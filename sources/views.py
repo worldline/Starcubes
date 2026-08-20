@@ -30,6 +30,7 @@ from core.etl import (truncate_last_partition, truncate_partition,
                       clear_etl_history, set_highwatermark)
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user
+from core.audit import audit_window
 from core.query import grouped_label, grouped_token, slugify_group_set
 from core.source import Source, _get_cached_engine
 from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
@@ -93,6 +94,7 @@ def _insert_seed_children(conn, ds_id: int):
     from sources.management.commands.seed_example import (
         FACT_COLUMNS, DIMENSIONS, FACT_INDICES,
         BASE_TABLE, SMALL_WINDOW_HINT, WATERMARK_MAX_QUERY,
+        WATERMARK_FACT_EXPR,
     )
     conn.execute(text("""
         UPDATE starcubes_meta.datasource SET
@@ -100,10 +102,12 @@ def _insert_seed_children(conn, ds_id: int):
             watermark_column    = 'end_time',
             watermark_max_query = :wmq,
             partition_column    = 'create_time',
-            small_window_hint   = :hint
+            small_window_hint   = :hint,
+            watermark_fact_expr = :wm_fact_expr
         WHERE id = :id
     """), {"id": ds_id, "base": BASE_TABLE, "wmq": WATERMARK_MAX_QUERY,
-            "hint": SMALL_WINDOW_HINT})
+            "hint": SMALL_WINDOW_HINT,
+            "wm_fact_expr": WATERMARK_FACT_EXPR})
     conn.execute(text(
         "INSERT INTO starcubes_meta.fact_column "
         "  (datasource_id, name, pg_type, role, ordinal, source_expr) "
@@ -167,7 +171,8 @@ def source_new(request):
                      watermark_column, watermark_max_query,
                      partition_column, partition_period,
                      chunksize, transform_procs,
-                     small_window_hint, interval_ladder, bar_pixel_target, pk_format)
+                     small_window_hint, interval_ladder, bar_pixel_target, pk_format,
+                     late_arrival_overlap_s, watermark_fact_expr)
                 VALUES
                     (:name, :schema_name, :dialect, :dsn,
                      NULLIF(:import_query, ''), NULLIF(:base_table, ''),
@@ -175,7 +180,8 @@ def source_new(request):
                      :partition_column, :partition_period,
                      :chunksize, :transform_procs,
                      NULLIF(:small_window_hint, ''),
-                     CAST(:ladder AS int[]), :bar_pixel_target, NULLIF(:pk_format, ''))
+                     CAST(:ladder AS int[]), :bar_pixel_target, NULLIF(:pk_format, ''),
+                     :late_arrival_overlap_s, NULLIF(:watermark_fact_expr, ''))
                 RETURNING id
             """), {
                 "name":               p["name"],
@@ -194,6 +200,8 @@ def source_new(request):
                 "ladder":             "{" + ",".join(str(x) for x in ladder) + "}",
                 "bar_pixel_target":   float(p.get("bar_pixel_target", 5)),
                 "pk_format":          p.get("pk_format", ""),
+                "late_arrival_overlap_s": int(p.get("late_arrival_overlap_s") or 0),
+                "watermark_fact_expr": p.get("watermark_fact_expr", ""),
             }).mappings().one()
             if preload_seed:
                 _insert_seed_children(conn, row["id"])
@@ -396,6 +404,8 @@ def source_edit(request, pk: int):
                     interval_ladder    = CAST(:ladder AS int[]),
                     bar_pixel_target   = :bar_pixel_target,
                     pk_format          = NULLIF(:pk_format, ''),
+                    late_arrival_overlap_s = :late_arrival_overlap_s,
+                    watermark_fact_expr = NULLIF(:watermark_fact_expr, ''),
                     updated_at         = now()
                 WHERE id = :id
             """), {
@@ -416,6 +426,8 @@ def source_edit(request, pk: int):
                 "ladder":             "{" + ",".join(str(x) for x in ladder) + "}",
                 "bar_pixel_target":   float(p.get("bar_pixel_target", 5)),
                 "pk_format":          p.get("pk_format", ""),
+                "late_arrival_overlap_s": int(p.get("late_arrival_overlap_s") or 0),
+                "watermark_fact_expr": p.get("watermark_fact_expr", ""),
             })
         return redirect("sources:detail", pk=pk)
     ds = _load_datasource(pk)
@@ -597,6 +609,38 @@ def preview_import(request, pk: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
+def _etl_busy_response(pk: int):
+    """409 JsonResponse if an ETL is already running for this datasource.
+
+    Also reaps stale `running` rows whose process died without updating
+    the status. Returns None when the datasource is free to start a run.
+    """
+    with _meta_engine().begin() as conn:
+        # Mark stale runs as failed (process killed/crashed before updating).
+        conn.execute(text(
+            "UPDATE starcubes_meta.etl_run SET status = 'failed', "
+            "  error = 'stale run: process did not update status' "
+            " WHERE datasource_id = :id AND status = 'running' "
+            "   AND started_at < now() - interval '1 hour'"
+        ), {"id": pk})
+        running = conn.execute(text(
+            "SELECT id FROM starcubes_meta.etl_run "
+            "WHERE datasource_id = :id AND status = 'running' LIMIT 1"
+        ), {"id": pk}).one_or_none()
+        forever_active = conn.execute(text(
+            "SELECT 1 FROM starcubes_meta.etl_forever "
+            " WHERE datasource_id = :id AND status IN ('running','stopping')"
+        ), {"id": pk}).scalar()
+    if running:
+        return JsonResponse({"ok": False, "error": "ETL already running"},
+                            status=409)
+    if forever_active:
+        return JsonResponse(
+            {"ok": False, "error": "Forever ETL is active — stop it first"},
+            status=409)
+    return None
+
+
 @require_POST
 def etl_run(request, pk: int):
     try:
@@ -605,28 +649,9 @@ def etl_run(request, pk: int):
         end = request.POST.get("end")
         limit = request.POST.get("limit")
 
-        with _meta_engine().begin() as conn:
-            # Mark stale runs as failed (process killed/crashed before updating).
-            conn.execute(text(
-                "UPDATE starcubes_meta.etl_run SET status = 'failed', "
-                "  error = 'stale run: process did not update status' "
-                " WHERE datasource_id = :id AND status = 'running' "
-                "   AND started_at < now() - interval '1 hour'"
-            ), {"id": pk})
-            running = conn.execute(text(
-                "SELECT id FROM starcubes_meta.etl_run "
-                "WHERE datasource_id = :id AND status = 'running' LIMIT 1"
-            ), {"id": pk}).one_or_none()
-            forever_active = conn.execute(text(
-                "SELECT 1 FROM starcubes_meta.etl_forever "
-                " WHERE datasource_id = :id AND status IN ('running','stopping')"
-            ), {"id": pk}).scalar()
-        if running:
-            return JsonResponse({"ok": False, "error": "ETL already running"}, status=409)
-        if forever_active:
-            return JsonResponse(
-                {"ok": False, "error": "Forever ETL is active — stop it first"},
-                status=409)
+        busy = _etl_busy_response(pk)
+        if busy is not None:
+            return busy
 
         ds = _load_datasource(pk)
         env = os.environ.copy()
@@ -1165,6 +1190,66 @@ def etl_create_partitions(request, pk: int):
         source, _ = _load_source(pk)
         parts = create_future_partitions(source, source.dest_engine(), n)
         return JsonResponse({"ok": True, "partitions": parts})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+def etl_audit(request, pk: int):
+    """Compare source vs fact row counts per time bucket over a window.
+
+    The ETL's overlap re-fetch (`datasource.late_arrival_overlap_s`) covers
+    a bounded amount of out-of-order arrival; this finds whatever exceeded
+    it — and is also how an operator measures what the overlap should be.
+    """
+    try:
+        from_time = _parse_dt(request.POST["from_time"])
+        to_time = _parse_dt(request.POST["to_time"])
+        buckets = int(request.POST.get("buckets", 24))
+        source, _ = _load_source(pk)
+        rows = audit_window(source, source.dest_engine(),
+                            start=from_time, end=to_time, buckets=buckets)
+        total_missing = sum(r["missing"] or 0 for r in rows)
+        total_surplus = sum(r["surplus"] or 0 for r in rows)
+        unreadable = sum(1 for r in rows if r["source_rows"] is None)
+        return JsonResponse({"ok": True, "buckets": rows,
+                             "total_missing": total_missing,
+                             "total_surplus": total_surplus,
+                             "unreadable_buckets": unreadable})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+def etl_backfill(request, pk: int):
+    """Re-load one closed window, inserting only rows missing from fact.
+
+    Spawns the same `manage.py etl_run` subprocess as a normal run (with
+    `--backfill`), so the per-run log file, ETL History and the live
+    monitor all work unchanged. The run is recorded with kind='backfill'
+    and therefore cannot move the high watermark backwards.
+    """
+    try:
+        start = request.POST["from_time"]
+        end = request.POST["to_time"]
+        # Validate before spawning — a bad timestamp should be a message
+        # here, not a failed run row the user has to go read the log for.
+        if _parse_dt(end) <= _parse_dt(start):
+            return JsonResponse(
+                {"ok": False, "error": "backfill end must be after start"})
+
+        busy = _etl_busy_response(pk)
+        if busy is not None:
+            return busy
+
+        ds = _load_datasource(pk)
+        env = os.environ.copy()
+        cmd = [_PYTHON_EXE, "manage.py", "etl_run", "--name", ds["name"],
+               "--backfill", "--start", start, "--end", end]
+        _proc, log_path = _spawn_etl_subprocess(cmd, env,
+                                                datasource_name=ds["name"])
+        return JsonResponse({"ok": True, "status": "started",
+                             "log_path": log_path})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
 

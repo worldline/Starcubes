@@ -13,7 +13,7 @@ Read this when editing anything under `sources/`.
 ### Pages
 - `GET /sources/` — list with last-run status badge per datasource
 - `GET/POST /sources/new/` — create datasource
-- `GET /sources/<pk>/` — detail (10 tabs: Basics | Fact Columns | Dimensions | Dim Data | Group Dims | Indices | ETL History | ETL Commands | Storage | ETL Log)
+- `GET /sources/<pk>/` — detail (11 tabs: Basics | Fact Columns | Dimensions | Dim Data | Group Dims | Measures | Indices | Storage | ETL Commands | Audit | ETL History | ETL Log)
 - `GET/POST /sources/<pk>/edit/` — edit scalar fields
 - `POST /sources/<pk>/delete/` — delete (CASCADE in DB)
 
@@ -72,6 +72,20 @@ crashed/orphaned sessions are revived.
 - `POST .../etl/clear-history/` — delete `etl_run` rows for datasource
 - `POST .../etl/create-partitions/` — create N future partitions
 - `POST .../etl/refresh-counts/` — refresh dim count columns
+
+### JSON: audit / backfill
+- `POST .../etl/audit/` — `from_time`, `to_time`, `buckets` (≤ 200). Counts
+  source rows (N range `count(*)`s on `watermark_column`) against fact rows
+  (one bucketed pass over `watermark_fact_expr`) and returns
+  `{buckets: [{start, end, source_rows, fact_rows, missing, surplus}],
+  total_missing, total_surplus, unreadable_buckets}`. A bucket whose source
+  query failed carries `source_rows: null` rather than a bogus gap.
+- `POST .../etl/backfill/` — `from_time`, `to_time`. Spawns
+  `manage.py etl_run --backfill --start … --end …` through the same
+  `spawn_etl_subprocess` path as a normal run, so the per-run log file, ETL
+  History and the live monitor all work unchanged. Guarded by the same
+  "already running / forever active" 409 check as `etl/run/`
+  (`_etl_busy_response`, shared between the two views).
 
 ### JSON: schema
 - `POST .../create-fact/` — create the fact table + initial partitions
@@ -162,6 +176,16 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   Run ETL card (`etlCmdClearHistBtn2`) — both wire to the shared
   `clearEtlHistory()` function, which also calls `refreshHistTable([])` so
   the table doesn't keep showing deleted rows after a clear.
+- **Audit tab** (`tab-audit`): reconciles source vs fact row counts per time
+  bucket, so late-arriving transactions that slipped past
+  `datasource.late_arrival_overlap_s` become visible. Bucket edges come back
+  from the server as ISO strings and are handed *straight back* to
+  `etl/backfill/` — the window round-trips exactly instead of being
+  re-derived in JS, where a rounding difference would backfill the wrong
+  span. Rows with `missing > 0` get the `.audit-gap` class and a per-row
+  Backfill button; "Backfill all gaps" spans the first to the last gap
+  bucket. Running an audit is the intended way to *measure*
+  `late_arrival_overlap_s` before setting it.
 - **ETL Log tab** (`tab-etl-log`): lazy-loaded on first activation via
   `etlLogActivate()` — populates the `<select>` from `etl/logs/`, then tails
   the selected file from `etl/log/`. Polls every 2s only while the tab is

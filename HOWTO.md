@@ -487,6 +487,61 @@ query. If blank, the ETL uses `SELECT max(<watermark_column>) FROM
 to compute on the base table (e.g. when the base table is a view or has
 complex partitioning).
 
+**Late Arrival Overlap (s)** — How many seconds the load window reaches back
+*past* the high watermark on every run. Most source databases do not
+guarantee that rows become visible in watermark order: a transaction can
+commit after the ETL has already moved past its `end_time`, and with an
+overlap of 0 that row is never seen again. With an overlap set, the ETL
+re-reads that many seconds on each pass and drops the rows it already has by
+primary key, so re-reading costs source-DB I/O but never duplicates data.
+
+Requirements and trade-offs:
+
+- A fact column with `role = 'pk'` is required. Without one the run fails
+  rather than inserting duplicates.
+- Default is `0`, i.e. the historical behaviour. Do not guess a value — run
+  the **Audit** tab over a representative window first (see below), see how
+  far back rows actually turn up, and set the overlap above that.
+- The cost is one extra source-side range scan per run. A few minutes of
+  overlap on an indexed watermark column is usually negligible; hours are
+  not.
+- Blocks within the overlap span are excluded from the server-side plot
+  cache, since a later run can still add rows there.
+
+**Watermark Fact Expression** — SQL, evaluated against the *fact* table, that
+reproduces the watermark value. Needed only when the watermark is not itself
+a fact column. The example Oracle source watermarks on `end_time` but stores
+`create_time` plus a `total` duration, so it sets
+`create_time + total * interval '1 millisecond'`. Leave blank when the
+watermark column *is* the partition column, which is the common case. Used
+by the overlap re-fetch and by the Audit tab.
+
+### Finding and repairing missed transactions
+
+The **Audit** tab on a datasource compares row counts between the source and
+the fact table, bucket by bucket, over a window you choose:
+
+1. Pick **From** / **To** and a bucket count (max 200), then **Run Audit**.
+   The source is counted on its watermark column, the fact table on the
+   watermark fact expression (or the partition column).
+2. Buckets where the source has more rows than the fact table are flagged as
+   *missing*. A bucket whose source query failed shows `?` rather than a
+   bogus gap.
+3. **Backfill** on a row — or **Backfill all gaps** for the whole span —
+   re-loads that window and inserts only the rows that are not already
+   present, matched by primary key. It runs as a normal background ETL
+   subprocess, so progress shows up in the ETL Log and ETL History tabs.
+
+A backfill never moves the high watermark, so it is safe to run against old
+windows while incremental loading continues. It does leave the dimension
+`count` columns stale (they only affect the chart's stacking order) — run
+**Refresh Counts** afterwards if that matters.
+
+Use this both to repair known gaps and to *measure* the right value for
+**Late Arrival Overlap**: audit a window that is already fully loaded, and
+the oldest bucket that still gains rows tells you how far back the source
+reorders.
+
 ### ETL performance fields
 
 **Chunk Size** — Number of rows per extract chunk. The ETL reads the source

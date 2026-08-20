@@ -39,11 +39,19 @@ structural changes.
 - **Multi-dialect WHERE construction.** `core/etl.py` emits Oracle
   `to_timestamp(..., 'YYYY-MM-DD HH24:MI:SS')` literals — fine for the
   example Oracle source, wrong for Postgres/MySQL. When a second non-Oracle
-  source is wired up, switch to SQLAlchemy bind parameters.
+  source is wired up, switch to SQLAlchemy bind parameters. (`core/audit.py`
+  already uses binds for its source-side counts and avoids any truncation
+  function for exactly this reason.)
 - **Test coverage.** No unit or integration tests for `core/etl.py`,
   `core/query.py`, or the three-stage multiprocessing pipeline. The
   `_resume_state` deduplication logic and `copy_from` path are especially
-  risky to change without tests.
+  risky to change without tests. (The late-arrival overlap work was verified
+  with a throwaway end-to-end script against a local Postgres acting as both
+  source and warehouse — that shape is worth keeping if a suite ever lands.)
+- **Late arrivals beyond the overlap are only found on demand.** The Audit
+  tab has to be run by a human over a chosen window; nothing schedules it,
+  and nothing alerts on a gap. A periodic audit of the trailing N hours
+  (with the result stored per run) would close that.
 - **Source schema drift guard.** No pre-flight validation that upstream
   columns still match `source_expr` / `base_table` before the extract loop.
   A dropped/renamed source column fails mid-run.
@@ -104,7 +112,17 @@ structural changes.
   32 767 ceiling still applies — use the GUI's cardinality estimate
   before promoting a column.
 - **High watermark (HWM)** — `max(watermark_column)` in the source. The
-  ETL loads `[last_successful_hwm, current_hwm)` on each run.
+  ETL loads `[last_successful_hwm - late_arrival_overlap_s, current_hwm)`
+  on each run; only `kind='incremental'` runs advance it.
+- **Late-arrival overlap** — `datasource.late_arrival_overlap_s`, the number
+  of seconds the load window reaches back *past* the HWM on every run,
+  because the source does not promise that rows become visible in watermark
+  order. Rows already loaded are dropped by PK in the extract loop. Default
+  0 (historical behaviour). See the design-decision note below.
+- **Backfill run** — `import_fact(..., backfill=True)` /
+  `manage.py etl_run --backfill --start … --end …`. Re-loads one closed
+  historical window, de-duping the whole window by PK, and is recorded with
+  `etl_run.kind='backfill'` so it cannot move the HWM.
 - **Dimension group** — a named bucket (e.g. "OK", "Error") collecting one
   or more dim rows via `dim_group_member`. Always belongs to exactly one
   group dimension.
@@ -245,6 +263,85 @@ any of the systems it covers.
 - **`core/query.py:timeseries_drilldown` matches both `'dimension'` and
   `'auto-dimension'`** when iterating fact columns. Auto-dims are
   first-class for chart drill-down.
+
+- **The load window reaches back past the HWM, because the source does not
+  deliver rows in watermark order.** `import_fact` used to load
+  `[last_end_time, max(watermark_column))` and advance the HWM to that max,
+  so a transaction that only became visible *after* the run — with a
+  watermark below the new HWM — dropped out of every future window and was
+  lost silently and permanently. There is no unique constraint on `fact` to
+  catch it and nothing in the run stats that would have shown it.
+  `datasource.late_arrival_overlap_s` now pulls the window's lower bound
+  back by N seconds on every incremental run; `_resume_state` returns
+  `(last_end_time, extract_from, existing_pks)` where `extract_from =
+  last_end_time - overlap`, and `_overlap_pks` pre-loads the PKs already in
+  fact across that span so the extract loop drops them per chunk. The
+  re-fetch is therefore idempotent: rerunning changes nothing.
+  Three things this deliberately is *not*:
+    - **Not a lag.** Holding the window's *upper* bound back below
+      `max(watermark_column)` would buy the same safety by making the chart
+      permanently stale. The overlap loads the tip immediately and collects
+      stragglers on the next pass instead.
+    - **Not a unique index + `ON CONFLICT`.** That is the airtight fix, and
+      it costs the `copy_from` fast path (see the three-stage-pipeline note)
+      plus a btree on an UNLOGGED billion-row table. The PK set is matched
+      in the parent process instead, where it is free.
+    - **Not on by default.** The right value is deployment-specific — it is
+      *measured* with the Audit tab, not guessed — so the column defaults to
+      0, which reproduces the old behaviour exactly.
+  Two guards, both raised before the worker pool starts:
+  `late_arrival_overlap_s > 0` without a `role='pk'` fact column fails the
+  run (silently duplicating rows would be worse than the bug), and a PK set
+  above `_MAX_OVERLAP_PKS` (5M, `STARCUBES_MAX_OVERLAP_PKS`) fails rather
+  than OOM-killing the parent.
+
+- **`datasource.watermark_fact_expr` exists because the watermark is not
+  always a projected fact column.** The example Oracle source watermarks on
+  `end_time` but stores `create_time` plus a `total` duration, so finding
+  the already-loaded rows of an overlap window means recomputing the
+  watermark fact-side. `core/etl.py:_resume_state` used to hard-code
+  literally `pc + total * interval '1 millisecond'` — the one place in the
+  engine that assumed a non-configurable fact column, and it broke the crash
+  -resume path outright for any datasource without a `total` column.
+  `Source.watermark_fact_sql()` returns the configured expression or falls
+  back to `partition_column`. `seed_example` sets it for the example source,
+  which is what preserves that source's previous behaviour.
+
+- **A backfill must never move the high watermark backwards.** `_resume_state`
+  picks the newest `status='ok'` run by `finished_at`, so re-loading an old
+  window would have rewound the watermark and skipped everything after it —
+  a trap that already existed for a plain `--start`/`--end` run.
+  `etl_run.kind` ('incremental' | 'backfill') is the fix; the HWM query
+  filters on it. Backfill runs also skip `_increment_dim_counts` (their
+  window overlaps rows an earlier run already counted) and call
+  `bump_cache_epoch`, because they insert rows *behind* the HWM, inside
+  ranges the plot cache already considers final. For the same reason
+  `is_cacheable` now subtracts `late_arrival_overlap_s` from the cacheable
+  horizon: an ordinary incremental run can insert into that span too, with
+  no invalidation event to catch it.
+
+- **The overlap de-dupe filter stays armed for the whole run.** The previous
+  crash-resume filter disabled itself as soon as one full-`chunksize` chunk
+  arrived clean — which silently assumes the source delivers rows in
+  watermark order. `Source.import_query` carries no `ORDER BY`, so a
+  re-fetched row can surface in any chunk; that assumption is the very bug
+  the filter exists to paper over. `_increment_dim_counts` is still handed
+  the *HWM*, not `extract_from`: counting from the overlap boundary would
+  re-add the same rows on every pass. Late arrivals below the HWM therefore
+  go uncounted — dim counts only drive the chart's stacking order, are
+  approximate by contract, and `--refresh-counts` recomputes them.
+
+- **`core/audit.py` counts the two sides differently on purpose.** Any
+  *bounded* overlap can be exceeded, so the Audit tab compares source and
+  fact row counts per time bucket — and is also how an operator measures
+  what `late_arrival_overlap_s` should be in the first place. The fact side
+  is one query bucketed server-side by integer division on the epoch; the
+  source side is N plain `count(*)` range predicates on `watermark_column`,
+  deliberately *not* `date_trunc`/`TRUNC`, which would drag the open
+  multi-dialect item in the backlog into a new place. When
+  `watermark_fact_expr` is derived, the fact-side count can use neither BRIN
+  nor partition pruning and scans the range — hence the bucket cap (200) and
+  the `statement_timeout`, since uWSGI only has 8 request slots.
 
 - **Duplicate detection only runs when the last `etl_run` row has
   `status != 'ok'`.** A crashed run may have partially written a chunk;
@@ -743,10 +840,11 @@ any of the systems it covers.
 
 | File | Purpose |
 |------|---------|
-| `core/source.py` | `Source` / `Dimension` / `FactColumn` / `FactIndex` dataclasses + `Source.load` + `_get_cached_engine` + `init_oracle_client`. Splits `dim_fact_to_table()` (regular) from `auto_dim_fact_to_table()` (auto-dims, resolved in the parent ETL process). |
+| `core/source.py` | `Source` / `Dimension` / `FactColumn` / `FactIndex` dataclasses + `Source.load` + `_get_cached_engine` + `init_oracle_client` + `watermark_fact_sql()` (fact-side watermark expression, falls back to `partition_column`). Splits `dim_fact_to_table()` (regular) from `auto_dim_fact_to_table()` (auto-dims, resolved in the parent ETL process). |
 | `core/schema.py` | `create_fact`, `create_indices`, `drop_indices`, `import_dimensions`, `read_dimensions`, `ensure_starcubes_meta(engine, force=)`. Partition lifecycle: `list_fact_partitions`, `create_future_partitions` (append-only, manual), `ensure_partitions_for` (gap-filling, called every `import_fact` run), `vacuum_analyze_fact`. |
-| `core/etl.py` | `import_fact` — the three-stage pipeline; calls `ensure_partitions_for` before starting workers. `_resume_state` for HWM + dedupe. `_load_auto_dim_maps` + `_resolve_auto_dim_chunk` for parent-process auto-dim discovery. `EtlAborted` for user-initiated kills; `EtlStageFailed` (+ `_put_with_abort`/`_join_with_abort`/`_raise_if_failed`) for a dead transform/load worker. Throughput metrics: `_snapshot_stats`/`_build_stats_payload` read the shared `mp.Array` into the `stats` jsonb shape (now including live `queues`/`workers`); `_rate`/`_fmt_rate` compute/format rows-per-second; `_bound_log_size` truncates the process's own log file in place. Uses `logging.getLogger(__name__)`, never `print()`. Maintenance: `truncate_last_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`. |
+| `core/etl.py` | `import_fact` — the three-stage pipeline; calls `ensure_partitions_for` before starting workers. `_resume_state` returns `(last_end_time, extract_from, existing_pks)`; `_overlap_pks` loads the PK set for the late-arrival overlap. `backfill=True` re-loads a closed window without moving the HWM. `_load_auto_dim_maps` + `_resolve_auto_dim_chunk` for parent-process auto-dim discovery. `EtlAborted` for user-initiated kills; `EtlStageFailed` (+ `_put_with_abort`/`_join_with_abort`/`_raise_if_failed`) for a dead transform/load worker. Throughput metrics: `_snapshot_stats`/`_build_stats_payload` read the shared `mp.Array` into the `stats` jsonb shape (now including live `queues`/`workers`); `_rate`/`_fmt_rate` compute/format rows-per-second; `_bound_log_size` truncates the process's own log file in place. Uses `logging.getLogger(__name__)`, never `print()`. Maintenance: `truncate_last_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`. |
 | `core/query.py` | `timeseries_multibar` — multibar JSON producer. Bars ordered ascending by dim count. `split_grouped_col`/`resolve_group_set`/`slugify_group_set`/`grouped_token`/`grouped_label` own the `<col>:grouped:<slug>` token; `build_group_by_indices` resolves group names for grouped drill-down. |
+| `core/audit.py` | `audit_window` — per-bucket source-vs-fact row-count reconciliation behind the Audit tab; `gap_span` folds the gap buckets into one backfill window. No Django imports. |
 | `core/cache.py` | Server-side `plot_json` cache helpers. `make_cache_key`, `is_cacheable`, `get_cached_plot`, `put_cached_plot`, `bump_cache_epoch`, `clear_cache`. No Django imports. |
 | `core/adhoc.py` | Query console backend: `validate_sql` (single-statement SELECT/WITH lexer), `run_query` (read-only txn + server-side cursor + `application_name` tag), `cancel_query` (`pg_stat_activity` → `pg_cancel_backend`), `history_*`. No Django imports. |
 | `migrations/starcubes_meta.sql` | Consolidated idempotent meta-schema (0001–0019 combined). Used by `core/schema.py`. Per-step migrations live in `migrations/000N_*.sql`. |

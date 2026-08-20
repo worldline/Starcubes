@@ -214,6 +214,8 @@ class Source:
     measures: list[Measure] = field(default_factory=list)
     is_default: bool = False          # chart selects this source when no ?name= given
     pk_format: Optional[str] = None   # Python format string for PK display in chart drill-down
+    late_arrival_overlap_s: int = 0   # seconds the load window reaches back past the HWM
+    watermark_fact_expr: Optional[str] = None  # fact-side SQL reproducing watermark_column
 
     @classmethod
     def load(cls, meta_engine, dest_dsn: str, name_or_id) -> "Source":
@@ -228,6 +230,7 @@ class Source:
                 f"       chunksize, transform_procs, "
                 f"       small_window_hint, "
                 f"       interval_ladder, bar_pixel_target, pk_format, "
+                f"       late_arrival_overlap_s, watermark_fact_expr, "
                 f"       is_default "
                 f"  FROM starcubes_meta.datasource WHERE {key_sql}"
             ), {"k": name_or_id}).mappings().first()
@@ -408,6 +411,17 @@ class Source:
     def bigint_measure_columns(self) -> list[str]:
         return [c.name for c in self.fact_columns
                 if c.pg_type == "bigint" and c.role == "measure"]
+
+    def watermark_fact_sql(self) -> str:
+        """Fact-side SQL expression that reproduces ``watermark_column``.
+
+        The watermark is not always a projected fact column -- the example
+        Oracle source watermarks on ``end_time`` but stores ``create_time``
+        plus a ``total`` duration -- so the expression is configurable.
+        Used to select the already-loaded rows of the overlap window
+        (`core/etl.py:_resume_state`) and by `core/audit.py`.
+        """
+        return self.watermark_fact_expr or self.partition_column
 
     def pk_column(self) -> Optional[str]:
         return next((c.name for c in self.fact_columns if c.role == "pk"), None)

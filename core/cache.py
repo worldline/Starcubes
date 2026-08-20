@@ -4,7 +4,8 @@ Eligibility (caller-checked, see `is_cacheable`):
   * measure is count(*) (None or the literal string)
   * `to` is at a UTC interval boundary
   * `to` <= now() - interval (block does not include "now")
-  * `to` <= last successful HWM (data behind the cache is final)
+  * `to` <= last successful HWM minus late_arrival_overlap_s (data behind
+    the cache is final — the overlap span can still take late arrivals)
 
 The key includes the datasource's `cache_epoch`, so any operation that
 mutates historical fact rows can invalidate the whole datasource's cache by
@@ -64,8 +65,15 @@ def is_cacheable(
     t_to_epoch: int,
     hwm_epoch: Optional[int],
     now_epoch: Optional[int] = None,
+    late_arrival_overlap_s: int = 0,
 ) -> bool:
-    """Return True if a request is eligible for the server-side cache."""
+    """Return True if a request is eligible for the server-side cache.
+
+    ``late_arrival_overlap_s`` pulls the cacheable horizon back below the
+    high watermark: with an overlap configured, every incremental run may
+    still insert late-arriving rows into that span, so a payload cached
+    there would go stale without any invalidation event to catch it.
+    """
     if measure not in (None, "", "count(*)"):
         return False
     if hwm_epoch is None:
@@ -78,7 +86,7 @@ def is_cacheable(
         now_epoch = int(time.time())
     if t_to_epoch > now_epoch - interval:
         return False
-    if t_to_epoch > hwm_epoch:
+    if t_to_epoch > hwm_epoch - max(0, late_arrival_overlap_s):
         return False
     return True
 

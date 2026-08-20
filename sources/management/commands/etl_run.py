@@ -70,6 +70,11 @@ class Command(BaseCommand):
                                  "(YYYY-MM-DD HH:MM:SS or ISO 8601)")
         parser.add_argument("--limit", default=None, type=int,
                             help="maximum number of rows to import")
+        parser.add_argument("--backfill", action="store_true",
+                            help="re-load the --start/--end window, skipping "
+                                 "rows already in fact (matched by PK). Does "
+                                 "not move the high watermark. Requires "
+                                 "--start and --end.")
 
         # Standalone maintenance actions (one per invocation)
         parser.add_argument("--refresh-counts", action="store_true",
@@ -184,6 +189,19 @@ class Command(BaseCommand):
             return
 
         # Full ETL run (with optional window overrides)
+        if options["backfill"]:
+            if not (options["start"] and options["end"]):
+                self.stderr.write(
+                    "Error: --backfill requires --start and --end "
+                    "(it re-loads one closed window)\n")
+                self.stderr.flush()
+                raise SystemExit(1)
+            if options["forever"] is not None:
+                self.stderr.write(
+                    "Error: --backfill cannot be combined with --forever\n")
+                self.stderr.flush()
+                raise SystemExit(1)
+
         interval = options["forever"]
         if interval is not None and interval < 1:
             self.stderr.write("Error: --forever requires a positive number of seconds")
@@ -276,6 +294,7 @@ class Command(BaseCommand):
                                        start_time=start_time,
                                        end_time_override=end_time,
                                        row_limit=options["limit"],
+                                       backfill=options["backfill"],
                                        log_path=log_path)
                 except EtlAborted as exc:
                     # import_fact's finally already reaped the workers and

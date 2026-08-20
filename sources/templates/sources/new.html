@@ -129,6 +129,16 @@
         <input class="form-control" name="pk_format" placeholder="e.g. &lt;a href=&quot;https://portal.example.com/txn/{0:012d}&quot;&gt;{0:012d}&lt;/a&gt;">
         <div class="form-hint">Python format string for PK display in chart drill-down. Leave blank for raw IDs.</div>
       </div>
+      <div class="form-group">
+        <label class="form-label">Late Arrival Overlap (s)</label>
+        <input class="form-control" name="late_arrival_overlap_s" type="number" min="0" step="1" value="0">
+        <div class="form-hint">Seconds the incremental load window reaches back past the high watermark, so transactions that become visible out of watermark order are still picked up. Duplicates are filtered by primary key, so a fact column with role=pk is required. 0 disables it. Use the Audit tab to measure the real skew before choosing a value.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Watermark Fact Expression</label>
+        <input class="form-control mono" name="watermark_fact_expr" placeholder="e.g. create_time + total * interval &#39;1 millisecond&#39;">
+        <div class="form-hint">Fact-side SQL reproducing the watermark column, used to find already-loaded rows in the overlap window and by the Audit tab. Leave blank to use the partition column. Example: <code>create_time + total * interval &#39;1 millisecond&#39;</code></div>
+      </div>
     </div>
   </div>
 

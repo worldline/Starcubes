@@ -16,6 +16,14 @@ BASE_TABLE          = "txn"
 SMALL_WINDOW_HINT   = "/*+ ORDERED INDEX(txn, TXN3) */"
 WATERMARK_MAX_QUERY = "SELECT max(end_time) FROM txn"
 
+# Fact-side SQL that reproduces watermark_column (end_time). The fact table
+# stores create_time plus a `total` duration in milliseconds, not end_time
+# itself, so the watermark has to be recomputed to find the already-loaded
+# rows of an overlap window (core/etl.py:_resume_state) and to count rows
+# per bucket in the Audit tab (core/audit.py). core/etl.py used to hard-code
+# exactly this expression, which broke every source without a `total` column.
+WATERMARK_FACT_EXPR = "create_time + total * interval '1 millisecond'"
+
 TOTAL_EXPR = (
     "extract( minute from "
     "TO_TIMESTAMP(substr(to_char(end_time),1,19)||'.'||"
@@ -136,18 +144,21 @@ def _upsert_datasource(meta_engine, name, schema, source_dsn, force):
             "  base_table, watermark_column, watermark_max_query, "
             "  partition_column, partition_period, "
             "  chunksize, transform_procs, small_window_hint, "
-            "  interval_ladder, bar_pixel_target, is_default"
+            "  interval_ladder, bar_pixel_target, is_default, "
+            "  watermark_fact_expr"
             ") VALUES ("
             "  :name, :schema, 'oracle', :dsn, "
             "  :base, 'end_time', :wmq, "
             "  'create_time', 'month', "
             "  10000, 1, :hint, "
-            "  '{1,60,3600,86400}', 5, :is_def"
+            "  '{1,60,3600,86400}', 5, :is_def, "
+            "  :wm_fact_expr"
             ") RETURNING id"
         ), {"name": name, "schema": schema,
             "dsn": source_dsn or "",
             "base": BASE_TABLE, "wmq": WATERMARK_MAX_QUERY,
             "hint": SMALL_WINDOW_HINT,
+            "wm_fact_expr": WATERMARK_FACT_EXPR,
             "is_def": not has_default}).scalar()
 
         conn.execute(text(

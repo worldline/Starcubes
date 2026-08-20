@@ -206,7 +206,8 @@ def plot_json(request):
         hwm_epoch, cache_epoch = _read_hwm_and_epoch(meta, source.id)
         cache_key = None
         if is_cacheable(measure=measure, interval=interval,
-                        t_to_epoch=t_to_epoch, hwm_epoch=hwm_epoch):
+                        t_to_epoch=t_to_epoch, hwm_epoch=hwm_epoch,
+                        late_arrival_overlap_s=source.late_arrival_overlap_s):
             cache_key = make_cache_key(
                 datasource_id=source.id,
                 group_by=group_by_raw,

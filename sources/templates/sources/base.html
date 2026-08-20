@@ -608,6 +608,10 @@ tr.editing .row-edit { display: flex; }
 .cmd-result.ok { color: var(--success); }
 .cmd-result.err { color: var(--danger); }
 
+/* Audit tab: a bucket whose source row count exceeds the fact row count */
+.audit-gap td { color: var(--danger); }
+.audit-gap td:first-child { border-left: 3px solid var(--danger); }
+
 /* DateTime picker */
 .dtp-label { position: relative; }
 .dtp-label input {

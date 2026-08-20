@@ -16,6 +16,7 @@
     <button class="tab-btn" data-tab="indices">Indices ({{ indices|length }})</button>
     <button class="tab-btn" data-tab="storage">Storage</button>
     <button class="tab-btn" data-tab="etl-cmds">ETL Commands</button>
+    <button class="tab-btn" data-tab="audit">Audit</button>
     <button class="tab-btn" data-tab="history">ETL History ({{ runs|length }})</button>
     <button class="tab-btn" data-tab="etl-log">ETL Log</button>
   </div>
@@ -55,6 +56,8 @@
         <dt>Interval Ladder</dt><dd class="mono">{{ ds.interval_ladder_str }}</dd>
         <dt>Bar Pixel Target</dt><dd>{{ ds.bar_pixel_target }}</dd>
         <dt>PK Format</dt><dd class="mono">{{ ds.pk_format|default:'—' }}</dd>
+        <dt>Late Arrival Overlap</dt><dd>{% if ds.late_arrival_overlap_s %}{{ ds.late_arrival_overlap_s }} s{% else %}off{% endif %}</dd>
+        <dt>Watermark Fact Expr</dt><dd class="mono">{{ ds.watermark_fact_expr|default:'— (partition column)' }}</dd>
       </dl>
     </div>
   </div>
@@ -802,6 +805,67 @@
   </div>
 </div>
 
+<!-- Audit tab -->
+<!-- Source-vs-fact reconciliation. The ETL's overlap re-fetch
+     (datasource.late_arrival_overlap_s) absorbs a bounded amount of
+     out-of-order arrival; this finds what exceeded it, and is how the
+     overlap value gets measured in the first place. -->
+<div class="tab-panel" id="tab-audit">
+  <div class="card">
+    <div class="card-header"><span class="card-title">&#128269; Gap Audit</span></div>
+    <div class="card-body">
+      <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+        Counts rows on both sides per time bucket and reports the difference.
+        The source is counted on <span class="mono">{{ ds.watermark_column }}</span>,
+        the fact table on <span class="mono">{{ ds.watermark_fact_expr|default:ds.partition_column }}</span>.
+        Missing rows are closed with Backfill, which re-loads the window and
+        skips everything already present (matched by primary key).
+      </p>
+      <div class="form-row">
+        <div>
+          <label class="form-label dtp-label">From
+            <input type="text" id="auditFrom" placeholder="YYYY-MM-DD HH:MM">
+          </label>
+        </div>
+        <div>
+          <label class="form-label dtp-label">To
+            <input type="text" id="auditTo" placeholder="YYYY-MM-DD HH:MM">
+          </label>
+        </div>
+        <div>
+          <label class="form-label">Buckets</label>
+          <input class="form-control" type="number" id="auditBuckets" min="1" max="200" value="24">
+          <div class="form-hint">Max 200</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary" id="auditRunBtn">Run Audit</button>
+        <button class="btn btn-secondary" id="auditBackfillAllBtn" style="display:none">Backfill all gaps</button>
+        <span class="cmd-result" id="result-audit"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="auditResultCard" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Buckets</span>
+      <span class="text-muted" style="font-size:11px;margin-left:auto">times shown in local timezone</span>
+    </div>
+    <table class="data-table" id="auditTable">
+      <thead>
+        <tr>
+          <th>Bucket start</th>
+          <th style="text-align:right">Source rows</th>
+          <th style="text-align:right">Fact rows</th>
+          <th style="text-align:right">Missing</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="auditTbody"></tbody>
+    </table>
+  </div>
+</div>
+
 <!-- ETL History tab -->
 <div class="tab-panel" id="tab-history">
   <div class="card">
@@ -908,6 +972,8 @@ function doDelete() {
 var dtpStart = new DateTimePicker(document.getElementById('etlCmdStart'), { nextFocus: document.getElementById('etlCmdEnd'), onChange: function(){} });
 var dtpEnd = new DateTimePicker(document.getElementById('etlCmdEnd'), { nextFocus: document.getElementById('etlCmdStart'), onChange: function(){} });
 var dtpDeleteFrom = new DateTimePicker(document.getElementById('etlCmdDeleteFrom'), { onChange: function(){} });
+var dtpAuditFrom = new DateTimePicker(document.getElementById('auditFrom'), { nextFocus: document.getElementById('auditTo'), onChange: function(){} });
+var dtpAuditTo = new DateTimePicker(document.getElementById('auditTo'), { nextFocus: document.getElementById('auditFrom'), onChange: function(){} });
 
 // --- Connection status auto-check ---
 (function() {
@@ -2610,6 +2676,113 @@ document.getElementById('etlCmdHwmBtn').addEventListener('click', function() {
   }).catch(function(e) {
     showCmdResult(resultEl, false, '✗ ' + e);
   }).finally(function() { btn.disabled = false; });
+});
+
+// --- Gap Audit ---------------------------------------------------------
+// Source-vs-fact row counts per bucket. Bucket edges come back as ISO
+// strings and are handed straight back to the backfill endpoint, so a
+// bucket's window round-trips exactly instead of being re-derived here.
+var auditGapSpan = null;   // [from, to] covering every bucket with a gap
+
+function auditRenderRows(rows) {
+  var tbody = document.getElementById('auditTbody');
+  tbody.innerHTML = '';
+  rows.forEach(function(r) {
+    var tr = document.createElement('tr');
+    var missing = r.missing || 0;
+    var surplus = r.surplus || 0;
+    if (missing) tr.classList.add('audit-gap');
+
+    var tdStart = document.createElement('td');
+    tdStart.textContent = fmtLocal(r.start);
+    tr.appendChild(tdStart);
+
+    var tdSrc = document.createElement('td');
+    tdSrc.style.textAlign = 'right';
+    tdSrc.textContent = (r.source_rows === null) ? '?' : r.source_rows.toLocaleString();
+    tr.appendChild(tdSrc);
+
+    var tdFact = document.createElement('td');
+    tdFact.style.textAlign = 'right';
+    tdFact.textContent = r.fact_rows.toLocaleString();
+    tr.appendChild(tdFact);
+
+    var tdDiff = document.createElement('td');
+    tdDiff.style.textAlign = 'right';
+    if (r.source_rows === null)  { tdDiff.textContent = '?'; }
+    else if (missing)            { tdDiff.textContent = missing.toLocaleString() + ' missing'; }
+    else if (surplus)            { tdDiff.textContent = surplus.toLocaleString() + ' surplus'; }
+    else                         { tdDiff.textContent = '✓'; }
+    tr.appendChild(tdDiff);
+
+    var tdAct = document.createElement('td');
+    if (missing) {
+      var b = document.createElement('button');
+      b.className = 'btn btn-secondary btn-sm';
+      b.textContent = 'Backfill';
+      b.addEventListener('click', function() { auditBackfill(r.start, r.end, b); });
+      tdAct.appendChild(b);
+    }
+    tr.appendChild(tdAct);
+    tbody.appendChild(tr);
+  });
+  document.getElementById('auditResultCard').style.display = rows.length ? '' : 'none';
+}
+
+function auditBackfill(from, to, btn) {
+  var resultEl = document.getElementById('result-audit');
+  if (!confirm('Re-load ' + fmtLocal(from) + ' → ' + fmtLocal(to) + '?\n\n'
+             + 'Rows already in fact are skipped by primary key. '
+             + 'The high watermark is not moved.')) return;
+  if (btn) btn.disabled = true;
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/backfill/', {from_time: from, to_time: to})
+    .then(function(d) {
+      showCmdResult(resultEl, d.ok, d.ok
+        ? '✓ Backfill started — watch the ETL Log tab, then re-run the audit'
+        : ('✗ ' + d.error));
+    })
+    .catch(function(e) { showCmdResult(resultEl, false, '✗ ' + e); })
+    .finally(function() { if (btn) btn.disabled = false; });
+}
+
+document.getElementById('auditRunBtn').addEventListener('click', function() {
+  var btn = this;
+  var from = document.getElementById('auditFrom').value;
+  var to = document.getElementById('auditTo').value;
+  var buckets = document.getElementById('auditBuckets').value || '24';
+  var resultEl = document.getElementById('result-audit');
+  var backfillAllBtn = document.getElementById('auditBackfillAllBtn');
+  if (!from || !to) { alert('Pick a From and To timestamp.'); return; }
+
+  btn.disabled = true;
+  backfillAllBtn.style.display = 'none';
+  auditGapSpan = null;
+  showCmdResult(resultEl, true, 'Counting…');
+  postJSON('/sources/' + DS_PK + '/etl/audit/',
+           {from_time: from, to_time: to, buckets: buckets}).then(function(d) {
+    if (!d.ok) { showCmdResult(resultEl, false, '✗ ' + d.error); return; }
+    auditRenderRows(d.buckets);
+    var gaps = d.buckets.filter(function(r) { return r.missing; });
+    if (gaps.length) {
+      auditGapSpan = [gaps[0].start, gaps[gaps.length - 1].end];
+      backfillAllBtn.style.display = '';
+    }
+    var msg = d.total_missing
+      ? ('✗ ' + d.total_missing.toLocaleString() + ' row(s) missing in '
+         + gaps.length + ' bucket(s)')
+      : '✓ No gaps';
+    if (d.total_surplus) { msg += ' — ' + d.total_surplus.toLocaleString() + ' surplus'; }
+    if (d.unreadable_buckets) { msg += ' — ' + d.unreadable_buckets + ' bucket(s) unreadable'; }
+    showCmdResult(resultEl, !d.total_missing, msg);
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; });
+});
+
+document.getElementById('auditBackfillAllBtn').addEventListener('click', function() {
+  if (!auditGapSpan) return;
+  auditBackfill(auditGapSpan[0], auditGapSpan[1], this);
 });
 
 // Clear ETL History — shared between the Metadata card and the Run ETL card

@@ -239,6 +239,12 @@ Use the GUI at `/sources/new/` or write a seed script modelled on
   does **not** need to be in the SELECT list) and optionally a
   `watermark_max_query` (`SELECT max(<wm>) FROM <base_table>`) that lets the
   ETL skip the wrap-subquery scan;
+- optionally a `late_arrival_overlap_s`, if the source can make rows visible
+  out of watermark order — the load window then reaches that many seconds
+  back past the high watermark and drops what it already has by primary key.
+  Pair it with `watermark_fact_expr` when the watermark is not itself a fact
+  column. The Audit tab on the datasource page measures how much overlap a
+  given source actually needs, and backfills whatever slipped past it;
 - `fact_column` rows describing the warehouse layout (one `time` role, one
   `pk` role, N `measure` / `dimension` / `auto-dimension` roles) — each with
   a `source_expr` projection;

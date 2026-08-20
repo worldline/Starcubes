@@ -34,6 +34,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import JSONB
 from tqdm import tqdm
 
+from .cache import bump_cache_epoch
 from .schema import (UNKNOWN_SOURCE_ID, ensure_partitions_for, import_dimensions,
                      read_dimensions, refresh_dim_counts)
 from .source import Source
@@ -187,6 +188,11 @@ def _increment_dim_counts(source: Source, dest_engine,
                     f"         GROUP BY {d.fact_column}) sub "
                     f" WHERE d.index = sub.idx"
                 ), {"end": end_time})
+
+# Upper bound on the PK set held in memory for overlap de-duplication.
+# ~60-80 MB per million entries; beyond this the overlap window is almost
+# certainly misconfigured, and a loud failure beats an OOM-killed parent.
+_MAX_OVERLAP_PKS = int(os.environ.get("STARCUBES_MAX_OVERLAP_PKS", 5_000_000))
 
 SMALLINT_MAX = 32767  # signed int16 upper bound
 BIGINT_MAX = 9223372036854775807  # signed int64 upper bound
@@ -638,19 +644,79 @@ def _bound_log_size(max_bytes: int) -> None:
         pass
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize a DB timestamp to an aware UTC datetime.
+
+    psycopg2 hands back timestamptz in the session timezone; normalizing
+    here keeps a later .replace(tzinfo=None) from producing
+    session-local-as-naive instead of UTC-as-naive.
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _overlap_pks(source: Source, dest_engine, since: datetime,
+                 until: Optional[datetime] = None) -> set:
+    """PKs already in fact whose watermark falls in ``[since, until)``.
+
+    Held in a plain Python set and matched per chunk in the extract loop.
+    At realistic overlaps (minutes) the set is small; ``_MAX_OVERLAP_PKS``
+    turns an unrealistic one into a loud failure instead of an OOM kill of
+    the ETL parent.
+    """
+    pk = source.pk_column()
+    if pk is None:
+        raise RuntimeError(
+            f"{source.name}: late_arrival_overlap_s is set but no fact "
+            f"column has role='pk'. Without a primary key the overlap "
+            f"re-fetch would insert duplicate rows instead of filtering "
+            f"them -- set the pk role or set late_arrival_overlap_s = 0.")
+
+    schema = source.schema_name
+    wm_expr = source.watermark_fact_sql()
+    where = f" WHERE {wm_expr} >= :since"
+    params: dict = {"since": since}
+    if until is not None:
+        where += f" AND {wm_expr} < :until"
+        params["until"] = until
+
+    with dest_engine.begin() as dst:
+        n = dst.execute(text(
+            f"SELECT count(*) FROM {schema}.fact{where}"), params).scalar()
+        if n and n > _MAX_OVERLAP_PKS:
+            raise RuntimeError(
+                f"{source.name}: overlap window from {since} holds {n} fact "
+                f"rows, above the {_MAX_OVERLAP_PKS} PK limit. Lower "
+                f"late_arrival_overlap_s or raise "
+                f"STARCUBES_MAX_OVERLAP_PKS.")
+        if not n:
+            return set()
+        pks = pd.read_sql(text(
+            f"SELECT {pk} FROM {schema}.fact{where}"), dst, params=params)
+    return set(pks[pk])
+
+
 def _resume_state(source: Source, dest_engine, meta_engine) -> tuple[
-        Optional[datetime], bool, set]:
+        Optional[datetime], Optional[datetime], set]:
     """Figure out where to resume from.
 
-    Returns (last_end_time, needs_dedupe, existing_pks):
-      - last_end_time: None if fact is empty (first run).
-      - needs_dedupe: True only when a prior run was interrupted — the first
-        chunk may overlap what's already loaded; we filter by PK until a full
-        chunk arrives clean.
+    Returns (last_end_time, extract_from, existing_pks):
+      - last_end_time: the high watermark. None if fact is empty (first
+        run). Stays the HWM even when the extract reaches further back, so
+        `_increment_dim_counts` does not re-count the overlap window on
+        every pass.
+      - extract_from: the real lower bound of the load window --
+        last_end_time minus `late_arrival_overlap_s`. The source does not
+        guarantee that rows become visible in watermark order, so a plain
+        `>= last_end_time` window loses every row that shows up late.
+      - existing_pks: PKs already in fact whose watermark falls inside the
+        re-fetched span. Empty when there is nothing to de-duplicate.
     """
     schema = source.schema_name
     pc = source.partition_column
-    pk = source.pk_column()
+    wm_expr = source.watermark_fact_sql()
+    overlap = max(0, int(source.late_arrival_overlap_s or 0))
 
     with dest_engine.begin() as dst:
         has_rows = dst.execute(text(
@@ -658,46 +724,41 @@ def _resume_state(source: Source, dest_engine, meta_engine) -> tuple[
             f"(SELECT 1 FROM {schema}.fact LIMIT 1) t"
         )).scalar()
     if not has_rows:
-        return None, False, set()
+        return None, None, set()
 
     with meta_engine.begin() as meta:
         last_end = meta.execute(text(
             "SELECT last_end_time FROM starcubes_meta.etl_run "
             " WHERE datasource_id = :ds AND status = 'ok' "
+            "   AND kind = 'incremental' "
             " ORDER BY finished_at DESC LIMIT 1"
         ), {"ds": source.id}).scalar()
 
     if last_end is not None:
-        # psycopg2 hands back timestamptz in the session timezone; normalize
-        # to UTC so .replace(tzinfo=None) downstream produces UTC-as-naive
-        # rather than session-local-as-naive (off-by-tz-offset bug).
-        if last_end.tzinfo is None:
-            last_end = last_end.replace(tzinfo=timezone.utc)
-        else:
-            last_end = last_end.astimezone(timezone.utc)
-        return _ceil_second(last_end), False, set()
+        last_end = _ceil_second(_as_utc(last_end))
+        if overlap <= 0:
+            return last_end, last_end, set()
+        extract_from = last_end - timedelta(seconds=overlap)
+        return last_end, extract_from, _overlap_pks(
+            source, dest_engine, extract_from)
 
-    # prior run interrupted: reconstruct a conservative watermark from fact
-    # and pre-load PKs that overlap it so the first chunks can be de-duped.
+    # Prior run interrupted: reconstruct a conservative watermark from
+    # fact. The reconstruction window is the last minute of partition_column
+    # -- widened to the configured overlap when that is larger -- and every
+    # PK inside it is pre-loaded so the first chunks can be de-duped.
     with dest_engine.begin() as dst:
         last_end = dst.execute(text(
-            f"SELECT date_trunc('second', max({pc} + total * interval '1 millisecond')) "
+            f"SELECT date_trunc('second', max({wm_expr})) "
             f"  FROM {schema}.fact "
             f" WHERE {pc} > (SELECT max({pc}) - interval '1 minute' "
             f"                FROM {schema}.fact)"
         )).scalar()
-        existing_pks: set = set()
-        if pk is not None:
-            pks = pd.read_sql(text(
-                f"SELECT {pk} FROM {schema}.fact "
-                f" WHERE {pc} + total * interval '1 millisecond' > :t"
-            ), dst, params={"t": last_end})
-            existing_pks = set(pks[pk])
-    if last_end.tzinfo is None:
-        last_end = last_end.replace(tzinfo=timezone.utc)
-    else:
-        last_end = last_end.astimezone(timezone.utc)
-    return _ceil_second(last_end), True, existing_pks
+    if last_end is None:
+        return None, None, set()
+    last_end = _ceil_second(_as_utc(last_end))
+    extract_from = last_end - timedelta(seconds=max(60, overlap))
+    return last_end, extract_from, _overlap_pks(
+        source, dest_engine, extract_from)
 
 
 def import_fact(source: Source, meta_engine, *,
@@ -708,6 +769,7 @@ def import_fact(source: Source, meta_engine, *,
                 start_time: datetime | None = None,
                 end_time_override: datetime | None = None,
                 row_limit: int | None = None,
+                backfill: bool = False,
                 log_path: str | None = None) -> int:
     """Run one incremental fact load for `source`. Returns rows loaded.
 
@@ -726,6 +788,13 @@ def import_fact(source: Source, meta_engine, *,
     this timestamp instead of the last ``etl_run`` row's ``last_end_time``.
     Deduplication is skipped because the user chose the window explicitly.
 
+    ``backfill`` re-loads a closed historical window (requires both
+    ``start_time`` and ``end_time_override``) and de-dupes the *whole*
+    window against the PKs already in fact, so only genuinely missing rows
+    are inserted.  The run is recorded with ``kind='backfill'`` and is
+    therefore invisible to ``_resume_state`` — a backfill must never move
+    the high watermark backwards.
+
     ``end_time_override`` overrides the source ``max(watermark_column)``
     query — the extract ends at this timestamp.  The source max query is
     skipped entirely.
@@ -739,6 +808,12 @@ def import_fact(source: Source, meta_engine, *,
     also captured into ``log_tail`` so the GUI can show a traceback without
     filesystem access to the log volume.
     """
+    if backfill and (start_time is None or end_time_override is None):
+        raise ValueError(
+            "backfill requires both start_time and end_time_override — "
+            "a backfill re-loads one closed window, it does not chase the "
+            "source watermark.")
+
     source_engine = source.source_engine()
     dest_engine = source.dest_engine()
 
@@ -750,9 +825,10 @@ def import_fact(source: Source, meta_engine, *,
     with meta_engine.begin() as meta:
         run_id = meta.execute(text(
             "INSERT INTO starcubes_meta.etl_run "
-            "  (datasource_id, started_at, status, pid, log_path) "
-            "VALUES (:ds, :t, 'running', :pid, :log_path) RETURNING id"
+            "  (datasource_id, started_at, status, kind, pid, log_path) "
+            "VALUES (:ds, :t, 'running', :kind, :pid, :log_path) RETURNING id"
         ), {"ds": source.id, "t": started, "pid": parent_pid,
+            "kind": "backfill" if backfill else "incremental",
             "log_path": log_path}).scalar()
 
     status = "ok"
@@ -765,6 +841,7 @@ def import_fact(source: Source, meta_engine, *,
                             # "processed through" progress indicator
     end_time: Optional[datetime] = None
     last_end_time: Optional[datetime] = None
+    extract_from: Optional[datetime] = None
     manager = None
     workers: list[mp.Process] = []
     progress_thread: Optional[threading.Thread] = None
@@ -830,22 +907,32 @@ def import_fact(source: Source, meta_engine, *,
                 end_time = end_time.replace(tzinfo=timezone.utc)
             end_time = _ceil_second(end_time)
 
-        last_end_time, needs_dedupe, existing_pks = _resume_state(
-            source, dest_engine, meta_engine)
-
-        if start_time is not None:
+        if backfill:
+            # A backfill owns its window outright: no HWM lookup, and the
+            # whole window is de-duped against what is already in fact so
+            # only the genuinely missing rows get inserted.
             if start_time.tzinfo is None:
                 start_time = start_time.replace(tzinfo=timezone.utc)
-            last_end_time = _ceil_second(start_time)
-            needs_dedupe = False
-            existing_pks = set()
+            last_end_time = extract_from = _ceil_second(start_time)
+            existing_pks = _overlap_pks(
+                source, dest_engine, extract_from, end_time)
+        else:
+            last_end_time, extract_from, existing_pks = _resume_state(
+                source, dest_engine, meta_engine)
+
+            if start_time is not None:
+                if start_time.tzinfo is None:
+                    start_time = start_time.replace(tzinfo=timezone.utc)
+                # Explicit user-chosen window: no overlap, no de-dupe.
+                last_end_time = extract_from = _ceil_second(start_time)
+                existing_pks = set()
 
         # Update first_end_time now that we know it
         with meta_engine.begin() as meta:
             meta.execute(text(
                 "UPDATE starcubes_meta.etl_run "
                 " SET first_end_time = :first WHERE id = :id"
-            ), {"first": last_end_time, "id": run_id})
+            ), {"first": extract_from, "id": run_id})
 
         # Make sure every partition the load window can possibly touch
         # exists before the worker pool starts — a COPY into a row with no
@@ -859,7 +946,7 @@ def import_fact(source: Source, meta_engine, *,
         # window is kept current without a cron job or a manual GUI click.
         try:
             ensure_partitions_for(source, dest_engine,
-                                  start=(last_end_time or end_time), end=end_time,
+                                  start=(extract_from or end_time), end=end_time,
                                   back=1, forward=1, quiet=quiet)
         except Exception:
             logger.exception("%s: partition pre-flight failed", source.name)
@@ -867,8 +954,8 @@ def import_fact(source: Source, meta_engine, *,
 
         query = source.import_query
         if (source.small_window_hint
-                and last_end_time is not None
-                and (end_time - last_end_time).days == 0):
+                and extract_from is not None
+                and (end_time - extract_from).days == 0):
             logger.log(logging.DEBUG if quiet else logging.INFO,
                       "%s: small window, applying %s",
                       source.name, source.small_window_hint)
@@ -876,9 +963,9 @@ def import_fact(source: Source, meta_engine, *,
                 "SELECT", f"SELECT {source.small_window_hint}", 1)
 
         _ts_fmt = '%Y-%m-%d %H:%M:%S'
-        if last_end_time is not None:
+        if extract_from is not None:
             where = (f" WHERE {wm} >= to_timestamp("
-                     f"'{last_end_time.strftime(_ts_fmt)}', "
+                     f"'{extract_from.strftime(_ts_fmt)}', "
                      f"'YYYY-MM-DD HH24:MI:SS') "
                      f"   AND {wm} < to_timestamp("
                      f"'{end_time.strftime(_ts_fmt)}', "
@@ -888,11 +975,18 @@ def import_fact(source: Source, meta_engine, *,
                      f"'{end_time.strftime(_ts_fmt)}', "
                      f"'YYYY-MM-DD HH24:MI:SS')")
 
+        if backfill:
+            _mode = "backfill"
+        elif extract_from is None:
+            _mode = "initial"
+        else:
+            _mode = "incremental"
         logger.log(logging.DEBUG if quiet else logging.INFO,
-                  "%s: window [%s, %s)  (%s%s)",
-                  source.name, last_end_time, end_time,
-                  "incremental" if last_end_time else "initial",
-                  ", dedupe" if needs_dedupe else "")
+                  "%s: window [%s, %s)  (%s, hwm=%s, overlap=%ss, "
+                  "dedupe against %d pk%s)",
+                  source.name, extract_from, end_time, _mode, last_end_time,
+                  source.late_arrival_overlap_s, len(existing_pks),
+                  "" if len(existing_pks) == 1 else "s")
 
         manager = mp.Manager()
         unmapped_log = manager.list()  # appended to by transform workers
@@ -1049,13 +1143,16 @@ def import_fact(source: Source, meta_engine, *,
                 f"[rd {duplicates}]"
                 f"[tq {transform_q.qsize()}][lq {load_q.qsize()}]"
                 f"[E {live_e} T {live_t} L {live_l}]")
-            if needs_dedupe and pk_column:
+            # Stays armed for the whole run: `Source.import_query` carries
+            # no ORDER BY, so a re-fetched row can surface in any chunk.
+            # (The old "disable once a full chunk arrives clean" heuristic
+            # assumed watermark-ordered delivery, which the source does not
+            # provide -- that assumption is the bug this filter exists for.)
+            if existing_pks and pk_column:
                 overlap = set(chunk[pk_column]) & existing_pks
-                duplicates += len(overlap)
-                chunk = chunk[~chunk[pk_column].isin(overlap)].copy()
-                if len(chunk) == source.chunksize:
-                    needs_dedupe = False
-                    existing_pks.clear()
+                if overlap:
+                    duplicates += len(overlap)
+                    chunk = chunk[~chunk[pk_column].isin(overlap)].copy()
             rows_total += len(chunk.index)
             # Auto-dim resolution runs in the parent before the put; the
             # time inside is foreign-DB latency, not extract itself —
@@ -1246,7 +1343,22 @@ def import_fact(source: Source, meta_engine, *,
                   source.name, summary, run_id)
 
     if status == "ok":
-        _increment_dim_counts(source, dest_engine, last_end_time, end_time)
+        if backfill:
+            # The backfill window overlaps rows an earlier run already
+            # counted, so an increment would inflate the dim counts. They
+            # only drive the chart's stacking order and are approximate by
+            # design; `manage.py etl_run --refresh-counts` recomputes them.
+            if rows_total:
+                logger.info("%s: backfill inserted %d row(s); dim counts are "
+                            "stale — run --refresh-counts to recompute",
+                            source.name, rows_total)
+                # Rows landed *behind* the high watermark, inside ranges the
+                # server-side plot cache already considers final.
+                bump_cache_epoch(meta_engine, source.id)
+        else:
+            # Deliberately the HWM, not extract_from: counting from the
+            # overlap boundary would re-add the same rows on every pass.
+            _increment_dim_counts(source, dest_engine, last_end_time, end_time)
 
     return rows_total
 
