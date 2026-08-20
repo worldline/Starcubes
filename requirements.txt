@@ -1,0 +1,7 @@
+oracledb
+sqlalchemy
+pandas
+tqdm
+django
+psycopg2-binary
+django-htmx

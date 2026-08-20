@@ -1,0 +1,21 @@
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <title>starcubes</title>
+  <desc>Starcubes Logo – Konzept 2h Orbit Open Duotone</desc>
+  <g stroke="#2B3A55" stroke-width="2" opacity="0.3">
+    <line x1="100" y1="100" x2="100" y2="28"/>
+    <line x1="100" y1="100" x2="163" y2="64"/>
+    <line x1="100" y1="100" x2="163" y2="136"/>
+    <line x1="100" y1="100" x2="100" y2="172"/>
+    <line x1="100" y1="100" x2="37" y2="136"/>
+    <line x1="100" y1="100" x2="37" y2="64"/>
+  </g>
+  <circle cx="100" cy="28" r="7" fill="#46567A"/>
+  <circle cx="163" cy="64" r="7" fill="#46567A"/>
+  <circle cx="163" cy="136" r="7" fill="#46567A"/>
+  <circle cx="100" cy="172" r="7" fill="#46567A"/>
+  <circle cx="37" cy="136" r="7" fill="#46567A"/>
+  <circle cx="37" cy="64" r="7" fill="#46567A"/>
+  <polygon points="100,73 124,86.5 100,100 76,86.5" fill="#2B3A55"/>
+  <polygon points="76,86.5 100,100 100,127 76,113.5" fill="#5C6B87"/>
+  <polygon points="100,100 124,86.5 124,113.5 100,127" fill="#CF4F8F"/>
+</svg>

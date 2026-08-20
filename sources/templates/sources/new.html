@@ -1,0 +1,176 @@
+{% extends "sources/base.html" %}
+{% block title %}New Datasource — starcubes{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="{% url 'sources:list' %}" class="text-muted" style="font-size:13px">← Sources</a>
+  <h1 class="page-title">New Datasource</h1>
+</div>
+
+<form method="post" action="{% url 'sources:new' %}">
+  {% csrf_token %}
+  <div class="card">
+    <div class="card-header"><span class="card-title">Identity</span></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Name <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" name="name" required placeholder="e.g. mydb">
+          <div class="form-hint">Short identifier, e.g. mydb</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Schema Name <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" name="schema_name" required placeholder="e.g. starcubes_mydb">
+          <div class="form-hint">Postgres schema for warehouse tables</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Dialect <span style="color:var(--danger)">*</span></label>
+          <select class="form-control" name="source_dialect">
+            {% for d in dialects %}<option>{{ d }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">Source Connection</span></div>
+    <div class="card-body">
+      <div class="form-group">
+        <label class="form-label">Source DSN <span style="color:var(--danger)">*</span></label>
+        <input class="form-control" name="source_dsn" type="password" required placeholder="oracle+oracledb://user:pass@host:1521/SID">
+        <div class="form-hint">SQLAlchemy connection URL for the source database</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Import Query</label>
+        <textarea class="form-control" name="import_query" placeholder="SELECT col1, col2 FROM txn -- leave blank to compose from base_table"></textarea>
+        <div class="form-hint">Full SELECT without WHERE clause. Leave blank and set Base Table to auto-compose.</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Base Table</label>
+          <input class="form-control" name="base_table" placeholder="txn">
+          <div class="form-hint">Used when Import Query is blank</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Small Window Hint</label>
+          <input class="form-control" name="small_window_hint" placeholder="/*+ ORDERED INDEX(txn, TXN3) */">
+          <div class="form-hint">SQL hint inserted for small-window loads (dialect-specific)</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">Watermark &amp; Partitioning</span></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Watermark Column <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" name="watermark_column" required placeholder="e.g. end_time">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Partition Column <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" name="partition_column" required placeholder="e.g. create_time">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Partition Period</label>
+          <select class="form-control" name="partition_period">
+            {% for opt in partition_periods %}
+              <option value="{{ opt }}"{% if opt == defaults.partition_period %} selected{% endif %}>{{ opt }}</option>
+            {% endfor %}
+          </select>
+          <div class="form-hint">Granularity of fact RANGE partitions. Cannot be changed once partitions exist.</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Watermark Max Query</label>
+        <textarea class="form-control" name="watermark_max_query" placeholder="SELECT max(end_time) FROM txn"></textarea>
+        <div class="form-hint">Optional custom query to find the current high-watermark</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">ETL Performance</span></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Chunk Size</label>
+          <input class="form-control" name="chunksize" type="number" value="{{ defaults.chunksize }}">
+          <div class="form-hint">Rows per extract chunk</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Transform Processes</label>
+          <input class="form-control" name="transform_procs" type="number" value="{{ defaults.transform_procs }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">Display Settings</span></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Interval Ladder</label>
+          <input class="form-control" name="interval_ladder" value="{{ defaults.interval_ladder }}">
+          <div class="form-hint">Comma-separated seconds (finest to coarsest)</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bar Pixel Target</label>
+          <input class="form-control" name="bar_pixel_target" type="number" step="0.1" value="{{ defaults.bar_pixel_target }}">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">PK Format</label>
+        <input class="form-control" name="pk_format" placeholder="e.g. &lt;a href=&quot;https://portal.example.com/txn/{0:012d}&quot;&gt;{0:012d}&lt;/a&gt;">
+        <div class="form-hint">Python format string for PK display in chart drill-down. Leave blank for raw IDs.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">Seed Data</span></div>
+    <div class="card-body">
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" name="preload_seed_example">
+          <span>Preload example Oracle configuration</span>
+        </label>
+        <div class="form-hint">
+          Inserts 19 fact columns, 14 dimensions, and 1 index for the example Oracle payment-transaction dataset.
+          Source expressions use Oracle-specific syntax (to_number, nvl, extract).
+          Only select this if your source dialect is Oracle.
+        </div>
+        <div id="seedDialectWarning" class="action-result err" style="display:none">
+          The example seed data uses Oracle-specific SQL expressions.
+          Consider changing the dialect to Oracle, or leave unchecked.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Create Datasource</button>
+    <a class="btn btn-secondary" href="{% url 'sources:list' %}">Cancel</a>
+  </div>
+</form>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+  var cb = document.querySelector('[name="preload_seed_example"]');
+  var dialect = document.querySelector('[name="source_dialect"]');
+  var warning = document.getElementById('seedDialectWarning');
+  function checkDialect() {
+    warning.style.display = (cb.checked && dialect.value !== 'oracle') ? 'block' : 'none';
+  }
+  cb.addEventListener('change', checkDialect);
+  dialect.addEventListener('change', checkDialect);
+})();
+</script>
+{% endblock %}

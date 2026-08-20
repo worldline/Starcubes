@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>starcubes — drill into billions of rows in your browser</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg-0: #07091a;
+    --bg-1: #0d1230;
+    --bg-2: #131a3d;
+    --ink-0: #f4f7ff;
+    --ink-1: #b9c4e8;
+    --ink-2: #6b7aa8;
+    --accent-cyan: #38e1ff;
+    --accent-orange: #ffb259;
+    --accent-magenta: #ff5cf2;
+    --accent-green: #7afca2;
+    --grid-line: rgba(120, 142, 220, 0.08);
+  }
+
+  html, body {
+    background:
+      radial-gradient(1200px 700px at 12% 8%, rgba(56, 225, 255, 0.10), transparent 60%),
+      radial-gradient(900px 600px at 92% 88%, rgba(255, 92, 242, 0.10), transparent 60%),
+      radial-gradient(800px 800px at 50% 50%, rgba(255, 178, 89, 0.04), transparent 70%),
+      var(--bg-0);
+    color: var(--ink-0);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  }
+
+  .reveal {
+    font-family: 'Inter', system-ui, sans-serif;
+    color: var(--ink-0);
+    font-weight: 400;
+  }
+
+  .reveal .slides {
+    text-align: left;
+  }
+
+  .reveal .slides section {
+    padding: 1.5em 2em;
+    height: 100%;
+  }
+
+  .reveal h1, .reveal h2, .reveal h3, .reveal h4 {
+    font-family: 'Inter', sans-serif;
+    color: var(--ink-0);
+    text-transform: none;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    margin: 0 0 0.35em 0;
+    font-weight: 700;
+  }
+
+  .reveal h1 { font-size: 4.2em; font-weight: 800; }
+  .reveal h2 { font-size: 2.4em; }
+  .reveal h3 { font-size: 1.55em; color: var(--ink-1); font-weight: 600; }
+  .reveal p, .reveal li { color: var(--ink-1); font-size: 1.05em; line-height: 1.55; }
+  .reveal strong { color: var(--ink-0); font-weight: 600; }
+  .reveal code, .reveal pre {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+  .reveal code {
+    color: var(--accent-cyan);
+    background: rgba(56, 225, 255, 0.08);
+    padding: 0.05em 0.35em;
+    border-radius: 4px;
+    font-size: 0.88em;
+  }
+
+  .reveal a { color: var(--accent-cyan); text-decoration: none; }
+
+  /* Controls / progress styling */
+  .reveal .controls { color: var(--accent-cyan); }
+  .reveal .progress { color: var(--accent-cyan); height: 3px; }
+  .reveal .slide-number { background: transparent; color: var(--ink-2); font-family: 'JetBrains Mono', monospace; font-size: 0.7em; }
+
+  /* === Reusable bits === */
+  .eyebrow {
+    display: inline-block;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.72em;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    padding: 0.35em 0.9em;
+    border: 1px solid rgba(56, 225, 255, 0.35);
+    border-radius: 999px;
+    margin-bottom: 1.2em;
+  }
+
+  .grad-text {
+    background: linear-gradient(110deg, var(--accent-cyan) 0%, var(--accent-magenta) 60%, var(--accent-orange) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .lede {
+    font-size: 1.35em;
+    line-height: 1.45;
+    color: var(--ink-0);
+    font-weight: 300;
+    max-width: 22em;
+  }
+
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1.05fr 1fr;
+    gap: 2em;
+    align-items: start;
+  }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.2em;
+  }
+
+  .card {
+    background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
+    border: 1px solid rgba(160, 180, 230, 0.12);
+    border-radius: 12px;
+    padding: 1.1em 1.3em;
+    position: relative;
+    overflow: hidden;
+  }
+  .card::before {
+    content: '';
+    position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: linear-gradient(180deg, var(--accent-cyan), transparent);
+  }
+  .card.orange::before { background: linear-gradient(180deg, var(--accent-orange), transparent); }
+  .card.magenta::before { background: linear-gradient(180deg, var(--accent-magenta), transparent); }
+  .card.green::before { background: linear-gradient(180deg, var(--accent-green), transparent); }
+
+  .card h4 {
+    color: var(--ink-0);
+    font-size: 1.05em;
+    margin: 0 0 0.4em 0;
+    font-weight: 600;
+  }
+  .card p { font-size: 0.88em; color: var(--ink-1); margin: 0; line-height: 1.5; }
+
+  .kicker {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.66em;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent-cyan);
+    margin-bottom: 0.4em;
+    display: block;
+  }
+  .card.orange .kicker { color: var(--accent-orange); }
+  .card.magenta .kicker { color: var(--accent-magenta); }
+  .card.green .kicker { color: var(--accent-green); }
+
+  .feature-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .feature-list li {
+    padding: 0.55em 0 0.55em 1.5em;
+    position: relative;
+    border-bottom: 1px solid rgba(160, 180, 230, 0.07);
+  }
+  .feature-list li:last-child { border-bottom: none; }
+  .feature-list li::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 1em;
+    width: 8px; height: 8px;
+    background: var(--accent-cyan);
+    box-shadow: 0 0 12px var(--accent-cyan);
+    border-radius: 50%;
+  }
+
+  /* === Title slide === */
+  #title-slide { text-align: center; }
+  #title-slide h1 {
+    font-size: 7em;
+    font-weight: 800;
+    letter-spacing: -0.04em;
+    margin-bottom: 0.05em;
+  }
+  #title-slide .tag {
+    font-size: 1.55em;
+    color: var(--ink-1);
+    font-weight: 300;
+    max-width: 26em;
+    margin: 0.4em auto 0;
+    letter-spacing: -0.01em;
+  }
+  #title-slide .meta {
+    margin-top: 2.5em;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75em;
+    color: var(--ink-2);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+  }
+  #title-slide .meta span { color: var(--accent-cyan); }
+
+  .title-bg {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    z-index: -1;
+    opacity: 0.6;
+  }
+  .title-bg svg { width: 100%; height: 100%; }
+
+  /* === Mock chart === */
+  .chart-mock {
+    background: linear-gradient(180deg, rgba(15, 22, 56, 0.85), rgba(7, 9, 26, 0.85));
+    border: 1px solid rgba(160, 180, 230, 0.15);
+    border-radius: 14px;
+    padding: 1em;
+    position: relative;
+  }
+  .chart-mock .chart-head {
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid rgba(160, 180, 230, 0.08);
+    padding-bottom: 0.5em; margin-bottom: 0.6em;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.65em;
+    color: var(--ink-2); letter-spacing: 0.1em;
+  }
+  .chart-mock .chart-head .live {
+    display: inline-flex; align-items: center; gap: 0.4em;
+    color: var(--accent-green);
+  }
+  .chart-mock .chart-head .live::before {
+    content: ''; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent-green); box-shadow: 0 0 8px var(--accent-green);
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  .chart-mock svg { width: 100%; height: 280px; display: block; }
+
+  .legend {
+    display: flex; gap: 1em; flex-wrap: wrap;
+    margin-top: 0.6em;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.65em;
+    color: var(--ink-1);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 0.4em; }
+  .legend span::before { content: ''; width: 10px; height: 10px; border-radius: 2px; }
+  .legend .l1::before { background: var(--accent-cyan); }
+  .legend .l2::before { background: var(--accent-magenta); }
+  .legend .l3::before { background: var(--accent-orange); }
+  .legend .l4::before { background: var(--accent-green); }
+
+  /* === Tabs mock === */
+  .tabs {
+    display: flex; gap: 0.4em; padding: 0.5em;
+    background: linear-gradient(180deg, rgba(15,22,56,0.7), rgba(7,9,26,0.7));
+    border: 1px solid rgba(160, 180, 230, 0.12);
+    border-radius: 10px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.78em;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+  }
+  .tabs .tab {
+    padding: 0.55em 1em;
+    border-radius: 6px;
+    color: var(--ink-2);
+    white-space: nowrap;
+    transition: all 0.2s;
+  }
+  .tabs .tab.active {
+    background: linear-gradient(135deg, rgba(56,225,255,0.18), rgba(255,92,242,0.18));
+    color: var(--ink-0);
+    box-shadow: inset 0 0 0 1px rgba(56, 225, 255, 0.4);
+  }
+  .tabs .tab.spacer { flex: 1; min-width: 1em; }
+  .tabs .tab.right { color: var(--ink-2); }
+
+  /* === Sources GUI mock === */
+  .gui-mock {
+    background: linear-gradient(180deg, rgba(15,22,56,0.7), rgba(7,9,26,0.7));
+    border: 1px solid rgba(160,180,230,0.12);
+    border-radius: 12px;
+    padding: 1em 1.2em;
+    font-family: 'JetBrains Mono', monospace; font-size: 0.72em;
+  }
+  .gui-mock .gui-tabs {
+    display: flex; gap: 0; border-bottom: 1px solid rgba(160,180,230,0.12);
+    padding-bottom: 0;
+    overflow-x: auto;
+    margin: 0 -1.2em 0.9em -1.2em; padding: 0 1.2em 0 1.2em;
+  }
+  .gui-mock .gui-tab {
+    padding: 0.6em 0.9em;
+    color: var(--ink-2);
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .gui-mock .gui-tab.active {
+    color: var(--accent-cyan);
+    border-bottom-color: var(--accent-cyan);
+  }
+  .gui-row {
+    display: grid;
+    grid-template-columns: 30% 1fr auto;
+    padding: 0.5em 0;
+    border-bottom: 1px dashed rgba(160,180,230,0.08);
+    color: var(--ink-1);
+  }
+  .gui-row span:first-child { color: var(--ink-2); }
+  .badge {
+    font-size: 0.85em;
+    padding: 0.15em 0.55em;
+    border-radius: 4px;
+    font-weight: 700;
+  }
+  .badge.ok { background: rgba(122, 252, 162, 0.15); color: var(--accent-green); }
+  .badge.run { background: rgba(56, 225, 255, 0.15); color: var(--accent-cyan); }
+  .badge.warn { background: rgba(255, 178, 89, 0.15); color: var(--accent-orange); }
+
+  /* === Architecture / tech slide === */
+  .arch {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.74em;
+    line-height: 1.7;
+    color: var(--ink-1);
+    background: rgba(0,0,0,0.25);
+    border: 1px solid rgba(160,180,230,0.1);
+    border-radius: 10px;
+    padding: 1em 1.3em;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .arch .src { color: var(--accent-orange); }
+  .arch .etl { color: var(--accent-cyan); }
+  .arch .pg  { color: var(--accent-magenta); }
+  .arch .ok  { color: var(--accent-green); }
+
+  /* === Tech bullet cards === */
+  .tech-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.9em;
+    margin-top: 1em;
+  }
+  .tech-grid .card { padding: 0.85em 1em; }
+  .tech-grid .card h4 { font-size: 0.95em; }
+  .tech-grid .card p { font-size: 0.78em; }
+  .tech-grid code { font-size: 0.78em; }
+
+  /* === Final slide === */
+  #closer { text-align: center; }
+  #closer h2 {
+    font-size: 3.2em;
+    font-weight: 700;
+    max-width: 14em;
+    margin: 0 auto 0.5em;
+  }
+  #closer .recap {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.4em;
+    max-width: 36em; margin: 2em auto 0;
+  }
+  #closer .recap div {
+    border: 1px solid rgba(160,180,230,0.12);
+    border-radius: 12px;
+    padding: 1.1em 0.5em;
+    background: rgba(255,255,255,0.02);
+  }
+  #closer .recap .n {
+    font-size: 1.9em; font-weight: 700;
+    background: linear-gradient(110deg, var(--accent-cyan), var(--accent-magenta));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    display: block; margin-bottom: 0.1em;
+  }
+  #closer .recap .lbl {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.66em; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink-2);
+  }
+
+  /* small */
+  .footnote {
+    margin-top: 1em;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7em;
+    color: var(--ink-2);
+    letter-spacing: 0.05em;
+  }
+
+  /* Animations */
+  .reveal section.present .fade-up { animation: fadeUp 0.7s ease both; }
+  .reveal section.present .fade-up.delay-1 { animation-delay: 0.15s; }
+  .reveal section.present .fade-up.delay-2 { animation-delay: 0.3s; }
+  .reveal section.present .fade-up.delay-3 { animation-delay: 0.45s; }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* Subtle background grid */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image:
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 60px 60px;
+    pointer-events: none;
+    z-index: 0;
+  }
+</style>
+</head>
+
+<body>
+<div class="reveal">
+  <div class="slides">
+
+    <!-- ============ SLIDE 1 — TITLE ============ -->
+    <section id="title-slide" data-background-color="#07091a">
+      <div class="title-bg">
+        <svg viewBox="0 0 1280 720" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+          <defs>
+            <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#38e1ff" stop-opacity="0.7"/>
+              <stop offset="1" stop-color="#ff5cf2" stop-opacity="0.0"/>
+            </linearGradient>
+            <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#ffb259" stop-opacity="0.45"/>
+              <stop offset="1" stop-color="#38e1ff" stop-opacity="0.0"/>
+            </linearGradient>
+          </defs>
+          <g opacity="0.45">
+            <!-- stacked-bar silhouette as background art -->
+            <rect x="80"  y="500" width="44" height="160" fill="url(#g1)"/>
+            <rect x="140" y="430" width="44" height="230" fill="url(#g1)"/>
+            <rect x="200" y="380" width="44" height="280" fill="url(#g1)"/>
+            <rect x="260" y="320" width="44" height="340" fill="url(#g1)"/>
+            <rect x="320" y="280" width="44" height="380" fill="url(#g1)"/>
+            <rect x="380" y="260" width="44" height="400" fill="url(#g1)"/>
+            <rect x="440" y="220" width="44" height="440" fill="url(#g1)"/>
+            <rect x="500" y="180" width="44" height="480" fill="url(#g1)"/>
+            <rect x="560" y="160" width="44" height="500" fill="url(#g2)"/>
+            <rect x="620" y="140" width="44" height="520" fill="url(#g2)"/>
+            <rect x="680" y="170" width="44" height="490" fill="url(#g2)"/>
+            <rect x="740" y="210" width="44" height="450" fill="url(#g2)"/>
+            <rect x="800" y="260" width="44" height="400" fill="url(#g2)"/>
+            <rect x="860" y="290" width="44" height="370" fill="url(#g2)"/>
+            <rect x="920" y="340" width="44" height="320" fill="url(#g2)"/>
+            <rect x="980" y="390" width="44" height="270" fill="url(#g2)"/>
+            <rect x="1040" y="430" width="44" height="230" fill="url(#g2)"/>
+            <rect x="1100" y="480" width="44" height="180" fill="url(#g2)"/>
+          </g>
+        </svg>
+      </div>
+
+      <div style="margin-top: 6vh;">
+        <span class="eyebrow fade-up">A self-hosted data warehouse</span>
+        <h1 class="grad-text fade-up delay-1">starcubes</h1>
+        <p class="tag fade-up delay-2">
+          Drill into <strong>billions</strong> of transactions in your browser.
+          Configure a source, watch the bars stack up.
+        </p>
+        <div class="meta fade-up delay-3">
+          ETL &nbsp;<span>·</span>&nbsp; Star schema &nbsp;<span>·</span>&nbsp; Postgres &nbsp;<span>·</span>&nbsp; Django
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ============ SLIDE 2 — THE PROBLEM ============ -->
+    <section data-background-color="#07091a">
+      <div class="grid-2">
+        <div>
+          <span class="eyebrow fade-up">The problem</span>
+          <h2 class="fade-up delay-1">
+            Your source DB has <span class="grad-text">a billion rows</span>.
+          </h2>
+          <h3 class="fade-up delay-2" style="margin-top:0.6em;">You just want a chart.</h3>
+          <p class="fade-up delay-3" style="margin-top:1.2em; max-width: 22em;">
+            Today's options force you to glue three tools together — and you still
+            write the star models by hand.
+          </p>
+        </div>
+
+        <div class="fade-up delay-2">
+          <div class="card orange" style="margin-bottom:0.8em;">
+            <span class="kicker">Airbyte / Meltano</span>
+            <h4>Move the data</h4>
+            <p>…but won't model it into a star schema.</p>
+          </div>
+          <div class="card magenta" style="margin-bottom:0.8em;">
+            <span class="kicker">dbt</span>
+            <h4>Transform the data</h4>
+            <p>…by hand. Every dimension. Every source.</p>
+          </div>
+          <div class="card">
+            <span class="kicker">Superset / Metabase / Grafana</span>
+            <h4>Visualize the data</h4>
+            <p>…assuming someone else already modeled it.</p>
+          </div>
+          <p class="footnote">3 tools · 3 UIs · 3 deploys · still no chart.</p>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ============ SLIDE 3 — THE EXPERIENCE ============ -->
+    <section data-background-color="#07091a">
+      <span class="eyebrow fade-up">The experience</span>
+      <h2 class="fade-up delay-1" style="margin-bottom:0.7em;">
+        One canvas. <span class="grad-text">Years</span> of transactions.
+      </h2>
+
+      <div class="grid-2" style="gap: 2.2em;">
+        <div class="chart-mock fade-up delay-2">
+          <div class="chart-head">
+            <span>source · group_by=response · 60s bars</span>
+            <span class="live">LIVE · following</span>
+          </div>
+          <svg viewBox="0 0 600 280" preserveAspectRatio="none" aria-hidden="true">
+            <!-- grid stripes -->
+            <g opacity="0.4">
+              <line x1="0"   y1="60"  x2="600" y2="60"  stroke="rgba(120,142,220,0.15)"/>
+              <line x1="0"   y1="120" x2="600" y2="120" stroke="rgba(120,142,220,0.15)"/>
+              <line x1="0"   y1="180" x2="600" y2="180" stroke="rgba(120,142,220,0.15)"/>
+              <line x1="0"   y1="240" x2="600" y2="240" stroke="rgba(120,142,220,0.15)"/>
+            </g>
+            <!-- stacked bars: heights random-ish, multi-series -->
+            <g>
+              <!-- each bar is composed of 4 segments stacked bottom→up -->
+              <!-- format helper: bar at x with widths w, segments [g, m, o, c] -->
+              <!-- bar 1 -->
+              <rect x="10"  y="220" width="22" height="50"  fill="#7afca2" opacity="0.85"/>
+              <rect x="10"  y="190" width="22" height="30"  fill="#ffb259" opacity="0.85"/>
+              <rect x="10"  y="170" width="22" height="20"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="10"  y="160" width="22" height="10"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="40"  y="200" width="22" height="70"  fill="#7afca2" opacity="0.85"/>
+              <rect x="40"  y="170" width="22" height="30"  fill="#ffb259" opacity="0.85"/>
+              <rect x="40"  y="145" width="22" height="25"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="40"  y="125" width="22" height="20"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="70"  y="190" width="22" height="80"  fill="#7afca2" opacity="0.85"/>
+              <rect x="70"  y="155" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="70"  y="130" width="22" height="25"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="70"  y="105" width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="100" y="180" width="22" height="90"  fill="#7afca2" opacity="0.85"/>
+              <rect x="100" y="140" width="22" height="40"  fill="#ffb259" opacity="0.85"/>
+              <rect x="100" y="110" width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="100" y="85"  width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="130" y="165" width="22" height="105" fill="#7afca2" opacity="0.85"/>
+              <rect x="130" y="125" width="22" height="40"  fill="#ffb259" opacity="0.85"/>
+              <rect x="130" y="95"  width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="130" y="70"  width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="160" y="155" width="22" height="115" fill="#7afca2" opacity="0.85"/>
+              <rect x="160" y="115" width="22" height="40"  fill="#ffb259" opacity="0.85"/>
+              <rect x="160" y="85"  width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="160" y="55"  width="22" height="30"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="190" y="170" width="22" height="100" fill="#7afca2" opacity="0.85"/>
+              <rect x="190" y="135" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="190" y="105" width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="190" y="80"  width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="220" y="190" width="22" height="80"  fill="#7afca2" opacity="0.85"/>
+              <rect x="220" y="155" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="220" y="130" width="22" height="25"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="220" y="105" width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="250" y="175" width="22" height="95"  fill="#7afca2" opacity="0.85"/>
+              <rect x="250" y="140" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="250" y="115" width="22" height="25"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="250" y="90"  width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="280" y="160" width="22" height="110" fill="#7afca2" opacity="0.85"/>
+              <rect x="280" y="125" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="280" y="95"  width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="280" y="70"  width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="310" y="150" width="22" height="120" fill="#7afca2" opacity="0.85"/>
+              <rect x="310" y="115" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="310" y="85"  width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="310" y="55"  width="22" height="30"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="340" y="170" width="22" height="100" fill="#7afca2" opacity="0.85"/>
+              <rect x="340" y="135" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="340" y="105" width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="340" y="80"  width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="370" y="195" width="22" height="75"  fill="#7afca2" opacity="0.85"/>
+              <rect x="370" y="160" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="370" y="135" width="22" height="25"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="370" y="110" width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="400" y="180" width="22" height="90"  fill="#7afca2" opacity="0.85"/>
+              <rect x="400" y="145" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="400" y="115" width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="400" y="90"  width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="430" y="165" width="22" height="105" fill="#7afca2" opacity="0.85"/>
+              <rect x="430" y="130" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="430" y="100" width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="430" y="75"  width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="460" y="145" width="22" height="125" fill="#7afca2" opacity="0.85"/>
+              <rect x="460" y="105" width="22" height="40"  fill="#ffb259" opacity="0.85"/>
+              <rect x="460" y="75"  width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="460" y="45"  width="22" height="30"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="490" y="160" width="22" height="110" fill="#7afca2" opacity="0.85"/>
+              <rect x="490" y="125" width="22" height="35"  fill="#ffb259" opacity="0.85"/>
+              <rect x="490" y="95"  width="22" height="30"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="490" y="70"  width="22" height="25"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="520" y="180" width="22" height="90"  fill="#7afca2" opacity="0.85"/>
+              <rect x="520" y="150" width="22" height="30"  fill="#ffb259" opacity="0.85"/>
+              <rect x="520" y="125" width="22" height="25"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="520" y="105" width="22" height="20"  fill="#38e1ff" opacity="0.95"/>
+              <rect x="550" y="195" width="22" height="75"  fill="#7afca2" opacity="0.85"/>
+              <rect x="550" y="165" width="22" height="30"  fill="#ffb259" opacity="0.85"/>
+              <rect x="550" y="140" width="22" height="25"  fill="#ff5cf2" opacity="0.85"/>
+              <rect x="550" y="120" width="22" height="20"  fill="#38e1ff" opacity="0.95"/>
+            </g>
+            <!-- viewport indicator -->
+            <rect x="495" y="0" width="80" height="280" fill="rgba(122,252,162,0.05)" stroke="rgba(122,252,162,0.3)" stroke-width="1" stroke-dasharray="4 4"/>
+          </svg>
+          <div class="legend">
+            <span class="l1">200 OK</span>
+            <span class="l2">301</span>
+            <span class="l3">404</span>
+            <span class="l4">500</span>
+          </div>
+        </div>
+
+        <ul class="feature-list fade-up delay-3">
+          <li><strong>Zoom &amp; pan</strong> — arrow keys, scroll, drag. DST-safe calendar snapping.</li>
+          <li><strong>Follow live</strong> — trailing edge auto-refresh as new rows land.</li>
+          <li><strong>Drill in</strong> — click a stack segment → that dimension's transaction list.</li>
+          <li><strong>Filter anything</strong> — combine dimensions with AND/OR trees.</li>
+          <li><strong>Group dimensions</strong> — bucket dim values into named groups on the fly.</li>
+        </ul>
+      </div>
+    </section>
+
+
+    <!-- ============ SLIDE 4 — MULTI-SOURCE ============ -->
+    <section data-background-color="#07091a">
+      <span class="eyebrow fade-up">Many sources, one view</span>
+      <h2 class="fade-up delay-1">Switch between datasets <span class="grad-text">instantly</span>.</h2>
+
+      <div class="fade-up delay-2" style="margin: 1.6em 0 0.4em 0;">
+        <div class="tabs">
+          <div class="tab active">orders</div>
+          <div class="tab">payments</div>
+          <div class="tab">sessions</div>
+          <div class="tab">events</div>
+          <div class="tab">audit-log</div>
+          <div class="tab spacer"></div>
+          <div class="tab right">Sources</div>
+          <div class="tab right">☀</div>
+        </div>
+      </div>
+
+      <div class="grid-3 fade-up delay-3" style="margin-top: 1.6em;">
+        <div class="card">
+          <span class="kicker">Per-source state</span>
+          <h4>Picks up where you left off</h4>
+          <p>group_by, filters, zoom level — all remembered per source in localStorage.</p>
+        </div>
+        <div class="card orange">
+          <span class="kicker">Plot memory</span>
+          <h4>Zero-flicker switching</h4>
+          <p>Already-rendered slices snap back instantly from in-memory cache.</p>
+        </div>
+        <div class="card magenta">
+          <span class="kicker">Shareable URLs</span>
+          <h4>Send a link, see the same chart</h4>
+          <p>Every interaction updates the URL — source, filters, viewport, all of it.</p>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ============ SLIDE 5 — CONFIGURE ============ -->
+    <section data-background-color="#07091a">
+      <div class="grid-2" style="gap: 2.4em; align-items: center;">
+        <div>
+          <span class="eyebrow fade-up">Configure everything in the browser</span>
+          <h2 class="fade-up delay-1">No YAML.<br/>No <code>dbt run</code>.</h2>
+          <p class="fade-up delay-2" style="margin-top: 1em;">
+            Every datasource lives as <strong>metadata rows</strong>. Edit fact columns,
+            dimensions, indices, partitions — inline, with live previews and connection
+            tests.
+          </p>
+          <ul class="feature-list fade-up delay-3" style="margin-top: 0.6em;">
+            <li>One-click ETL — or <strong>forever mode</strong> for continuous loads</li>
+            <li>Per-source connection status, partition browser, storage stats</li>
+            <li>Estimate column cardinality before you commit to a dimension</li>
+          </ul>
+        </div>
+
+        <div class="gui-mock fade-up delay-2">
+          <div class="gui-tabs">
+            <span class="gui-tab">Basics</span>
+            <span class="gui-tab">Fact Cols</span>
+            <span class="gui-tab active">Dimensions</span>
+            <span class="gui-tab">Indices</span>
+            <span class="gui-tab">ETL History</span>
+            <span class="gui-tab">Commands</span>
+            <span class="gui-tab">Storage</span>
+          </div>
+          <div class="gui-row">
+            <span>response</span><span>inline · 12 vals</span><span class="badge ok">OK</span>
+          </div>
+          <div class="gui-row">
+            <span>app_loc</span><span>lookup · 248 vals</span><span class="badge ok">OK</span>
+          </div>
+          <div class="gui-row">
+            <span>peer</span><span>lookup · primary</span><span class="badge ok">OK</span>
+          </div>
+          <div class="gui-row">
+            <span>request_id</span><span>auto-discover</span><span class="badge warn">9 234</span>
+          </div>
+          <div class="gui-row" style="border-bottom:none;">
+            <span>cncy_code</span><span>inline · ISO 4217</span><span class="badge ok">OK</span>
+          </div>
+          <div style="margin-top:0.8em; padding-top:0.6em; border-top:1px solid rgba(160,180,230,0.12); display:flex; gap:0.6em; align-items:center;">
+            <span class="badge run">ETL running</span>
+            <span style="color:var(--ink-2); font-size:0.9em;">forever · 60s · pid 28341 · hwm 2026-05-26 14:23</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ============ SLIDE 6 — UNDER THE HOOD (TECH) ============ -->
+    <section data-background-color="#07091a">
+      <span class="eyebrow fade-up">Under the hood</span>
+      <h2 class="fade-up delay-1" style="margin-bottom: 0.5em;">
+        How a billion rows stays <span class="grad-text">snappy</span>.
+      </h2>
+
+      <div class="grid-2" style="gap: 2em;">
+        <div class="arch fade-up delay-2">  <span class="src">[Source DB]</span>          <span class="etl">[core/etl.py]</span>          <span class="pg">[Postgres]</span>
+       Oracle              ┌─ Extract     ────┐    starcubes_meta
+       Postgres   ─────►   │  Transform × N   ├──► starcubes_&lt;name&gt;
+       MySQL               └─ Load (COPY)  ──┘     ├ fact (RANGE)
+       MSSQL                                       └ dim_* (smallint)
+                                                          │
+                                                          ▼
+                                                  <span class="ok">viz / chart.html</span>
+                                                  + plot_json cache
+        </div>
+
+        <div>
+          <div class="tech-grid">
+            <div class="card">
+              <span class="kicker">Storage</span>
+              <h4>Compact star schema</h4>
+              <p>Dim FKs are <code>smallint</code> — 2 bytes per row, not 20.</p>
+            </div>
+            <div class="card orange">
+              <span class="kicker">Layout</span>
+              <h4>Partitioned + unlogged</h4>
+              <p>RANGE on time, BRIN index. Drop a partition to forget data.</p>
+            </div>
+            <div class="card magenta">
+              <span class="kicker">Throughput</span>
+              <h4>3-stage pipeline</h4>
+              <p>Extract → N×Transform → <code>COPY FROM</code>. Multiprocess.</p>
+            </div>
+            <div class="card green">
+              <span class="kicker">Latency</span>
+              <h4>Two caches</h4>
+              <p>Server: frozen <code>count(*)</code> by hash. Client: natural calendar blocks.</p>
+            </div>
+          </div>
+          <p class="footnote fade-up delay-3" style="margin-top: 0.9em;">
+            Append-only ETL never invalidates cache. Historical mutations bump an epoch.
+          </p>
+        </div>
+      </div>
+    </section>
+
+
+    <!-- ============ SLIDE 7 — CLOSER ============ -->
+    <section id="closer" data-background-color="#07091a">
+      <span class="eyebrow fade-up">One app. Your data.</span>
+      <h2 class="fade-up delay-1">
+        <span class="grad-text">Self-hosted.</span><br/>
+        Open architecture.<br/>
+        Built for your data.
+      </h2>
+
+      <div class="recap fade-up delay-2">
+        <div>
+          <span class="n">1</span>
+          <span class="lbl">Docker image</span>
+        </div>
+        <div>
+          <span class="n">1</span>
+          <span class="lbl">Postgres DB</span>
+        </div>
+        <div>
+          <span class="n">∞</span>
+          <span class="lbl">Datasources</span>
+        </div>
+      </div>
+
+      <p class="footnote fade-up delay-3" style="margin-top: 3em;">
+        github.com/hgruber/starcubes &nbsp;·&nbsp; chart engine: timeseries.js
+      </p>
+    </section>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    controls: true,
+    progress: true,
+    slideNumber: 'c/t',
+    transition: 'slide',
+    transitionSpeed: 'default',
+    backgroundTransition: 'fade',
+    width: 1280,
+    height: 800,
+    margin: 0.06,
+    minScale: 0.4,
+    maxScale: 1.6,
+  });
+</script>
+
+</body>
+</html>

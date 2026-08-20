@@ -1,0 +1,787 @@
+# Claude agent notes for starcubes
+
+Context for future Claude sessions. Read `README.md` first for the
+user-facing picture and `HOWTO.md` for operator guidance; this file
+covers the non-obvious design decisions, domain vocabulary, and current
+refactor state.
+
+## Sub-docs (read when relevant)
+
+- **[`docs/sources-app.md`](docs/sources-app.md)** — full URL map, gotchas,
+  and inline-CRUD UX for the `/sources/` GUI. Read when touching anything
+  under `sources/`.
+- **[`docs/chart-app.md`](docs/chart-app.md)** — chart.html multi-source UI:
+  `sourceMemory`, source-switch flow, natural-window block fetching. Read
+  when touching `viz/` or chart JS.
+
+## Repo state
+
+The repo is **mid-rewrite** from a hard-coded Oracle single-file ETL
+(`star.py`, removed) into a configurable multi-source app. See the
+**Built** and **Backlog** lists below for the current state before making
+structural changes.
+
+**Built (high level — read git log / `ls` for specifics):**
+
+- `core/` — framework-agnostic ETL engine (`source.py`, `schema.py`,
+  `etl.py`, `query.py`, `cache.py`). Must not import Django.
+- `starcubes/` — Django project with custom DB backend, login middleware.
+- `sources/` — full datasource CRUD + ETL monitor GUI (see sub-doc).
+- `viz/` — multi-source chart UI + JSON endpoints (see sub-doc).
+- `migrations/` — numbered `000N_*.sql`, idempotent. The consolidated
+  `starcubes_meta.sql` is used by `core/schema.py`.
+- Management commands under `sources/management/commands/`:
+  `etl_run`, `seed_example`, `query_multibar`, `create_indices`,
+  `drop_indices`, `query_cache_clear`.
+
+**Backlog (the known unfinished work):**
+
+- **Multi-dialect WHERE construction.** `core/etl.py` emits Oracle
+  `to_timestamp(..., 'YYYY-MM-DD HH24:MI:SS')` literals — fine for the
+  example Oracle source, wrong for Postgres/MySQL. When a second non-Oracle
+  source is wired up, switch to SQLAlchemy bind parameters.
+- **Test coverage.** No unit or integration tests for `core/etl.py`,
+  `core/query.py`, or the three-stage multiprocessing pipeline. The
+  `_resume_state` deduplication logic and `copy_from` path are especially
+  risky to change without tests.
+- **Source schema drift guard.** No pre-flight validation that upstream
+  columns still match `source_expr` / `base_table` before the extract loop.
+  A dropped/renamed source column fails mid-run.
+- **Partition retirement.** `import_fact` now ensures partitions forward of
+  the load window exist on every run (`core/schema.py:ensure_partitions_for`,
+  see the design-decision note below) — the manual `create_future_partitions`
+  CLI flag / GUI button is now redundant for the common case. Old partitions
+  are still not auto-dropped or archived; that stays manual
+  (`etl/drop-partition/`, `etl/truncate-partition/`).
+- **Authentication on JSON endpoints.** All `viz/` JSON endpoints
+  (`plot_json`, `drill_json`, `txn_json`, `api_sources`, `api_source_meta`)
+  are public. The chart's user-tunable settings (Y-axis mode, bar pixel
+  target) live in the browser's `localStorage` — every visitor can change
+  them, nobody persists per-user server-side.
+- **Engine cache fast-fail for dead sources.** `_get_cached_engine` relies
+  on `pool_pre_ping=True` and `pool_timeout=30`. Stale engines retry until
+  timeout on every checkout. No circuit breaker.
+- **A `SELECT`-only DB role for the Query console.** The chart's ad-hoc SQL
+  console (`core/adhoc.py`) runs as the app's own Postgres role. The read-only
+  transaction blocks writes but not `pg_sleep()`, `pg_read_file()`, or reading
+  every table in the schema. The real security boundary would be a second DSN
+  pointing at a dedicated reader role; the four read-only layers are
+  defence-in-depth, not a substitute.
+- **Console concurrency.** uWSGI has `processes = 2 × threads = 4` = 8 request
+  slots. Enough simultaneous long console queries stall the whole app —
+  *including the cancel requests that would clear them*. The 30 s
+  `statement_timeout` bounds it; raising `threads` or a per-user guard would
+  bound it better.
+
+## Domain vocabulary
+
+- **Fact table** — `<schema_name>.fact`, one row per transaction. `RANGE`
+  partitions on the time column, `UNLOGGED`, BRIN on the time column.
+  Partition granularity is configurable per datasource (`partition_period`
+  ∈ `'day' | 'week' | 'month'`, default `'month'`; weekly partitions start
+  on the ISO Monday). Dimension columns are `smallint` foreign keys.
+- **Dimension table** — `<schema_name>.<dim>`: `index smallserial PRIMARY
+  KEY, source_id text, name text, description text`. Max 32 767 rows per
+  dim (signed `smallint` limit). The neutral `source_id` column replaces
+  any source-specific key names.
+- **Primary dimension** — when several fact columns share a dim table
+  (e.g. `so_peer_1/2/3` and `src_peer` all reference `peer`), exactly one
+  `dimension` row is `is_primary = true`. That one drives DDL, dim import,
+  and the `read_dimensions` mapping; the rest only contribute their
+  fact-column-to-dim-table link for the transform stage.
+- **Inline dimension** — a dimension backed by a fixed CSV value set
+  instead of a source DB lookup. `inline_values` text column on
+  `starcubes_meta.dimension` holds `source_id,name[,description]` lines. When
+  set (and `source_table` is null), `import_dimensions` populates the dim
+  table from the CSV. `source_table` and `inline_values` are mutually
+  exclusive.
+- **Auto-dimension** — a `fact_column` whose `role = 'auto-dimension'`.
+  Same smallint storage as a regular dim, same `dimension` metadata row
+  (admin creates one with `dim_table` and `is_primary = true`), but the
+  initial value set is unknown. The ETL parent process discovers new
+  source values per chunk and INSERTs dim rows on the fly with
+  `name = source_id` and `description = 'auto-discovered <UTC ts>'`. The
+  32 767 ceiling still applies — use the GUI's cardinality estimate
+  before promoting a column.
+- **High watermark (HWM)** — `max(watermark_column)` in the source. The
+  ETL loads `[last_successful_hwm, current_hwm)` on each run.
+- **Dimension group** — a named bucket (e.g. "OK", "Error") collecting one
+  or more dim rows via `dim_group_member`. Always belongs to exactly one
+  group dimension.
+- **Group dimension** — a row in `starcubes_meta.dim_group_set`: a *named*
+  bucketing of one native dimension, with a user-given `name` and a derived
+  URL `slug`. A dimension may carry arbitrarily many (e.g. `peer` bucketed
+  both by country and by peer type), so the chart addresses one via the
+  token `<fact_column>:grouped:<slug>`. The bare pre-0020 token
+  `<fact_column>:grouped` still resolves — to the dimension's first set.
+  A dim value may be assigned in several group dimensions at once, but only
+  to one group *within* each. Created and edited in the `/sources/<id>/`
+  Group Dims tab.
+- **ETL forever session** — a background loop (`manage.py etl_run
+  --forever`) that sleeps N seconds between incremental passes. Tracked
+  in `starcubes_meta.etl_forever` with PID, `stop_requested` flag, and status
+  (`running` / `stopping` / `stopped` / `failed`). At most one active
+  session per datasource.
+- **Measure** — a row in `starcubes_meta.measure`: the user-facing catalog of
+  measurements in the chart's measure dropdown. `agg` is an aggregation
+  expression — the literal `count(*)` or `func(col)` (func ∈ sum/avg/min/max/
+  quantile, col a `role='measure'` fact column). `name` is the dropdown label;
+  `graph_style` picks the `timeseries.js` plot type (`'multibar'`, `'multiline'`,
+  `'multipoint'`, `'quantile-bands'`; the CHECK widens as types land).
+  `percentiles` is a comma-separated ladder (`'25,50,75'` or `'5,25,50,75,95'`)
+  used only by `quantile-bands` (see the quantile-bands design note below).
+  One row may be `is_default`
+  (partial unique index `ux_measure_default`). Distinct from
+  `fact_column.role='measure'`, which stays the low-level "aggregatable +
+  smallint-clamped" column marker. The dropdown maps the `count(*)` agg to an
+  empty `measure=` param (so `core/query._parse_measure` never sees a bare
+  `count(*)`); other aggs pass through. `plot_json` resolves `graph_style` via
+  `Source.graph_style_for(agg)` → `plot['type']`. A source with **zero**
+  measure rows falls back to the historical implicit `count(*)` + auto sum/
+  avg/min/max list.
+- **Default source** — `datasource.is_default` (partial unique index
+  `ux_datasource_default`, at most one true). The chart's `loadSources()`
+  picks the flagged source when no `?name=` is given, else first-by-name.
+- **No-breakdown group-by** — `group_by` empty (`""`, the chart's `(none)`
+  option) means no series split: `timeseries_multibar` emits one constant
+  `'(all)'` series per slot. `_build_bar_where` drops the `gb_where` clause
+  for an empty `group_by`, so drill/txn endpoints work on an `(all)` bar
+  (drill then breaks down by every dimension, since none is excluded).
+
+## Design decisions that are not obvious from reading the code
+
+This is the highest-value section in this file — read it before changing
+any of the systems it covers.
+
+- **One Postgres schema per datasource** (`starcubes_<name>`), not one shared
+  fact table. Sources have incompatible shapes; a shared fact would force
+  a lowest-common-denominator model. Isolation is cheap.
+
+- **Partition naming sorts chronologically as a plain string within one
+  period.** `core/schema.py:list_fact_partitions` orders by `relname`;
+  `create_future_partitions` parses the last name to find the next
+  boundary. Three fixed-width zero-padded shapes:
+    - month: `fact_yYYYYmMM`
+    - week:  `fact_yIIIIwWW` (ISO year + ISO week)
+    - day:   `fact_yYYYYmMMdDD`
+  Mixing periods on a single source is not supported — the application
+  layer rejects `partition_period` changes once any partition exists.
+
+- **`_floor_to_period` / `_next_period` use naive midnight `datetime`s.**
+  Adding `timedelta(days=1)` / `(days=7)` to a naive midnight is exact (no
+  tzinfo, no DST drift) — the `partition_column` is read in source-DB
+  time and stored as wall-clock. Month arithmetic uses `replace(month=...)`
+  with explicit Dec→Jan handling.
+
+- **`smallint` dimension keys** — the point of the whole compact-star model.
+  2 bytes per fact row instead of the source's 4–20 byte key. The 32 767
+  ceiling is a deliberate tradeoff. High-cardinality dims do not belong here.
+
+- **`cncy_code` has role `dimension` with an inline CSV dimension.** It's a
+  currency code stored raw as smallint; no source lookup table. The ETL
+  only clamps `role='measure'` integer columns (`stay`, `total` — see
+  `SMALLINT_MAX`/`BIGINT_MAX` in `core/etl.py`), so `cncy_code` passes
+  through the transform stage mapped to dim indices, unclamped, via the
+  `inline_values` field on the dimension row (ISO 4217 mapping, e.g.
+  `978,EUR,Euro`). Do **not** reclassify it as `measure` — it would be
+  clamped to `[0, 32767]` and both negative values and values above
+  32 767 would be silently rewritten.
+
+- **Integer measure columns must be non-negative and in range — the ETL
+  enforces this by clamping, silently, not by failing the run.** A
+  `role='measure'` fact column with `pg_type` `smallint` or `bigint` is
+  assumed to be a count/sum/duration that is never legitimately negative.
+  `core/etl.py:_transform_worker` clamps every such column to
+  `[0, SMALLINT_MAX]` / `[0, BIGINT_MAX]` via pandas `.clip()` (`NaN`
+  passes through unchanged) before the `COPY`. This replaced an
+  upper-bound-only clamp after a production run failed with
+  `NumericValueOutOfRange` on a negative `total` (an elapsed-duration
+  `source_expr` that went negative on clock skew / out-of-order
+  timestamps — see `sources/management/commands/seed_example.py`'s
+  `TOTAL_EXPR` for the shape of expression that can do this). The clamp
+  is silent by design (consistent with the pre-existing upper-bound
+  truncation), which is a real tradeoff: a negative or overflowing
+  `source_expr` result becomes indistinguishable from a legitimate `0`
+  or type-max value instead of surfacing as a data-quality signal. Anyone
+  adding a new integer measure column whose `source_expr` could go
+  negative or overflow should know it will be clamped, not preserved or
+  flagged.
+
+- **Three-stage multiprocessing pipeline** — Extract (main proc,
+  `pd.read_sql` chunked), Transform (N child procs, numpy vector
+  `Series.replace` + CSV serialisation), Load (1 child proc, psycopg
+  `copy_from` on a `raw_connection()`). The *only* way we hit the
+  throughput numbers that motivated the design. Do **not** replace
+  `copy_from` with SQLAlchemy `INSERT` — orders of magnitude slower.
+
+- **Each load worker builds its own engine inside the child**, rather than
+  inheriting the parent's SQLAlchemy pool via `fork()`. The parent calls
+  `source_engine.dispose()` before the extract loop. The original
+  implementation shared one engine post-fork; worked on Linux but was fragile.
+
+- **HWM lives in `starcubes_meta.etl_run`**, not a per-schema `etl_log` table.
+  Lets the GUI show run history across all datasources in one query and
+  survives per-schema DDL changes.
+
+- **Auto-dim discovery happens in the parent ETL process, not the workers.**
+  Transform workers receive a snapshot `dim_frames` mapping at fork time;
+  mutating across processes would require `mp.Manager` (slow per-row IPC)
+  or per-worker DB inserts (race on `smallserial`). Instead,
+  `core/etl.py:_resolve_auto_dim_chunk` runs in the parent between
+  `pd.read_sql` chunk delivery and `transform_q.put(chunk)`. It finds
+  `chunk[col].dropna().unique()` not in the local map, INSERTs each new
+  value, registers it under str/int/float forms (same as
+  `read_dimensions`), and rewrites the chunk column to indices. NaN →
+  `-1` sentinel via `fillna(null_idx)`. Auto-dim columns are excluded
+  from the `dim_fact_to_table` passed to workers — so the worker `map()`
+  step doesn't re-process them. Concurrency assumption: one ETL process
+  per datasource (enforced for forever-mode by `ux_etl_forever_active`).
+
+- **`Source.dim_fact_to_table()` excludes auto-dim columns**; auto-dims
+  live in `Source.auto_dim_fact_to_table()`. Workers must not see auto-dim
+  columns in their mapping dict — the parent has already substituted
+  source values with smallint indices, so a second `map()` would NaN them out.
+
+- **`core/query.py:timeseries_drilldown` matches both `'dimension'` and
+  `'auto-dimension'`** when iterating fact columns. Auto-dims are
+  first-class for chart drill-down.
+
+- **Duplicate detection only runs when the last `etl_run` row has
+  `status != 'ok'`.** A crashed run may have partially written a chunk;
+  the next run reconstructs a conservative HWM from the fact table and
+  PK-filters the first chunks until one arrives clean. Once a full chunk
+  passes without overlaps, the dedupe set is cleared. See
+  `core/etl.py:_resume_state`.
+
+- **`small_window_hint`** is a per-source optional string inserted after
+  the first `SELECT` when the load window is within a day. For the example
+  Oracle source: `/*+ ORDERED INDEX(txn, TXN3) */` — Oracle-specific. Do not
+  hard-code this into the engine.
+
+- **ETL throughput is measured as net busy time per stage, not wall time.**
+  Each of the three pipeline stages (extract in the parent, N transform
+  workers, 1 load worker) writes `(rows, busy_s, wait_s)` per chunk into a
+  shared `mp.Array('d', ...)`, `lock=False` — one writer per slot, so a
+  slightly stale read is harmless, and it's ~2 orders of magnitude cheaper
+  than an `mp.Manager()` proxy on the hot path (per-chunk, not per-row).
+  `busy_s` excludes queue block time (`transform_q.put()` backpressure,
+  `in_queue.get()` wait) so a slow downstream stage doesn't make an upstream
+  stage look slow. Transform throughput uses `rows / max_i(busy_i)` — the
+  stage is only as fast as its slowest worker, since all N run in parallel;
+  per-worker rates still land in `stats.transform.procs`. A **progress-writer
+  thread** in the parent (started *after* `w.start()` — forking with a live
+  thread is risky) snapshots the array into `etl_run.progress_rows` /
+  `progress_at` / `stats` every 5 s, because the parent can block for minutes
+  in `transform_q.put()` and the GUI needs a live signal regardless.
+  `progress_at` only advances when `rows_total` or the load stage's row
+  count actually moved since the last tick — stamping it unconditionally
+  (the original behaviour) made a fully wedged pipeline look perpetually
+  alive, which is exactly how a dead load worker went unnoticed for
+  hours. `stats` also carries `queues.{transform,load}` (current
+  `qsize()`), `workers[].{name,alive,exitcode}`, and `processed_through`
+  (an ISO timestamp: the running max of the `partition_column` value seen
+  across extracted chunks so far), and a heartbeat log line
+  (`STARCUBES_ETL_LOG_INTERVAL_S`, default 30s) prints the same
+  numbers — signal that used to exist only in the (usually discarded)
+  tqdm bar description. `processed_through` is deliberately not called
+  "watermark" — that term already means `max(watermark_column)` in the
+  *source* (see "High watermark (HWM)" below), a static per-run target,
+  not a live in-progress position; `watermark_column` also isn't always
+  even a projected fact column, so exposing that value would need new
+  SELECT-projection plumbing. `partition_column` is already extracted and
+  UTC-parsed per chunk (`parse_dates={pc: ...}`), so reusing it is free.
+  Since `Source.import_query` has no `ORDER BY`, this is a best-effort
+  "furthest point seen so far" (a running max, guarding against one
+  out-of-order chunk making it jump backward), not a strict monotonic
+  guarantee.
+
+- **A killed ETL run must land as `status='failed'`, never `'ok'`.**
+  `sources/management/commands/etl_run.py` registers `_abort_signal_handler`
+  for SIGTERM/SIGINT only in single-run mode (forever mode keeps its own
+  flag-based `_signal_handler`, which must not be overwritten); it raises
+  `EtlAborted` (`core/etl.py`), which `import_fact`'s existing
+  `except`/`finally` treats like any other run failure — reaps the workers
+  via the join→terminate→kill escalation and writes the row. This is not
+  cosmetic: `_resume_state`'s dedupe logic keys off "last run != ok", so a
+  cleanly-terminated kill must look like an interrupted run to the next
+  invocation, or the resume window would skip the PK-overlap check on data
+  that was only partially loaded. The GUI's `etl_kill` view (`sources/
+  views.py`) sends the SIGTERM and lets the parent write its own row; only
+  on force-kill (`SIGKILL` via `os.killpg`, since `sources/etl_spawn.py`
+  spawns with `start_new_session=True` making the parent the process group
+  leader) does the view finish the row itself, because a `SIGKILL`ed parent
+  can't.
+
+- **A dead transform/load worker fails the run instead of deadlocking it.**
+  `transform_q`/`load_q` are bounded (`maxsize=8`); before `EtlStageFailed`
+  existed, a worker that raised or was killed left its queue undrained —
+  the other stage's `put()` then filled *its* queue too, and the parent's
+  own `transform_q.put(chunk)` blocked forever with no timeout anywhere in
+  that path. `_transform_worker`/`_load_worker` (`core/etl.py`) now catch
+  every exception, log the traceback, `abort_evt.set()`, and push
+  `(stage, message, traceback)` onto an unbounded `error_q` before exiting.
+  The parent never calls a bare `put()`/`join()` on either queue —
+  `_put_with_abort`/`_join_with_abort` poll with a short timeout and call
+  `_raise_if_failed` (checks `abort_evt` and every worker's `exitcode`)
+  between attempts, raising `EtlStageFailed` (sibling of `EtlAborted`) into
+  the existing `except`/`finally` machinery. A worker that dies before it
+  can report (SIGKILL, OOM) still gets caught: `_raise_if_failed` falls
+  back to `"<worker> exited with code N without reporting an error"` when
+  `error_q` is empty but a worker's `exitcode` is non-`None`. The load
+  worker specifically had **no** exception handling at all previously —
+  `sqlalchemy.create_engine`/`raw_connection()` even sat outside its
+  `try:` — so e.g. a `no partition of relation "fact" found for row` (see
+  the partition pre-flight note below) killed it silently.
+
+- **ETL logging goes to a per-run file, not `/dev/null`.**
+  `sources/etl_spawn.py:spawn_etl_subprocess` used to detach stdin/stdout/
+  stderr to `DEVNULL` — deliberately, to stop a uWSGI worker's SIGTERM/
+  SIGHUP or log rotation from reaching the child (still true) — which also
+  meant every `print()`/traceback from a spawned ETL vanished, and
+  `podman logs` showed nothing about the ETL ever. It now opens
+  `STARCUBES_LOG_DIR/etl-<slug>-<timestamp>-<rand>.log` with `O_APPEND`
+  and points both fds at it (a regular file has the same SIGPIPE immunity
+  a pipe/DEVNULL had, so the original fix survives), exports
+  `STARCUBES_ETL_LOG_PATH` to the child, and forces `PYTHONUNBUFFERED=1` +
+  a `-u` flag (the runtime image is `python3.12-slim-bookworm`; a
+  redirected stdout is 8 KB block-buffered otherwise, so a killed child
+  could lose its last, most diagnostic lines). `core/etl.py` uses
+  `logging.getLogger(__name__)` — never `print()` on the hot/error paths
+  — configured by `sources/etl_logging.py:configure_etl_logging()` at the
+  one process entry point allowed to know about Django settings
+  (`etl_run.py`/`etl_resume_forever.py`); `core/` itself stays
+  Django-free. `STARCUBES_ETL_LOG_STDOUT=1` (set in the Dockerfile)
+  additionally mirrors every log line onto the container's PID-1 stdout
+  via `/proc/1/fd/1` so `podman logs`/`docker logs` show ETL activity —
+  safe unlike the old raw-fd approach because it targets PID 1's own
+  stdout (not a uWSGI worker's fd) and CPython leaves `SIGPIPE` as
+  `SIG_IGN`, so a dead reader raises a catchable `BrokenPipeError`
+  instead of killing the process. `etl_run.log_path`/`log_tail`
+  (migration `0021`) record the file path on every run and the last ~8 KB
+  on failure, so the GUI's ETL Log tab and history table work even
+  without shell access to the log volume. `core/etl.py:_bound_log_size`
+  `ftruncate`s the file in place once it exceeds
+  `STARCUBES_LOG_MAX_BYTES` — safe specifically because the fd is
+  `O_APPEND`, so the next write lands back at offset 0.
+
+- **`import_fact` ensures partitions exist before starting the worker
+  pool** (`core/schema.py:ensure_partitions_for`, called from
+  `core/etl.py:import_fact` right after `first_end_time` is known). There
+  is no DEFAULT partition (see the function's own docstring for the three
+  reasons — string-sortable-name contract, ACCESS EXCLUSIVE lock
+  contention with the ETL's own COPY, and silent misrouting), and nothing
+  previously called `create_future_partitions` automatically — it was a
+  manual CLI flag / GUI button. A source whose newest partition fell
+  behind the calendar (e.g. `partition_period='month'`, last partition
+  July, ETL run in August) made every COPY fail with `no partition of
+  relation "fact" found for row`; combined with the load-worker silence
+  above, this was invisible and permanent. Unlike
+  `create_future_partitions(n)`, which anchors on `existing[-1]` and can
+  only append, `ensure_partitions_for(start, end, back=1, forward=1)`
+  **gap-fills**: it walks every period in `[start-back, end+forward]` and
+  creates whichever ones are missing, even when a later partition already
+  exists. `back=1` covers skew between `partition_column` and
+  `watermark_column` when they're different fact columns; `forward=1`
+  keeps one period of runway past `end_time` so the next run doesn't
+  immediately need another partition. Runs on every `import_fact` call,
+  including every forever-mode iteration, so partition coverage never
+  depends on a cron job again. Capped at `_MAX_ENSURE_PARTITIONS = 512`
+  partitions per call — a stale HWM combined with `partition_period='day'`
+  would otherwise silently create thousands of tables; it raises instead.
+
+- **Django tables land in `starcubes_meta`, not `public`.** The custom DB backend
+  (`starcubes/db_backends.DatabaseWrapper`) sets `search_path=starcubes_meta,public`
+  and ensures the schema exists on first connection. `auth_user`,
+  `django_session`, `django_migrations`, etc. are created in `starcubes_meta`
+  by `manage.py migrate`. The container entrypoint runs `migrate` before
+  `collectstatic`. `ensure_starcubes_meta()` checks for the `datasource` table
+  (not just the schema) so it still creates starcubes_meta application tables
+  when the schema already exists. SQLAlchemy connections use
+  schema-qualified names. `ensure_starcubes_meta(engine, force=True)` re-runs
+  the consolidated `starcubes_meta.sql` even when `datasource` already
+  exists — the *only* path that lets an existing container pick up a new
+  idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` block added after
+  first boot (e.g. `etl_run.log_path`/`log_tail`, migration `0021`), since
+  the cheap `SourcesConfig.ready()` probe used on every request-serving
+  process deliberately skips the 500-line script once the table exists.
+  `sources/management/commands/bootstrap.py` calls it with `force=True`
+  once per container start, *before* `call_command("migrate")` — and
+  captures the return value into a local `freshly_bootstrapped`, not the
+  module-level `core.schema._freshly_bootstrapped` global, because
+  `migrate` immediately triggers `ready()` → a second, non-forced
+  `ensure_starcubes_meta()` call that would otherwise overwrite the global
+  back to `False` before the admin-user-creation check reads it.
+
+- **`CSRF_TRUSTED_ORIGINS` must be set explicitly via `STARCUBES_CSRF_TRUSTED_ORIGINS`
+  (comma-separated `scheme://host[:port]` entries) for any deployment behind
+  the bundled nginx+uwsgi.** With `ALLOWED_HOSTS=["*"]` and nginx's catch-all
+  `server_name _;` in `docker/nginx.conf`, Django's Origin check on POST
+  (`request.get_host()`-derived "good origin" vs. the browser's `Origin`
+  header) is fragile across the nginx→uwsgi hop and rejects logins with
+  "Origin checking failed" even on a same-origin, same-scheme request. The
+  explicit allowlist sidesteps the derivation entirely. Empty by default —
+  must be set per deployment (e.g. `http://127.0.0.1:8080` for local docker
+  access, plus any other hostname/IP used to reach it).
+
+- **Always build the container image via `docker/build.sh`, never
+  `podman build`/`docker build` directly.** The wrapper exists for two
+  reasons: (a) it defaults the container engine to `podman` (`CONTAINER_ENGINE`
+  overrides), and (b) it pins the working directory to the repo root before
+  delegating. There's no longer a submodule to initialize at build time —
+  the JS dependency (`@hgruber/timeseries.js@~0.9.0`) is pinned via the
+  top-level `package.json`/`package-lock.json` pair and pulled by the
+  `jsbuilder` Dockerfile stage through `npm ci`.
+
+- **Frontend JS dependencies live at the repo root.** Top-level
+  `package.json`/`package-lock.json` declare the only frontend JS dep
+  (`@hgruber/timeseries.js`, pinned `~0.9.0`). The Dockerfile's `jsbuilder`
+  stage runs `npm ci --omit=dev` and copies `dist/timeseries.min.js` into
+  `viz/static/timeseries/timeseries.js`, which `STATICFILES_DIRS` exposes to
+  Django's `collectstatic`. `chart.html` loads it via
+  `{% static 'timeseries/timeseries.js' %}`. No `node_modules` reaches the
+  runtime stage — `.dockerignore` blocks it. To bump timeseries.js:
+  `npm update @hgruber/timeseries.js` (or edit the version in `package.json`)
+  and rebuild.
+
+- **The starcubes logo/icon ships as light/dark asset pairs, not a single
+  `currentColor` SVG.** `viz/static/viz/starcubes_icon.svg` /
+  `starcubes_lockup.svg` (icon-only vs. icon+wordmark) are duotone with
+  several fixed hex fills — unlike the pre-rebrand logo they replaced,
+  which adapted to theme via a single `currentColor` fill. A blanket
+  `currentColor` swap isn't possible without flattening the duotone design,
+  so each has a `*_dark.svg` sibling: shape fills `#2B3A55`→`#7C8FC9`,
+  `#46567A`→`#93A3D1`, `#5C6B87`→`#AAB7DC` (navy/slate tones lightened for
+  contrast against the `#1a1a1a` dark background), the pink accent
+  `#CF4F8F` unchanged. The lockup's "star" wordmark is a separate case —
+  it needs to read as body text, not as a graphic element, so it doesn't
+  follow the shape mapping: it's `#DDDDDD`, matching `--body-color` dark
+  exactly (the lightened shape tone `#7C8FC9` tested too low-contrast for
+  small nav-height text). Diff the light/dark SVG pairs directly if
+  retuning. Two integration patterns follow from that split: the nav-brand
+  logo (`sources/base.html`, `viz/templates/registration/login.html`,
+  `viz/templates/viz/chart.html`) renders **both** `<img>` variants and
+  toggles visibility via `[data-theme="dark"] .nav-brand-logo-{light,dark}`
+  CSS (same attribute-selector pattern as `[data-theme="dark"] .errorlist`
+  in `login.html`), since the app's theme lives in a `data-theme` attribute
+  set from `localStorage`, not `prefers-color-scheme`. The chart watermark
+  (`chart.html`, drawn to canvas by `timeseries.js`, no CSS access once
+  drawn) instead picks the file server-side-templated-but-JS-branched: the
+  `_isDark` check already used for `ts.setColors()` is hoisted before the
+  `new TimeSeries({...})` call so `watermark:` can pick between the two
+  `{% static %}` paths. Favicons use a third mechanism, native
+  `<link rel="icon" media="(prefers-color-scheme: dark)">` pairs, because
+  the tab icon reflects OS theme rather than the app's in-page toggle.
+
+- **The Query console is read-only by four independent mechanisms, and
+  cancellable across worker processes.** `core/adhoc.py` runs user SQL under
+  (a) a connection with `-cdefault_transaction_read_only=on`, (b) an explicit
+  `SET TRANSACTION READ ONLY`, (c) `validate_sql`'s single-statement +
+  SELECT/WITH check, and (d) a named server-side cursor, which Postgres
+  refuses over a data-modifying CTE — the one writing shape that starts with
+  `WITH` and so slips past (c). Measured: the cursor does *not* refuse
+  `SELECT 1; SELECT 2`, so (c) alone enforces "one statement", while (a)+(b)
+  alone enforce "no writes" (SQLSTATE 25006). Cancellation cannot use an
+  in-memory `{token: pid}` map because uWSGI runs `processes = 2` and the
+  cancel request routinely lands in the other worker; instead the query tags
+  its backend via `set_config('application_name', 'sq:<user_id>:<token>',
+  true)` and the cancel endpoint finds it in `pg_stat_activity`.
+  `set_config(..., is_local => true)` rather than `SET LOCAL` because `SET`
+  takes no bind parameters — and its transaction-local scope is also what
+  keeps the tag from leaking to the next user of the pooled connection. The
+  cancel is issued on the *meta* engine, since the console pool may be
+  saturated by the very queries being cancelled. User SQL goes through
+  `exec_driver_sql`, never `text()`: `text()` would read the `:1` in
+  `SELECT '{"a":1}'::jsonb` as a bind parameter. See `docs/chart-app.md`.
+
+- **`query_history.user_id` has no foreign key to `auth_user`.** Not an
+  oversight: `SourcesConfig.ready()` calls `ensure_starcubes_meta()` — which
+  executes `migrations/starcubes_meta.sql` — and `ready()` fires *during* the
+  `call_command("migrate")` in `sources/management/commands/bootstrap.py`,
+  i.e. before Django's own migrations create `auth_user`. A hard FK would
+  break every fresh install. Rows are cleaned up explicitly by the
+  `delete_user` branch of `sources/views.py:settings_page` instead.
+
+- **`core/` must not import Django.** The ETL engine has to be runnable
+  from a cron job or a management command without the Django runtime
+  loaded. `sources/` and `viz/` are thin Django adapters on top of `core/`.
+
+- **`viz/views.py:_parse_dt` is also in `query_multibar` management command.**
+  Duplication is deliberate — the management command is a standalone entry
+  point that must not import from `viz/` (same constraint as `core/`).
+
+- **SQLAlchemy engine cache prevents connection leaks.** Before the cache,
+  each request called `create_engine()` which created a new pool (5 idle
+  connections) that was never disposed. `core/source.py:_get_cached_engine`
+  ensures one pool per (dsn, connect_args). Pool sizing: `pool_size=5`,
+  `max_overflow=10`, `pool_pre_ping=True`, `pool_recycle=1800`,
+  `pool_timeout=30`.
+
+- **`scheduleViewportChange` in timeseries.js is a throttle, not a debounce.**
+  A pure trailing-edge debounce starves under fast tick rates: at high zoom
+  `mspp` can be < 300 ms, so `follower_tick` fires faster than the debounce
+  window and resets the timer on every call — the callback never elapses.
+  The throttle (skip if pending, fire latest values after 300 ms) guarantees
+  `onViewportChange` fires at most once per 300 ms regardless of caller
+  cadence. Single trigger for `currentViewport` updates, `autoFetch`, legend
+  refresh, and DT input sync.
+
+- **`follower_tick` and `follow_view` call `scheduleViewportChange()`.**
+  They mutate `tmin`/`tmax` directly without going through the user-input
+  paths that already call it. Without these calls, follow mode would never
+  emit viewport-change events.
+
+- **Stacked bars are sorted ascending by dimension count.** Each dim table
+  has a `count` column (total fact rows per value, refreshed after each
+  ETL). The multibar query uses `ORDER BY _g.count, slot` so series stack
+  smallest-at-bottom. The count is approximate (last ETL refresh, not
+  current viewport) but provides a globally consistent sort order across
+  all fetched blocks. Pass-through columns (no dim table) fall back to
+  alphabetical order.
+
+- **The chart does not pin a render interval — the library cross-fades between
+  resolution tiers.** `chart.html` used to call `ts.setRenderInterval(interval)`
+  on every `autoFetch`, which makes `prepare_grid` draw exactly that tier and
+  disables the dissolve. It now lets the library choose, and instead hands it
+  the *same* threshold starcubes fetches on: `ts.setFadeBand(bar_pixel_target,
+  bar_pixel_target / 2)` from `loadMeta` (plus `fadeHi`/`fadeLo` constructor
+  options in `initTs` for the case where it runs first). The two rules must not
+  drift — `bestInterval()` and `prepare_grid`'s tier pick are the same formula,
+  and if they disagree one resolution is drawn while another is kept topped up,
+  so panning holes out whatever is visible. `fadeTiers(ppms)` mirrors the
+  library's choice locally so `autoFetch` fetches *both* tiers while both are
+  on screen. Everything that reports a single number (`updateInfo`, the y-axis
+  label, `updateLegend`) cuts at `_fade < 0.5`, the same cutoff the library's
+  `get_element` hit test uses. See `docs/chart-app.md`.
+
+- **The chart's y-axis is a density, not a per-bar count.** Counts scale with
+  the bin, so mid cross-fade the two tiers' extents are 60× apart (measured:
+  43× at one real viewport) and the axis has to travel between them — the bars
+  breathe through what should be a plain resolution swap. `chart.html` therefore
+  plots a rate via the library's `ts.setRateUnit(seconds, {label, transition})`:
+  both tiers land on one scale (measured: 1.39×, which is only the real
+  peak-vs-average difference) and the switch changes nothing but the printed
+  numbers, dissolved over 300 ms. **Only additive measures may be scaled** —
+  `isExtensiveMeasure()` accepts `count(*)`, `sum(…)` and the bare-column form
+  (`core/query._parse_measure` reads that as `sum`); an `avg`/`min`/`max`/
+  `quantile` is already per-unit and is pushed with `plot.extensive = false`.
+  Dividing one of those by the bin length would silently be off by the tier
+  ratio, the same class of mistake as reclassifying `cncy_code` as a measure.
+  Tooltip, legend, drill-down and CSV keep absolute counts throughout. The
+  `yAxisMode` setting (`auto` | `s`/`min`/`h`/`d` | `count`) lives in
+  `localStorage` with a `?yaxis=` URL override — no server state, no migration.
+  See `docs/chart-app.md`.
+
+- **Follow-mode polling interval is `max(5s, interval/3)`.** A 60s bar
+  interval polls every 20s; a 5s interval clamps to 5s. Only fires when the
+  viewport is near "now" (tmax within 2× interval of `Date.now()`), so
+  scrolling to historical data stops network traffic.
+
+- **`ts.pan(dir)` uses local-time calendar snapping, not fixed-ms offsets.**
+  DST spring-forward days have 23h, fall-back days 25h. All seven snap
+  units use `Date` setters (`setHours`, `setDate`, `setMonth`,
+  `setFullYear`) so a day pan crosses DST as a calendar day, not
+  86 400 000 ms. Both viewport edges snap independently (floor tmin, ceil
+  tmax), then shift by the same calendar-unit count — no overlap between
+  successive pans.
+
+- **Watermark is drawn after `background()`, before the data.**
+  `background()` fills the plot area with opaque `plotBg`; drawing the
+  watermark before would hide it entirely. After `background()` puts it
+  above the grid stripes but behind the data series.
+
+- **`dataCache` fetch cache is keyed by sorted URLSearchParams** (name,
+  group_by, measure, from, to, interval, all filter params). Naturally
+  per-source and per-param-set. `sourceMemory` is a separate in-memory
+  per-source plot store (not a URL cache) used for instant canvas
+  restoration on source switch.
+
+- **Trailing-edge blocks bypass both caches.** A block is "trailing" if
+  `to >= Date.now()/1000 - interval`. Such blocks are not stored in
+  `dataCache` (server data is volatile near now) and not stored in
+  `sourceMemory` (must always be re-fetched). `autoFetch` always re-fetches.
+
+- **Server-side `plot_json` cache** (`starcubes_meta.query_cache`) is keyed
+  on sha256 of `(datasource_id, group_by_raw, measure, interval_start_epoch,
+  to_epoch, interval, filter_tree, series_label, cache_epoch)`. Eligibility
+  (`core.cache.is_cacheable`): `measure` must be `count(*)` (None or the
+  literal), `to` must be at a UTC interval boundary, `to <= now - interval`,
+  and `to <= last successful HWM`. Bin aggregation in `timeseries_multibar`
+  uses `extract(epoch from f.{pc})` — UTC-anchored regardless of session
+  `TimeZone`. `chart.html` aligns fetch windows to natural calendar
+  boundaries (see `docs/chart-app.md`) so cache keys collide across users.
+
+- **Cache invalidation = `datasource.cache_epoch` bump.** The epoch is part
+  of the cache key, so an UPDATE on the datasource row implicitly orphans
+  every old entry without a DELETE. Bumped from six endpoints that touch
+  historical fact rows: `etl_delete_from`, `etl_truncate_last`,
+  `etl_truncate_partition`, `etl_drop_partition`, `etl_set_highwatermark`,
+  `etl_clear_history`. Append-only ETL does **not** bump (cached data
+  behind HWM stays correct). Orphans are cleaned by `manage.py
+  query_cache_clear` or an LRU sweep on `last_hit_at`.
+
+- **Grouped dimensions aggregate by raw dim index, then merge in Python.**
+  When `group_by` names a group dimension, `timeseries_multibar`
+  groups by the raw `smallint` fact column (`f.{col}::int`) and sorts by
+  slot only — no CASE expression, no dim-table JOIN. After the query,
+  Python maps each dim index to its group name via `index_to_group` and
+  sums per-index counts into per-group counts per slot. Grouping on a
+  2-byte integer is the cheapest possible aggregation; the Python merge
+  is O(rows) with a single dict lookup per row.
+
+- **Drill-down on grouped dimensions resolves group names to dim indices.**
+  Under a group dimension the chart uses group names ("OK", "Error",
+  "(other)") as series keys. Drill-down and transaction-list endpoints
+  detect the grouped token, call `build_group_by_indices()` to map group
+  names → dim indices, pass the result to `_build_bar_where`. Named
+  groups use `f.{col} = ANY(:_gb_indices)`; "(other)" uses
+  `f.{col} != ALL(:_gb_named_indices)`, whose index list is derived from
+  `group_by_indices` itself so it stays scoped to the addressed set — a
+  second group dimension on the same column has a different complement.
+  Without this translation, the group name would be sent as `group_by_val`
+  and treated as a `source_id` in a dim-table subquery, returning no rows.
+
+- **The grouped token is parsed in exactly one place.** `<col>`,
+  `<col>:grouped` and `<col>:grouped:<slug>` all arrive through
+  `core/query.py:split_grouped_col()` → `resolve_group_set()`; `viz/views.py`
+  wraps both in `_resolve_group_by()`. Before 0020 the `:grouped` suffix was
+  hand-stripped in five Python and six JS spots, each with its own slicing
+  style. The slug charset is `[a-z0-9-]` (`slugify_group_set`, with German
+  umlaut transliteration) because the token travels through
+  `_parse_filter_spec`, which splits filter params on `=` and value lists on
+  `,`. Slugs are re-derived on rename — chart bookmarks and the per-source
+  `localStorage` state break by design (the alternative, opaque numeric ids,
+  would have made every shared chart URL unreadable). `chart.html`
+  compensates for the *old* break only: `normalizeGbToken()` rewrites a bare
+  `<col>:grouped` onto the column's first set.
+
+- **The hover tooltip belongs to the library, not to starcubes.** starcubes used to
+  build its own `#bar-tooltip` card; the same box existed twice more in the
+  `timeseries.js` demos. It now ships with the library as
+  `TimeSeries.attachTooltip(ts, …)` (opt-in — the library still creates no DOM
+  unless asked), and `attachBarTooltip()` in `chart.html` passes only the two
+  app-specific hooks: `labelFor` for `_resolveDimName()` and `colorFor` for
+  `_seriesColor()`/`starcubesSeriesColors`. Theming needs no code — the library's
+  `tooltip*` palette keys hold the former `--legend-*` values and re-apply on
+  the `ts.setColors()` that `applyTheme()` already calls. Do **not** re-add a
+  local tooltip; extend it through the library's `formatter`/`labelFor` options
+  instead. `_barHeaderHtml()` and the `.btt-*` classes survive because the
+  drill-modal header still uses them. See `docs/chart-app.md`.
+
+- **Quantile-bands are a distinct plot type, not a multibar measure.** A
+  measure with `graph_style='quantile-bands'` and `agg='quantile(col)'` routes
+  `plot_json` to `core/query.timeseries_quantiles` (not `timeseries_multibar`).
+  The plot's `data[slot][series]` is a **list** of `percentile_cont` values
+  aligned to `plot['percentiles']` (the per-measure ladder from
+  `Source.quantiles_for`), not a scalar. The `quantile-bands` renderer in the
+  `timeseries.js` vendored bundle draws one line per percentile from each slot's
+  **center** and shades the bands at fixed per-band alpha (darkest at the
+  median). Because the per-slot value is an array, three spots in
+  `timeseries.js` branch on the type: `prepare_grid` y-range (max/min array
+  entry per slot), `pushData` block-concat min/max, and `get_element`
+  hit-testing (skipped — no per-bar target, so no drill/tooltip). Grouped
+  (`:grouped`) percentiles are computed **SQL-side** via a `CASE` mapping dim
+  index → group name before `percentile_cont` — percentiles cannot be merged
+  in Python the way counts are. Not server-cacheable (`is_cacheable` rejects
+  non-`count(*)` measures). The vendored bundle lives in
+  `viz/static/timeseries/timeseries.js` (rebuild via `./docker/build.sh`);
+  Adjacent fetch blocks are stored as **separate** plot objects in `data[]`
+  (only multibar/quantile-bands are concat-trimmed on *overlap*, not on plain
+  adjacency). Connected renderers would otherwise leave a one-slot hole at each
+  block margin, so `renderers.js:plotData` supports an opt-in `coalesce(plot)`
+  key: active blocks of one type sharing the key are merged via `coalesceBlocks`
+  (rebasing each block's slots onto the group's earliest `interval_start`, which
+  is always a multiple of `interval`) into one synthetic plot drawn once.
+  quantile-bands opts in with key `name|interval` (`name` is `"{source}:
+  {group_by}"`), so only same-source/same-group-by/same-interval blocks merge.
+  Multibar bars are discrete so it does not need this.
+
+- **`interval_end` is the requested window end, not the data horizon —
+  deliberately.** `core/query.py` reports both `interval_end` (the client's
+  requested `to`) and `incomplete_until` (the last `status='ok'` ETL
+  watermark, the HWM) and never caps the former by the latter. Capping it
+  server-side looks like the obvious fix for the class of bug where a chart
+  in follow mode shows a data gap the width of the ETL lag, and breaks three
+  things instead: `pushData` in `timeseries.js` deliberately prefers
+  `interval_end` to delete slots of a superseded older block, so an empty
+  capped result would stop clearing stale bars past the HWM; `chart.html`'s
+  non-live `covered` test in `fetchTier` would never be satisfied for any
+  block past the HWM, refetching the whole viewport on every 300 ms
+  follow-mode tick; and the client loses the ability to distinguish "no rows
+  here (yet)" from "not loaded yet", which is the entire basis of the
+  provisional-block logic below. The clamp belongs client-side, in
+  `fetchRange`, per block, and only for **trailing** fetches — see
+  `docs/chart-app.md`, "Provisional blocks and the ETL high-water mark".
+
+- **`autoFetch` coalesces re-triggers instead of aborting the in-flight
+  fetch; `AbortController.abort()` is reserved for genuine param/source
+  changes.** Follow mode drives `autoFetch` every 300 ms
+  (`scheduleViewportChange` in `timeseries.js` is a throttle, not a
+  debounce). The original code called `activeController.abort()` on every
+  single invocation, so on any backend slower than 300 ms the in-flight
+  fetch was killed before it could ever complete — a permanent livelock, not
+  just wasted requests. `autoFetch` is now a thin coalescing shell around
+  `_autoFetchOnce` (its `run again if a call arrived while I was in flight`
+  wrapper); `abort()` survives as `abortInFlight()`, called explicitly only
+  from `resetAndFetch` and both branches of `setActiveSource`. Do **not**
+  drop those explicit calls when refactoring: `fetchRange` stamps
+  `_starcubesGroupBy`/`_starcubesMeasure` onto the response *after* its
+  `await`, so an unaborted response landing after a switch would be
+  mislabelled with the new params and painted onto the just-cleared canvas.
+
+## Code conventions
+
+- SQLAlchemy 2.x idioms: `text()`, `engine.begin() as conn`, `.mappings()`
+  for row dicts.
+- All per-source configuration comes from a `Source` dataclass loaded from
+  `starcubes_meta`. Never hard-code dimensions, column lists, or SQL into a helper.
+- Migrations numbered `000N_*.sql`, idempotent (`IF NOT EXISTS`, `OR REPLACE`).
+- Django management commands live under `sources/management/commands/`.
+  They import from `core/` but never the reverse. `core/` must not import
+  Django. Use `manage.py <command>` for all CLI operations.
+
+## Key files (most-touched, top of mind)
+
+| File | Purpose |
+|------|---------|
+| `core/source.py` | `Source` / `Dimension` / `FactColumn` / `FactIndex` dataclasses + `Source.load` + `_get_cached_engine` + `init_oracle_client`. Splits `dim_fact_to_table()` (regular) from `auto_dim_fact_to_table()` (auto-dims, resolved in the parent ETL process). |
+| `core/schema.py` | `create_fact`, `create_indices`, `drop_indices`, `import_dimensions`, `read_dimensions`, `ensure_starcubes_meta(engine, force=)`. Partition lifecycle: `list_fact_partitions`, `create_future_partitions` (append-only, manual), `ensure_partitions_for` (gap-filling, called every `import_fact` run), `vacuum_analyze_fact`. |
+| `core/etl.py` | `import_fact` — the three-stage pipeline; calls `ensure_partitions_for` before starting workers. `_resume_state` for HWM + dedupe. `_load_auto_dim_maps` + `_resolve_auto_dim_chunk` for parent-process auto-dim discovery. `EtlAborted` for user-initiated kills; `EtlStageFailed` (+ `_put_with_abort`/`_join_with_abort`/`_raise_if_failed`) for a dead transform/load worker. Throughput metrics: `_snapshot_stats`/`_build_stats_payload` read the shared `mp.Array` into the `stats` jsonb shape (now including live `queues`/`workers`); `_rate`/`_fmt_rate` compute/format rows-per-second; `_bound_log_size` truncates the process's own log file in place. Uses `logging.getLogger(__name__)`, never `print()`. Maintenance: `truncate_last_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`. |
+| `core/query.py` | `timeseries_multibar` — multibar JSON producer. Bars ordered ascending by dim count. `split_grouped_col`/`resolve_group_set`/`slugify_group_set`/`grouped_token`/`grouped_label` own the `<col>:grouped:<slug>` token; `build_group_by_indices` resolves group names for grouped drill-down. |
+| `core/cache.py` | Server-side `plot_json` cache helpers. `make_cache_key`, `is_cacheable`, `get_cached_plot`, `put_cached_plot`, `bump_cache_epoch`, `clear_cache`. No Django imports. |
+| `core/adhoc.py` | Query console backend: `validate_sql` (single-statement SELECT/WITH lexer), `run_query` (read-only txn + server-side cursor + `application_name` tag), `cancel_query` (`pg_stat_activity` → `pg_cancel_backend`), `history_*`. No Django imports. |
+| `migrations/starcubes_meta.sql` | Consolidated idempotent meta-schema (0001–0019 combined). Used by `core/schema.py`. Per-step migrations live in `migrations/000N_*.sql`. |
+| `starcubes/settings.py` | Reads `STARCUBES_POSTGRES_DSN` from env. Custom DB backend, `CsrfViewMiddleware` in MIDDLEWARE. |
+| `starcubes/db_backends.py` | Custom PG backend — ensures `starcubes_meta` schema exists, sets search_path. |
+| `starcubes/middleware.py` | `RequireLoginMiddleware` — gates `/sources/` and `/admin/`. |
+| `viz/views.py` | Chart page, plot/drill/txn JSON endpoints (handle `:grouped`), source list + meta APIs. `plot_json` consults `core.cache` for cacheable `count(*)`. The four `query_*` console endpoints gate themselves with `_login_required_json` (403 JSON, not a 302) and answer user SQL errors with HTTP 200. |
+| `viz/templates/viz/chart.html` | Multi-source chart UI — see `docs/chart-app.md`. |
+| `sources/views.py` | Datasource CRUD + ETL JSON endpoints. Group dimensions live under `group-dims/` (list/detail/add/save/delete). Six historical-mutation endpoints call `bump_cache_epoch`. `etl_kill` sends SIGTERM/SIGKILL and cleans up a dead-PID or force-killed `etl_run` row (a live-SIGTERM'd parent writes its own row via `EtlAborted`). `etl_logs`/`etl_log_tail` serve the per-run log files under `etl/logs/`/`etl/log/`. See `docs/sources-app.md`. |
+| `sources/etl_spawn.py` | `spawn_etl_subprocess(cmd, env=, datasource_name=)` — returns `(Popen, log_path \| None)`. Opens a per-run log file under `STARCUBES_LOG_DIR` and points the child's stdout+stderr at it (instead of the historical `DEVNULL`); `prune_etl_logs`/`slugify_ds`/`log_dir` are its helpers. |
+| `sources/etl_logging.py` | `configure_etl_logging()` — the one place allowed to wire Django settings into `core/etl.py`'s `logging.getLogger`. Stderr handler always; optional PID-1-stdout mirror when `STARCUBES_ETL_LOG_STDOUT` is set (for `podman logs`); registers `faulthandler` on `SIGUSR1`. |
+| `sources/templates/sources/detail.html` | 10-tab detail page (Basics, Fact Columns, Dimensions, Dim Data, Group Dims, Measures, Indices, Storage, ETL Commands, ETL History, ETL Log — nav and panel order are two independent lists in the template, kept in sync manually, not driven by one JS array) with inline CRUD + ETL controls, including an ETL Log tab that tails the per-run log file. `fmtRate`/`fmtCount` format throughput in the statusbar and ETL History table; for a `running` row the statusbar now reads live per-stage rates + queue depths + `processed_through` from `stats` (the stored `rows_per_s` columns are NULL until the run finishes) and shows a stall badge when `progress_at` goes stale; `etlKillBtn` escalates SIGTERM → SIGKILL across two clicks. |
+| `examples.sql` | Reference SQL. Lines 43–62 are the template for `core/query.timeseries_multibar`. |
+| `docker/build.sh` | The only supported way to build the container image — defaults `CONTAINER_ENGINE=podman` and delegates to the build engine. The Dockerfile's `jsbuilder` stage pulls `@hgruber/timeseries.js` from npm via `npm ci`. See the design-decision note above. |
+
+Use `ls`, `grep`, and `git log` for anything not listed — don't rely on
+this table as a manifest.
+
+## Verification before reporting work done
+
+1. **Syntax / import** — every Python file in `core/` and
+   `sources/management/commands/` must `ast.parse` cleanly. Imports
+   additionally require `sqlalchemy`, `pandas`, `tqdm`.
+   `ast.parse` alone is not enough after a refactor that moves code between
+   functions: it accepts a name that no longer has a binding in its new
+   scope, and the `except Exception` in `viz/views.py` turns the resulting
+   `NameError` into an HTTP 500 the chart only shows in its status line.
+   Run an undefined-name check too — `ruff check --select F821 core/ viz/
+   sources/` or `python -m pyflakes` — whenever a function's locals were
+   extracted into a helper.
+2. **SQL** — `psql -f migrations/0001_starcubes_meta.sql` must be idempotent.
+   Re-running is part of the contract; verify by running twice.
+3. **Seed round-trip** — `manage.py seed_example --force --skip-initial-ddl`
+   followed by `Source.load(meta, dsn, 'source')` must return a `Source`
+   whose `fact_columns` / `dimensions` / `indices` match the seed tuples.
+4. **ETL parity** — when the first real ETL runs, compare row counts for
+   the same `[last_end_time, end_time)` window. Throughput should be
+   within 10% — the copy path is unchanged.

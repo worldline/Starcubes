@@ -1,0 +1,3 @@
+# Vendored @hgruber/timeseries.js bundle lands here at container-build time
+# (jsbuilder stage). Keep this directory in git so `viz/static/` exists with
+# the right shape; the bundle itself is .gitignored.

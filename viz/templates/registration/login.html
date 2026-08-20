@@ -1,0 +1,128 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login — starcubes</title>
+<link rel="icon" type="image/svg+xml" href="{% static 'viz/starcubes_icon.svg' %}" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/svg+xml" href="{% static 'viz/starcubes_icon_dark.svg' %}" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" sizes="32x32" href="{% static 'viz/favicon/favicon-32.png' %}" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" sizes="32x32" href="{% static 'viz/favicon/favicon-32-dark.png' %}" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" sizes="16x16" href="{% static 'viz/favicon/favicon-16.png' %}" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" sizes="16x16" href="{% static 'viz/favicon/favicon-16-dark.png' %}" media="(prefers-color-scheme: dark)">
+<link rel="alternate icon" href="{% static 'viz/favicon/favicon.ico' %}">
+<link rel="apple-touch-icon" href="{% static 'viz/favicon/apple-touch-icon.png' %}">
+<script>/* Apply saved theme before paint */
+(function(){var t=localStorage.getItem('starcubes-theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');})();
+</script>
+<style>
+:root {
+  --bg: #fff; --fg: #1a1a1a; --bg2: #f5f5f5; --bg3: #e8e8e8;
+  --border: #d0d0d0; --accent: #2c5282; --accent-fg: #fff;
+  --accent-hover: #1a3a5c; --muted: #666; --danger: #c53030;
+  --input-bg: #fff; --input-border: #ccc;
+}
+[data-theme="dark"] {
+  --bg: #1a1a2e; --fg: #e0e0e0; --bg2: #252540; --bg3: #333350;
+  --border: #444466; --accent: #5a9bd5; --accent-fg: #fff;
+  --accent-hover: #7ab5e8; --muted: #aaa; --danger: #e53e3e;
+  --input-bg: #252540; --input-border: #555;
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.nav {
+  display: flex; align-items: center; gap: 0;
+  padding: 0 16px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  height: 44px;
+}
+.nav-brand { display: flex; align-items: center; margin-right: 24px; text-decoration: none; }
+.nav-brand-logo { height: 36px; width: auto; }
+.nav-brand-logo-dark { display: none; }
+[data-theme="dark"] .nav-brand-logo-light { display: none; }
+[data-theme="dark"] .nav-brand-logo-dark { display: inline; }
+.nav-spacer { flex: 1; }
+.nav-theme-btn {
+  background: none; border: none; cursor: pointer;
+  font-size: 16px; padding: 4px 8px; color: var(--muted);
+}
+.login-wrap {
+  display: flex; align-items: center; justify-content: center;
+  flex: 1; padding: 24px;
+}
+.login-card {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 32px; width: 100%; max-width: 380px;
+}
+.login-card h1 { margin: 0 0 20px; font-size: 20px; font-weight: 600; }
+.login-card label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--muted); }
+.login-card input[type=text],
+.login-card input[type=password] {
+  width: 100%; padding: 8px 10px; margin-bottom: 14px;
+  border: 1px solid var(--input-border); border-radius: 4px;
+  background: var(--input-bg); color: var(--fg); font-size: 14px;
+}
+.login-card input:focus { outline: none; border-color: var(--accent); }
+.errorlist { margin: 0 0 12px; padding: 10px 14px; background: #fff5f5; border: 1px solid var(--danger); border-radius: 4px; color: var(--danger); font-size: 13px; list-style: none; }
+[data-theme="dark"] .errorlist { background: #2d1b1b; }
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 5px;
+  border: 1px solid transparent; font-size: 13px; font-weight: 500;
+  cursor: pointer; white-space: nowrap; text-decoration: none; transition: background 0.1s;
+}
+.btn-primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); text-decoration: none; color: var(--accent-fg); }
+</style>
+</head>
+<body>
+<nav class="nav">
+  <a class="nav-brand" href="/">
+    <img class="nav-brand-logo nav-brand-logo-light" src="{% static 'viz/starcubes_lockup.svg' %}" alt="starcubes">
+    <img class="nav-brand-logo nav-brand-logo-dark" src="{% static 'viz/starcubes_lockup_dark.svg' %}" alt="starcubes">
+  </a>
+  <span class="nav-spacer"></span>
+  <button class="nav-theme-btn" id="themeToggle" title="Toggle theme">&#9728;</button>
+</nav>
+<div class="login-wrap">
+  <div class="login-card">
+    <h1>Sign in</h1>
+    {% if form.errors %}
+    <ul class="errorlist">
+      {% for error in form.non_field_errors %}<li>{{ error }}</li>{% endfor %}
+      {% for field in form %}{% for error in field.errors %}<li>{{ error }}</li>{% endfor %}{% endfor %}
+    </ul>
+    {% endif %}
+    <form method="post" action="{% url 'login' %}">
+      {% csrf_token %}
+      <input type="hidden" name="next" value="{{ next }}">
+      <label for="id_username">Username</label>
+      <input type="text" name="username" id="id_username" autofocus autocapitalize="none" autocomplete="username">
+      <label for="id_password">Password</label>
+      <input type="password" name="password" id="id_password" autocomplete="current-password">
+      <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:4px">Sign in</button>
+    </form>
+  </div>
+</div>
+<script>
+document.getElementById('themeToggle').addEventListener('click', function() {
+  var html = document.documentElement;
+  var current = html.getAttribute('data-theme');
+  var next = current === 'dark' ? '' : 'dark';
+  if (next) html.setAttribute('data-theme', next); else html.removeAttribute('data-theme');
+  localStorage.setItem('starcubes-theme', next || '');
+});
+</script>
+</body>
+</html>

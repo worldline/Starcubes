@@ -1,0 +1,4321 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>starcubes chart</title>
+<link rel="icon" type="image/svg+xml" href="{% static 'viz/starcubes_icon.svg' %}" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/svg+xml" href="{% static 'viz/starcubes_icon_dark.svg' %}" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" sizes="32x32" href="{% static 'viz/favicon/favicon-32.png' %}" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" sizes="32x32" href="{% static 'viz/favicon/favicon-32-dark.png' %}" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" sizes="16x16" href="{% static 'viz/favicon/favicon-16.png' %}" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" sizes="16x16" href="{% static 'viz/favicon/favicon-16-dark.png' %}" media="(prefers-color-scheme: dark)">
+<link rel="alternate icon" href="{% static 'viz/favicon/favicon.ico' %}">
+<link rel="apple-touch-icon" href="{% static 'viz/favicon/apple-touch-icon.png' %}">
+<script>/* Apply saved theme before paint to prevent flash */
+(function(){var t=localStorage.getItem('starcubes-theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');})();
+</script>
+<style>
+  :root {
+    --filter-tag-in-bg: #d4edda;
+    --filter-tag-in-border: #34a853;
+    --filter-tag-in-text: #155724;
+    --filter-tag-not-in-bg: #f8d7da;
+    --filter-tag-not-in-border: #dc3545;
+    --filter-tag-not-in-text: #721c24;
+    --filter-dropdown-bg: #fff;
+    --filter-dropdown-hover: #f0f0f0;
+    --filter-dropdown-border: #ccc;
+    --filter-panel-bg: #fafafa;
+    --filter-panel-border: #ddd;
+    --filter-label-color: #333;
+    --filter-count-color: #999;
+    --filter-op-bg: #fff;
+    --filter-op-border: #ccc;
+    --filter-op-color: #555;
+    --filter-search-bg: #fff;
+    --filter-search-border: #ccc;
+    --filter-tag-x-hover: rgba(0,0,0,0.15);
+    --filter-row-border: #e0e0e0;
+    --filter-and-color: #888;
+    --filter-or-color: #d97706;
+    --filter-tag-sw-bg: #dbeafe;
+    --filter-tag-sw-border: #2563eb;
+    --filter-tag-sw-text: #1e3a8a;
+    --filter-tag-snw-bg: #fef3c7;
+    --filter-tag-snw-border: #d97706;
+    --filter-tag-snw-text: #78350f;
+    --filter-tag-ct-bg: #f3e8ff;
+    --filter-tag-ct-border: #9333ea;
+    --filter-tag-ct-text: #581c87;
+    --filter-tag-nc-bg: #fce7f3;
+    --filter-tag-nc-border: #db2777;
+    --filter-tag-nc-text: #831843;
+    --filter-text-input-bg: #f0f0f0;
+    --filter-text-input-border: #ccc;
+    --filter-add-btn-bg: #2c5282;
+    --filter-add-btn-border: #2c5282;
+    --filter-add-btn-color: #fff;
+    --dtp-bg: #fff;
+    --dtp-border: #ccc;
+    --dtp-shadow: rgba(0,0,0,0.15);
+    --dtp-header-bg: #f5f5f5;
+    --dtp-header-color: #333;
+    --dtp-arrow-color: #555;
+    --dtp-arrow-hover: #2c5282;
+    --dtp-day-color: #333;
+    --dtp-day-hover-bg: #e8e8e8;
+    --dtp-day-selected-bg: #2c5282;
+    --dtp-day-selected-text: #fff;
+    --dtp-day-today-bg: #e3f2fd;
+    --dtp-day-other-color: #bbb;
+    --dtp-dow-color: #888;
+    --dtp-time-bg: #fff;
+    --dtp-time-border: #ccc;
+    --dtp-time-color: #333;
+    --dtp-btn-bg: #2c5282;
+    --dtp-btn-color: #fff;
+    --dtp-btn-hover: #2a4365;
+    --body-bg: #fff;
+    --body-color: #222;
+    --bg2: #f5f5f5;
+    --border: #d0d0d0;
+    --ctrl-bg: #fafafa;
+    --ctrl-border: #ddd;
+    --label-color: #555;
+    --input-bg: #fff;
+    --input-border: #ccc;
+    --btn-bg: #2c5282;
+    --btn-color: #fff;
+    --btn-hover: #2a4365;
+    --toggle-bg: none;
+    --toggle-border: #ccc;
+    --toggle-color: #333;
+    --toggle-hover: #e8e8e8;
+    --info-color: #555;
+    --info-border: #eee;
+    --info-err-color: #c00;
+    /* "Data not yet loaded" pending-stripe tint for #info::before.
+       Amber/warning hue = "stale, refreshing" (not red = "broken").
+       Two translucent stops form the barber-pole; kept low-alpha so the
+       11px #info-text on top (z-index:1) stays legible. */
+    --info-pending-stripe-a: rgba(245, 158, 11, 0.30);
+    --info-pending-stripe-b: rgba(245, 158, 11, 0.08);
+    --legend-bg: rgba(255,255,255,0.92);
+    --legend-border: #ccc;
+    --legend-shadow: rgba(0,0,0,0.15);
+    --legend-title-color: #555;
+    --legend-close-color: #888;
+    --legend-close-hover: #333;
+    --legend-total-color: #888;
+    --legend-copy-color: #555;
+    --legend-copy-hover-bg: #e8e8e8;
+    --legend-copy-hover-color: #333;
+    --legend-copy-ok-bg: #d4edda;
+    --legend-copy-ok-border: #b5d7bf;
+    --legend-copy-ok-color: #1e6b34;
+    --follow-dot: #999;
+    --follow-dot-active: #d00;
+    /* Aliases bridging chart.html names to sources/base.html names */
+    --muted: var(--label-color);
+    --fg: var(--body-color);
+    --accent: var(--btn-bg);
+    /* Colorized active-tab treatment, shared with sources/base.html */
+    --tab-active-bg: #e8f0fb;
+    --tab-active-fg: #1f4068;
+    --tab-active-hover-bg: #edf2fa;
+    /* Query console */
+    --query-th-bg: #f2f2f2;
+    --query-row-alt-bg: rgba(0,0,0,0.03);
+    --query-null-color: #999;
+    --query-row-sel-bg: #d7e6fb;
+    --query-focus-ring: #6ea8fe;
+  }
+  [data-theme="dark"] {
+    --filter-tag-in-bg: #1e3a2e;
+    --filter-tag-in-border: #34a853;
+    --filter-tag-in-text: #a8e6b8;
+    --filter-tag-not-in-bg: #3a1e1e;
+    --filter-tag-not-in-border: #dc3545;
+    --filter-tag-not-in-text: #f8a8b0;
+    --filter-dropdown-bg: #333;
+    --filter-dropdown-hover: #444;
+    --filter-dropdown-border: #555;
+    --filter-panel-bg: #222;
+    --filter-panel-border: #444;
+    --filter-label-color: #ddd;
+    --filter-count-color: #888;
+    --filter-op-bg: #333;
+    --filter-op-border: #555;
+    --filter-op-color: #ccc;
+    --filter-search-bg: #333;
+    --filter-search-border: #555;
+    --filter-tag-x-hover: rgba(255,255,255,0.2);
+    --filter-row-border: #444;
+    --filter-and-color: #888;
+    --filter-or-color: #f59e0b;
+    --filter-tag-sw-bg: #1e2a4a;
+    --filter-tag-sw-border: #3b82f6;
+    --filter-tag-sw-text: #93c5fd;
+    --filter-tag-snw-bg: #3a2e14;
+    --filter-tag-snw-border: #f59e0b;
+    --filter-tag-snw-text: #fde68a;
+    --filter-tag-ct-bg: #2a1e3a;
+    --filter-tag-ct-border: #a855f7;
+    --filter-tag-ct-text: #d8b4fe;
+    --filter-tag-nc-bg: #3a1e2d;
+    --filter-tag-nc-border: #ec4899;
+    --filter-tag-nc-text: #fbcfe8;
+    --filter-text-input-bg: #2a2a2a;
+    --filter-text-input-border: #555;
+    --filter-add-btn-bg: #2c5282;
+    --filter-add-btn-border: #2c5282;
+    --filter-add-btn-color: #fff;
+    --dtp-bg: #2a2a2a;
+    --dtp-border: #555;
+    --dtp-shadow: rgba(0,0,0,0.4);
+    --dtp-header-bg: #333;
+    --dtp-header-color: #ddd;
+    --dtp-arrow-color: #aaa;
+    --dtp-arrow-hover: #5a9bd5;
+    --dtp-day-color: #ddd;
+    --dtp-day-hover-bg: #444;
+    --dtp-day-selected-bg: #2c5282;
+    --dtp-day-selected-text: #fff;
+    --dtp-day-today-bg: #1e3a5f;
+    --dtp-day-other-color: #666;
+    --dtp-dow-color: #888;
+    --dtp-time-bg: #333;
+    --dtp-time-border: #555;
+    --dtp-time-color: #ddd;
+    --dtp-btn-bg: #2c5282;
+    --dtp-btn-color: #fff;
+    --dtp-btn-hover: #3a6ba8;
+    --body-bg: #1a1a1a;
+    --body-color: #ddd;
+    --bg2: #1e2028;
+    --border: #333;
+    --ctrl-bg: #222;
+    --ctrl-border: #444;
+    --label-color: #ccc;
+    --input-bg: #333;
+    --input-border: #555;
+    --btn-bg: #3a6ba8;
+    --btn-color: #fff;
+    --btn-hover: #4a7bb8;
+    --toggle-bg: none;
+    --toggle-border: #555;
+    --toggle-color: #ccc;
+    --toggle-hover: #444;
+    --info-color: #aaa;
+    --info-border: #333;
+    --info-err-color: #f66;
+    /* Brighter amber + higher alpha so the stripes read on a dark bar. */
+    --info-pending-stripe-a: rgba(251, 191, 36, 0.38);
+    --info-pending-stripe-b: rgba(251, 191, 36, 0.10);
+    --legend-bg: rgba(30,30,30,0.92);
+    --legend-border: #555;
+    --legend-shadow: rgba(0,0,0,0.4);
+    --legend-title-color: #ccc;
+    --legend-close-color: #aaa;
+    --legend-close-hover: #ddd;
+    --legend-total-color: #888;
+    --legend-copy-color: #ccc;
+    --legend-copy-hover-bg: #444;
+    --legend-copy-hover-color: #eee;
+    --legend-copy-ok-bg: #1e3a2e;
+    --legend-copy-ok-border: #34a853;
+    --legend-copy-ok-color: #a8e6b8;
+    --follow-dot: #777;
+    --follow-dot-active: #f44;
+    /* Aliases bridging chart.html names to sources/base.html names */
+    --muted: var(--label-color);
+    --fg: var(--body-color);
+    --accent: var(--btn-bg);
+    /* Colorized active-tab treatment, shared with sources/base.html */
+    --tab-active-bg: #1d2f4a;
+    --tab-active-fg: #aecbf0;
+    --tab-active-hover-bg: #233859;
+    /* Query console */
+    --query-th-bg: #2a2a2a;
+    --query-row-alt-bg: rgba(255,255,255,0.04);
+    --query-null-color: #777;
+    --query-row-sel-bg: #24405f;
+    --query-focus-ring: #4d7fc4;
+  }
+  html, body { margin: 0; padding: 0; height: 100%;
+               font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI",
+                     sans-serif; }
+  body      { display: flex; flex-direction: column; background: var(--body-bg); color: var(--body-color); }
+  form#ctrl { padding: 6px 12px; background: var(--ctrl-bg);
+              border-bottom: 1px solid var(--ctrl-border); display: flex; flex-wrap: wrap;
+              gap: 12px 16px; align-items: flex-end; }
+  form label { display: flex; flex-direction: column; gap: 2px;
+               font-size: 11px; color: var(--label-color); }
+  form input, form select { font: inherit; padding: 3px 5px;
+                            border: 1px solid var(--input-border); border-radius: 3px;
+                            background: var(--input-bg); color: inherit; }
+  form select[multiple] { min-width: 130px; min-height: 70px; }
+  form button { padding: 5px 14px; background: var(--btn-bg); color: var(--btn-color);
+                border: 0; border-radius: 3px; cursor: pointer; font: inherit; }
+  form button:hover { background: var(--btn-hover); }
+
+  /* ── Filter panel ─────────────────────────────────────────────────── */
+  #filter-panel { background: var(--filter-panel-bg);
+                  border-bottom: 1px solid var(--filter-panel-border); }
+  #filter-toggle { background: none; border: 1px solid var(--filter-op-border);
+                   border-radius: 3px; padding: 3px 10px; cursor: pointer;
+                   font: inherit; font-size: 12px; color: var(--filter-op-color);
+                   align-self: flex-end; }
+  #filter-toggle:hover { background: var(--filter-dropdown-hover); }
+
+  #filter-summary { display: none; flex-wrap: wrap; gap: 4px 8px;
+                    padding: 0 12px 6px; align-items: center; }
+  #filter-panel.collapsed #filter-summary { display: flex; }
+  #filter-panel.collapsed #filter-summary:empty { display: none; }
+  .filter-summary-paren { font-weight: 700; color: var(--filter-or-color); font-size: 13px; }
+  .filter-summary-or { font-weight: 700; color: #888; margin: 0 1px; }
+  .filter-summary-conn { font-size: 10px; color: #888; margin: 0 2px; }
+
+  .filter-summary-tag { font-size: 11px; padding: 1px 6px; border-radius: 8px;
+                        border: 1px solid var(--filter-tag-in-border);
+                        background: var(--filter-tag-in-bg);
+                        color: var(--filter-tag-in-text); }
+  .filter-summary-tag--not-in { border-color: var(--filter-tag-not-in-border); background: var(--filter-tag-not-in-bg); color: var(--filter-tag-not-in-text); }
+  .filter-summary-tag--sw     { border-color: var(--filter-tag-sw-border);     background: var(--filter-tag-sw-bg);     color: var(--filter-tag-sw-text); }
+  .filter-summary-tag--snw    { border-color: var(--filter-tag-snw-border);    background: var(--filter-tag-snw-bg);    color: var(--filter-tag-snw-text); }
+  .filter-summary-tag--ct     { border-color: var(--filter-tag-ct-border);     background: var(--filter-tag-ct-bg);     color: var(--filter-tag-ct-text); }
+  .filter-summary-tag--nc     { border-color: var(--filter-tag-nc-border);     background: var(--filter-tag-nc-bg);     color: var(--filter-tag-nc-text); }
+
+  #filter-table { display: flex; flex-direction: column; gap: 4px;
+                 padding: 4px 12px 8px; }
+  #filter-panel.collapsed #filter-table { display: none; }
+
+  .filter-row { display: flex; align-items: center; gap: 6px;
+                padding: 4px 6px; border: 1px solid var(--filter-row-border);
+                border-radius: 4px; background: var(--filter-search-bg); }
+  .filter-row-and-or { font-size: 10px; font-weight: 600; cursor: pointer;
+                       padding: 2px 4px; border-radius: 3px; user-select: none;
+                       border: 1px solid transparent; min-width: 28px;
+                       text-align: center; }
+  .filter-row-and-or--and { color: var(--filter-and-color); }
+  .filter-row-and-or--or  { color: var(--filter-or-color);
+                             background: rgba(217,119,6,0.1);
+                             border-color: var(--filter-or-color); }
+
+  .filter-row-column { font: inherit; font-size: 13px; padding: 2px 4px;
+                       border: 1px solid var(--filter-search-border); border-radius: 3px;
+                       background: var(--filter-dropdown-bg); color: inherit;
+                       max-width: 140px; }
+  .filter-row-column:focus { outline: 1px solid var(--filter-tag-in-border); }
+
+  .filter-row-op { font-size: 11px; padding: 2px 6px; border-radius: 3px;
+                   cursor: pointer; border: 1px solid; font: inherit;
+                   -webkit-appearance: none; appearance: none; }
+  .filter-row-op--in            { background: var(--filter-tag-in-bg);    border-color: var(--filter-tag-in-border);    color: var(--filter-tag-in-text); }
+  .filter-row-op--not-in        { background: var(--filter-tag-not-in-bg); border-color: var(--filter-tag-not-in-border); color: var(--filter-tag-not-in-text); }
+  .filter-row-op--starts-with   { background: var(--filter-tag-sw-bg);    border-color: var(--filter-tag-sw-border);    color: var(--filter-tag-sw-text); }
+  .filter-row-op--starts-not-with { background: var(--filter-tag-snw-bg); border-color: var(--filter-tag-snw-border);  color: var(--filter-tag-snw-text); }
+  .filter-row-op--contains      { background: var(--filter-tag-ct-bg);    border-color: var(--filter-tag-ct-border);    color: var(--filter-tag-ct-text); }
+  .filter-row-op--not-contains  { background: var(--filter-tag-nc-bg);    border-color: var(--filter-tag-nc-border);    color: var(--filter-tag-nc-text); }
+
+  .filter-row-values { flex: 1; display: flex; flex-wrap: wrap; align-items: center;
+                       gap: 3px; min-height: 24px; position: relative; }
+
+  .filter-tag { display: inline-flex; align-items: center; gap: 3px;
+                font-size: 11px; padding: 1px 4px 1px 8px; border-radius: 10px;
+                border: 1px solid var(--filter-tag-in-border);
+                background: var(--filter-tag-in-bg);
+                color: var(--filter-tag-in-text); }
+  .filter-tag--not-in { border-color: var(--filter-tag-not-in-border);
+                        background: var(--filter-tag-not-in-bg);
+                        color: var(--filter-tag-not-in-text); }
+  .filter-tag--sw { border-color: var(--filter-tag-sw-border);
+                    background: var(--filter-tag-sw-bg);
+                    color: var(--filter-tag-sw-text); }
+  .filter-tag-x { cursor: pointer; font-weight: bold; padding: 0 2px;
+                   border-radius: 50%; line-height: 1; user-select: none; }
+  .filter-tag-x:hover { background: var(--filter-tag-x-hover); }
+
+  .filter-search-wrap { position: relative; display: inline-flex; }
+  .filter-search { width: 120px; font: inherit; font-size: 12px;
+                   padding: 2px 4px; border: 1px solid var(--filter-search-border);
+                   border-radius: 3px; box-sizing: border-box;
+                   background: var(--filter-search-bg); color: inherit; }
+  .filter-text-input { width: 160px; font: inherit; font-size: 12px;
+                       padding: 2px 4px; border: 1px solid var(--filter-text-input-border);
+                       border-radius: 3px; box-sizing: border-box;
+                       background: var(--filter-text-input-bg); color: inherit; }
+  .filter-dropdown { position: absolute; top: 100%; left: 0; min-width: 100%;
+                     max-height: 200px; overflow-y: auto;
+                     background: var(--filter-dropdown-bg);
+                     border: 1px solid var(--filter-dropdown-border);
+                     border-top: none; border-radius: 0 0 3px 3px;
+                     box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+                     z-index: 100; }
+  .filter-dropdown-item { padding: 4px 8px; cursor: pointer;
+                          font-size: 12px; }
+  .filter-dropdown-item:hover { background: var(--filter-dropdown-hover); }
+
+  .filter-row-remove { background: none; border: none; font-size: 16px;
+                       cursor: pointer; color: var(--filter-count-color);
+                       padding: 0 2px; line-height: 1; }
+  .filter-row-remove:hover { color: #dc3545; }
+  .filter-row-indent-btn { background: none; border: none; font-size: 11px;
+                           cursor: pointer; color: #6366f1; padding: 0 1px;
+                           line-height: 1; opacity: 0.7; }
+  .filter-row-indent-btn:hover:not(:disabled) { opacity: 1; }
+  .filter-row-indent-btn:disabled { color: #ccc; cursor: default; }
+  .filter-row-indent-spacer { flex-shrink: 0; display: inline-block; }
+
+  #filter-add-row { padding: 4px 12px 8px; }
+  #filter-panel.collapsed #filter-add-row { display: none; }
+  #filter-add { font: inherit; font-size: 12px; padding: 3px 10px;
+                background: var(--filter-add-btn-bg); color: var(--filter-add-btn-color);
+                border: 1px solid var(--filter-add-btn-border); border-radius: 3px;
+                cursor: pointer; }
+  #filter-add:hover { opacity: 0.9; }
+
+  #info     { padding: 4px 12px; color: var(--info-color); font-size: 11px;
+              border-top: 1px solid var(--info-border); min-height: 16px;
+              text-align: left; }
+  #info.err { color: var(--info-err-color); }
+  /* While chart data loads, the *unloaded* (right-hand) portion of the
+     status line is tinted to flag missing data; the loaded portion keeps
+     the normal background. As blocks arrive the tint recedes left-to-right,
+     and once the viewport is fully covered it fades out — so a fully loaded
+     status line looks exactly like before. --info-progress is the loaded
+     fraction; the tint's left edge sits there and its right edge is pinned
+     to 0. Driven entirely by inline CSS vars (set from JS) so setInfo()'s
+     className reset can't clear it. */
+  #info { position: relative; overflow: hidden; }
+  #info > #info-text { position: relative; z-index: 1; }
+  #info::before {
+    content: ""; position: absolute; top: 0; bottom: 0; right: 0;
+    left: var(--info-progress, 0%);
+    /* Diagonal barber-pole "in-progress" hazard stripes. The 200% tile width
+       gives the drift animation room to slide a full stripe period and loop
+       seamlessly. */
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--info-pending-stripe-a) 0,
+      var(--info-pending-stripe-a) 8px,
+      var(--info-pending-stripe-b) 8px,
+      var(--info-pending-stripe-b) 16px
+    );
+    background-size: 200% 100%;
+    opacity: var(--info-load-opacity, 0);
+    transition: left var(--info-anim, .25s) ease, opacity .2s ease;
+    animation: info-pending-drift 1s linear infinite;
+    pointer-events: none;
+    z-index: 0;
+  }
+  /* One stripe period (22.6px ≈ 16px / cos45°) horizontally so the loop is
+     seamless; expressed as a fraction of the 200% tile. */
+  @keyframes info-pending-drift {
+    from { background-position: 0 0; }
+    to   { background-position: 32px 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #info::before { transition: opacity .2s ease; animation: none; }
+  }
+  .starcubes-g    { color: #2c5282; font-weight: 700; }
+  .starcubes-star { color: #d97706; font-weight: 700; }
+  [data-theme="dark"] .starcubes-g    { color: #5a9bd5; }
+  [data-theme="dark"] .starcubes-star { color: #f59e0b; }
+  #wrap     { flex: 1; padding: 8px; min-height: 0; background: var(--body-bg); position: relative; }
+  canvas    { display: block; width: 100%; height: 100%; }
+  #loading-overlay {
+    display: none; position: absolute; inset: 0;
+    background: var(--body-bg); z-index: 10;
+    align-items: center; justify-content: center;
+    font-size: 15px; color: var(--label-color); letter-spacing: 0.03em;
+  }
+  #loading-overlay.visible { display: flex; }
+
+  /* ── Legend ─────────────────────────────────────────────────────────── */
+  #legend   { position: fixed; z-index: 1000; background: var(--legend-bg);
+              border: 1px solid var(--legend-border); border-radius: 6px; padding: 8px 12px;
+              font-size: 12px; box-shadow: 0 2px 8px var(--legend-shadow);
+              cursor: grab; user-select: none; overflow-y: auto;
+              backdrop-filter: blur(4px); display: none; }
+  #legend.dragging { cursor: grabbing; opacity: 0.85; }
+  #legend-header { display: flex; justify-content: space-between; align-items: center;
+                   margin-bottom: 4px; }
+  #legend-title { font-weight: 600; font-size: 11px; color: var(--legend-title-color); }
+  #legend-close { background: none; border: none; font-size: 16px; cursor: pointer;
+                  padding: 0 2px; line-height: 1; color: var(--legend-close-color); }
+  #legend-close:hover { color: var(--legend-close-hover); }
+  #legend-copy { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
+                 font-size: 10px; cursor: pointer; padding: 1px 6px; margin-right: 4px;
+                 color: var(--legend-copy-color); line-height: 1.4; }
+  #legend-copy:hover { background: var(--legend-copy-hover-bg); color: var(--legend-copy-hover-color); }
+  #legend-copy.copied { background: var(--legend-copy-ok-bg); border-color: var(--legend-copy-ok-border); color: var(--legend-copy-ok-color); }
+  #legend-split { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
+                  font-size: 10px; padding: 1px 6px; cursor: pointer; margin-right: 4px;
+                  color: var(--legend-copy-color); line-height: 1.4; }
+  #legend-split:hover { background: var(--legend-copy-hover-bg); color: var(--legend-copy-hover-color); }
+  .legend-down { margin-left: 4px; color: var(--legend-total-color); font-size: 11px; }
+  #legend-filter { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
+                   font-size: 10px; cursor: pointer; padding: 1px 6px; margin-right: 4px;
+                   color: var(--legend-copy-color); line-height: 1.4; }
+  #legend-filter:hover { background: var(--legend-copy-hover-bg); color: var(--legend-copy-hover-color); }
+  #legend-items { display: flex; flex-direction: column; gap: 2px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; }
+  .legend-item:hover { background: var(--legend-hover-bg, rgba(128,128,128,0.15)); border-radius: 3px; }
+  .legend-item.selected .legend-swatch { outline: 2px solid var(--toggle-color); outline-offset: 1px; }
+  .legend-name:hover { text-decoration: underline; }
+  .legend-swatch { width: 14px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .legend-total { margin-left: auto; color: var(--legend-total-color); font-size: 11px; padding-left: 8px; }
+  #legend-toggle { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
+                   padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
+                   color: var(--toggle-color); }
+  #legend-toggle:hover { background: var(--toggle-hover); }
+  #follow-toggle { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
+                   padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
+                   color: var(--toggle-color); display: flex; align-items: center; gap: 5px; }
+  #follow-toggle:hover { background: var(--toggle-hover); }
+  #follow-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+                background: var(--follow-dot); }
+  #follow-toggle.active #follow-dot { background: var(--follow-dot-active); animation: follow-pulse 1s ease-in-out infinite; }
+  #source-config-link { font: inherit; font-size: 12px; color: var(--toggle-color); }
+  #source-config-link:hover { color: var(--accent, #6ea8fe); }
+  #theme-toggle { background: none; border: none; border-radius: 3px;
+                   padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
+                   color: var(--toggle-color); }
+  #theme-toggle:hover { background: var(--toggle-hover); }
+  @keyframes follow-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+  /* ── Drill-down modal ───────────────────────────────────────────────── */
+  #drill-overlay {
+    display: none; position: fixed; inset: 0; z-index: 3000;
+    background: rgba(0,0,0,0.45);
+  }
+  #drill-modal {
+    position: absolute;
+    background: var(--legend-bg); border: 1px solid var(--legend-border);
+    border-radius: 6px; box-shadow: 0 4px 20px var(--legend-shadow);
+    backdrop-filter: blur(6px);
+    display: flex; flex-direction: column;
+    max-height: 80vh; width: 340px; font-size: 12px;
+  }
+  #drill-header {
+    padding: 10px 12px 8px; border-bottom: 1px solid var(--filter-row-border);
+    display: flex; justify-content: space-between; align-items: flex-start;
+    cursor: move; user-select: none;
+  }
+  #drill-header-info { flex: 1; }
+  #drill-header-info .btt-dim { font-size: 13px; margin-bottom: 2px; }
+  #drill-close {
+    background: none; border: none; font-size: 18px; cursor: pointer;
+    color: var(--legend-close-color); padding: 0 0 0 8px; line-height: 1;
+  }
+  #drill-close:hover { color: var(--legend-close-hover); }
+  #drill-body { overflow-y: auto; padding: 8px 12px 12px; flex: 1; }
+  .drill-section { margin-top: 10px; }
+  .drill-section:first-child { margin-top: 0; }
+  .drill-section-title {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    color: var(--legend-total-color); letter-spacing: 0.04em;
+    margin-bottom: 4px; padding-bottom: 2px;
+    border-bottom: 1px solid var(--filter-row-border);
+  }
+  .drill-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 2px 0; white-space: nowrap; overflow: hidden;
+  }
+  .drill-swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+  .drill-name   { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--body-color); }
+  .drill-count  { color: var(--legend-total-color); font-size: 11px; flex-shrink: 0; }
+  #drill-status { padding: 16px; text-align: center; color: var(--legend-total-color); }
+  #drill-status.err { color: var(--info-err-color); }
+  /* Common (single-entry) block */
+  .drill-common {
+    background: var(--filter-tag-in-bg);
+    border: 1px solid var(--filter-tag-in-border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-bottom: 10px;
+  }
+  .drill-common-title {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    color: var(--filter-tag-in-text); letter-spacing: 0.04em;
+    margin-bottom: 5px; padding-bottom: 2px;
+    border-bottom: 1px solid var(--filter-tag-in-border);
+  }
+  .drill-common-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 2px 0; white-space: nowrap; overflow: hidden;
+  }
+  .drill-common-col {
+    color: var(--legend-total-color); flex-shrink: 0;
+  }
+  .drill-common-col::after { content: ':'; }
+  .drill-common-val {
+    flex: 1; overflow: hidden; text-overflow: ellipsis;
+    color: var(--filter-tag-in-text);
+  }
+  .drill-common-count {
+    color: var(--legend-total-color); font-size: 11px; flex-shrink: 0;
+  }
+  .drill-filter-bar {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    padding-bottom: 8px; margin-bottom: 8px;
+    border-bottom: 1px solid var(--filter-row-border);
+  }
+  .drill-chip-x {
+    background: none; border: none; cursor: pointer; padding: 0 0 0 4px;
+    font-size: 11px; line-height: 1; color: inherit; opacity: 0.6;
+    vertical-align: middle;
+  }
+  .drill-chip-x:hover { opacity: 1; }
+  .drill-row--clickable { cursor: pointer; border-radius: 3px; margin: 0 -4px; padding: 2px 4px; }
+  .drill-row--clickable:hover { background: var(--toggle-hover); }
+  .drill-common-row--clickable { cursor: pointer; border-radius: 3px; margin: 0 -4px; padding: 2px 4px; }
+  .drill-common-row--clickable:hover { background: color-mix(in srgb, var(--filter-tag-in-bg) 80%, var(--toggle-hover)); }
+  .drill-dimname-btn {
+    background: none; border: none; padding: 0; cursor: pointer;
+    font: inherit; font-weight: 600; color: var(--legend-title-color); text-align: left;
+  }
+  .drill-dimname-btn:hover { text-decoration: underline; }
+  #drill-action-btns { display: flex; gap: 4px; align-items: flex-start; padding: 0 6px 0 0; }
+  #drill-action-btns button {
+    background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
+    padding: 1px 7px; cursor: pointer; font: inherit; font-size: 11px;
+    color: var(--toggle-color); white-space: nowrap;
+  }
+  #drill-action-btns button:hover { background: var(--toggle-hover); }
+  .drill-back-btn {
+    display: inline-flex; align-items: center; gap: 3px; margin-bottom: 8px;
+    background: none; border: none; cursor: pointer; padding: 0;
+    font: inherit; font-size: 11px; color: var(--legend-total-color);
+  }
+  .drill-back-btn:hover { color: var(--body-color); }
+  /* Transaction ID list */
+  .drill-txn-count { color: var(--legend-total-color); font-size: 11px; margin-bottom: 6px; }
+  .drill-txn-list {
+    font-family: monospace; font-size: 11px; line-height: 1.7;
+    color: var(--body-color); word-break: break-all;
+  }
+  .drill-copy-btn {
+    margin-top: 8px; background: none; border: 1px solid var(--toggle-border);
+    border-radius: 3px; padding: 2px 8px; cursor: pointer; font: inherit; font-size: 11px;
+    color: var(--toggle-color); display: block;
+  }
+  .drill-copy-btn:hover { background: var(--toggle-hover); }
+  /* Alert mockup form */
+  .drill-alarm-form { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; }
+  .drill-alarm-row  { display: flex; flex-direction: column; gap: 3px; }
+  .drill-alarm-label {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    color: var(--legend-total-color); letter-spacing: 0.04em;
+  }
+  .drill-alarm-ctx { font-size: 11px; color: var(--body-color); }
+  .drill-alarm-input, .drill-alarm-select {
+    background: var(--dtp-bg); border: 1px solid var(--dtp-border); border-radius: 3px;
+    padding: 3px 6px; font: inherit; font-size: 12px; color: var(--body-color); width: 100%;
+    box-sizing: border-box;
+  }
+  .drill-alarm-cond { display: flex; gap: 6px; }
+  .drill-alarm-cond .drill-alarm-select { width: 70px; }
+  .drill-alarm-cond .drill-alarm-input  { flex: 1; width: auto; }
+  .drill-alarm-save {
+    background: var(--filter-tag-in-bg); border: 1px solid var(--filter-tag-in-border);
+    color: var(--filter-tag-in-text); border-radius: 4px;
+    padding: 4px 14px; cursor: pointer; font: inherit; font-size: 12px; align-self: flex-start;
+  }
+  .drill-alarm-save:hover { opacity: 0.85; }
+  .drill-alarm-save:disabled { opacity: 0.6; cursor: default; }
+
+
+  /* ── Query console ────────────────────────────────────────────────────────
+     A floating, resizable ad-hoc SQL panel. It is a body-level sibling with
+     position:fixed rather than a child of #wrap: #wrap has padding and is a
+     flex:1 item, so a child would be laid out against a box that moves with
+     the toolbar and filter panel, and dragging would be clamped to the chart
+     area. #legend is fixed for exactly the same reason. z-index sits above
+     the legend (1000) and below #drill-overlay (3000), so clicking a bar
+     still brings the drill modal to the front. */
+  #query-toggle { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
+                  padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
+                  color: var(--toggle-color); }
+  #query-toggle:hover  { background: var(--toggle-hover); }
+  #query-toggle.active { background: var(--toggle-hover); border-color: var(--accent); }
+
+  #query-panel {
+    display: none; position: fixed; z-index: 1500;
+    left: 60px; top: 120px; width: 640px; height: 460px;
+    min-width: 380px; min-height: 240px;
+    background: var(--legend-bg); border: 1px solid var(--legend-border);
+    border-radius: 6px; box-shadow: 0 4px 20px var(--legend-shadow);
+    backdrop-filter: blur(6px);
+    flex-direction: column; font-size: 12px;
+    /* Native resize: the browser writes inline width/height, which is what
+       makes persistence a two-line ResizeObserver. It is ignored unless
+       overflow is something other than visible. */
+    resize: both; overflow: hidden;
+  }
+  #query-panel.open { display: flex; }
+  #query-header {
+    padding: 8px 12px; border-bottom: 1px solid var(--filter-row-border);
+    display: flex; justify-content: space-between; align-items: center;
+    cursor: move; user-select: none; flex: 0 0 auto;
+  }
+  #query-title { font-weight: 600; color: var(--legend-title-color); }
+  #query-close {
+    background: none; border: none; font-size: 18px; cursor: pointer;
+    color: var(--legend-close-color); padding: 0 0 0 8px; line-height: 1;
+  }
+  #query-close:hover { color: var(--legend-close-hover); }
+
+  #query-editor { padding: 8px 12px 0; flex: 0 0 auto; }
+  #query-sql {
+    width: 100%; box-sizing: border-box; min-height: 64px; height: 84px;
+    resize: vertical; padding: 6px 8px; border-radius: 3px;
+    border: 1px solid var(--input-border); background: var(--input-bg);
+    color: var(--body-color); font-size: 12px; line-height: 1.45;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  #query-actions {
+    padding: 6px 12px; display: flex; align-items: center; gap: 8px;
+    flex: 0 0 auto; flex-wrap: wrap;
+  }
+  #query-run {
+    background: var(--btn-bg); color: var(--btn-color); border: none;
+    border-radius: 3px; padding: 4px 14px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  #query-run:disabled, #query-cancel:disabled, #chart-sql:disabled { opacity: 0.5; cursor: default; }
+  #query-cancel {
+    background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
+    padding: 3px 12px; cursor: pointer; font: inherit; font-size: 12px;
+    color: var(--toggle-color);
+  }
+  #query-cancel:not(:disabled):hover { background: var(--toggle-hover); }
+  #chart-sql {
+    background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
+    padding: 3px 12px; cursor: pointer; font: inherit; font-size: 12px;
+    color: var(--toggle-color);
+  }
+  #chart-sql:not(:disabled):hover { background: var(--toggle-hover); }
+  #query-status  { font-size: 11px; color: var(--legend-total-color); flex: 1;
+                   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #query-status.err { color: var(--filter-tag-not-in-border); white-space: normal; }
+  #query-hint { font-size: 10px; color: var(--legend-total-color); }
+
+  #query-results-wrap { flex: 1; min-height: 0; overflow: auto; margin: 0 12px;
+                        border: 1px solid var(--filter-row-border); border-radius: 3px; }
+  #query-table { border-collapse: collapse; font-size: 11px; width: 100%;
+                 font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  #query-table th, #query-table td {
+    padding: 3px 8px; border-bottom: 1px solid var(--filter-row-border);
+    text-align: left; white-space: nowrap; max-width: 320px;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  #query-table th { position: sticky; top: 0; background: var(--query-th-bg);
+                    font-weight: 600; z-index: 1; }
+  #query-table tbody tr:nth-child(even) { background: var(--query-row-alt-bg); }
+  #query-table td.q-num  { text-align: right; }
+  #query-table td .q-null { color: var(--query-null-color); font-style: italic; }
+
+  #query-history-head {
+    padding: 6px 12px; flex: 0 0 auto;
+    border-top: 1px solid var(--filter-row-border);
+  }
+  #query-history-toggle {
+    background: none; border: none; padding: 0; cursor: pointer;
+    font: inherit; font-size: 11px; font-weight: 600;
+    color: var(--legend-total-color); text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  #query-history-toggle:hover { color: var(--body-color); }
+  #query-history-wrap { display: none; max-height: 180px; overflow: auto;
+                        margin: 0 12px 10px; flex: 0 0 auto; }
+  #query-history-wrap.open { display: block; }
+  /* The scroll container, not the rows, is the focus target: one tab stop for
+     the whole list, with arrow keys moving a selection inside it. */
+  #query-history-wrap:focus { outline: 2px solid var(--query-focus-ring); outline-offset: -2px; }
+  #query-history-wrap:focus-visible { outline: 2px solid var(--query-focus-ring); outline-offset: -2px; }
+  #query-history-table { border-collapse: collapse; font-size: 11px; width: 100%; }
+  #query-history-table td {
+    padding: 3px 6px; border-bottom: 1px solid var(--filter-row-border);
+    vertical-align: top;
+  }
+  #query-history-table tr { cursor: pointer; }
+  #query-history-table tr:hover { background: var(--toggle-hover); }
+  #query-history-table tr.sel { background: var(--query-row-sel-bg); }
+  #query-history-table tr.sel:hover { background: var(--query-row-sel-bg); }
+  .q-hist-sql { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                max-width: 1px; width: 100%; }
+  .q-hist-date { color: var(--legend-total-color); white-space: nowrap; }
+  .q-hist-del { background: none; border: none; cursor: pointer; padding: 0 2px;
+                color: var(--legend-close-color); font-size: 13px; line-height: 1; }
+  .q-hist-del:hover { color: var(--legend-close-hover); }
+  .q-hist-empty { color: var(--legend-total-color); font-size: 11px; padding: 4px 6px; }
+
+  /* ── Bar header rows ─────────────────────────────────────────────────────
+     Shared by the drill-down modal header. The hover tooltip itself is drawn
+     and themed by the library (TimeSeries.attachTooltip), so it needs no CSS
+     here — but these classes are still used by _barHeaderHtml(). */
+  .btt-dim  { font-weight: 600; color: var(--legend-title-color); display: flex; align-items: center; gap: 5px; }
+  .btt-date { color: var(--legend-total-color); font-size: 11px; }
+  .btt-val  { color: var(--body-color); }
+
+  /* ── DateTime picker ──────────────────────────────────────────────────── */
+  .dtp-label { position: relative; }
+  .dtp-label input { min-width: 11em; }
+  .dtp-popup {
+    position: absolute; top: 100%; left: 0; margin-top: 2px;
+    background: var(--dtp-bg); border: 1px solid var(--dtp-border);
+    border-radius: 4px; box-shadow: 0 3px 10px var(--dtp-shadow);
+    z-index: 200; padding: 8px; font-size: 12px;
+    user-select: none; display: none; min-width: 220px;
+  }
+  .dtp-popup.open { display: block; }
+  .dtp-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 6px; padding: 2px 0;
+  }
+  .dtp-header span { font-weight: 600; color: var(--dtp-header-color); }
+  .dtp-arrow {
+    background: none; border: 1px solid var(--dtp-border); border-radius: 3px;
+    padding: 2px 8px; cursor: pointer; color: var(--dtp-arrow-color);
+    font: inherit; font-size: 12px; line-height: 1;
+  }
+  .dtp-arrow:hover { color: var(--dtp-arrow-hover); border-color: var(--dtp-arrow-hover); }
+  .dtp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; text-align: center; }
+  .dtp-dow { font-size: 10px; font-weight: 600; color: var(--dtp-dow-color); padding: 2px 0; }
+  .dtp-day { padding: 3px 0; cursor: pointer; border-radius: 3px; color: var(--dtp-day-color); }
+  .dtp-day:hover { background: var(--dtp-day-hover-bg); }
+  .dtp-day.other-month { color: var(--dtp-day-other-color); cursor: default; }
+  .dtp-day.today { background: var(--dtp-day-today-bg); font-weight: 600; }
+  .dtp-day.selected { background: var(--dtp-day-selected-bg); color: var(--dtp-day-selected-text); font-weight: 600; }
+  .dtp-day.today.selected { background: var(--dtp-day-selected-bg); color: var(--dtp-day-selected-text); }
+  .dtp-time-row {
+    display: flex; align-items: center; gap: 4px;
+    margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--dtp-border);
+  }
+  .dtp-time-row label {
+    display: flex; flex-direction: row; align-items: center; gap: 4px;
+    font-size: 12px; color: var(--dtp-day-color);
+  }
+  .dtp-time-input {
+    width: 2.4em; text-align: center; font: inherit; font-size: 12px;
+    padding: 2px 3px; border: 1px solid var(--dtp-time-border); border-radius: 3px;
+    background: var(--dtp-time-bg); color: var(--dtp-time-color);
+  }
+  .dtp-apply-row { margin-top: 6px; display: flex; justify-content: flex-end; }
+  .dtp-apply {
+    padding: 3px 12px; background: var(--dtp-btn-bg); color: var(--dtp-btn-color);
+    border: 0; border-radius: 3px; cursor: pointer; font: inherit; font-size: 12px;
+  }
+  .dtp-apply:hover { background: var(--dtp-btn-hover); }
+
+  /* ── Navigation + source tabs (single combined row) ─────────────── */
+  #nav-tabs {
+    display: flex; align-items: center;
+    background: var(--bg2); border-bottom: 1px solid var(--border);
+    padding: 0 16px; flex-shrink: 0; height: 44px;
+  }
+  .nav-brand {
+    display: flex; align-items: center;
+    margin-right: 12px; text-decoration: none;
+  }
+  .nav-brand-logo { height: 36px; width: auto; }
+  .nav-brand-logo-dark { display: none; }
+  [data-theme="dark"] .nav-brand-logo-light { display: none; }
+  [data-theme="dark"] .nav-brand-logo-dark { display: inline; }
+  .source-tab {
+    padding: 0 14px; background: none; border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer; font: inherit; font-size: 13px; font-weight: 500;
+    color: var(--label-color); display: flex; align-items: center;
+    height: 44px;
+    border-radius: 5px 5px 0 0;
+    transition: background 0.12s, color 0.12s;
+  }
+  .source-tab:hover { color: var(--body-color); background: var(--tab-active-hover-bg); text-decoration: none; }
+  .source-tab.active {
+    color: var(--tab-active-fg); font-weight: 600;
+    background: var(--tab-active-bg);
+    border-bottom-color: var(--btn-bg);
+  }
+  .source-tab.active:hover { background: var(--tab-active-bg); }
+  .nav-sep { width: 1px; background: var(--border); margin: 8px 4px; flex-shrink: 0; height: 24px; }
+  .nav-link {
+    padding: 0 14px; height: 44px; display: flex; align-items: center;
+    color: var(--label-color); font-size: 13px; font-weight: 500;
+    border-bottom: 2px solid transparent; text-decoration: none;
+    border-radius: 5px 5px 0 0;
+    transition: background 0.12s, color 0.12s;
+  }
+  .nav-link:hover { color: var(--body-color); background: var(--tab-active-hover-bg); text-decoration: none; }
+  .nav-link.active {
+    color: var(--tab-active-fg); font-weight: 600;
+    background: var(--tab-active-bg);
+    border-bottom-color: var(--btn-bg);
+  }
+  .nav-spacer { flex: 1; }
+  .nav-user { font-size: 12px; color: var(--muted); margin-right: 4px; }
+  .nav-theme-btn {
+    background: none; border: none; cursor: pointer;
+    font-size: 16px; padding: 4px 8px; color: var(--label-color);
+  }
+  .nav-theme-btn:hover { color: var(--body-color); }
+</style>
+</head>
+<body>
+
+<div id="nav-tabs">
+  <a class="nav-brand" id="nav-brand" href="/">
+    <img class="nav-brand-logo nav-brand-logo-light" src="{% static 'viz/starcubes_lockup.svg' %}" alt="starcubes">
+    <img class="nav-brand-logo nav-brand-logo-dark" src="{% static 'viz/starcubes_lockup_dark.svg' %}" alt="starcubes">
+  </a>
+  <!-- source tabs injected here by loadSources() -->
+  <span id="nav-spacer" class="nav-spacer"></span>
+  {% if user.is_authenticated %}
+  <a id="source-config-link" href="/sources/" title="Source configuration">configure</a>
+  {% endif %}
+  <span class="nav-sep"></span>
+  {% if user.is_authenticated %}
+  <span class="nav-user">{{ user.username }}</span>
+  <span id="user-menu" style="display:none;margin-right:4px;font-size:12px;color:var(--muted)"></span>
+  <button class="nav-theme-btn" id="prefs-toggle" type="button" title="Preferences" style="font-size:14px;border:none">&#x2699;</button>
+  <form method="post" action="{% url 'logout' %}" style="display:inline">{% csrf_token %}
+    <button type="submit" class="nav-theme-btn" title="Logout {{ user.username }}" style="font-size:13px;border:none">&#x2715;</button>
+  </form>
+  {% else %}
+  <span id="user-menu" style="display:none;margin-right:4px;font-size:12px;color:var(--muted)"></span>
+  {# The y-axis mode is client-side, so the popover is useful without an account. #}
+  <button class="nav-theme-btn" id="prefs-toggle" type="button" title="Preferences" style="font-size:14px;border:none">&#x2699;</button>
+  <a class="nav-link" href="{% url 'login' %}" style="font-size:13px">Login</a>
+  {% endif %}
+  <a class="nav-theme-btn" id="slides-link" href="{% url 'viz:slides' %}" target="_blank" rel="noopener" title="About starcubes (slides)" style="font-size:14px;text-decoration:none;border:none">&#x2139;</a>
+  <button class="nav-theme-btn" id="theme-toggle" type="button" title="Switch theme" style="border:none"></button>
+</div>
+
+<div id="prefs-popover" style="display:none;position:absolute;top:44px;right:60px;z-index:30;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:12px 14px;box-shadow:0 4px 12px var(--shadow);min-width:220px">
+  <button type="button" id="prefs-close" aria-label="Close preferences" style="position:absolute;top:6px;right:8px;width:22px;height:22px;padding:0;line-height:1;background:transparent;color:var(--muted);border:none;border-radius:3px;cursor:pointer;font-size:16px">&times;</button>
+  <div style="font-weight:600;margin-bottom:8px">Y axis</div>
+  <select id="prefs-yaxis" style="width:100%;padding:4px 6px;border:1px solid var(--input-border);border-radius:3px;background:var(--input-bg);color:var(--fg);font-size:13px">
+    <option value="auto">Rate, unit follows zoom</option>
+    <option value="s">Rate, fixed per second</option>
+    <option value="min">Rate, fixed per minute</option>
+    <option value="h">Rate, fixed per hour</option>
+    <option value="d">Rate, fixed per day</option>
+    <option value="count">Count per bar</option>
+  </select>
+  <div style="font-size:11px;margin-top:5px;color:var(--muted)">A rate keeps bar heights stable across a resolution change; only the numbers switch.</div>
+  <div style="font-weight:600;margin:12px 0 8px">Bar pixel target</div>
+  <div style="display:flex;align-items:center;gap:8px">
+    <input type="number" id="prefs-bar-target" min="1" max="100" step="0.5" style="width:70px;padding:4px 6px;border:1px solid var(--input-border);border-radius:3px;background:var(--input-bg);color:var(--fg);font-size:13px">
+    <span style="color:var(--muted);font-size:12px">px</span>
+    <button type="button" id="prefs-save" style="padding:4px 10px;font-size:12px;background:var(--btn-bg);color:var(--btn-color);border:none;border-radius:3px;cursor:pointer">Save</button>
+    <button type="button" id="prefs-reset" style="padding:4px 10px;font-size:12px;background:var(--bg3);color:var(--body-color);border:1px solid var(--border);border-radius:3px;cursor:pointer">Reset</button>
+  </div>
+  <div style="font-size:11px;margin-top:5px;color:var(--muted)">Lower → finer resolution. Stored in this browser only; clears with site data.</div>
+</div>
+
+<form id="ctrl">
+  <input type="hidden" name="name" id="source-name">
+  <label>group by<select name="group_by"></select></label>
+  <button id="filter-toggle" type="button">Filters &#x25B8;</button>
+  <label>measure<select name="measure"><option value="">count(*)</option></select></label>
+  <label class="dtp-label">from<input type="text" name="dtp_from" id="dtp-from" placeholder="YYYY-MM-DD HH:MM"></label>
+  <label class="dtp-label">to<input type="text" name="dtp_to" id="dtp-to" placeholder="YYYY-MM-DD HH:MM"></label>
+  <button id="legend-toggle" type="button" title="Toggle legend">Legend</button>
+  <button id="follow-toggle" type="button" title="Toggle seismograph follow mode"><span id="follow-dot"></span>Follow</button>
+  {% if user.is_authenticated %}
+  <button id="query-toggle" type="button" title="Ad-hoc SQL console">Query</button>
+  {% endif %}
+</form>
+
+<div id="filter-panel" class="collapsed" style="display:none">
+  <div id="filter-summary"></div>
+  <div id="filter-table"></div>
+  <div id="filter-add-row">
+    <button id="filter-add" type="button">+ Add filter</button>
+  </div>
+</div>
+<div id="wrap"><canvas id="chart"></canvas><div id="loading-overlay">Loading…</div></div>
+<div id="info"><span id="info-text"></span></div>
+<div id="drill-overlay">
+  <div id="drill-modal">
+    <div id="drill-header">
+      <div id="drill-header-info"></div>
+      <div id="drill-action-btns">
+        <button id="drill-txn-btn"   type="button" title="Show transaction IDs">IDs</button>
+        <button id="drill-alarm-btn" type="button" title="Set up alert">Alert</button>
+      </div>
+      <button id="drill-close" type="button" title="Close">&times;</button>
+    </div>
+    <div id="drill-body"><div id="drill-status">Loading&hellip;</div></div>
+  </div>
+</div>
+<div id="legend">
+  <div id="legend-header">
+    <span id="legend-title"></span>
+    <span style="display: flex; align-items: center;">
+      <button id="legend-filter" type="button" title="Filter selected" style="display:none">Filter</button>
+      <button id="legend-split" type="button" title="Move selected to lower half of butterfly stack" style="display:none">Split</button>
+      <button id="legend-copy" type="button" title="Copy legend as CSV">CSV</button>
+      <button id="legend-close" type="button" title="Close legend">&times;</button>
+    </span>
+  </div>
+  <div id="legend-items"></div>
+</div>
+
+{% if user.is_authenticated %}
+<div id="query-panel">
+  {% comment %}
+     Guarantees the csrftoken cookie exists on this page. The logout form is
+     the only other place that emits the token, and it carries the same auth
+     gate, so in practice it already does — but relying on that is fragile,
+     and the console is the first thing on the chart page to POST.
+
+     Note for editors: this is a comment *tag*, not the hash-brace form.
+     Django's hash-brace comment is single-line only, so a multi-line one is
+     not stripped at all — it renders as visible text, and any tag sitting
+     inside it still executes.
+  {% endcomment %}
+  {% csrf_token %}
+  <div id="query-header">
+    <span id="query-title">Query</span>
+    <button id="query-close" type="button" title="Close">&times;</button>
+  </div>
+  <div id="query-editor">
+    <textarea id="query-sql" spellcheck="false" placeholder="SELECT ... — one read-only statement"></textarea>
+  </div>
+  <div id="query-actions">
+    <button id="query-run" type="button">Run</button>
+    <button id="query-cancel" type="button" disabled>Cancel</button>
+    <button id="chart-sql" type="button" disabled
+            title="Copy the SQL behind the active chart legend into the console">SQL</button>
+    <span id="query-status"></span>
+    <span id="query-hint" title="Ctrl/Cmd+Enter runs the query">Ctrl+&#x23ce;</span>
+  </div>
+  <div id="query-results-wrap"><table id="query-table"></table></div>
+  <div id="query-history-head">
+    <button id="query-history-toggle" type="button">History &#x25B8;</button>
+  </div>
+  <div id="query-history-wrap" tabindex="0" role="listbox" aria-label="Query history"><table id="query-history-table"></table></div>
+</div>
+{% endif %}
+
+<script src="{% static 'timeseries/timeseries.js' %}"></script>
+<script>
+const PLOT_URL    = "{% url 'viz:plot_json' %}";
+const DRILL_URL   = "{% url 'viz:drill_json' %}";
+const TXN_URL     = "{% url 'viz:txn_json' %}";
+const SOURCES_URL = "{% url 'viz:api_sources' %}";
+const META_URL    = "{% url 'viz:api_source_meta' %}";
+const CHART_SQL_URL = "{% url 'viz:chart_sql' %}";
+
+const form     = document.getElementById('ctrl');
+const info     = document.getElementById('info');
+const filterPanel  = document.getElementById('filter-panel');
+const filterToggle = document.getElementById('filter-toggle');
+const chartSqlBtn  = document.getElementById('chart-sql');
+let ts       = null;
+let currentMeta = null;
+
+// ── Filter state ──────────────────────────────────────────────────────
+let filterRows = [];
+let filterRowId = 0;
+let legendSelected = new Set();
+// Raw dim-value keys for series stacked downward (butterfly mode).
+// Persisted per source in localStorage; cleared on group_by change.
+let lowerHalf = new Set();
+
+const OP_CYCLE  = ['in', 'not_in', 'starts_with', 'starts_not_with', 'contains', 'not_contains'];
+const OP_LABELS = {
+  in: 'is in', not_in: 'is not in',
+  starts_with: 'starts with', starts_not_with: 'starts not with',
+  contains: 'contains', not_contains: 'does not contain',
+};
+
+function getDimColumns() {
+  if (!currentMeta) return [];
+  return currentMeta.fact_columns
+    .filter(c => (c.role === 'dimension' || c.role === 'auto-dimension') && c.dim_table)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// A group_by / filter column is either a plain fact column or a group
+// dimension addressed as `<col>:grouped:<slug>`. `<col>:grouped` without a
+// slug is the pre-0020 token and resolves to the column's first group set,
+// so old bookmarks and localStorage state keep working.
+function gbIsGrouped(gb) { return /:grouped(:|$)/.test(gb || ''); }
+function gbColumn(gb) { return (gb || '').replace(/:grouped(:.*)?$/, ''); }
+
+// The group set a token addresses, or null (plain column, or a slug that no
+// longer exists because the group dimension was renamed or deleted).
+function gbSet(gb) {
+  const sets = (currentMeta && currentMeta.dim_group_sets) || [];
+  const hit = sets.find(s => s.token === gb);
+  if (hit) return hit;
+  if (gb && gb.endsWith(':grouped')) return sets.find(s => s.col === gbColumn(gb)) || null;
+  return null;
+}
+
+// Rewrite a pre-0020 `<col>:grouped` token onto the column's first group
+// dimension. Applied wherever a token enters from outside the page (URL
+// params, localStorage) so old links keep resolving after the split.
+function normalizeGbToken(gb) {
+  if (!gb || !gb.endsWith(':grouped')) return gb;
+  const s = gbSet(gb);
+  return s ? s.token : gb;
+}
+
+// Human label: the group dimension's name for grouped tokens, the bare
+// column name otherwise.
+function gbLabel(gb) {
+  if (!gbIsGrouped(gb)) return gb || '';
+  const s = gbSet(gb);
+  return s ? s.label : gbColumn(gb) + ' (grouped)';
+}
+
+function getDimOptions(dimTable) {
+  if (!currentMeta || !dimTable) return [];
+  return currentMeta.dimensions[dimTable] || [];
+}
+
+// Filterable columns: dim columns, each followed by one entry per group
+// dimension defined on it. The value list for a group dimension is its
+// group names (sorted by global count desc) plus the literal "(other)".
+function getFilterColumns() {
+  if (!currentMeta) return [];
+  const sets = currentMeta.dim_group_sets || [];
+  const dimCols = currentMeta.fact_columns
+    .filter(c => (c.role === 'dimension' || c.role === 'auto-dimension') && c.dim_table)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const result = [];
+  for (const c of dimCols) {
+    result.push({ name: c.name, label: c.name });
+    for (const s of sets.filter(s => s.col === c.name)) {
+      result.push({ name: s.token, label: s.label });
+    }
+  }
+  return result;
+}
+
+function getFilterOptionsForCol(colName) {
+  if (!currentMeta || !colName) return [];
+  if (gbIsGrouped(colName)) {
+    const s = gbSet(colName);
+    const groups = s ? s.groups : [];
+    const sorted = [...groups].sort((a, b) => (b.count || 0) - (a.count || 0));
+    const opts = sorted.map(g => [g.group_name, '', '']);
+    opts.push(['(other)', '', '']);
+    return opts;
+  }
+  const fc = currentMeta.fact_columns.find(c => c.name === colName);
+  return fc && fc.dim_table ? (currentMeta.dimensions[fc.dim_table] || []) : [];
+}
+
+function addFilterRow() {
+  const cols = getFilterColumns();
+  const col = cols.length ? cols[0].name : '';
+  const opts = getFilterOptionsForCol(col);
+  filterRows.push({
+    id: ++filterRowId,
+    andOr: 'and',
+    indent: 0,
+    column: col,
+    op: 'in',
+    values: new Set(),
+    _options: opts,
+    _debounce: null,
+  });
+  renderFilterTable();
+}
+
+function removeFilterRow(id) {
+  filterRows = filterRows.filter(r => r.id !== id);
+  renderFilterTable();
+  renderFilterSummary();
+  resetAndFetch();
+}
+
+function updateFilterRow(id, field, value) {
+  const row = filterRows.find(r => r.id === id);
+  if (!row) return;
+  if (field === 'column') {
+    row.column = value;
+    row._options = getFilterOptionsForCol(value);
+    // Clear values when column changes
+    if (row.op === 'in' || row.op === 'not_in') {
+      row.values = new Set();
+    } else {
+      row.values = '';
+    }
+  } else if (field === 'op') {
+    const wasSetType = (row.op === 'in' || row.op === 'not_in');
+    const isSetType = (value === 'in' || value === 'not_in');
+    if (wasSetType && !isSetType) {
+      row.values = '';
+    } else if (!wasSetType && isSetType) {
+      row.values = new Set();
+    }
+    // If both are set types or both are text types, preserve values
+    row.op = value;
+  } else {
+    row[field] = value;
+  }
+  renderFilterTable();
+  if (field === 'op') { renderFilterSummary(); resetAndFetch(); }
+}
+
+function toggleFilterAndOr(id) {
+  const row = filterRows.find(r => r.id === id);
+  if (!row) return;
+  row.andOr = row.andOr === 'and' ? 'or' : 'and';
+  renderFilterTable();
+  resetAndFetch();
+}
+
+function addFilterValue(rowId, sid) {
+  const row = filterRows.find(r => r.id === rowId);
+  if (!row || !(row.values instanceof Set) || row.values.has(sid)) return;
+  row.values.add(sid);
+  renderFilterTable();
+  resetAndFetch();
+}
+
+function removeFilterValue(rowId, sid) {
+  const row = filterRows.find(r => r.id === rowId);
+  if (!row || !(row.values instanceof Set) || !row.values.has(sid)) return;
+  row.values.delete(sid);
+  renderFilterTable();
+  renderFilterSummary();
+  resetAndFetch();
+}
+
+function renderFilterTable() {
+  const container = document.getElementById('filter-table');
+  if (!container) return;
+  container.innerHTML = '';
+  const cols = getFilterColumns();
+
+  for (let i = 0; i < filterRows.length; i++) {
+    const row = filterRows[i];
+    const rowEl = document.createElement('div');
+    rowEl.className = 'filter-row';
+
+    // AND/OR toggle (only for rows 2+)
+    if (i > 0) {
+      const andOr = document.createElement('span');
+      andOr.className = 'filter-row-and-or' + (row.andOr === 'or' ? ' filter-row-and-or--or' : ' filter-row-and-or--and');
+      andOr.textContent = row.andOr.toUpperCase();
+      andOr.title = row.andOr === 'and' ? 'Click to change to OR' : 'Click to change to AND';
+      andOr.addEventListener('click', () => toggleFilterAndOr(row.id));
+      rowEl.appendChild(andOr);
+    } else {
+      const spacer = document.createElement('span');
+      spacer.className = 'filter-row-and-or';
+      spacer.style.pointerEvents = 'none';
+      rowEl.appendChild(spacer);
+    }
+
+    // Indent spacer (between AND/OR area and column select)
+    const indentSpacer = document.createElement('span');
+    indentSpacer.className = 'filter-row-indent-spacer';
+    indentSpacer.style.width = (row.indent || 0) * 20 + 'px';
+    rowEl.appendChild(indentSpacer);
+
+    // Column dropdown
+    const colSelect = document.createElement('select');
+    colSelect.className = 'filter-row-column';
+    for (const c of cols) {
+      const opt = document.createElement('option');
+      opt.value = c.name;
+      opt.textContent = c.label;
+      if (c.name === row.column) opt.selected = true;
+      colSelect.appendChild(opt);
+    }
+    colSelect.addEventListener('change', () => updateFilterRow(row.id, 'column', colSelect.value));
+    rowEl.appendChild(colSelect);
+
+    // Operator select
+    const opSel = document.createElement('select');
+    opSel.className = 'filter-row-op filter-row-op--' + row.op.replace(/_/g, '-');
+    for (const op of OP_CYCLE) {
+      const opt = document.createElement('option');
+      opt.value = op;
+      opt.textContent = OP_LABELS[op];
+      if (op === row.op) opt.selected = true;
+      opSel.appendChild(opt);
+    }
+    opSel.addEventListener('change', () => updateFilterRow(row.id, 'op', opSel.value));
+    rowEl.appendChild(opSel);
+
+    // Value area
+    const valuesEl = document.createElement('div');
+    valuesEl.className = 'filter-row-values';
+
+    if (row.op === 'in' || row.op === 'not_in') {
+      // Tags for selected values
+      for (const sid of row.values) {
+        const opt = row._options.find(([s]) => s === sid);
+        const display = opt ? (opt[1] || sid) : sid;
+        const tag = document.createElement('span');
+        tag.className = 'filter-tag' + (row.op === 'not_in' ? ' filter-tag--not-in' : '');
+        tag.textContent = display;
+        if (opt && opt[1]) tag.title = opt[1];
+        const x = document.createElement('span');
+        x.className = 'filter-tag-x';
+        x.textContent = '×';
+        x.addEventListener('click', () => removeFilterValue(row.id, sid));
+        tag.appendChild(x);
+        valuesEl.appendChild(tag);
+      }
+      // Search input + dropdown
+      const searchWrap = document.createElement('div');
+      searchWrap.className = 'filter-search-wrap';
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.className = 'filter-search';
+      search.placeholder = 'Search…';
+      search.setAttribute('aria-label', `Search ${row.column}`);
+      const dropdown = document.createElement('div');
+      dropdown.className = 'filter-dropdown';
+      dropdown.hidden = true;
+      search.addEventListener('focus', () => renderFilterDropdown(row.id, search.value));
+      search.addEventListener('input', () => renderFilterDropdown(row.id, search.value));
+      search.addEventListener('blur', () => {
+        setTimeout(() => { dropdown.hidden = true; }, 150);
+      });
+      search.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          dropdown.hidden = true;
+          search.blur();
+        }
+      });
+      searchWrap.appendChild(search);
+      searchWrap.appendChild(dropdown);
+      valuesEl.appendChild(searchWrap);
+    } else {
+      // Text input for starts_with / contains
+      const textInput = document.createElement('input');
+      textInput.type = 'text';
+      textInput.className = 'filter-text-input';
+      textInput.placeholder = row.op === 'starts_with' ? 'Starts with…' : row.op === 'starts_not_with' ? 'Starts not with…' : row.op === 'contains' ? 'Contains…' : 'Does not contain…';
+      textInput.value = row.values || '';
+      textInput.addEventListener('input', () => {
+        row.values = textInput.value;
+        renderFilterSummary();
+        if (row._debounce) clearTimeout(row._debounce);
+        row._debounce = setTimeout(() => resetAndFetch(), 300);
+      });
+      valuesEl.appendChild(textInput);
+    }
+
+    rowEl.appendChild(valuesEl);
+
+    // Remove button
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'filter-row-remove';
+    removeBtn.textContent = '×';
+    removeBtn.title = 'Remove filter';
+    removeBtn.addEventListener('click', () => removeFilterRow(row.id));
+    rowEl.appendChild(removeBtn);
+
+    // Dedent button (◁)
+    const prevRow = i > 0 ? filterRows[i - 1] : null;
+    const dedentBtn = document.createElement('button');
+    dedentBtn.type = 'button';
+    dedentBtn.className = 'filter-row-indent-btn';
+    dedentBtn.textContent = '◁';
+    dedentBtn.title = 'Decrease indent';
+    dedentBtn.disabled = (row.indent || 0) === 0;
+    dedentBtn.addEventListener('click', () => {
+      row.indent = Math.max(0, (row.indent || 0) - 1);
+      renderFilterTable();
+      resetAndFetch();
+    });
+    rowEl.appendChild(dedentBtn);
+
+    // Indent button (▷)
+    const maxIndent = prevRow ? (prevRow.indent || 0) + 1 : 0;
+    const indentBtn = document.createElement('button');
+    indentBtn.type = 'button';
+    indentBtn.className = 'filter-row-indent-btn';
+    indentBtn.textContent = '▷';
+    indentBtn.title = 'Increase indent';
+    indentBtn.disabled = i === 0 || (row.indent || 0) >= maxIndent;
+    indentBtn.addEventListener('click', () => {
+      row.indent = Math.min(maxIndent, (row.indent || 0) + 1);
+      renderFilterTable();
+      resetAndFetch();
+    });
+    rowEl.appendChild(indentBtn);
+
+    container.appendChild(rowEl);
+  }
+
+  renderFilterSummary();
+}
+
+function renderFilterDropdown(rowId, query) {
+  const row = filterRows.find(r => r.id === rowId);
+  if (!row) return;
+  const container = document.getElementById('filter-table');
+  if (!container) return;
+  const rowIdx = filterRows.indexOf(row);
+  const rowEl = container.children[rowIdx];
+  if (!rowEl) return;
+  const dropdown = rowEl.querySelector('.filter-dropdown');
+  const searchInput = rowEl.querySelector('.filter-search');
+  if (!dropdown || !row._options) return;
+
+  dropdown.innerHTML = '';
+  const q = (query || '').toLowerCase();
+  let count = 0;
+  for (const [sid, nm] of row._options) {
+    if (row.values.has(sid)) continue;
+    const label = nm || sid;
+    if (q && !label.toLowerCase().includes(q) && !sid.toLowerCase().includes(q)) continue;
+    const item = document.createElement('div');
+    item.className = 'filter-dropdown-item';
+    item.textContent = nm ? `${nm} (${sid})` : sid;
+    if (nm) item.title = nm;
+    item.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      addFilterValue(rowId, sid);
+      if (searchInput) searchInput.value = '';
+      renderFilterDropdown(rowId, '');
+    });
+    dropdown.appendChild(item);
+    count++;
+  }
+  dropdown.hidden = count === 0;
+}
+
+function _buildFilterTree(rows) {
+  const root = [];
+  const stack = [root];
+  const indentStack = [-1];
+  for (const row of rows) {
+    const indent = row.indent || 0;
+    const node = { row, andOr: row.andOr, children: [] };
+    while (indent <= indentStack[indentStack.length - 1]) {
+      stack.pop();
+      indentStack.pop();
+    }
+    stack[stack.length - 1].push(node);
+    stack.push(node.children);
+    indentStack.push(indent);
+  }
+  return root;
+}
+
+function _nodeHasContent(node) {
+  const row = node.row;
+  const hasVal = (row.op === 'in' || row.op === 'not_in') ? row.values.size > 0 : !!row.values;
+  return hasVal || node.children.some(_nodeHasContent);
+}
+
+function _renderSummaryNodes(siblings) {
+  const active = siblings.filter(_nodeHasContent);
+  if (!active.length) return '';
+
+  // Group consecutive OR-connected siblings
+  const groups = [];
+  for (const node of active) {
+    if (groups.length === 0 || node.andOr === 'and') groups.push([node]);
+    else groups[groups.length - 1].push(node);
+  }
+
+  let html = '';
+  for (const group of groups) {
+    // Parens around an OR group are only needed when AND connects it to other groups.
+    const needParens = group.length > 1 && groups.length > 1;
+    if (needParens) html += '<span class="filter-summary-paren">(</span>';
+    for (let i = 0; i < group.length; i++) {
+      if (i > 0) html += '<span class="filter-summary-or">OR</span>';
+      const { row, children } = group[i];
+      const hasVal = (row.op === 'in' || row.op === 'not_in') ? row.values.size > 0 : !!row.values;
+      if (hasVal) {
+        if (row.op === 'in' || row.op === 'not_in') {
+          const opCls = row.op === 'not_in' ? ' filter-summary-tag--not-in' : '';
+          for (const sid of row.values) {
+            const opt = row._options.find(([s]) => s === sid);
+            const display = opt ? (opt[1] || sid) : sid;
+            const x = `<button class="drill-chip-x" data-fsr-id="${row.id}" data-fsr-sid="${sid}" type="button" title="Remove">&times;</button>`;
+            html += `<span class="filter-summary-tag${opCls}" title="${row.column}: ${display}">${row.column}: ${display}${x}</span>`;
+          }
+        } else {
+          const textOpCls = row.op === 'starts_not_with' ? ' filter-summary-tag--snw' : row.op === 'contains' ? ' filter-summary-tag--ct' : row.op === 'not_contains' ? ' filter-summary-tag--nc' : ' filter-summary-tag--sw';
+          const x = `<button class="drill-chip-x" data-fsr-id="${row.id}" type="button" title="Remove">&times;</button>`;
+          html += `<span class="filter-summary-tag${textOpCls}">${row.column} ${OP_LABELS[row.op]} &ldquo;${row.values}&rdquo;${x}</span>`;
+        }
+      }
+      if (children.length) {
+        const childHtml = _renderSummaryNodes(children);
+        if (childHtml) {
+          const activeChildren = children.filter(_nodeHasContent);
+          const conn = activeChildren.length ? activeChildren[0].andOr.toUpperCase() : 'AND';
+          // Parens around children are needed when:
+          // - children contain OR connections (otherwise AND is unambiguous), or
+          // - parent connects via OR and children span multiple AND items
+          //   (avoids reading "A OR B C" as "(A OR B) AND C")
+          const childrenHaveOr = activeChildren.slice(1).some(n => n.andOr === 'or');
+          const wrapChildren = childrenHaveOr || (hasVal && conn === 'OR' && activeChildren.length > 1);
+          if (hasVal) html += `<span class="${conn === 'OR' ? 'filter-summary-or' : 'filter-summary-conn'}">${conn}</span>`;
+          if (wrapChildren) html += '<span class="filter-summary-paren">(</span>';
+          html += childHtml;
+          if (wrapChildren) html += '<span class="filter-summary-paren">)</span>';
+        }
+      }
+    }
+    if (needParens) html += '<span class="filter-summary-paren">)</span>';
+  }
+  return html;
+}
+
+function renderFilterSummary() {
+  const summary = document.getElementById('filter-summary');
+  if (!summary) return;
+  summary.innerHTML = _renderSummaryNodes(_buildFilterTree(filterRows));
+}
+
+// ── Filter panel toggle & add button ───────────────────────────────────
+filterToggle.addEventListener('click', () => {
+  filterPanel.classList.toggle('collapsed');
+  const isCollapsed = filterPanel.classList.contains('collapsed');
+  filterToggle.innerHTML = isCollapsed ? 'Filters &#x25B8;' : 'Filters &#x25BE;';
+});
+document.getElementById('filter-add').addEventListener('click', addFilterRow);
+document.getElementById('filter-summary').addEventListener('click', e => {
+  const btn = e.target.closest('.drill-chip-x');
+  if (!btn) return;
+  const id  = parseInt(btn.dataset.fsrId, 10);
+  const sid = btn.dataset.fsrSid;
+  if (sid !== undefined) {
+    removeFilterValue(id, sid);
+  } else {
+    removeFilterRow(id);
+  }
+});
+
+// ── Multi-resolution auto-fetch state ──────────────────────────────────
+let starcubesIntervalLadder = [1, 60, 3600, 86400];
+let starcubesBarTarget      = 5;
+let starcubesParams         = {};   // {name, group_by, measure, filterRows, filterGroups}
+let starcubesPush           = null;  // pushData callback from starcubes-data source
+let starcubesSeriesColors   = null;  // group-name → hex color from grouped dimensions
+let starcubesRedraw         = null;  // requestRedraw callback from starcubes-data source
+let loadedBlocks        = [];   // [{actualFrom, actualTo, interval, incompleteUntil}]
+let currentInterval      = null;
+let fadingInterval       = null;  // finer tier cross-faded under currentInterval, or null
+let fadeProgress         = 0;     // alpha of currentInterval while fadingInterval is drawn
+let pollTimer            = null;
+let currentViewport      = null;
+let fetchGeneration      = 0;
+let prefetchMargin       = 0.5;
+let activeController     = null;  // AbortController for in-flight fetches
+let hwmSeen               = null;  // monotonic max of plot.incomplete_until seen so far (per-source; reset on source/param change)
+
+// ── Per-source plot memory ───────────────────────────────────────────────
+// Keyed by source name. Stores non-trailing plots so switching back to a
+// previously-viewed source instantly restores the canvas without re-fetching.
+// Cleared per-source whenever resetAndFetch() is called (params changed).
+const sourceMemory = new Map(); // name → { plots: Plot[] }
+
+function sourceMemoryPut(name, plot) {
+  if (!sourceMemory.has(name)) sourceMemory.set(name, { plots: [] });
+  const { plots } = sourceMemory.get(name);
+  const id = `${plot.interval_start}|${plot.interval}`;
+  const idx = plots.findIndex(p => `${p.interval_start}|${p.interval}` === id);
+  const copy = JSON.parse(JSON.stringify(plot));
+  if (idx >= 0) plots[idx] = copy; else plots.push(copy);
+}
+
+function sourceMemoryRestore(name) {
+  const mem = sourceMemory.get(name);
+  if (!mem || !mem.plots.length) return false;
+  for (const plot of mem.plots) starcubesPush(JSON.parse(JSON.stringify(plot)));
+  // Reconstruct loadedBlocks from stored plots (same logic as fetchRange).
+  // Using interval_end directly (not the HWM-clamped form) is safe here:
+  // sourceMemoryPut only ever stores non-trailing, HWM-final plots, so
+  // interval_end already equals the clamped coveredTo for every entry.
+  loadedBlocks = mem.plots.map(plot => {
+    const slotKeys = Object.keys(plot.data || {}).map(Number);
+    const maxSlot  = slotKeys.length ? Math.max(...slotKeys) : -1;
+    const actualFrom = plot.interval_start;
+    const actualTo = typeof plot.interval_end === 'number'
+      ? plot.interval_end
+      : (maxSlot >= 0 ? plot.interval_start + plot.interval * (maxSlot + 1) : plot.interval_start);
+    return { actualFrom, actualTo, interval: plot.interval, incompleteUntil: plot.incomplete_until || null };
+  });
+  return true;
+}
+
+// ── Data block cache ────────────────────────────────────────────────────
+const CACHE_MAX_BYTES = 50 * 1024 * 1024;
+let dataCache = new Map();   // key → { plot, size, fetchedAt }
+let cacheSize = 0;
+
+function cacheKey(params) {
+  // Sort for canonical key regardless of insertion order
+  return [...params].sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0).toString();
+}
+
+function cacheGet(key) {
+  const entry = dataCache.get(key);
+  if (!entry) return null;
+  // LRU: move to end
+  dataCache.delete(key);
+  dataCache.set(key, entry);
+  // Return a deep copy — pushData mutates objects in data[], and the
+  // cached version must stay pristine for future reuse.
+  return JSON.parse(JSON.stringify(entry.plot));
+}
+
+function cachePut(key, plot) {
+  if (dataCache.has(key)) {
+    const old = dataCache.get(key);
+    cacheSize -= old.size;
+    dataCache.delete(key);
+  }
+  const size = JSON.stringify(plot).length;
+  cacheSize += size;
+  // Store a deep copy so mutations in data[] don't affect the cache.
+  dataCache.set(key, { plot: JSON.parse(JSON.stringify(plot)), size, fetchedAt: Date.now() });
+  // Evict oldest entries until under limit
+  while (cacheSize > CACHE_MAX_BYTES && dataCache.size > 1) {
+    const oldest = dataCache.keys().next().value;
+    cacheSize -= dataCache.get(oldest).size;
+    dataCache.delete(oldest);
+  }
+}
+
+function setInfo(msg, err = false) {
+  document.getElementById('info-text').textContent = msg;
+  info.className = err ? 'err' : '';
+}
+
+function fmtEpoch(t) {
+  return new Date(t * 1000).toISOString().replace('T', ' ').replace('.000Z', 'Z');
+}
+
+// ── Multi-resolution source ─────────────────────────────────────────────
+
+function unitFromInterval(iv) {
+  if (iv === 1)     return 's';
+  if (iv === 60)    return 'min';
+  if (iv === 3600)  return 'h';
+  if (iv === 86400) return 'd';
+  return `${iv}s`;
+}
+
+// Standard units the density axis can be expressed in, coarsest first.
+const RATE_UNITS = [
+  { key: 'd',   sec: 86400 },
+  { key: 'h',   sec: 3600 },
+  { key: 'min', sec: 60 },
+  { key: 's',   sec: 1 },
+];
+
+// Largest standard unit that still fits inside one bin, so the printed numbers
+// stay in a comfortable range: 60s and 300s bins both read "per minute",
+// 86400s bins read "per day".
+function rateUnitFor(interval) {
+  for (const u of RATE_UNITS) if (interval >= u.sec) return u;
+  return RATE_UNITS[RATE_UNITS.length - 1];
+}
+
+// Only an additive measure may be turned into a rate. count(*) and sum() are
+// amounts accumulated over the bin, so they scale with the bin length; avg,
+// min, max and the quantile ladder are already per-unit and dividing them by
+// the bin length would be plain wrong. A bare column name means sum() — that
+// is how core/query._parse_measure reads it.
+function isExtensiveMeasure(measure) {
+  const m = (measure || '').trim();
+  if (!m) return true;                        // the implicit count(*)
+  const fn = m.match(/^(\w+)\s*\(/);
+  return !fn || fn[1] === 'count' || fn[1] === 'sum';
+}
+
+// `unit` is the rate unit in force, or null when the axis carries raw per-bar
+// values. A time unit is only meaningful for an additive measure: "txns/h" is a
+// rate, but an average or a percentile is not per-bin at all and naming a time
+// unit after it would be a lie.
+function yAxisLabelFor(interval, unit) {
+  const measure = starcubesParams.measure || '';
+  if (!isExtensiveMeasure(measure)) return measure;
+  const prefix = measure || 'txns';
+  return `${prefix}/${unit ? unit.key : unitFromInterval(interval)}`;
+}
+
+// ── y-axis mode ─────────────────────────────────────────────────────────
+// The y-axis is a density, so the bars of two resolution tiers should be the
+// same height and only the *numbers* should change between them. That needs
+// the values plotted as a rate (count ÷ interval); the mode then only picks
+// which unit the rate is printed in.
+//
+//   'auto'            density, unit taken from the dominant tier
+//   's'|'min'|'h'|'d' density at a fixed unit, never switching
+//   'count'           raw counts per bar — the axis then rescales across a
+//                     tier cross-fade, which is what the others avoid
+const Y_AXIS_MODES = ['auto', 's', 'min', 'h', 'd', 'count'];
+let yAxisMode = 'auto';
+
+function loadYAxisMode() {
+  let stored = null;
+  try { stored = localStorage.getItem('starcubes-yaxis'); } catch(e) { /* private mode */ }
+  const v = new URLSearchParams(location.search).get('yaxis') || stored;
+  yAxisMode = Y_AXIS_MODES.includes(v) ? v : 'auto';
+}
+
+function setYAxisMode(mode) {
+  if (!Y_AXIS_MODES.includes(mode) || mode === yAxisMode) return;
+  yAxisMode = mode;
+  try { localStorage.setItem('starcubes-yaxis', mode); } catch(e) { /* private mode */ }
+  // A deliberate mode switch snaps: the dissolve exists to soften a transition
+  // the user did not ask for, not one they just clicked.
+  applyYAxisUnit(0);
+  updateInfo();
+  if (starcubesParams.name)
+    history.replaceState(null, '', '?' + buildHistoryParams().toString());
+}
+
+// Resolve the axis unit for the tier the user is actually reading and hand it
+// to the canvas. Deliberately **one** unit for both active tiers — that is what
+// makes their bars the same height through the dissolve.
+function applyYAxisUnit(transition) {
+  if (!ts || !ts.setRateUnit || !currentInterval) return;
+  const dominant = (fadingInterval !== null && fadeProgress < 0.5)
+    ? fadingInterval : currentInterval;
+  const unit = (yAxisMode === 'count' || !isExtensiveMeasure(starcubesParams.measure))
+    ? null
+    : (yAxisMode === 'auto' ? rateUnitFor(dominant)
+                            : RATE_UNITS.find(u => u.key === yAxisMode));
+  ts.setRateUnit(unit ? unit.sec : null, {
+    label: yAxisLabelFor(dominant, unit),
+    transition: transition,
+  });
+}
+
+function bestInterval(ppms) {
+  // Walk finest to coarsest. Pick the coarsest interval where bars are at
+  // least starcubesBarTarget pixels wide. This ensures zooming out switches to
+  // coarser intervals (wider bars) instead of finer ones (invisible bars).
+  for (let i = 0; i < starcubesIntervalLadder.length; i++) {
+    if (starcubesIntervalLadder[i] * ppms * 1000 >= starcubesBarTarget)
+      return starcubesIntervalLadder[i];
+  }
+  // Even the coarsest interval gives bars thinner than threshold;
+  // use it anyway (best we can do at this zoom level).
+  return starcubesIntervalLadder[starcubesIntervalLadder.length - 1];
+}
+
+// Low edge of the cross-fade band; starcubesBarTarget is the high edge. Half a
+// target means the dissolve lasts exactly one zoom octave. loadMeta() feeds
+// both numbers to ts.setFadeBand() so the canvas switches tiers on the same
+// threshold this file fetches on — see docs/chart-app.md.
+function fadeLoPx() { return starcubesBarTarget / 2; }
+
+// The tiers the canvas will actually draw at this zoom. Mirrors prepare_grid's
+// selection in timeseries.js: `primary` is the finest ladder entry whose bars
+// reach starcubesBarTarget px, and while the next-finer entry is still inside the
+// [fadeLoPx(), starcubesBarTarget) band the two are cross-faded. `prog` is the
+// incoming (coarse) tier's alpha, by the library's own formula.
+// Both tiers must be kept fetched for as long as both are drawn — otherwise
+// panning mid-band punches holes in whichever one is visually dominant.
+function fadeTiers(ppms) {
+  const primary = bestInterval(ppms);
+  let fading = null, prog = 0;
+  for (const iv of starcubesIntervalLadder)
+    if (iv < primary && (fading === null || iv > fading)) fading = iv;
+  if (fading !== null) {
+    const w = fading * ppms * 1000;
+    const hi = starcubesBarTarget, lo = fadeLoPx();
+    if (w > lo && w < hi) prog = (hi - w) / (hi - lo);
+    else fading = null;   // outside the band: dropped outright, no fade
+  }
+  return { primary, fading, prog };
+}
+
+function rangeGaps(from, to, interval) {
+  let covered = loadedBlocks
+    .filter(b => b.interval === interval)
+    .map(b => [b.actualFrom, b.actualTo])
+    .sort((a, b) => a[0] - b[0]);
+  let gaps = [], cursor = from;
+  for (const [s, e] of covered) {
+    if (s > cursor) gaps.push([cursor, Math.min(s, to)]);
+    cursor = Math.max(cursor, e);
+  }
+  if (cursor < to) gaps.push([cursor, to]);
+  return gaps;
+}
+
+// ── Natural-window block alignment ──────────────────────────────────────
+// Historic data is fetched as full natural-calendar-aligned blocks (UTC) so
+// cache keys collide across users. The block containing "now" is split into
+// smaller trailing-sized sub-blocks; the one containing now is live (cache
+// bypassed). Past sub-blocks within the current natural window are also
+// cacheable. See CLAUDE.md "Code conventions" and the server-side cache
+// eligibility in core/cache.is_cacheable.
+const NATURAL_WINDOWS = {
+  1:     { historic: 'hour',    trailing: 'tenmin'   },
+  60:    { historic: 'day',     trailing: 'fourhour' },
+  3600:  { historic: 'isoweek', trailing: 'day'      },
+  86400: { historic: 'month',   trailing: 'isoweek'  },
+};
+
+// Return [startSec, endSec) of the UTC-anchored window of `kind` containing
+// `epochSec`. All kinds align to UTC; isoweek starts Monday 00:00 UTC.
+function utcWindowContaining(kind, epochSec) {
+  if (kind === 'tenmin')   { const s = Math.floor(epochSec / 600)   * 600;   return [s, s + 600]; }
+  if (kind === 'hour')     { const s = Math.floor(epochSec / 3600)  * 3600;  return [s, s + 3600]; }
+  if (kind === 'fourhour') { const s = Math.floor(epochSec / 14400) * 14400; return [s, s + 14400]; }
+  if (kind === 'day')      { const s = Math.floor(epochSec / 86400) * 86400; return [s, s + 86400]; }
+  if (kind === 'isoweek') {
+    const dayStart = Math.floor(epochSec / 86400) * 86400;
+    const dow = new Date(dayStart * 1000).getUTCDay() || 7;  // 1=Mon..7=Sun
+    const weekStart = dayStart - (dow - 1) * 86400;
+    return [weekStart, weekStart + 7 * 86400];
+  }
+  if (kind === 'month') {
+    const d = new Date(epochSec * 1000);
+    const startMs = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+    const endMs   = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+    return [startMs / 1000, endMs / 1000];
+  }
+  throw new Error('unknown window kind: ' + kind);
+}
+
+// Enumerate the natural-aligned blocks that cover [vpFrom, vpTo] for a given
+// bin interval. Returns {from, to, live} entries:
+//   • live=false  → full UTC-aligned natural window (historic), cacheable
+//   • live=true   → trailing-sized window containing nowSec; not cacheable
+// Trailing-sized blocks inside the current natural window are clipped to that
+// window's bounds so they never overlap historic blocks. For intervals
+// outside {1, 60, 3600, 86400} this falls back to a single interval-aligned
+// block spanning the viewport (legacy behaviour).
+function enumerateNaturalBlocks(interval, vpFrom, vpTo, nowSec) {
+  const kinds = NATURAL_WINDOWS[interval];
+  if (!kinds) {
+    const from = Math.floor(vpFrom / interval) * interval;
+    const to   = Math.ceil(vpTo   / interval) * interval;
+    // live if the block contains or lies at/after now — a block entirely in
+    // the future must not be treated as historic (see the trailing-window
+    // comment below for why: fetched-empty-and-marked-covered is permanent).
+    return [{ from, to, live: nowSec < to + interval }];
+  }
+  const blocks  = [];
+  const histNow = utcWindowContaining(kinds.historic, nowSec);
+
+  // Past historic windows: anything that overlaps viewport before histNow.
+  if (vpFrom < histNow[0]) {
+    let cursor       = utcWindowContaining(kinds.historic, vpFrom)[0];
+    const histLimit  = Math.min(vpTo, histNow[0]);
+    while (cursor < histLimit) {
+      const hb = utcWindowContaining(kinds.historic, cursor);
+      blocks.push({ from: hb[0], to: hb[1], live: false });
+      cursor = hb[1];
+    }
+  }
+
+  // Trailing-sized windows inside the current natural window.
+  // Clipped to histNow bounds so they never overlap historic blocks.
+  if (vpTo > histNow[0] && vpFrom < histNow[1]) {
+    const startInside = Math.max(vpFrom, histNow[0]);
+    const endInside   = Math.min(vpTo,   histNow[1]);
+    let cursor = utcWindowContaining(kinds.trailing, startInside)[0];
+    while (cursor < endInside) {
+      const tb = utcWindowContaining(kinds.trailing, cursor);
+      const from = Math.max(tb[0], histNow[0]);
+      const to   = Math.min(tb[1], histNow[1]);
+      // live = window contains now OR lies entirely in the future. A window
+      // ahead of now must stay live (not historic): as `live: false` it was
+      // fetched whole, came back empty (nothing has happened there yet), and
+      // was recorded as fully covered — so once `now` reached it, it was
+      // never fetched again and stayed permanently blank. Live blocks are
+      // instead clipped to `now` by fetchTier's liveTo before fetching, so a
+      // future window costs nothing until it actually arrives.
+      const live = (nowSec < tb[1]);
+      blocks.push({ from, to, live });
+      cursor = tb[1];
+    }
+  }
+  return blocks;
+}
+
+async function fetchRange(from, to, interval, signal) {
+  // Refuse inverted/empty ranges before they reach the server. The
+  // `timeseries_multibar` query raises `t_to must be after t_from`, which
+  // would surface as a 500 and (in follow mode) re-fire on every tick —
+  // the "trailing bar keeps blinking" symptom.
+  if (from >= to) {
+    console.warn('fetchRange: skipping invalid range', { from, to, interval });
+    return null;
+  }
+  // Snap non-trailing `to` down to a UTC interval boundary so the server-side
+  // cache key collides across users who happen to request the same frozen
+  // window. Unix epoch is intrinsically UTC, so floor() suffices. Trailing
+  // fetches keep their original `to` (they bypass the cache anyway, and
+  // snapping would lose the most-recent-bin update from each poll).
+  const isTrailing = to >= Date.now() / 1000 - interval;
+  if (!isTrailing) to = Math.floor(to / interval) * interval;
+  const p = new URLSearchParams();
+  p.set('name', starcubesParams.name);
+  p.set('group_by', starcubesParams.group_by);
+  p.set('from', new Date(from * 1000).toISOString());
+  p.set('to', new Date(to * 1000).toISOString());
+  p.set('interval', interval);
+  p.set('series_label', 'source_id');
+  if (starcubesParams.measure) p.set('measure', starcubesParams.measure);
+  for (const row of starcubesParams.filterRows || []) {
+    let sep;
+    if (row.op === 'not_in') sep = '!=';
+    else if (row.op === 'starts_with') sep = '~=';
+    else if (row.op === 'starts_not_with') sep = '!~=';
+    else if (row.op === 'contains') sep = '*=';
+    else if (row.op === 'not_contains') sep = '!*=';
+    else sep = '=';
+    p.append('filter', `${row.col}${sep}${row.vals.join(',')}`);
+  }
+  // andor params: one per row starting from row 2 (row 1 has no connector)
+  for (let i = 1; i < (starcubesParams.filterRows || []).length; i++) {
+    p.append('andor', starcubesParams.filterRows[i].andOr || 'and');
+  }
+  // indent params: one per row (0 = top-level, 1+ = nested)
+  for (const row of starcubesParams.filterRows || []) {
+    p.append('indent', row.indent || 0);
+  }
+  const key = cacheKey(p);
+  // Bypass cache for trailing-edge fetches: the server's data near "now" is
+  // volatile (new bins arrive as ETL progresses), so each poll must hit the
+  // backend.  Without this, once a poll's URL stops changing (because no
+  // new data arrived between polls and `actualTo` is unchanged), every
+  // subsequent poll cache-hits forever and the chart never sees fresh ETL
+  // output until the user pans.
+  let plot = isTrailing ? null : cacheGet(key);
+  let freshlyFetched = false;
+  if (!plot) {
+    const r = await fetch(PLOT_URL + '?' + p, { signal });
+    if (!r.ok) {
+      const t = await r.text().catch(() => '');
+      throw new Error(`HTTP ${r.status}: ${t}`);
+    }
+    plot = await r.json();
+    freshlyFetched = true;
+  }
+  // Tag with current group_by so updateLegend can ignore residual blocks
+  // pushed under a previous group_by selection (resetAndFetch keeps old
+  // data visible until new pushData replaces it).
+  plot._starcubesGroupBy = starcubesParams.group_by;
+  // Tag with the current measure too. Switching measures can change the
+  // plot type (e.g. count(*) multibar → avg(...) multiline); pushData only
+  // trims overlapping blocks of the *same* type, so old-measure blocks of a
+  // different type would otherwise stay overlaid. We evict them below.
+  plot._starcubesMeasure = starcubesParams.measure || '';
+  // Counts and sums are amounts accumulated over the bin, so the canvas may
+  // divide them by the bin length to put both resolution tiers on one scale
+  // (ts.setRateUnit). An avg/min/max/quantile is already per-unit — marking it
+  // extensive would scale it by 60 on every tier switch.
+  plot.extensive = isExtensiveMeasure(starcubesParams.measure);
+  // Store group colors for legend rendering
+  starcubesSeriesColors = plot.series_colors || null;
+  starcubesPush(plot);
+  // starcubes shows a single measure at a time — drop any residual blocks left
+  // over from a previous measure so the former series disappears on switch.
+  if (ts.dropData) ts.dropData(p => p._starcubesMeasure !== plot._starcubesMeasure);
+  applySeriesDirections();
+  hideLoadingOverlay();
+  if (starcubesRedraw) starcubesRedraw();
+  updateLegend();
+  // Compute actual data extent from the plot (backend may align interval_start
+  // before the requested 'from', and slots may be sparse). Use the server's
+  // interval_end when present so an empty/sparse plot still marks the full
+  // requested range as covered — otherwise rangeGaps would re-fetch it on
+  // every viewport change.
+  const slotKeys = Object.keys(plot.data).map(Number);
+  const maxSlot = slotKeys.length ? Math.max(...slotKeys) : -1;
+  const actualFrom = plot.interval_start;
+  // rawTo = plot.interval_end, the *requested* window end (core/query.py sets
+  // it unconditionally). pushData in timeseries.js deletes slots of any
+  // overlapping older block across exactly this span, so the trim loop below
+  // must mirror that with rawTo, not the clamped coveredTo — see the trim
+  // loop's own comment.
+  const rawTo = typeof plot.interval_end === 'number'
+    ? plot.interval_end
+    : (maxSlot >= 0
+        ? plot.interval_start + plot.interval * (maxSlot + 1)
+        : plot.interval_start);
+  // hwm = the ETL high-water mark this plot was answered against. rawTo can
+  // be past it — the server always reports what was *asked* for, not how far
+  // the data actually goes (see CLAUDE.md, "interval_end is the requested
+  // window end, not the data horizon"). hwmSeen tracks the max hwm observed
+  // for this source so a momentarily-regressing value can't flap blocks
+  // open/closed.
+  const hwm = (typeof plot.incomplete_until === 'number') ? plot.incomplete_until : null;
+  if (hwm !== null) hwmSeen = Math.max(hwmSeen ?? hwm, hwm);
+  // Only TRAILING fetches get their claimed coverage clamped to the HWM.
+  // Floor, not ceil: the bin containing the HWM is only partially loaded, so
+  // its start is the last point we can honestly call "final". Non-trailing
+  // (historic) blocks keep rawTo unclamped — clamping them eagerly would
+  // fail fetchTier's `covered` test on every 300 ms follow-mode tick and
+  // refetch the whole viewport for any source whose ETL isn't continuous;
+  // instead a historic block that turns out to be provisional is reopened
+  // below, exactly once per HWM advance.
+  const coveredTo = (isTrailing && hwm !== null && hwm < rawTo)
+    ? Math.max(actualFrom, Math.floor(hwm / interval) * interval)
+    : rawTo;
+  // A plot is cacheable client-side only if it's final — i.e. its own extent
+  // doesn't outrun the HWM it was answered against. Caching a provisional
+  // plot would make the reopen logic below pointless: the reopened block
+  // would just cache-hit the same stale copy and re-close immediately,
+  // never repairing once the ETL actually catches up. This mirrors the
+  // server, where core/cache.is_cacheable already refuses anything with
+  // to > hwm — so every server-cache hit already satisfies this predicate.
+  const isFinal = hwm === null || hwm >= rawTo;
+  if (freshlyFetched && !isTrailing && isFinal) cachePut(key, plot);
+  // Trim existing loadedBlocks entries that overlap with new data
+  // (pushData already trimmed the data in timeseries.js; mirror here using
+  // rawTo — the span pushData actually erased — not the narrower coveredTo,
+  // or a trimmed neighbour would end up claiming coverage over slots that
+  // were just deleted from the canvas, a hole no gap scan could ever see).
+  // For each overlapping entry, keep only the parts strictly outside
+  // [actualFrom, rawTo).
+  const next = [];
+  for (const b of loadedBlocks) {
+    if (b.interval !== interval
+        || b.actualTo <= actualFrom
+        || b.actualFrom >= rawTo) {
+      next.push(b);
+      continue;
+    }
+    if (b.actualFrom < actualFrom) {
+      next.push({ ...b, actualTo: actualFrom });
+    }
+    if (b.actualTo > rawTo) {
+      next.push({ ...b, actualFrom: rawTo });
+    }
+    // else b is fully covered by the new plot — drop it.
+  }
+  loadedBlocks = next;
+  // Reopen older blocks whose claimed coverage was itself provisional
+  // (their own incompleteUntil was behind their actualTo) now that the HWM
+  // has advanced past where it stood when they were fetched. Only fires on
+  // a genuine HWM advance — a source whose ETL is stalled leaves hwmSeen
+  // unchanged, so this is a no-op on every other tick, not a per-tick scan
+  // that would re-trigger fetches.
+  if (hwm !== null) loadedBlocks = loadedBlocks.flatMap(b => {
+    if (!b.incompleteUntil || b.actualTo <= b.incompleteUntil || b.incompleteUntil >= hwmSeen)
+      return [b];
+    const t = Math.max(b.actualFrom, Math.floor(b.incompleteUntil / b.interval) * b.interval);
+    return t > b.actualFrom ? [{ ...b, actualTo: Math.min(b.actualTo, t) }] : [];
+  });
+  loadedBlocks.push({
+    actualFrom, actualTo: coveredTo, interval,
+    incompleteUntil: hwm,
+  });
+  // Store non-trailing plots per-source so setActiveSource can restore the
+  // canvas instantly on switch-back without re-fetching — final plots only,
+  // for the same reason as the client cache above.
+  if (!isTrailing && isFinal) sourceMemoryPut(starcubesParams.name, plot);
+  return plot;
+}
+
+// Merge adjacent/small gaps into fewer larger ranges to reduce DB requests.
+// Two gaps within `mergeThreshold` seconds of each other become one range.
+function mergeGaps(gaps, mergeThreshold) {
+  if (!gaps.length) return [];
+  const merged = [{ from: gaps[0][0], to: gaps[0][1] }];
+  for (let i = 1; i < gaps.length; i++) {
+    const gap = gaps[i];
+    const last = merged[merged.length - 1];
+    if (gap[0] - last.to <= mergeThreshold) {
+      last.to = gap[1];
+    } else {
+      merged.push({ from: gap[0], to: gap[1] });
+    }
+  }
+  return merged;
+}
+
+// Trailing-edge poll for "now is in the viewport" cases that aren't follow
+// mode.  Follow mode fires onViewportChange every 300 ms via the throttled
+// scheduleViewportChange in timeseries.js, which already drives autoFetch.
+// A static viewport whose right edge is near "now" produces no viewport
+// events, so without this timer fresh server-side data never arrives.
+function schedulePoll() {
+  if (pollTimer) clearTimeout(pollTimer);
+  if (!currentInterval) return;
+  const intervalMs = currentInterval * 1000;
+  // Inside the fade band the finer tier is on screen too and goes stale faster,
+  // so poll at its cadence rather than the coarse tier's. The "is now still in
+  // view" test below stays on the coarse tier — that is about the viewport, not
+  // about how often the trailing bin changes.
+  const pollMs = Math.max(5000,
+    Math.min(currentInterval, fadingInterval || Infinity) * 1000 / 3);
+  pollTimer = setTimeout(async () => {
+    const vp = currentViewport;
+    const now = Date.now();
+    if (ts && vp && now >= vp.tmin && now <= vp.tmax + intervalMs) {
+      try { await autoFetch(); }
+      catch (e) { if (e.name !== 'AbortError') { /* retry next cycle */ } }
+    }
+    schedulePoll();
+  }, pollMs);
+}
+
+// Fetch every natural-calendar block covering [vpFrom, vpTo) at one tier.
+// Past blocks are fetched whole (cacheable); the live block (containing now)
+// uses incremental gap fetching capped at ceil(now/interval)*interval so we
+// don't request future bins. Returns false when a newer fetch generation has
+// superseded this one, so the caller stops instead of fetching the next tier.
+async function fetchTier(interval, vpFrom, vpTo, nowSec, gen, ctrl) {
+  const blocks = enumerateNaturalBlocks(interval, vpFrom, vpTo, nowSec);
+  for (const block of blocks) {
+    if (fetchGeneration !== gen) return false;
+    if (block.live) {
+      const liveTo = Math.min(block.to,
+                              Math.ceil(nowSec / interval) * interval);
+      const rawGaps = rangeGaps(block.from, liveTo, interval);
+      const gaps = mergeGaps(rawGaps, interval);
+      for (const gap of gaps) {
+        if (fetchGeneration !== gen) return false;
+        // No back-extension needed here: fetchRange itself now clamps a
+        // trailing block's claimed coverage to floor(hwm/interval)*interval
+        // instead of the optimistic interval_end, so gap.from already sits
+        // exactly at the true, honest edge of what was loaded.
+        await fetchRange(gap.from, gap.to, interval, ctrl.signal);
+      }
+    } else {
+      const covered = loadedBlocks.some(b =>
+        b.interval === interval &&
+        b.actualFrom <= block.from &&
+        b.actualTo   >= block.to);
+      if (covered) continue;
+      await fetchRange(block.from, block.to, interval, ctrl.signal);
+    }
+  }
+  return true;
+}
+
+// Abort the in-flight fetch. Reserved for genuine param/source changes
+// (resetAndFetch, setActiveSource) — NOT called on every autoFetch tick.
+// Follow mode drives autoFetch every 300 ms (scheduleViewportChange is a
+// throttle, not a debounce); aborting per-tick means any backend slower
+// than 300 ms never completes a fetch (permanent livelock), and a response
+// that lands after a source/param switch would otherwise get labelled with
+// the *new* starcubesParams (fetchRange stamps _starcubesGroupBy/_starcubesMeasure
+// after its await) and painted onto the just-cleared canvas.
+function abortInFlight() {
+  if (activeController) activeController.abort();
+}
+
+let _afRunning = false, _afPending = false;
+
+// Coalescing wrapper: while a fetch is in flight, a re-trigger just marks
+// "run again with the latest viewport" instead of aborting — see
+// abortInFlight() above for why aborting per-tick is wrong in follow mode.
+async function autoFetch() {
+  if (_afRunning) { _afPending = true; return; }
+  _afRunning = true;
+  try {
+    do {
+      _afPending = false;
+      await _autoFetchOnce();
+    } while (_afPending);
+  } finally {
+    _afRunning = false;
+  }
+}
+
+async function _autoFetchOnce() {
+  if (!ts || !starcubesPush) return;
+  const gen = ++fetchGeneration;
+  const ctrl = new AbortController();
+  activeController = ctrl;
+  try {
+    const vp = currentViewport;
+    if (!vp) return;
+    const tmin = vp.tmin, tmax = vp.tmax;
+    // ppms (pixels per millisecond) drives bestInterval below. On initial
+    // page load and on source-switch, the library hasn't fired
+    // onViewportChange yet (zoom animation + 300 ms throttle), so vp.ppms
+    // is undefined. Compute it from the real canvas plot width instead of
+    // assuming an 800 px canvas — otherwise the first fetch picks the
+    // wrong bar interval and the px/bar display is stale until interaction.
+    const _pa = ts && ts.getPlotArea && ts.getPlotArea();
+    const _plotWidth = _pa && _pa.plotWidth;
+    const ppms = vp.ppms
+      || (tmax > tmin && _plotWidth ? _plotWidth / (tmax - tmin)
+            : (tmax > tmin ? 800 / (tmax - tmin) : 0.01));
+    const range = (tmax - tmin) / 1000;
+    // The canvas picks its own tier (no setRenderInterval pinning) so it can
+    // cross-fade between two of them; fadeTiers mirrors that choice here so we
+    // fetch exactly what gets drawn.
+    const { primary, fading, prog } = fadeTiers(ppms);
+    const vpFrom = tmin / 1000 - range * prefetchMargin;
+    const vpTo   = tmax / 1000 + range * prefetchMargin;
+    const nowSec = Date.now() / 1000;
+
+    // Update currentInterval without clearing loadedBlocks — blocks at
+    // different intervals are kept so zoom-in/out doesn't require refetch.
+    currentInterval = primary;
+    fadingInterval = fading;
+    fadeProgress = prog;
+    // Mid-dissolve the axis unit must name the tier the user actually reads —
+    // the one above 0.5 alpha, the same cutoff the library's hit test and
+    // updateLegend() use. The bars stay put across the switch (both tiers are
+    // drawn per the same unit), so only the printed numbers change, over 300 ms.
+    applyYAxisUnit(300);
+
+    // Remove blocks well outside fetch range (20% margin beyond prefetch).
+    // Keep blocks at all intervals so they're available on zoom transitions.
+    const margin = Math.max(range * 0.2, primary);
+    loadedBlocks = loadedBlocks.filter(b => {
+      if (b.actualTo < vpFrom - margin || b.actualFrom > vpTo + margin) return false;
+      return true;
+    });
+
+    if (!(await fetchTier(primary, vpFrom, vpTo, nowSec, gen, ctrl))) return;
+    // Inside the fade band both tiers are on screen, so the outgoing one has to
+    // stay covered too — otherwise panning mid-dissolve leaves holes in it.
+    // Costs one extra round of blocks for the one zoom octave the band lasts.
+    if (fading !== null &&
+        !(await fetchTier(fading, vpFrom, vpTo, nowSec, gen, ctrl))) return;
+
+    schedulePoll();
+    updateInfo();
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    hideLoadingOverlay();
+    setInfo('fetch failed: ' + e.message, true);
+  }
+}
+
+function updateInfo() {
+  if (!currentInterval) return;
+  const vp = currentViewport;
+  const ppms = vp ? (vp.ppms || 0.01) : 0.01;
+  // Report the tier the user is actually reading (the one above 0.5 alpha),
+  // and name the other one while the dissolve is on screen.
+  const dominant = (fadingInterval !== null && fadeProgress < 0.5)
+    ? fadingInterval : currentInterval;
+  const showsPrimary = dominant === currentInterval;
+  const other = showsPrimary ? fadingInterval : currentInterval;
+  // fadeProgress is the primary (coarse) tier's alpha, so the *other* tier's
+  // share is its complement whenever the primary is the one being named.
+  const otherAlpha = showsPrimary ? 1 - fadeProgress : fadeProgress;
+  const barWidth = dominant * ppms * 1000;
+  const barWidthFmt = barWidth >= 10 ? barWidth.toFixed(0) : barWidth.toFixed(1);
+  const mb = (cacheSize / 1024 / 1024).toFixed(1);
+  const fadeNote = fadingInterval !== null
+    ? ` + ${other}s @ ${Math.round(otherAlpha * 100)}%` : '';
+  // The axis unit is drawn on the canvas too, but having it here as well makes
+  // it obvious which y-axis mode is in force without reading the popover.
+  const rateUnit = ts && ts.getRateUnit && ts.getRateUnit();
+  const axisNote = rateUnit
+    ? ` · y ${yAxisLabelFor(dominant, RATE_UNITS.find(u => u.sec === rateUnit))}` : '';
+  setInfo(`${gbLabel(starcubesParams.group_by)} · interval ${dominant}s${fadeNote}${axisNote} · ${barWidthFmt}px/bar` +
+          (loadedBlocks.length ? ` · ${loadedBlocks.length} block(s) loaded` : '') +
+          ` · cache ${dataCache.size}/${mb}MB`);
+}
+
+// ── Timeseries init ─────────────────────────────────────────────────────
+
+function initTs() {
+  const tmp = document.createElement('canvas');
+  tmp.id = '__ts_bootstrap';
+  tmp.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;';
+  document.body.appendChild(tmp);
+  new TimeSeries({ canvas: '__ts_bootstrap', sources: [] });
+  tmp.remove();
+
+  TimeSeries.registerSource({
+    type: 'starcubes-data',
+    init(_src, cb) {
+      starcubesPush = cb.pushData.bind(cb);
+      starcubesRedraw = cb.requestRedraw.bind(cb);
+    },
+  });
+  TimeSeries.registerSource({
+    type: 'starcubes-tracker',
+    init(_src, cb) {
+      cb.onViewportChange((tmin, tmax, ppms) => {
+        currentViewport = { tmin, tmax, ppms };
+        syncDateTimeInputs();
+        updateLegend();
+        autoFetch();
+      });
+    },
+  });
+
+  // Capture before new TimeSeries() fires onViewportChange and overwrites currentViewport.
+  const _initTmin = currentViewport?.tmin;
+  const _initTmax = currentViewport?.tmax;
+
+  // Determined up front so the watermark asset (theme-adaptive, no currentColor
+  // support once drawn on canvas) can be picked before construction.
+  const _isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+  ts = new TimeSeries({
+    canvas: 'chart',
+    sources: [{ 'source-type': 'starcubes-data' }, { 'source-type': 'starcubes-tracker' }],
+    initialView: null,
+    // Resolution-tier switch point + dissolve band. loadMeta() re-applies these
+    // via setFadeBand once the per-source bar_pixel_target arrives; setting them
+    // here covers the case where initTs() runs first.
+    fadeHi: starcubesBarTarget,
+    fadeLo: fadeLoPx(),
+    watermark: _isDark
+      ? '{% static "viz/starcubes_lockup_dark.svg" %}'
+      : '{% static "viz/starcubes_lockup.svg" %}',
+    watermarkWidth: 0.63,   // fraction of plot width
+    watermarkAlpha: 0.1,    // opacity (0.2 = 80% transparent)
+  });
+
+  // Apply stored theme to the freshly created canvas
+  ts.setColors(_isDark ? TimeSeries.themes.dark : TimeSeries.themes.light);
+
+  ts.onStop(() => followToggle.classList.remove('active'));
+  ts.onFollow(() => followToggle.classList.add('active'));
+  attachBarTooltip();
+  ts.onClickDataCallback((plot, n, key, value) => openDrillModal(plot, n, key, value));
+  chartSqlBtn.disabled = !currentMeta;
+
+  if (_initTmin != null && _initTmax != null) { ts.zoom(_initTmin, _initTmax); ts.stop(); }
+}
+
+// ── Legend ────────────────────────────────────────────────────────────────
+
+const legendEl = document.getElementById('legend');
+const legendToggle = document.getElementById('legend-toggle');
+const legendClose = document.getElementById('legend-close');
+const legendCopy = document.getElementById('legend-copy');
+const legendFilterBtn = document.getElementById('legend-filter');
+const legendSplitBtn = document.getElementById('legend-split');
+// Butterfly down-stack (Split) only applies to stacked multibar plots; line/
+// point/quantile-bands renderers ignore series_directions. updateLegend() sets
+// this from the plots actually rendered so the click handler can gate Split.
+let legendStackable = false;
+const followToggle = document.getElementById('follow-toggle');
+let legendDrag = null;
+let lastLegendRows = []; // [{ name, total }] in current display order, for CSV copy
+
+// ── Follow mode toggle ───────────────────────────────────────────────────
+followToggle.addEventListener('click', () => {
+  if (!ts) return;
+  const isActive = followToggle.classList.toggle('active');
+  if (isActive) {
+    ts.followNow();
+  } else {
+    ts.stop();
+  }
+});
+
+// ── Theme toggle ─────────────────────────────────────────────────────────
+const themeToggle = document.getElementById('theme-toggle');
+
+function applyTheme(dark) {
+  if (dark) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    themeToggle.textContent = '☀';
+    if (ts) ts.setColors(TimeSeries.themes.dark);
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+    themeToggle.textContent = '☾';
+    if (ts) ts.setColors(TimeSeries.themes.light);
+  }
+  localStorage.setItem('starcubes-theme', dark ? 'dark' : 'light');
+}
+
+themeToggle.addEventListener('click', () => {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  applyTheme(!isDark);
+});
+
+// Apply stored theme (FOUC prevention script already set data-theme on <html>)
+(function() {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  themeToggle.textContent = dark ? '☀' : '☾';
+})();
+
+// ── Preferences popover ────────────────────────────────────────────────
+// Y-axis mode and bar pixel target are client-side preferences, stored in
+// localStorage. Both apply to every user, logged in or not; the canvas never
+// touches the server for them. Empty localStorage means: fall back to
+// datasource.bar_pixel_target (meta) for the bar target.
+(function() {
+  const prefsToggle = document.getElementById('prefs-toggle');
+  const prefsPopover = document.getElementById('prefs-popover');
+  if (!prefsToggle || !prefsPopover) return;
+  const prefsYAxis = document.getElementById('prefs-yaxis');
+  const prefsInput = document.getElementById('prefs-bar-target');
+  const prefsSave  = document.getElementById('prefs-save');
+  const prefsReset = document.getElementById('prefs-reset');
+  const prefsClose = document.getElementById('prefs-close');
+  let open = false;
+
+  function closePrefs() {
+    open = false;
+    prefsPopover.style.display = 'none';
+  }
+
+  function readBarTargetPref() {
+    let v = null;
+    try { v = localStorage.getItem('starcubes-bar-target'); } catch(e) { /* private mode */ }
+    if (v === null || v === '') return null;
+    const n = parseFloat(v);
+    return (Number.isFinite(n) && n > 0) ? n : null;
+  }
+  function writeBarTargetPref(v) {
+    try { localStorage.setItem('starcubes-bar-target', String(v)); } catch(e) { /* private mode */ }
+  }
+  function clearBarTargetPref() {
+    try { localStorage.removeItem('starcubes-bar-target'); } catch(e) { /* private mode */ }
+  }
+  // Called from loadMeta() once meta is known. localStorage wins if set;
+  // otherwise the source's bar_pixel_target applies.
+  window.applyBarTargetPref = function(meta) {
+    const fromLs = readBarTargetPref();
+    const base = meta && meta.bar_pixel_target ? meta.bar_pixel_target : 5;
+    starcubesBarTarget = fromLs !== null ? fromLs : base;
+    if (ts && ts.setFadeBand) ts.setFadeBand(starcubesBarTarget, fadeLoPx());
+  };
+
+  prefsToggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    open = !open;
+    prefsPopover.style.display = open ? 'block' : 'none';
+    if (open) {
+      prefsYAxis.value = yAxisMode;
+      if (prefsInput) prefsInput.value = starcubesBarTarget;
+    }
+  });
+
+  document.addEventListener('click', (e) => {
+    if (open && !prefsPopover.contains(e.target) && e.target !== prefsToggle) {
+      open = false; prefsPopover.style.display = 'none';
+    }
+  });
+
+  prefsYAxis.addEventListener('change', () => setYAxisMode(prefsYAxis.value));
+
+  if (prefsClose) prefsClose.addEventListener('click', closePrefs);
+
+  if (prefsSave) prefsSave.addEventListener('click', () => {
+    const v = parseFloat(prefsInput.value);
+    if (!Number.isFinite(v) || v <= 0) {
+      prefsInput.focus();
+      return;
+    }
+    writeBarTargetPref(v);
+    starcubesBarTarget = v;
+    if (ts && ts.setFadeBand) ts.setFadeBand(starcubesBarTarget, fadeLoPx());
+    resetAndFetch();
+  });
+
+  if (prefsReset) prefsReset.addEventListener('click', () => {
+    clearBarTargetPref();
+    const base = currentMeta && currentMeta.bar_pixel_target ? currentMeta.bar_pixel_target : 5;
+    starcubesBarTarget = base;
+    prefsInput.value = base;
+    if (ts && ts.setFadeBand) ts.setFadeBand(starcubesBarTarget, fadeLoPx());
+    resetAndFetch();
+  });
+})();
+
+legendToggle.addEventListener('click', () => {
+  const showing = legendEl.style.display === 'block';
+  legendEl.style.display = showing ? 'none' : 'block';
+  if (!showing) updateLegend();
+});
+legendClose.addEventListener('click', () => {
+  legendSelected.clear();
+  legendFilterBtn.style.display = 'none';
+  legendSplitBtn.style.display = 'none';
+  legendEl.style.display = 'none';
+});
+legendFilterBtn.addEventListener('click', () => {
+  if (!currentMeta || !starcubesParams.group_by || !legendSelected.size) return;
+  const col = starcubesParams.group_by;
+  let row = filterRows.find(r => r.column === col && r.op === 'in');
+  if (row) {
+    for (const k of legendSelected) { if (!row.values.has(k)) row.values.add(k); }
+  } else {
+    row = {
+      id: ++filterRowId,
+      andOr: 'and',
+      column: col,
+      op: 'in',
+      values: new Set(legendSelected),
+      _options: getFilterOptionsForCol(col),
+      _debounce: null,
+    };
+    filterRows.push(row);
+  }
+  legendSelected.clear();
+  legendFilterBtn.style.display = 'none';
+  legendSplitBtn.style.display = 'none';
+  renderFilterTable();
+  renderFilterSummary();
+  resetAndFetch();
+});
+legendSplitBtn.addEventListener('click', () => {
+  if (!legendSelected.size) return;
+  for (const k of legendSelected) {
+    if (lowerHalf.has(k)) lowerHalf.delete(k);
+    else                  lowerHalf.add(k);
+  }
+  legendSelected.clear();
+  legendFilterBtn.style.display = 'none';
+  legendSplitBtn.style.display = 'none';
+  applySeriesDirections();
+  if (starcubesRedraw) starcubesRedraw();
+  updateLegend();
+  saveSourceState(starcubesParams.name);
+});
+
+// Apply current lowerHalf to every plot's series_directions so the
+// renderer flips those keys downward. Series keys arrive with an
+// optional leading '_' for numeric-shaped values (the backend prefix);
+// lowerHalf stores raw keys, so register both forms to be safe.
+function applySeriesDirections() {
+  if (!ts || !ts.getData) return;
+  const plots = ts.getData() || [];
+  for (const plot of plots) {
+    if (!plot || plot.type !== 'multibar') continue;
+    if (!lowerHalf.size) {
+      plot.series_directions = null;
+      continue;
+    }
+    const dirs = {};
+    for (const k of lowerHalf) {
+      dirs[k] = 'down';
+      dirs['_' + k] = 'down';
+    }
+    plot.series_directions = dirs;
+  }
+}
+
+function csvEscape(v) {
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+legendCopy.addEventListener('click', async () => {
+  const header = `${gbLabel(starcubesParams.group_by) || 'series'},total`;
+  const lines = lastLegendRows.map(r => `${csvEscape(r.name)},${r.total}`);
+  const csv = [header, ...lines].join('\n') + '\n';
+  try {
+    await navigator.clipboard.writeText(csv);
+    legendCopy.classList.add('copied');
+    legendCopy.textContent = 'copied';
+    setTimeout(() => {
+      legendCopy.classList.remove('copied');
+      legendCopy.textContent = 'CSV';
+    }, 1200);
+  } catch (e) {
+    setInfo('clipboard copy failed: ' + e.message, true);
+  }
+});
+
+function makeLegendDraggable() {
+  legendEl.addEventListener('mousedown', e => {
+    if (e.target.closest('.legend-swatch') || e.target.closest('#legend-close') || e.target.closest('#legend-copy') || e.target.closest('#legend-filter') || e.target.closest('#legend-split')) return;
+    legendDrag = { x: e.clientX - legendEl.offsetLeft,
+                   y: e.clientY - legendEl.offsetTop };
+    legendEl.classList.add('dragging');
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove', e => {
+    if (!legendDrag) return;
+    legendEl.style.left = (e.clientX - legendDrag.x) + 'px';
+    legendEl.style.top  = (e.clientY - legendDrag.y) + 'px';
+    legendEl.style.right = 'auto';
+    delete legendEl.dataset.positioned;
+  });
+  document.addEventListener('mouseup', () => {
+    legendDrag = null;
+    legendEl.classList.remove('dragging');
+  });
+}
+
+function updateLegend() {
+  if (!ts || !currentMeta) return;
+  legendSelected.clear();
+  legendFilterBtn.style.display = 'none';
+  legendSplitBtn.style.display = 'none';
+  // Collect series totals from the blocks timeseries is actually rendering.
+  // getActiveData() returns only the plots selected by prepare_grid() —
+  // same interval filtering, same viewport check as the canvas renderer.
+  // This avoids double-counting across intervals, stale group_by blocks,
+  // and off-screen bars that the renderer clips away. Mid-cross-fade both
+  // tiers are active, so the `_fade < 0.5` skip below picks the dominant one
+  // (same cutoff as the library's hit test) — otherwise the totals would be
+  // counts/minute plus counts/hour added together.
+  const seriesMap = new Map(); // key → { name, total }
+  const data = ts.getActiveData ? ts.getActiveData() : (ts.getData ? ts.getData() : []);
+  const bounds = ts.getRenderBounds ? ts.getRenderBounds() : null;
+  const groupBy = starcubesParams.group_by || '';
+  const groupByName = gbColumn(groupBy);
+  // avg() measures are not additive: summing per-slot means is meaningless, so
+  // the legend shows the mean over the visible slots instead of the total.
+  const isAvgMeasure = /^avg\s*\(/i.test(starcubesParams.measure || '');
+  legendStackable = false;
+  for (const plot of data) {
+    if (!plot || (plot.type !== 'multibar' && plot.type !== 'multiline'
+                  && plot.type !== 'multipoint' && plot.type !== 'quantile-bands')) continue;
+    // Skip blocks tagged with a previous group_by — their series keys
+    // belong to a different dimension and would pollute the legend.
+    if (plot._starcubesGroupBy && plot._starcubesGroupBy !== groupBy) continue;
+    // Mid-cross-fade: count only the dominant resolution tier.
+    if (plot._fade != null && plot._fade < 0.5) continue;
+    if (plot.type === 'multibar') legendStackable = true;
+    const start = plot.interval_start;
+    const step  = plot.interval;
+    // quantile-bands store a percentile array per series. Locate this plot's
+    // p50/p25/p75 entries so the legend can show "median (p25–p75)" averaged
+    // over the visible window (see the band finalize pass below).
+    const isBands = plot.type === 'quantile-bands';
+    let bandIdx = null;
+    if (isBands) {
+      const ps = plot.percentiles || [];
+      const nearest = (target) => {
+        let bi = 0, bd = Infinity;
+        ps.forEach((v, i) => { const d = Math.abs(v - target); if (d < bd) { bd = d; bi = i; } });
+        return bi;
+      };
+      if (ps.length) bandIdx = { p50: nearest(50), p25: nearest(25), p75: nearest(75) };
+    }
+    for (const [slotIdx, bars] of Object.entries(plot.data)) {
+      const slotTime = start + Number(slotIdx) * step;
+      // Use render bounds (pixel-accurate, in sync with canvas) when
+      // available; fall back to viewport-based clipping otherwise.
+      if (bounds) {
+        if (slotTime + step <= bounds.tmin / 1000 || slotTime >= bounds.tmax / 1000) continue;
+      }
+      for (const [key, val] of Object.entries(bars)) {
+        const entry = seriesMap.get(key) || { name: key, total: 0 };
+        if (isBands && bandIdx && Array.isArray(val)) {
+          // Sum the median and quartiles to average across visible slots.
+          const b = entry.band || (entry.band = { p50: 0, p25: 0, p75: 0, n: 0 });
+          b.p50 += val[bandIdx.p50];
+          b.p25 += val[bandIdx.p25];
+          b.p75 += val[bandIdx.p75];
+          b.n += 1;
+        } else if (isAvgMeasure) {
+          // Accumulate sum + slot count; finalized to a mean below.
+          entry.total += val;
+          entry.avgN = (entry.avgN || 0) + 1;
+        } else {
+          entry.total += val;
+        }
+        seriesMap.set(key, entry);
+      }
+    }
+  }
+  // Finalize quantile-bands legend values: "median (p25–p75)" from the mean of
+  // each percentile over the visible window; sort key is the typical median.
+  const fmtNum = (x) => (x % 1 === 0 ? x.toLocaleString() : x.toFixed(1));
+  for (const entry of seriesMap.values()) {
+    if (entry.band && entry.band.n) {
+      const b = entry.band;
+      const med = b.p50 / b.n, lo = b.p25 / b.n, hi = b.p75 / b.n;
+      entry.total = med;
+      entry.display = `${fmtNum(med)} (${fmtNum(lo)}–${fmtNum(hi)})`;
+    } else if (isAvgMeasure && entry.avgN) {
+      // Mean of per-slot averages over the visible window.
+      entry.total = entry.total / entry.avgN;
+    }
+  }
+  // Resolve names from the dimension table for the current group_by column
+  // only. Skipped for a group dimension: its series keys are group names, so
+  // a dim-table hit would be a coincidental source_id collision, not a match.
+  const groupCol = gbIsGrouped(groupBy)
+    ? null : currentMeta.fact_columns.find(c => c.name === groupByName);
+  const groupDimTable = groupCol && groupCol.dim_table;
+  const groupDimOpts = groupDimTable ? (currentMeta.dimensions[groupDimTable] || []) : [];
+  for (const [key, entry] of seriesMap) {
+    // Strip the '_' prefix the backend adds to integer-like series keys
+    const rawKey = key[0] === '_' ? key.slice(1) : key;
+    const match = groupDimOpts.find(d => d[0] === rawKey);
+    if (match && match[1]) entry.name = match[1];
+    if (match && match[2]) entry.desc = match[2];
+  }
+  // Set max-height to 80% of canvas height
+  const canvas = document.getElementById('chart');
+  if (canvas) {
+    const h = canvas.getBoundingClientRect().height;
+    legendEl.style.maxHeight = Math.round(h * 0.8) + 'px';
+  }
+  // Position: top-right of the chart's drawing area with 5px margin
+  if (!legendEl.dataset.positioned) {
+    const area = ts ? ts.getPlotArea() : null;
+    const canvasRect = canvas.getBoundingClientRect();
+    const scaleX = canvasRect.width / (canvas.width || 1);
+    const scaleY = canvasRect.height / (canvas.height || 1);
+    const m = area ? area.margin : { top: 0, right: 0 };
+    const rightOffset = (m.right * scaleX) + 5;
+    const topOffset = (m.top * scaleY) + 5;
+    legendEl.style.position = 'fixed';
+    legendEl.style.right = (window.innerWidth - canvasRect.right + rightOffset) + 'px';
+    legendEl.style.top = (canvasRect.top + topOffset) + 'px';
+    legendEl.style.left = 'auto';
+    legendEl.dataset.positioned = '1';
+  }
+  // Update header
+  const titleEl = document.getElementById('legend-title');
+  if (titleEl) titleEl.textContent = groupByName || 'Legend';
+  // Render items (sorted by total descending)
+  const itemsEl = document.getElementById('legend-items');
+  if (!itemsEl) return;
+  const sorted = [...seriesMap.entries()].sort((a, b) => b[1].total - a[1].total);
+  lastLegendRows = sorted.map(([, entry]) => ({ name: entry.name, total: entry.total }));
+  let html = '';
+  for (const [key, entry] of sorted) {
+    const color = _seriesColor(key, entry.name);
+    const name = entry.name === key && entry.name.length > 20
+      ? entry.name.slice(0, 18) + '…' : entry.name;
+    const total = entry.display != null ? entry.display
+      : (entry.total % 1 === 0 ? entry.total.toLocaleString()
+         : entry.total.toFixed(1));
+    // raw source_id: strip the '_' prefix the backend adds to numeric keys
+    const rawKey = key[0] === '_' ? key.slice(1) : key;
+    const sel = legendSelected.has(rawKey) ? ' selected' : '';
+    const desc = entry.desc || '';
+    const downMark = lowerHalf.has(rawKey) ? '<span class="legend-down" title="In lower half of butterfly stack">&darr;</span>' : '';
+    html += `<div class="legend-item${sel}" data-key="${rawKey}"${desc ? ` title="${desc.replace(/"/g, '&quot;')}"` : ''}>`
+      + `<span class="legend-swatch" style="background:${color}"></span>`
+      + `<span class="legend-name">${name}</span>${downMark}`
+      + `<span class="legend-total">${total}</span></div>`;
+  }
+  itemsEl.innerHTML = html;
+  // Click legend items to toggle selection (not immediate filter)
+  itemsEl.querySelectorAll('.legend-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const rawKey = el.dataset.key;
+      if (legendSelected.has(rawKey)) {
+        legendSelected.delete(rawKey);
+        el.classList.remove('selected');
+      } else {
+        legendSelected.add(rawKey);
+        el.classList.add('selected');
+      }
+      const visible = legendSelected.size > 0;
+      legendFilterBtn.style.display = visible ? '' : 'none';
+      // Split (butterfly down-stack) only makes sense for stacked multibar.
+      legendSplitBtn.style.display = (visible && legendStackable) ? '' : 'none';
+    });
+  });
+}
+
+makeLegendDraggable();
+
+// ── Bar hover tooltip ────────────────────────────────────────────────────
+// The card itself — DOM, positioning, theming — comes from the library
+// (TimeSeries.attachTooltip); it re-themes itself off the palette we already
+// hand it in applyTheme(). Only the two things the library cannot know stay
+// here: resolving a raw source_id to its dimension label, and the server's
+// per-group colour map.
+
+let barTooltip = null;
+
+// "≙ 20.5/min" — the same number the y-axis shows for this bar. The tooltip
+// keeps reporting the absolute count in the bin (that is what a drill-down will
+// list), so without this the axis and the tooltip would state the same fact in
+// two units with nothing connecting them. Empty when the axis is not on a rate.
+function rateText(value, interval) {
+  const sec = ts && ts.getRateUnit && ts.getRateUnit();
+  if (!sec || typeof value !== 'number' || !interval) return '';
+  // When the axis unit *is* the bin length the rate repeats the count verbatim
+  // ("6 · 1min ≙ 6/min"), so it says nothing.
+  if (sec === interval) return '';
+  const r = value * sec / interval;
+  const u = RATE_UNITS.find(x => x.sec === sec);
+  return `≙ ${r % 1 === 0 ? r.toLocaleString() : r.toFixed(r < 10 ? 2 : 1)}/${u ? u.key : sec + 's'}`;
+}
+
+function attachBarTooltip() {
+  if (barTooltip) barTooltip.destroy();
+  barTooltip = TimeSeries.attachTooltip(ts, {
+    labelFor: key => _resolveDimName(key[0] === '_' ? key.slice(1) : key),
+    colorFor: key => {
+      const rawKey = key[0] === '_' ? key.slice(1) : key;
+      return _seriesColor('_' + rawKey, _resolveDimName(rawKey));
+    },
+    // Extend the shipped body rather than forking it: defaultContent() returns
+    // [title, time] and the rate belongs next to the count in the title row.
+    formatter: ctx => {
+      const nodes = ctx.defaultContent();
+      const rate = rateText(ctx.value, ctx.interval);
+      if (!rate || !nodes.length) return nodes;
+      const s = document.createElement('span');
+      s.textContent = rate;
+      s.style.cssText = `color:${ctx.colors.tooltipMuted};font-size:11px;font-weight:400`;
+      nodes[0].appendChild(s);
+      return nodes;
+    },
+  });
+}
+
+function fmtInterval(iv) {
+  if (iv >= 86400) return `${iv / 86400}d`;
+  if (iv >= 3600)  return `${iv / 3600}h`;
+  if (iv >= 60)    return `${iv / 60}min`;
+  return `${iv}s`;
+}
+
+function _resolveDimName(rawKey) {
+  // Same reasoning as updateLegend: a group dimension's keys are group names.
+  const groupCol = (currentMeta && !gbIsGrouped(starcubesParams.group_by))
+    ? currentMeta.fact_columns.find(c => c.name === gbColumn(starcubesParams.group_by)) : null;
+  const dimOpts  = groupCol && groupCol.dim_table
+    ? (currentMeta.dimensions[groupCol.dim_table] || []) : [];
+  const match = dimOpts.find(d => d[0] === rawKey);
+  return match && match[1] ? match[1] : rawKey;
+}
+
+function _seriesColor(key, name) {
+  // Use group color when available, else fall back to golden-angle hue.
+  if (starcubesSeriesColors && name && starcubesSeriesColors[name]) return starcubesSeriesColors[name];
+  return TimeSeries.seriesColor(key, 0.8);
+}
+
+function _barHeaderHtml(dimNameHtml, slotSec, value, interval, color) {
+  const measure = starcubesParams.measure ? starcubesParams.measure.replace(/\(.*/, '') : 'count';
+  const valStr  = value % 1 === 0 ? value.toLocaleString() : value.toFixed(2);
+  const dateStr = new Date(slotSec * 1000).toLocaleString();
+  const swatch  = `<span class="drill-swatch" style="background:${color}"></span>`;
+  return `<div class="btt-dim">${swatch}${dimNameHtml} <span class="btt-val">(${valStr} &middot; ${fmtInterval(interval)})</span></div>` +
+         `<div class="btt-date">${dateStr}</div>`;
+}
+
+// ── Drill-down modal ─────────────────────────────────────────────────────
+
+const drillOverlay = document.getElementById('drill-overlay');
+const drillModal   = document.getElementById('drill-modal');
+let _drillCtx = null;
+
+function closeDrillModal() { drillOverlay.style.display = 'none'; }
+document.getElementById('drill-close').addEventListener('click', closeDrillModal);
+drillOverlay.addEventListener('click', e => { if (e.target === drillOverlay) closeDrillModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeDrillModal();
+});
+document.getElementById('drill-header-info').addEventListener('click', e => {
+  if (!e.target.closest('.drill-dimname-btn') || !_drillCtx) return;
+  drillAddFilter(_drillCtx.groupBy, _drillCtx.rawKey);
+});
+
+// Drag to move
+document.getElementById('drill-header').addEventListener('pointerdown', e => {
+  if (e.target.closest('button')) return;
+  e.preventDefault();
+  const rect = drillModal.getBoundingClientRect();
+  const ox = e.clientX - rect.left, oy = e.clientY - rect.top;
+  e.currentTarget.setPointerCapture(e.pointerId);
+  function onMove(ev) {
+    const mw = drillModal.offsetWidth, mh = drillModal.offsetHeight;
+    drillModal.style.left = Math.max(0, Math.min(window.innerWidth  - mw, ev.clientX - ox)) + 'px';
+    drillModal.style.top  = Math.max(0, Math.min(window.innerHeight - mh, ev.clientY - oy)) + 'px';
+  }
+  function onUp() {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup',   onUp);
+  }
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup',   onUp);
+});
+document.getElementById('drill-body').addEventListener('click', e => {
+  if (e.target.closest('.drill-back-btn'))  { _fetchDrillContent(); return; }
+  if (e.target.closest('.drill-alarm-save')) {
+    const btn = e.target.closest('.drill-alarm-save');
+    btn.textContent = 'Alert saved'; btn.disabled = true; return;
+  }
+  const xBtn = e.target.closest('.drill-chip-x');
+  if (xBtn) {
+    e.stopPropagation();
+    drillRemoveFilter(xBtn.dataset.removeCol, xBtn.dataset.removeSid);
+    return;
+  }
+  const row = e.target.closest('[data-col][data-sid]');
+  if (!row) return;
+  drillAddFilter(row.dataset.col, row.dataset.sid);
+});
+document.getElementById('drill-txn-btn').addEventListener('click',   openTxnView);
+document.getElementById('drill-alarm-btn').addEventListener('click', openAlarmView);
+
+function positionDrillModal() {
+  const canvas = document.getElementById('chart');
+  const rect   = canvas.getBoundingClientRect();
+  const area   = ts ? ts.getPlotArea()
+    : { margin: { top: 0, left: 0 }, plotWidth: rect.width, plotHeight: rect.height };
+  const cx = rect.left + area.margin.left + area.plotWidth  / 2;
+  const cy = rect.top  + area.margin.top  + area.plotHeight / 2;
+  const mw = drillModal.offsetWidth  || 340;
+  const mh = drillModal.offsetHeight || 400;
+  drillModal.style.left = Math.max(8, Math.min(window.innerWidth  - mw - 8, cx - mw / 2)) + 'px';
+  drillModal.style.top  = Math.max(8, Math.min(window.innerHeight - mh - 8, cy - mh / 2)) + 'px';
+}
+
+function _drillFiltersHtml() {
+  const rows = starcubesParams.filterRows || [];
+  const parts = [];
+  for (const row of rows) {
+    const col = row.col;
+    const op = row.op;
+    const fc = currentMeta && currentMeta.fact_columns.find(c => c.name === col);
+    const dimOpts = fc && fc.dim_table ? (currentMeta.dimensions[fc.dim_table] || []) : [];
+    for (const sid of row.vals) {
+      const opt = dimOpts.find(([s]) => s === sid);
+      const display = opt ? (opt[1] || sid) : sid;
+      const cls = op === 'not_in' ? 'filter-summary-tag filter-summary-tag--not-in' : 'filter-summary-tag';
+      const x = op === 'in' || op === 'not_in'
+        ? `<button class="drill-chip-x" data-remove-col="${col}" data-remove-sid="${sid}" type="button" title="Remove filter">&times;</button>`
+        : '';
+      parts.push(`<span class="${cls}" title="${col}: ${display}">${col}: ${display}${x}</span>`);
+    }
+  }
+  return parts.length ? `<div class="drill-filter-bar">${parts.join('')}</div>` : '';
+}
+
+function drillRemoveFilter(column, sourceId) {
+  const row = filterRows.find(r => r.column === column && r.op === 'in');
+  if (!row) return;
+  row.values.delete(sourceId);
+  if (!row.values.size) filterRows = filterRows.filter(r => r !== row);
+  renderFilterTable();
+  renderFilterSummary();
+  resetAndFetch(true);
+  _fetchDrillContent();
+}
+
+async function _fetchDrillContent() {
+  const body = document.getElementById('drill-body');
+  body.innerHTML = '<div id="drill-status">Loading&hellip;</div>';
+  try {
+    const r = await fetch(DRILL_URL + '?' + _drillUrlParams());
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    renderDrillBody(data);
+    positionDrillModal();
+  } catch (err) {
+    body.innerHTML = `<div id="drill-status" class="err">${err.message}</div>`;
+  }
+}
+
+async function openDrillModal(plot, n, key, value) {
+  if (barTooltip) barTooltip.hide();
+  // Drill-down is only meaningful for (multi)bar slots — other plot types
+  // have no per-bar count/value to break down.
+  if (!plot || (plot.type !== 'multibar' && plot.type !== 'bar')) return;
+
+  const rawKey  = key[0] === '_' ? key.slice(1) : key;
+  const slotSec = plot.interval_start + n * plot.interval;
+  const dimName = _resolveDimName(rawKey);
+  const color   = _seriesColor('_' + rawKey, dimName);
+  const dimBtn  = `<button class="drill-dimname-btn" title="Add as filter">${dimName}</button>`;
+
+  document.getElementById('drill-header-info').innerHTML =
+    _barHeaderHtml(dimBtn, slotSec, value, plot.interval, color);
+
+  _drillCtx = { rawKey, slotSec, interval: plot.interval, groupBy: starcubesParams.group_by };
+  drillOverlay.style.display = 'block';
+  positionDrillModal();
+  await _fetchDrillContent();
+}
+
+function drillAddFilter(column, sourceId) {
+  let row = filterRows.find(r => r.column === column && r.op === 'in');
+  if (!row) {
+    const opts = getFilterOptionsForCol(column);
+    filterRows.push({ id: ++filterRowId, andOr: 'and', column, op: 'in',
+                      values: new Set(), _options: opts, _debounce: null });
+    row = filterRows[filterRows.length - 1];
+  }
+  if (row.values.has(sourceId)) return;
+  row.values.add(sourceId);
+  renderFilterTable();
+  renderFilterSummary();
+  resetAndFetch(true);
+  _fetchDrillContent();
+}
+
+function _drillUrlParams() {
+  const { rawKey, slotSec, interval } = _drillCtx;
+  const p = new URLSearchParams();
+  p.set('name',         starcubesParams.name);
+  p.set('group_by',     starcubesParams.group_by);
+  p.set('group_by_val', rawKey);
+  p.set('from', new Date(slotSec * 1000).toISOString());
+  p.set('to',   new Date((slotSec + interval) * 1000).toISOString());
+  for (const row of starcubesParams.filterRows || []) {
+    const sep = row.op === 'not_in' ? '!=' : row.op === 'starts_with' ? '~=' : row.op === 'starts_not_with' ? '!~=' : row.op === 'contains' ? '*=' : row.op === 'not_contains' ? '!*=' : '=';
+    p.append('filter', `${row.col}${sep}${row.vals.join(',')}`);
+  }
+  for (let i = 1; i < (starcubesParams.filterRows || []).length; i++) {
+    p.append('andor', starcubesParams.filterRows[i].andOr || 'and');
+  }
+  return p;
+}
+
+async function openTxnView() {
+  const body = document.getElementById('drill-body');
+  body.innerHTML = '<button class="drill-back-btn">← Breakdown</button><div id="drill-status">Loading…</div>';
+  try {
+    const r = await fetch(TXN_URL + '?' + _drillUrlParams());
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    const ids = data.transaction_ids || [];
+    const display = data.transaction_display || ids;
+    const note = ids.length >= (data.limit || 1000) ? `First ${ids.length} (limit reached)` : `${ids.length}`;
+    const hasHtml = display.some((d, i) => d !== ids[i]);
+    let listHtml;
+    if (hasHtml) {
+      listHtml = `<div class="drill-txn-list">${display.join('<br>')}</div>`;
+    } else {
+      const escaped = ids.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      listHtml = `<pre class="drill-txn-list">${escaped}</pre>`;
+    }
+    body.innerHTML =
+      '<button class="drill-back-btn">← Breakdown</button>' +
+      `<div class="drill-txn-count">${note} transaction IDs</div>` +
+      listHtml +
+      `<button class="drill-copy-btn" data-copy="${encodeURIComponent(ids.join('\n'))}">Copy all</button>`;
+    body.querySelector('.drill-copy-btn').addEventListener('click', function() {
+      navigator.clipboard.writeText(decodeURIComponent(this.dataset.copy));
+      this.textContent = 'Copied!';
+      setTimeout(() => { this.textContent = 'Copy all'; }, 1500);
+    });
+    positionDrillModal();
+  } catch (err) {
+    body.innerHTML = '<button class="drill-back-btn">← Breakdown</button>' +
+      `<div id="drill-status" class="err">${err.message}</div>`;
+  }
+}
+
+function openAlarmView() {
+  const dimName    = _drillCtx ? _resolveDimName(_drillCtx.rawKey) : '';
+  const intervalS  = _drillCtx ? _drillCtx.interval : 60;
+  const measure    = starcubesParams.measure ? starcubesParams.measure.replace(/\(.*/, '') : 'count';
+  const body = document.getElementById('drill-body');
+  body.innerHTML =
+    '<button class="drill-back-btn">← Breakdown</button>' +
+    '<div class="drill-alarm-form">' +
+    `<div class="drill-alarm-row"><div class="drill-alarm-label">Context</div>` +
+    `<div class="drill-alarm-ctx">${dimName} &middot; ${fmtInterval(intervalS)} window</div></div>` +
+    `<div class="drill-alarm-row"><div class="drill-alarm-label">Metric</div>` +
+    `<select class="drill-alarm-select"><option value="count">${measure}</option></select></div>` +
+    `<div class="drill-alarm-row"><div class="drill-alarm-label">Condition</div>` +
+    `<div class="drill-alarm-cond">` +
+    `<select class="drill-alarm-select"><option>&gt;</option><option>&lt;</option><option>=</option></select>` +
+    `<input class="drill-alarm-input" type="number" placeholder="threshold" min="0"></div></div>` +
+    `<div class="drill-alarm-row"><div class="drill-alarm-label">Window</div>` +
+    `<select class="drill-alarm-select">` +
+    `<option value="${intervalS}">${fmtInterval(intervalS)} (current)</option>` +
+    `<option value="300">5 min</option><option value="900">15 min</option><option value="3600">1 h</option>` +
+    `</select></div>` +
+    `<div class="drill-alarm-row"><div class="drill-alarm-label">Notify via</div>` +
+    `<select class="drill-alarm-select"><option>Email</option><option>Slack</option><option>PagerDuty</option></select></div>` +
+    `<button class="drill-alarm-save" type="button">Save Alert</button>` +
+    '</div>';
+  positionDrillModal();
+}
+
+function renderDrillBody(data) {
+  const body = document.getElementById('drill-body');
+  const dims  = (data.dimensions || []).filter(d => d.values && d.values.length)
+                                       .sort((a, b) => a.values.length - b.values.length);
+  if (!dims.length) {
+    body.innerHTML = _drillFiltersHtml() + '<div id="drill-status">No data</div>';
+    return;
+  }
+
+  const singles = dims.filter(d => d.values.length === 1);
+  const multi   = dims.filter(d => d.values.length  >  1);
+  let html = _drillFiltersHtml();
+
+  if (singles.length) {
+    html += '<div class="drill-common"><div class="drill-common-title">Common</div>';
+    for (const dim of singles) {
+      const row             = dim.values[0];
+      const color           = TimeSeries.seriesColor('_' + row.source_id, 0.8);
+      const val             = row.name.length > 28 ? row.name.slice(0, 26) + '…' : row.name;
+      const alreadyFiltered = filterRows.some(r => r.column === dim.column && (r.op === 'in' || r.op === 'not_in') && r.values.has(row.source_id));
+      const cls             = alreadyFiltered ? 'drill-common-row' : 'drill-common-row drill-common-row--clickable';
+      const attrs           = alreadyFiltered ? '' : ` data-col="${dim.column}" data-sid="${row.source_id}"`;
+      html += `<div class="${cls}"${attrs}>` +
+              `<span class="drill-swatch" style="background:${color}"></span>` +
+              `<span class="drill-common-col">${dim.column}</span>` +
+              `<span class="drill-common-val" title="${row.name}">${val}</span></div>`;
+    }
+    html += '</div>';
+  }
+
+  for (const dim of multi) {
+    html += `<div class="drill-section"><div class="drill-section-title">${dim.column}</div>`;
+    for (const row of dim.values) {
+      const color = TimeSeries.seriesColor('_' + row.source_id, 0.8);
+      const cnt   = row.count.toLocaleString();
+      const name  = row.name.length > 30 ? row.name.slice(0, 28) + '…' : row.name;
+      const alreadyFiltered = filterRows.some(r => r.column === dim.column && (r.op === 'in' || r.op === 'not_in') && r.values.has(row.source_id));
+      const cls   = alreadyFiltered ? 'drill-row' : 'drill-row drill-row--clickable';
+      const attrs = alreadyFiltered ? '' : ` data-col="${dim.column}" data-sid="${row.source_id}"`;
+      html += `<div class="${cls}"${attrs}>` +
+              `<span class="drill-swatch" style="background:${color}"></span>` +
+              `<span class="drill-name" title="${row.name}">${name}</span>` +
+              `<span class="drill-count">${cnt}</span></div>`;
+    }
+    html += '</div>';
+  }
+
+  body.innerHTML = html;
+}
+
+// ── DateTime picker ──────────────────────────────────────────────────────
+
+let _openPicker = null;
+
+class DateTimePicker {
+  constructor(input, { onChange, nextFocus }) {
+    this.input = input;
+    this.onChange = onChange;
+    this._nextFocus = nextFocus || null;
+    this._value = null;
+    this._pending = null;
+    this._pendingH = 0;
+    this._pendingM = 0;
+    this._viewY = 0;
+    this._viewM = 0;
+    this._isOpen = false;
+    this._popup = document.createElement('div');
+    this._popup.className = 'dtp-popup';
+    this._popup.innerHTML = this._html();
+    this._wire();
+    input.parentElement.style.position = 'relative';
+    input.parentElement.appendChild(this._popup);
+    input.addEventListener('focus', () => this.open());
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { this.close(true); e.preventDefault(); }
+      if (e.key === 'Enter') {
+        this._commitInput();
+        if (this._nextFocus) this._nextFocus.focus();
+        e.preventDefault();
+      }
+    });
+    input.addEventListener('blur', () => {
+      // Give popup clicks time to fire before closing on blur
+      setTimeout(() => { if (!this._isOpen) this._commitInput(); }, 100);
+    });
+    document.addEventListener('mousedown', e => {
+      if (this._isOpen && !this._popup.contains(e.target) && e.target !== this.input) {
+        this.close(true);
+        this._commitInput();
+      }
+    });
+  }
+
+  _commitInput() {
+    const s = this.input.value.trim();
+    if (!s) return;
+    const d = this._parseUserInput(s);
+    if (!d) return;
+    const ms = d.getTime();
+    // Skip if the popup just set this exact value (avoids double-fire)
+    if (this._value && this._value.getTime() === ms) return;
+    this._value = d;
+    this.onChange(ms);
+  }
+
+  _parseUserInput(s) {
+    // Accept "YYYY-MM-DD HH:MM" or "YYYY-MM-DD"
+    const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}))?$/);
+    if (!m) return null;
+    const y = +m[1], mo = +m[2] - 1, dy = +m[3], h = m[4] != null ? +m[4] : 0, mi = m[5] != null ? +m[5] : 0;
+    if (mo < 0 || mo > 11 || dy < 1 || dy > 31 || h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+    const d = new Date(y, mo, dy, h, mi, 0, 0);
+    if (d.getMonth() !== mo || d.getDate() !== dy) return null; // rejects e.g. Feb 30
+    return d;
+  }
+
+  _html() {
+    return '<div class="dtp-header">'
+      + '<button type="button" class="dtp-arrow" data-dir="-1">&larr;</button>'
+      + '<span class="dtp-month-year"></span>'
+      + '<button type="button" class="dtp-arrow" data-dir="1">&rarr;</button>'
+      + '</div>'
+      + '<div class="dtp-grid"><span class="dtp-dow">Mo</span><span class="dtp-dow">Tu</span>'
+      + '<span class="dtp-dow">We</span><span class="dtp-dow">Th</span>'
+      + '<span class="dtp-dow">Fr</span><span class="dtp-dow">Sa</span>'
+      + '<span class="dtp-dow">Su</span></div>'
+      + '<div class="dtp-grid dtp-days"></div>'
+      + '<div class="dtp-time-row"><label>Time '
+      + '<input type="number" class="dtp-time-input" data-f="h" min="0" max="23">'
+      + ' : <input type="number" class="dtp-time-input" data-f="m" min="0" max="59">'
+      + '</label></div>'
+      + '<div class="dtp-apply-row"><button type="button" class="dtp-apply">OK</button></div>';
+  }
+
+  _wire() {
+    const [prev, next] = this._popup.querySelectorAll('.dtp-arrow');
+    prev.addEventListener('click', () => this._nav(-1));
+    next.addEventListener('click', () => this._nav(1));
+    this._myEl = this._popup.querySelector('.dtp-month-year');
+    this._daysEl = this._popup.querySelector('.dtp-days');
+    this._hIn = this._popup.querySelector('[data-f="h"]');
+    this._mIn = this._popup.querySelector('[data-f="m"]');
+    this._hIn.addEventListener('change', () => {
+      this._pendingH = this._clamp(this._hIn.value, 0, 23);
+      this._hIn.value = this._pad(this._pendingH);
+    });
+    this._mIn.addEventListener('change', () => {
+      this._pendingM = this._clamp(this._mIn.value, 0, 59);
+      this._mIn.value = this._pad(this._pendingM);
+    });
+    this._popup.querySelector('.dtp-apply').addEventListener('click', () => this.close(false));
+  }
+
+  _clamp(v, lo, hi) {
+    const n = parseInt(v, 10);
+    return isNaN(n) ? lo : Math.max(lo, Math.min(hi, n));
+  }
+
+  _pad(n) { return String(n).padStart(2, '0'); }
+
+  _nav(dir) {
+    this._viewM += dir;
+    if (this._viewM < 0) { this._viewM = 11; this._viewY--; }
+    if (this._viewM > 11) { this._viewM = 0; this._viewY++; }
+    this._render();
+  }
+
+  _render() {
+    const M = ['January','February','March','April','May','June',
+               'July','August','September','October','November','December'];
+    this._myEl.textContent = M[this._viewM] + ' ' + this._viewY;
+    const y = this._viewY, m = this._viewM;
+    const off = (new Date(y, m, 1).getDay() + 6) % 7; // Mon=0
+    const dim = new Date(y, m + 1, 0).getDate();
+    const pdim = new Date(y, m, 0).getDate();
+    const now = new Date();
+    const tk = now.getFullYear() * 1e4 + now.getMonth() * 100 + now.getDate();
+    const sk = this._pending
+      ? this._pending.getFullYear() * 1e4 + this._pending.getMonth() * 100 + this._pending.getDate()
+      : -1;
+    this._daysEl.innerHTML = '';
+    for (let i = off - 1; i >= 0; i--) this._cell(pdim - i, true, -1);
+    for (let d = 1; d <= dim; d++) {
+      const k = y * 1e4 + m * 100 + d;
+      this._cell(d, false, k, k === tk, k === sk);
+    }
+    const n = this._daysEl.children.length;
+    for (let d = 1, r = (7 - n % 7) % 7; d <= r; d++) this._cell(d, true, -1);
+  }
+
+  _cell(day, other, _key, today, sel) {
+    const el = document.createElement('span');
+    el.className = 'dtp-day';
+    if (other) el.classList.add('other-month');
+    if (today) el.classList.add('today');
+    if (sel) el.classList.add('selected');
+    el.textContent = day;
+    if (!other) el.addEventListener('click', () => {
+      this._pending = new Date(this._viewY, this._viewM, day);
+      this._render();
+    });
+    this._daysEl.appendChild(el);
+  }
+
+  open() {
+    if (this._isOpen) return;
+    if (_openPicker && _openPicker !== this) _openPicker.close(true);
+    _openPicker = this;
+    this._isOpen = true;
+    const src = this._value || new Date();
+    this._pending = this._value ? new Date(this._value) : null;
+    this._pendingH = src.getHours();
+    this._pendingM = src.getMinutes();
+    this._viewY = src.getFullYear();
+    this._viewM = src.getMonth();
+    this._render();
+    this._hIn.value = this._pad(this._pendingH);
+    this._mIn.value = this._pad(this._pendingM);
+    this._popup.classList.add('open');
+  }
+
+  close(revert) {
+    if (!this._isOpen) return;
+    this._isOpen = false;
+    _openPicker = null;
+    this._popup.classList.remove('open');
+    if (revert) return;
+    const d = this._pending ? new Date(this._pending) : new Date();
+    d.setHours(this._pendingH, this._pendingM, 0, 0);
+    const prev = this._value ? this._value.getTime() : null;
+    this._value = d;
+    this.input.value = this._fmt(d);
+    if (prev !== d.getTime()) this.onChange(d.getTime());
+  }
+
+  setValue(ms) {
+    if (ms == null) return;
+    const d = new Date(ms);
+    this._value = d;
+    this.input.value = this._fmt(d);
+  }
+
+  getValue() { return this._value ? this._value.getTime() : null; }
+
+  _fmt(d) {
+    return d.getFullYear() + '-' + this._pad(d.getMonth() + 1) + '-' + this._pad(d.getDate())
+      + ' ' + this._pad(d.getHours()) + ':' + this._pad(d.getMinutes());
+  }
+}
+
+const dtpFrom = new DateTimePicker(document.getElementById('dtp-from'), {
+  nextFocus: document.getElementById('dtp-to'),
+  onChange(ms) {
+    if (!currentViewport) currentViewport = { tmin: 0, tmax: 0, ppms: 0 };
+    currentViewport.tmin = ms;
+    if (ts) ts.zoom(currentViewport.tmin, currentViewport.tmax);
+    resetAndFetch();
+  },
+});
+const dtpTo = new DateTimePicker(document.getElementById('dtp-to'), {
+  nextFocus: document.getElementById('dtp-from'),
+  onChange(ms) {
+    if (!currentViewport) currentViewport = { tmin: 0, tmax: 0, ppms: 0 };
+    currentViewport.tmax = ms;
+    if (ts) ts.zoom(currentViewport.tmin, currentViewport.tmax);
+    resetAndFetch();
+  },
+});
+
+function syncDateTimeInputs() {
+  if (!currentViewport) return;
+  if (currentViewport.tmin != null) dtpFrom.setValue(currentViewport.tmin);
+  if (currentViewport.tmax != null) dtpTo.setValue(currentViewport.tmax);
+}
+
+// ── Data loading helpers ────────────────────────────────────────────────
+
+async function fetchJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) {
+    const t = await r.text().catch(() => '');
+    throw new Error(`HTTP ${r.status}: ${t}`);
+  }
+  return r.json();
+}
+
+async function loadSources() {
+  const data = await fetchJson(SOURCES_URL);
+  const navTabs = document.getElementById('nav-tabs');
+  const spacer  = document.getElementById('nav-spacer');
+  navTabs.querySelectorAll('.source-tab').forEach(b => b.remove());
+  for (const s of data.sources) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'source-tab';
+    btn.dataset.name = s.name;
+    btn.textContent = s.name;
+    btn.addEventListener('click', () => setActiveSource(s.name));
+    navTabs.insertBefore(btn, spacer);
+  }
+  window._sourceIdByName = Object.fromEntries(data.sources.map(s => [s.name, s.id]));
+  if (data.sources.length) {
+    // Prefer the configured default source; fall back to first-by-name.
+    const def = data.sources.find(s => s.is_default) || data.sources[0];
+    form.elements.name.value = def.name;
+    setActiveSourceTab(def.name);
+  }
+  return data.sources;
+}
+
+function setActiveSourceTab(name) {
+  document.querySelectorAll('.source-tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.name === name);
+  });
+  const cfgLink = document.getElementById('source-config-link');
+  const id = window._sourceIdByName && window._sourceIdByName[name];
+  if (cfgLink && id) cfgLink.href = '/sources/' + id + '/';
+  const brand = document.getElementById('nav-brand');
+  if (brand && name) brand.href = '/?name=' + encodeURIComponent(name);
+}
+
+const loadingOverlay = document.getElementById('loading-overlay');
+function showLoadingOverlay() { loadingOverlay.classList.add('visible'); }
+function hideLoadingOverlay() { loadingOverlay.classList.remove('visible'); }
+
+async function setActiveSource(name) {
+  const prev = form.elements.name.value;
+  if (prev && prev !== name) saveSourceState(prev);
+  form.elements.name.value = name;
+  setActiveSourceTab(name);
+  // History is filtered per datasource, and stale results under a new title
+  // would be misleading.
+  if (window.onQuerySourceChanged) window.onQuerySourceChanged();
+  // Source is changing — an in-flight fetch for the old source would
+  // otherwise land after ts.clearAll() and get painted with mislabelled
+  // data (see abortInFlight). The memory-restore branch below calls
+  // autoFetch() directly rather than through resetAndFetch, so it needs
+  // this too.
+  abortInFlight();
+  currentViewport = null;
+  hwmSeen = null;  // HWM is per-datasource
+  if (ts) ts.clearAll();
+
+  if (starcubesPush && sourceMemoryRestore(name)) {
+    // Canvas re-populated instantly from memory — no overlay needed.
+    starcubesSeriesColors = null;  // stale colors from previous source
+    await loadMeta(name);
+    applySourceState(name);
+    // Memory-restored plots inherited the previous source's directions
+    // (or none). Re-decorate now that lowerHalf reflects this source.
+    applySeriesDirections();
+    if (starcubesRedraw) starcubesRedraw();
+    gatherParams();
+    updateLegend();
+    history.pushState(null, '', '?' + buildHistoryParams().toString());
+    autoFetch();   // fetch trailing edge and any gaps
+  } else {
+    showLoadingOverlay();
+    await loadMeta(name);
+    applySourceState(name);
+    resetAndFetch();
+  }
+}
+
+function saveSourceState(name) {
+  if (!name) return;
+  const state = {
+    group_by: form.elements.group_by.value,
+    measure:  form.elements.measure.value || '',
+    filterRows: filterRows.map(r => ({
+      id: r.id, column: r.column, op: r.op,
+      andOr: r.andOr || 'and', indent: r.indent || 0,
+      values: r.values instanceof Set ? [...r.values] : (r.values || ''),
+    })),
+    lowerHalf: [...lowerHalf],
+    viewport: currentViewport ? {
+      from: new Date(currentViewport.tmin).toISOString(),
+      to:   new Date(currentViewport.tmax).toISOString(),
+    } : null,
+  };
+  try { localStorage.setItem('starcubes-state-' + name, JSON.stringify(state)); } catch(e) {}
+}
+
+function applySourceState(name) {
+  let state;
+  try {
+    const raw = localStorage.getItem('starcubes-state-' + name);
+    if (!raw) { lowerHalf = new Set(); return; }
+    state = JSON.parse(raw);
+  } catch(e) { lowerHalf = new Set(); return; }
+
+  lowerHalf = new Set(Array.isArray(state.lowerHalf) ? state.lowerHalf : []);
+
+  if (state.group_by) {
+    const gb = form.elements.group_by;
+    const want = normalizeGbToken(state.group_by);
+    if ([...gb.options].some(o => o.value === want)) gb.value = want;
+  }
+  if (state.measure !== undefined) {
+    const ms = form.elements.measure;
+    if ([...ms.options].some(o => o.value === state.measure)) ms.value = state.measure;
+  }
+  if (Array.isArray(state.filterRows)) {
+    const validCols = new Set(getFilterColumns().map(c => c.name));
+    filterRows = state.filterRows
+      .map(r => ({ ...r, column: normalizeGbToken(r.column) }))
+      .filter(r => validCols.has(r.column))
+      .map(r => ({
+        id: ++filterRowId, column: r.column, op: r.op,
+        andOr: r.andOr || 'and', indent: r.indent || 0,
+        values: (r.op === 'in' || r.op === 'not_in')
+          ? new Set(Array.isArray(r.values) ? r.values : [])
+          : (r.values || ''),
+        _options: getFilterOptionsForCol(r.column),
+      }));
+    renderFilterTable();
+    renderFilterSummary();
+  }
+  if (state.viewport) {
+    const tmin = new Date(state.viewport.from).getTime();
+    const tmax = new Date(state.viewport.to).getTime();
+    if (!isNaN(tmin) && !isNaN(tmax)) {
+      currentViewport = { tmin, tmax };
+      syncDateTimeInputs();
+    }
+  }
+}
+
+function buildOption(value, label) {
+  const o = document.createElement('option');
+  o.value = value; o.textContent = label;
+  return o;
+}
+
+async function loadMeta(name) {
+  const meta = await fetchJson(`${META_URL}?name=${encodeURIComponent(name)}`);
+  currentMeta = meta;
+  chartSqlBtn.disabled = !ts;
+  starcubesIntervalLadder = meta.interval_ladder || [1, 60, 3600, 86400];
+  // applyBarTargetPref() (defined in the popover IIFE) honours localStorage;
+  // empty there falls back to meta.bar_pixel_target. setFadeBand is called
+  // inside the helper so we don't repeat it here.
+  applyBarTargetPref(meta);
+
+  const gb = form.elements.group_by;
+  gb.innerHTML = '';
+  // (none) = no breakdown, a single "(all)" series counting every row.
+  gb.appendChild(buildOption('', '(none)'));
+  const dimCols = meta.fact_columns.filter(c => (c.role === 'dimension' || c.role === 'auto-dimension') && c.dim_table);
+  dimCols.sort((a, b) => a.name.localeCompare(b.name));
+  const gsets = meta.dim_group_sets || [];
+  for (const c of dimCols) {
+    gb.appendChild(buildOption(c.name, c.name));
+    for (const s of gsets.filter(s => s.col === c.name)) {
+      gb.appendChild(buildOption(s.token, s.label));
+    }
+  }
+  // Preserve the prior default (first dimension) so a fresh load still shows
+  // a breakdown; applyUrlParams / applySourceState override when set.
+  gb.value = dimCols.length ? dimCols[0].name : '';
+
+  // Measure dropdown is driven by the source's measure catalog. The agg
+  // 'count(*)' maps to an empty value so plot_json treats it as count.
+  // Sources with no catalog rows fall back to the historical auto-list.
+  const ms = form.elements.measure;
+  ms.innerHTML = '';
+  let measureDefault = '';
+  if (meta.measures && meta.measures.length) {
+    for (const m of meta.measures) {
+      const val = m.agg === 'count(*)' ? '' : m.agg;
+      ms.appendChild(buildOption(val, m.name));
+      if (m.is_default) measureDefault = val;
+    }
+  } else {
+    ms.appendChild(buildOption('', 'count(*)'));
+    for (const c of meta.fact_columns) {
+      if (c.role === 'measure')
+        for (const fn of ['sum', 'avg', 'min', 'max'])
+          ms.appendChild(buildOption(`${fn}(${c.name})`, `${fn}(${c.name})`));
+    }
+  }
+  ms.value = measureDefault;
+
+  // ── Build filter panel ────────────────────────────────────────────
+  filterRows = [];
+  filterRowId = 0;
+  const filterTable = document.getElementById('filter-table');
+  if (filterTable) filterTable.innerHTML = '';
+
+  // Show/hide the filter panel based on whether there are dimension columns
+  filterPanel.style.display = getDimColumns().length ? '' : 'none';
+
+  if (!currentViewport) {
+    // Default to today 00:00 → tomorrow 00:00 local time.
+    // setDate(+1) instead of +86400000 ms keeps the end on a calendar
+    // boundary across DST transitions.
+    const start = new Date(); start.setHours(0, 0, 0, 0);
+    const end = new Date(start); end.setDate(end.getDate() + 1);
+    currentViewport = { tmin: start.getTime(), tmax: end.getTime() };
+    syncDateTimeInputs();
+  }
+}
+
+function applyUrlParams() {
+  const params = new URLSearchParams(location.search);
+  // ?yaxis= wins over the stored preference, so a shared link shows the axis
+  // the sender saw. Not written back to localStorage — a link should not
+  // silently reconfigure the recipient's chart for good.
+  loadYAxisMode();
+  for (const k of ['name', 'group_by', 'measure']) {
+    let v = params.get(k);
+    if (k === 'group_by' && v != null) v = normalizeGbToken(v);
+    if (v != null && form.elements[k]) form.elements[k].value = v;
+  }
+  setActiveSourceTab(form.elements.name.value);
+  const f = params.get('from'), t = params.get('to');
+  if (f && t) {
+    currentViewport = { tmin: new Date(f).getTime(), tmax: new Date(t).getTime() };
+    syncDateTimeInputs();
+  }
+  // Accept explicit ?interval= for bookmarked URLs (overrides auto-selection once).
+  const intervalOverride = params.get('interval');
+  if (intervalOverride) currentInterval = parseInt(intervalOverride, 10) || null;
+  // Clear existing filter rows before parsing URL params
+  filterRows = [];
+  filterRowId = 0;
+  // Parse filter=, andor=, and indent= params together
+  const filterSpecs = params.getAll('filter');
+  const andorList = params.getAll('andor');
+  const indentList = params.getAll('indent');
+  for (let i = 0; i < filterSpecs.length; i++) {
+    const spec = filterSpecs[i];
+    let col, vals, op;
+    // Parse order must match backend: !~= and !*= before !=, ~= and *= before =
+    if (spec.includes('!~=')) {
+      const idx = spec.indexOf('!~=');
+      col = spec.slice(0, idx);
+      vals = spec.slice(idx + 3).split(',');
+      op = 'starts_not_with';
+    } else if (spec.includes('!*=')) {
+      const idx = spec.indexOf('!*=');
+      col = spec.slice(0, idx);
+      vals = spec.slice(idx + 3).split(',');
+      op = 'not_contains';
+    } else if (spec.includes('!=')) {
+      const neq = spec.indexOf('!=');
+      col = spec.slice(0, neq);
+      vals = spec.slice(neq + 2).split(',');
+      op = 'not_in';
+    } else if (spec.includes('~=')) {
+      const idx = spec.indexOf('~=');
+      col = spec.slice(0, idx);
+      vals = [spec.slice(idx + 2)];
+      op = 'starts_with';
+    } else if (spec.includes('*=')) {
+      const idx = spec.indexOf('*=');
+      col = spec.slice(0, idx);
+      vals = [spec.slice(idx + 2)];
+      op = 'contains';
+    } else {
+      const eq = spec.indexOf('=');
+      if (eq < 0) continue;
+      col = spec.slice(0, eq);
+      vals = spec.slice(eq + 1).split(',');
+      op = 'in';
+    }
+    col = normalizeGbToken(col);
+    const opts = getFilterOptionsForCol(col);
+    const andOr = i === 0 ? 'and' : (andorList[i - 1] || 'and');
+    const indent = parseInt(indentList[i] || '0', 10) || 0;
+    filterRows.push({
+      id: ++filterRowId,
+      andOr: andOr,
+      indent: indent,
+      column: col,
+      op: op,
+      values: (op === 'in' || op === 'not_in') ? new Set(vals) : (vals[0] || ''),
+      _options: opts,
+      _debounce: null,
+    });
+  }
+  renderFilterTable();
+}
+
+function gatherParams() {
+  starcubesParams = {
+    name:          form.elements.name.value,
+    group_by:      form.elements.group_by.value,
+    measure:       form.elements.measure.value || null,
+    filterRows:    [],   // ordered list of {col, op, vals} for serialization
+    filterGroups:  [],   // grouped: list of lists, OR within group, AND between groups
+  };
+  // Build flat row list (for URL serialization) and grouped list (for query)
+  for (const row of filterRows) {
+    let vals;
+    if (row.op === 'in' || row.op === 'not_in') {
+      if (!row.values.size) continue;
+      vals = [...row.values];
+    } else {
+      if (!row.values) continue;
+      vals = [row.values];
+    }
+    const entry = { col: row.column, op: row.op, vals, andOr: row.andOr, indent: row.indent || 0 };
+    starcubesParams.filterRows.push(entry);
+    // Group: AND starts a new group, OR continues the current one
+    if (starcubesParams.filterGroups.length === 0 || row.andOr === 'and') {
+      starcubesParams.filterGroups.push([{ col: row.column, op: row.op, vals }]);
+    } else {
+      starcubesParams.filterGroups[starcubesParams.filterGroups.length - 1].push({ col: row.column, op: row.op, vals });
+    }
+  }
+  saveSourceState(starcubesParams.name);
+}
+
+function buildHistoryParams() {
+  const p = new URLSearchParams();
+  p.set('name', starcubesParams.name);
+  p.set('group_by', starcubesParams.group_by);
+  if (currentViewport) {
+    p.set('from', new Date(currentViewport.tmin).toISOString());
+    p.set('to',   new Date(currentViewport.tmax).toISOString());
+  }
+  if (starcubesParams.measure) p.set('measure', starcubesParams.measure);
+  // Carried in the URL so a shared link reproduces the axis the sender saw.
+  if (yAxisMode !== 'auto') p.set('yaxis', yAxisMode);
+  for (const row of starcubesParams.filterRows || []) {
+    let sep;
+    if (row.op === 'not_in') sep = '!=';
+    else if (row.op === 'starts_with') sep = '~=';
+    else if (row.op === 'starts_not_with') sep = '!~=';
+    else if (row.op === 'contains') sep = '*=';
+    else if (row.op === 'not_contains') sep = '!*=';
+    else sep = '=';
+    p.append('filter', `${row.col}${sep}${row.vals.join(',')}`);
+  }
+  for (let i = 1; i < (starcubesParams.filterRows || []).length; i++) {
+    p.append('andor', starcubesParams.filterRows[i].andOr || 'and');
+  }
+  for (const row of starcubesParams.filterRows || []) {
+    p.append('indent', row.indent || 0);
+  }
+  return p;
+}
+
+function resetAndFetch(pushHistory = true) {
+  if (!ts) initTs();
+  // Params are changing — any in-flight fetch belongs to the old params and
+  // would otherwise land after this and get mislabelled (see abortInFlight).
+  abortInFlight();
+  gatherParams();
+  // Params are changing — discard any stored plots for this source so that
+  // switching back re-fetches fresh data instead of restoring stale plots.
+  sourceMemory.delete(starcubesParams.name);
+  // Reset tracking — new params mean new queries, but keep old data visible
+  // until pushData replaces it incrementally as new blocks arrive.
+  loadedBlocks = [];
+  currentInterval = null;
+  fadingInterval = null;
+  fadeProgress = 0;
+  hwmSeen = null;
+  starcubesSeriesColors = null;
+  updateLegend();
+  // Cache is NOT cleared here — keys include all params, so different
+  // group_by/measure/filters produce different keys naturally. Switching
+  // back to a previous param set hits the cache with zero server requests.
+  if (pushHistory) history.pushState(null, '', '?' + buildHistoryParams().toString());
+  autoFetch();
+}
+
+form.elements.group_by.addEventListener('change', () => { lowerHalf.clear(); resetAndFetch(); });
+form.elements.measure.addEventListener('change', () => resetAndFetch());
+
+window.addEventListener('popstate', async () => {
+  applyUrlParams();
+  if (form.elements.name.value) resetAndFetch(false);
+});
+
+(async () => {
+  showLoadingOverlay();
+  try {
+    const sources = await loadSources();
+    if (!sources.length) { hideLoadingOverlay(); setInfo('no datasources — seed one first', true); return; }
+    const wantedName = new URLSearchParams(location.search).get('name');
+    if (wantedName && sources.some(s => s.name === wantedName)) {
+      form.elements.name.value = wantedName;
+      setActiveSourceTab(wantedName);
+    }
+    await loadMeta(form.elements.name.value);
+    applyUrlParams();
+    if (!ts) initTs();
+    gatherParams();
+    autoFetch();
+  } catch (e) {
+    hideLoadingOverlay();
+    setInfo('init failed: ' + e.message, true);
+  }
+})();
+
+/* starcubes-info-loading-indicator */
+// Determinate progress bar on the #info status line. While chart data is
+// loading, fill it left-to-right in proportion to how much of the visible
+// viewport is already covered by loaded blocks. We wrap fetchRange (the one
+// chokepoint for bar-data requests) and recompute coverage after each block
+// settles; loadedBlocks is updated synchronously inside fetchRange, so the
+// fraction has advanced by the time the await resolves. State lives in
+// inline CSS vars, not classes, because setInfo() resets #info.className.
+//
+// Visibility is gated separately from the ref-count, by a show delay and a
+// minimum-visible duration: follow mode drives autoFetch (wrapped here as
+// _autoFetchOnce, its actual per-tick body) every 300 ms via
+// scheduleViewportChange's throttle, and most of those settle in well under
+// that — an ungated ref-count strobed the bar 3x/second. A real multi-block
+// load (zoom-out, source switch, cold cache) exceeds the delay and shows
+// steadily; once shown it can't blink back off inside MIN_VISIBLE_MS.
+(function () {
+  const infoEl = document.getElementById('info');
+  let _infoLoadDepth = 0;
+  const SHOW_DELAY_MS = 400;
+  const MIN_VISIBLE_MS = 500;
+  let _showTimer = null;
+  let _hideTimer = null;
+  let _shown = false;
+  let _shownAt = 0;
+
+  function _vpCoverage() {
+    try {
+      const vp = currentViewport;
+      if (!vp || !(vp.tmax > vp.tmin)) return 0;
+      const from = vp.tmin / 1000, to = vp.tmax / 1000;
+      const span = to - from;
+      let gap = 0;
+      // Coverage of the primary tier — the one being fetched for this zoom.
+      const gaps = (typeof rangeGaps === 'function' && currentInterval)
+        ? rangeGaps(from, to, currentInterval) : [];
+      for (const g of gaps) {
+        // rangeGaps() returns [from, to] arrays, not {from,to} objects.
+        const a = Math.max(g[0], from), b = Math.min(g[1], to);
+        if (b > a) gap += b - a;
+      }
+      return Math.min(1, Math.max(0, 1 - gap / span));
+    } catch (e) { return 0; }
+  }
+
+  function _show() {
+    if (_shown || !infoEl) return;
+    _shown = true;
+    _shownAt = Date.now();
+    infoEl.style.setProperty('--info-load-opacity', '1');
+  }
+
+  function _hide() {
+    _shown = false;
+    if (infoEl) infoEl.style.setProperty('--info-load-opacity', '0');
+  }
+
+  // Updates --info-progress unconditionally (cheap, and keeps the bar's
+  // position current for whenever it does become visible), then reconciles
+  // show/hide state against the grace delay and minimum-visible window.
+  function _render(snap) {
+    if (!infoEl) return;
+    const cov = _vpCoverage();
+    if (snap) infoEl.style.setProperty('--info-anim', '0s');
+    infoEl.style.setProperty('--info-progress', Math.round(cov * 100) + '%');
+    if (snap) { void infoEl.offsetWidth; infoEl.style.setProperty('--info-anim', '.25s'); }
+    if (_infoLoadDepth === 0 || cov >= 0.999) {
+      if (_showTimer) { clearTimeout(_showTimer); _showTimer = null; }
+      if (_shown) {
+        const remain = MIN_VISIBLE_MS - (Date.now() - _shownAt);
+        if (remain > 0) {
+          if (!_hideTimer) _hideTimer = setTimeout(() => { _hideTimer = null; _hide(); }, remain);
+        } else {
+          _hide();
+        }
+      }
+    }
+  }
+
+  // Wrap an async function so the indicator stays visible for its whole
+  // duration: bump the depth counter on entry, drop it on settle, re-render
+  // coverage each time. Ref-counted so nested wrapped calls (_autoFetchOnce →
+  // fetchRange) keep the bar up across the entire multi-block sequence
+  // instead of flickering between sequential block fetches.
+  function _wrapLoading(orig) {
+    return async function (...args) {
+      const starting = _infoLoadDepth === 0;
+      _infoLoadDepth++;
+      if (starting) {
+        // A load just started somewhere further up a still-visible bar's
+        // min-visible window shouldn't hide out from under it — cancel any
+        // pending hide so the two loads read as one continuous bar.
+        if (_hideTimer) { clearTimeout(_hideTimer); _hideTimer = null; }
+        if (!_showTimer) {
+          _showTimer = setTimeout(() => {
+            _showTimer = null;
+            if (_infoLoadDepth > 0) _show();
+          }, SHOW_DELAY_MS);
+        }
+      }
+      _render(starting);
+      try {
+        return await orig.apply(this, args);
+      } finally {
+        _infoLoadDepth = Math.max(0, _infoLoadDepth - 1);
+        _render(false);
+      }
+    };
+  }
+
+  if (typeof _autoFetchOnce === 'function') _autoFetchOnce = _wrapLoading(_autoFetchOnce);
+  if (typeof fetchRange === 'function') fetchRange = _wrapLoading(fetchRange);
+})();
+
+// ── Query console ───────────────────────────────────────────────────────
+//
+// Ad-hoc read-only SQL against the warehouse schema of the current source.
+// Everything here is null-guarded on #query-panel, which only renders for an
+// authenticated user — anonymous visitors get no button and no panel.
+//
+// Geometry (position, size, open state, history collapsed) lives in
+// localStorage under 'starcubes-query-panel', same as the other per-browser
+// prefs. The *history* is per user and server-side; only the chrome is local.
+(function () {
+  const panel = document.getElementById('query-panel');
+  const toggle = document.getElementById('query-toggle');
+  if (!panel || !toggle) return;
+
+  const QUERY_RUN_URL     = "{% url 'viz:query_run' %}";
+  const QUERY_CANCEL_URL  = "{% url 'viz:query_cancel' %}";
+  const QUERY_HISTORY_URL = "{% url 'viz:query_history' %}";
+  const QUERY_HDEL_URL    = "{% url 'viz:query_history_delete' %}";
+  const STORE_KEY = 'starcubes-query-panel';
+
+  const sqlBox      = document.getElementById('query-sql');
+  const runBtn      = document.getElementById('query-run');
+  const cancelBtn   = document.getElementById('query-cancel');
+  const statusEl    = document.getElementById('query-status');
+  const titleEl     = document.getElementById('query-title');
+  const resultTable = document.getElementById('query-table');
+  const histToggle  = document.getElementById('query-history-toggle');
+  const histWrap    = document.getElementById('query-history-wrap');
+  const histTable   = document.getElementById('query-history-table');
+
+  let state = { open: false, historyOpen: false, left: null, top: null,
+                width: null, height: null };
+  try { Object.assign(state, JSON.parse(localStorage.getItem(STORE_KEY) || '{}')); }
+  catch (e) { /* corrupt entry — fall back to defaults */ }
+  const saveState = () => {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) {}
+  };
+
+  let running = null;        // { token, abort } while a query is in flight
+  let historyLoaded = false;
+
+  // ── CSRF + POST helper ────────────────────────────────────────────────
+  // chart.html was GET-only before this panel; these mirror the helpers in
+  // sources/base.html rather than inventing a second convention.
+  function csrfToken() {
+    const m = document.cookie.match(/csrftoken=([^;]+)/);
+    if (m) return m[1];
+    const input = panel.querySelector('input[name=csrfmiddlewaretoken]');
+    return input ? input.value : '';
+  }
+
+  async function postForm(url, data, signal) {
+    const body = new URLSearchParams(data);
+    const r = await fetch(url, {
+      method: 'POST', signal,
+      headers: { 'X-CSRFToken': csrfToken(),
+                 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+    if (r.status === 403) {
+      let msg = 'not logged in, or the session expired — reload the page';
+      try { msg = (await r.json()).error || msg; } catch (e) {}
+      throw new Error(msg);
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  // GET parallel of postForm — no CSRF, no body. /chart/sql is the only GET
+  // the panel fires; the rest of the console endpoints are POST.
+  async function getJson(url) {
+    const r = await fetch(url);
+    if (r.status === 403) {
+      let msg = 'session expired — reload the page';
+      try { msg = (await r.json()).error || msg; } catch (_) {}
+      throw new Error(msg);
+    }
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return r.json();
+  }
+
+  // ── Panel geometry ────────────────────────────────────────────────────
+  function clampIntoViewport() {
+    const w = panel.offsetWidth || 640, h = panel.offsetHeight || 460;
+    const left = Math.max(0, Math.min(window.innerWidth  - w, state.left ?? 60));
+    const top  = Math.max(0, Math.min(window.innerHeight - h, state.top  ?? 120));
+    panel.style.left = left + 'px';
+    panel.style.top  = top  + 'px';
+    state.left = left; state.top = top;
+  }
+
+  function applyGeometry() {
+    if (state.width)  panel.style.width  = state.width;
+    if (state.height) panel.style.height = state.height;
+    if (state.historyOpen) histWrap.classList.add('open');
+    histToggle.innerHTML = 'History ' + (state.historyOpen ? '▾' : '▸');
+  }
+
+  function setOpen(open) {
+    state.open = open;
+    panel.classList.toggle('open', open);
+    toggle.classList.toggle('active', open);
+    if (open) {
+      clampIntoViewport();
+      if (!historyLoaded) loadHistory();
+      updateTitle();
+      sqlBox.focus();
+    }
+    saveState();
+  }
+
+  applyGeometry();
+  if (state.open) setOpen(true);
+
+  // The native resize gripper writes inline width/height — just read them back.
+  if (window.ResizeObserver) {
+    let pending = null;
+    new ResizeObserver(() => {
+      clearTimeout(pending);
+      pending = setTimeout(() => {
+        if (!panel.classList.contains('open')) return;
+        state.width  = panel.style.width  || state.width;
+        state.height = panel.style.height || state.height;
+        saveState();
+      }, 200);
+    }).observe(panel);
+  }
+  window.addEventListener('resize', () => {
+    if (panel.classList.contains('open')) { clampIntoViewport(); saveState(); }
+  });
+
+  // Drag by the header — same pointer-capture shape as the drill modal.
+  const header = document.getElementById('query-header');
+  let drag = null;
+  header.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    drag = { dx: e.clientX - panel.offsetLeft, dy: e.clientY - panel.offsetTop };
+    header.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  header.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const w = panel.offsetWidth, h = panel.offsetHeight;
+    state.left = Math.max(0, Math.min(window.innerWidth  - w, e.clientX - drag.dx));
+    state.top  = Math.max(0, Math.min(window.innerHeight - h, e.clientY - drag.dy));
+    panel.style.left = state.left + 'px';
+    panel.style.top  = state.top  + 'px';
+  });
+  header.addEventListener('pointerup', (e) => {
+    if (!drag) return;
+    drag = null;
+    header.releasePointerCapture(e.pointerId);
+    saveState();
+  });
+
+  // starcubesParams is a top-level `let` declared far above this block;
+  // it is always initialized by the time any handler here runs.
+  function sourceName() { return (starcubesParams && starcubesParams.name) || ''; }
+
+  function updateTitle() {
+    const name = sourceName();
+    titleEl.textContent = name ? 'Query — ' + name : 'Query';
+  }
+
+  // ── Status line ───────────────────────────────────────────────────────
+  function setStatus(msg, isErr) {
+    statusEl.textContent = msg || '';
+    statusEl.classList.toggle('err', !!isErr);
+  }
+
+  // ── Results ───────────────────────────────────────────────────────────
+  const NUMERIC = /^-?[\d.,]+$/;
+
+  function renderResults(data) {
+    resultTable.replaceChildren();
+    if (!data.columns.length) return;
+    const thead = document.createElement('thead');
+    const hrow = document.createElement('tr');
+    for (const c of data.columns) {
+      const th = document.createElement('th');
+      th.textContent = c;          // never innerHTML: column names are data too
+      hrow.appendChild(th);
+    }
+    thead.appendChild(hrow);
+    resultTable.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    for (const row of data.rows) {
+      const tr = document.createElement('tr');
+      for (const v of row) {
+        const td = document.createElement('td');
+        if (v === null || v === undefined) {
+          const span = document.createElement('span');
+          span.className = 'q-null';
+          span.textContent = 'NULL';
+          td.appendChild(span);
+        } else {
+          const text = typeof v === 'object' ? JSON.stringify(v) : String(v);
+          // textContent, not innerHTML — warehouse values are arbitrary
+          // strings and would otherwise be an XSS vector in our own page.
+          td.textContent = text;
+          td.title = text;
+          if (NUMERIC.test(text)) td.className = 'q-num';
+        }
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    resultTable.appendChild(tbody);
+  }
+
+  // ── Run / cancel ──────────────────────────────────────────────────────
+  function setRunning(on) {
+    runBtn.disabled = on;
+    cancelBtn.disabled = !on;
+  }
+
+  async function runQuery() {
+    if (running) return;
+    const sql = sqlBox.value.trim();
+    if (!sql) { setStatus('nothing to run', true); return; }
+
+    const token = [...crypto.getRandomValues(new Uint8Array(8))]
+      .map(b => b.toString(16).padStart(2, '0')).join('');
+    running = { token, abort: new AbortController() };
+    setRunning(true);
+    setStatus('running…');
+
+    try {
+      const data = await postForm(QUERY_RUN_URL, {
+        name: sourceName(),
+        sql, token,
+      }, running.abort.signal);
+
+      if (!data.ok) {
+        renderResults({ columns: [], rows: [] });
+        setStatus(data.error || 'query failed', !data.cancelled);
+      } else {
+        renderResults(data);
+        const note = data.truncated
+          ? `first ${data.row_count} rows (truncated)`
+          : `${data.row_count} row${data.row_count === 1 ? '' : 's'}`;
+        setStatus(`${note} · ${data.elapsed_ms} ms`);
+      }
+      loadHistory();
+    } catch (e) {
+      if (e.name !== 'AbortError') setStatus(e.message, true);
+    } finally {
+      running = null;
+      setRunning(false);
+    }
+  }
+
+  async function cancelQuery() {
+    if (!running) return;
+    const { token, abort } = running;
+    setStatus('cancelling…');
+    // Server first: aborting the fetch alone does nothing to the backend —
+    // uWSGI never notices the dropped client, and the query would keep going
+    // until statement_timeout. The order is the whole point.
+    try {
+      const data = await postForm(QUERY_CANCEL_URL, { token });
+      if (data.ok && !data.cancelled) setStatus('nothing was running');
+    } catch (e) {
+      setStatus('cancel failed: ' + e.message, true);
+    }
+    abort.abort();
+  }
+
+  // ── History ───────────────────────────────────────────────────────────
+  function oneLine(sql) { return sql.replace(/\s+/g, ' ').trim(); }
+
+  // Index of the highlighted history row, -1 for none. The scroll container
+  // owns focus (one tab stop); this is the caret inside it.
+  let histIndex = -1;
+
+  function histRows() { return [...histTable.querySelectorAll('tr[data-id]')]; }
+
+  function selectHistory(i, { scroll = true } = {}) {
+    const rows = histRows();
+    if (!rows.length) { histIndex = -1; return; }
+    histIndex = Math.max(0, Math.min(rows.length - 1, i));
+    rows.forEach((tr, n) => {
+      const on = n === histIndex;
+      tr.classList.toggle('sel', on);
+      tr.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    const row = rows[histIndex];
+    // 'nearest' so stepping through a long list scrolls by one row rather
+    // than yanking the selection to the middle of the box.
+    if (scroll) row.scrollIntoView({ block: 'nearest' });
+  }
+
+  function loadSelectedHistory() {
+    const row = histRows()[histIndex];
+    if (!row) return;
+    sqlBox.value = row.dataset.sql;
+    sqlBox.focus();
+    sqlBox.setSelectionRange(sqlBox.value.length, sqlBox.value.length);
+  }
+
+  async function deleteHistoryRow(tr) {
+    try {
+      await postForm(QUERY_HDEL_URL, { id: tr.dataset.id });
+      const wasAt = histRows().indexOf(tr);
+      tr.remove();
+      const rows = histRows();
+      if (!rows.length) { renderHistory([]); histIndex = -1; return; }
+      // Keep the caret where the deleted row was, so repeated Delete walks
+      // down the list instead of jumping back to the top.
+      selectHistory(Math.min(wasAt, rows.length - 1));
+    } catch (err) {
+      setStatus('delete failed: ' + err.message, true);
+    }
+  }
+
+  function renderHistory(entries) {
+    histTable.replaceChildren();
+    histIndex = -1;
+    if (!entries.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.className = 'q-hist-empty';
+      td.textContent = 'no queries yet for this source';
+      tr.appendChild(td);
+      histTable.appendChild(tr);
+      return;
+    }
+    for (const e of entries) {
+      const tr = document.createElement('tr');
+      tr.dataset.id = e.id;
+      tr.dataset.sql = e.sql;
+      tr.setAttribute('role', 'option');
+
+      const tdSql = document.createElement('td');
+      tdSql.className = 'q-hist-sql';
+      const flat = oneLine(e.sql);
+      tdSql.textContent = flat.length > 90 ? flat.slice(0, 90) + '…' : flat;
+      tdSql.title = e.sql;
+
+      const tdDate = document.createElement('td');
+      tdDate.className = 'q-hist-date';
+      tdDate.textContent = new Date(e.last_run_at).toLocaleString();
+
+      const tdDel = document.createElement('td');
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.className = 'q-hist-del';
+      del.title = 'Remove from history';
+      del.textContent = '×';
+      tdDel.appendChild(del);
+
+      tr.append(tdSql, tdDate, tdDel);
+      histTable.appendChild(tr);
+    }
+  }
+
+  async function loadHistory() {
+    const name = sourceName();
+    if (!name) return;
+    try {
+      const p = new URLSearchParams({ name });
+      const r = await fetch(QUERY_HISTORY_URL + '?' + p.toString());
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data.ok) { renderHistory(data.entries); historyLoaded = true; }
+    } catch (e) { /* history is a convenience — stay silent */ }
+  }
+
+  // One delegated handler, delete-button check first (same shape as the
+  // drill-body delegation). Single-click only selects — focus stays in the
+  // listbox so the user can page through history without re-acquiring the
+  // textarea on every click. Double-click loads and runs.
+  histTable.addEventListener('click', (e) => {
+    const tr = e.target.closest('tr');
+    if (!tr || !tr.dataset.id) return;
+    if (e.target.closest('.q-hist-del')) { deleteHistoryRow(tr); return; }
+    selectHistory(histRows().indexOf(tr), { scroll: false });
+  });
+  histTable.addEventListener('dblclick', async (e) => {
+    const tr = e.target.closest('tr');
+    if (!tr || !tr.dataset.id) return;
+    if (e.target.closest('.q-hist-del')) { await deleteHistoryRow(tr); return; }
+    selectHistory(histRows().indexOf(tr), { scroll: false });
+    loadSelectedHistory();
+    runQuery();
+  });
+
+  // Arrow-key navigation. Bound to the scroll container so it only fires when
+  // the list actually has focus — the SQL editor's own Up/Down must keep
+  // moving the caret between lines.
+  histWrap.addEventListener('keydown', (e) => {
+    const rows = histRows();
+    if (!rows.length) return;
+    switch (e.key) {
+      case 'ArrowDown': e.preventDefault(); selectHistory(histIndex < 0 ? 0 : histIndex + 1); break;
+      case 'ArrowUp':   e.preventDefault(); selectHistory(histIndex < 0 ? rows.length - 1 : histIndex - 1); break;
+      case 'Home':      e.preventDefault(); selectHistory(0); break;
+      case 'End':       e.preventDefault(); selectHistory(rows.length - 1); break;
+      case 'Enter':     e.preventDefault(); loadSelectedHistory(); break;
+      case 'Delete':
+      case 'Backspace':
+        if (histIndex >= 0) { e.preventDefault(); deleteHistoryRow(rows[histIndex]); }
+        break;
+      case 'Tab':
+        break;  // let focus leave normally
+      default:
+        break;
+    }
+  });
+
+  // Entering the list with nothing selected starts at the top, so the first
+  // arrow press moves rather than merely establishing a caret.
+  histWrap.addEventListener('focus', () => {
+    if (histIndex < 0 && histRows().length) selectHistory(0);
+  });
+
+  histToggle.addEventListener('click', () => {
+    state.historyOpen = !state.historyOpen;
+    histWrap.classList.toggle('open', state.historyOpen);
+    histToggle.innerHTML = 'History ' + (state.historyOpen ? '▾' : '▸');
+    if (state.historyOpen && !historyLoaded) loadHistory();
+    if (state.historyOpen) histWrap.focus();
+    saveState();
+  });
+
+  // ── Wiring ────────────────────────────────────────────────────────────
+  toggle.addEventListener('click', () => setOpen(!panel.classList.contains('open')));
+  document.getElementById('query-close').addEventListener('click', () => setOpen(false));
+  runBtn.addEventListener('click', runQuery);
+  cancelBtn.addEventListener('click', cancelQuery);
+
+  // Copy the SQL behind the active chart legend into the editor (no run).
+  // The server builds it via core.query.build_chart_legend_sql — the
+  // legend-aligned counterpart of build_chart_sql, the helper that backs
+  // timeseries_multibar and timeseries_quantiles — using the same joins and
+  // filter tree, but aggregating per series across the whole time window so
+  // the result returns one row per series, matching what updateLegend()
+  // displays. Its series column also carries the *displayed* label: the
+  // dim name, or the group name for :grouped. We fetch plots with
+  // series_label=source_id and translate here in _resolveDimName(), which a
+  // statement pasted into the console cannot do.
+  chartSqlBtn.addEventListener('click', async () => {
+    if (chartSqlBtn.disabled) return;
+    gatherParams();
+    const p = buildHistoryParams();
+    if (typeof currentInterval === 'number') p.set('interval', currentInterval);
+    try {
+      const data = await getJson(CHART_SQL_URL + '?' + p.toString());
+      if (data.ok && typeof data.sql === 'string') {
+        sqlBox.value = data.sql;
+        sqlBox.focus();
+        sqlBox.setSelectionRange(sqlBox.value.length, sqlBox.value.length);
+        setStatus('copied chart SQL');
+      } else {
+        setStatus(data.error || 'no SQL available', true);
+      }
+    } catch (e) {
+      setStatus('chart SQL failed: ' + e.message, true);
+    }
+  });
+  sqlBox.addEventListener('keydown', (e) => {
+    // Ctrl/Cmd+Enter only. Plain Enter — and Shift+Enter, which a textarea
+    // treats identically — stay available for typing multi-line SQL.
+    if (e.key !== 'Enter') return;
+    if (e.ctrlKey || e.metaKey) { e.preventDefault(); runQuery(); }
+  });
+  // Escape is deliberately NOT wired: the global keydown handler closes the
+  // drill modal, and hanging the panel off it would silently discard a
+  // half-typed query. The × is the only close affordance.
+
+  // Called from setActiveSource — the history is filtered per datasource and
+  // results from the old source would be misleading under the new title.
+  window.onQuerySourceChanged = function () {
+    updateTitle();
+    renderResults({ columns: [], rows: [] });
+    setStatus('');
+    historyLoaded = false;
+    if (panel.classList.contains('open') || state.historyOpen) loadHistory();
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,139 @@
+{% extends "sources/base.html" %}
+{% block title %}Edit {{ ds.name }} — starcubes{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <a href="{% url 'sources:detail' ds.id %}" class="text-muted" style="font-size:13px">← {{ ds.name }}</a>
+  <h1 class="page-title">Edit Datasource</h1>
+</div>
+
+<form method="post" action="{% url 'sources:edit' ds.id %}">
+  {% csrf_token %}
+  <div class="card">
+    <div class="card-header"><span class="card-title">Identity</span></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Name <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" name="name" required value="{{ ds.name }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Schema Name <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" name="schema_name" required value="{{ ds.schema_name }}">
+          <div class="form-hint">Renaming does not rename the Postgres schema</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Dialect <span style="color:var(--danger)">*</span></label>
+          <select class="form-control" name="source_dialect">
+            {% for d in dialects %}<option {% if d == ds.source_dialect %}selected{% endif %}>{{ d }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">Source Connection</span></div>
+    <div class="card-body">
+      <div class="form-group">
+        <label class="form-label">Source DSN <span style="color:var(--danger)">*</span></label>
+        <input class="form-control" name="source_dsn" type="password" required value="{{ ds.source_dsn }}">
+        <div class="form-hint">SQLAlchemy connection URL. Current value shown as-is (contains credentials).</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Import Query</label>
+        <textarea class="form-control" name="import_query">{{ ds.import_query|default:'' }}</textarea>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Base Table</label>
+          <input class="form-control" name="base_table" value="{{ ds.base_table|default:'' }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Small Window Hint</label>
+          <input class="form-control" name="small_window_hint" value="{{ ds.small_window_hint|default:'' }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">Watermark &amp; Partitioning</span></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Watermark Column <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" name="watermark_column" required value="{{ ds.watermark_column }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Partition Column <span style="color:var(--danger)">*</span></label>
+          <input class="form-control" name="partition_column" required value="{{ ds.partition_column }}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Partition Period</label>
+          <select class="form-control" name="partition_period"{% if period_locked %} disabled{% endif %}>
+            {% for opt in partition_periods %}
+              <option value="{{ opt }}"{% if opt == ds.partition_period %} selected{% endif %}>{{ opt }}</option>
+            {% endfor %}
+          </select>
+          {% if period_locked %}
+            <input type="hidden" name="partition_period" value="{{ ds.partition_period }}">
+            <div class="form-hint">Locked: fact partitions already exist. Drop the warehouse schema to change.</div>
+          {% else %}
+            <div class="form-hint">Granularity of fact RANGE partitions. Cannot be changed once partitions exist.</div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Watermark Max Query</label>
+        <textarea class="form-control" name="watermark_max_query">{{ ds.watermark_max_query|default:'' }}</textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">ETL Performance</span></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Chunk Size</label>
+          <input class="form-control" name="chunksize" type="number" value="{{ ds.chunksize }}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Transform Processes</label>
+          <input class="form-control" name="transform_procs" type="number" value="{{ ds.transform_procs }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">Display Settings</span></div>
+    <div class="card-body">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Interval Ladder</label>
+          <input class="form-control" name="interval_ladder" value="{{ ds.interval_ladder_str }}">
+          <div class="form-hint">Comma-separated seconds</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Bar Pixel Target</label>
+          <input class="form-control" name="bar_pixel_target" type="number" step="0.1" value="{{ ds.bar_pixel_target }}">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">PK Format</label>
+        <input class="form-control" name="pk_format" value="{{ ds.pk_format|default:'' }}">
+        <div class="form-hint">Python format string for PK display in chart drill-down. Use {0} as placeholder. Example: &lt;a href="https://portal.example.com/txn/{0:012d}"&gt;{0:012d}&lt;/a&gt;</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">Save Changes</button>
+    <a class="btn btn-secondary" href="{% url 'sources:detail' ds.id %}">Cancel</a>
+  </div>
+</form>
+{% endblock %}

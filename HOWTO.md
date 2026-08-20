@@ -1,0 +1,795 @@
+# starcubes How-to
+
+Guide to using the starcubes GUI and configuring datasources. For architecture
+and internals, see `README.md` and `CLAUDE.md`.
+
+## Table of contents
+
+- [Sources GUI](#sources-gui)
+  - [Login](#login)
+  - [Datasource list](#datasource-list)
+  - [Creating a datasource](#creating-a-datasource)
+  - [Tab: Basics](#tab-basics)
+  - [Tab: Fact Columns](#tab-fact-columns)
+  - [Tab: Dimensions](#tab-dimensions)
+  - [Tab: Dim Data](#tab-dim-data)
+  - [Tab: Group Dims](#tab-group-dims)
+  - [Tab: Indices](#tab-indices)
+  - [Tab: ETL History](#tab-etl-history)
+  - [Tab: ETL Commands](#tab-etl-commands)
+  - [Tab: Storage](#tab-storage)
+  - [Tab: ETL Log](#tab-etl-log)
+  - [Editing and deleting a datasource](#editing-and-deleting-a-datasource)
+- [Source configuration reference](#source-configuration-reference)
+  - [Identity fields](#identity-fields)
+  - [Source connection fields](#source-connection-fields)
+  - [Watermark and partitioning fields](#watermark-and-partitioning-fields)
+  - [ETL performance fields](#etl-performance-fields)
+  - [Fact column fields](#fact-column-fields)
+  - [Dimension fields](#dimension-fields)
+  - [Index fields](#index-fields)
+- [Chart GUI](#chart-gui)
+  - [Source tabs](#source-tabs)
+  - [Control bar](#control-bar)
+  - [Filters](#filters)
+  - [Follow mode](#follow-mode)
+  - [Keyboard shortcuts](#keyboard-shortcuts)
+  - [Legend](#legend)
+  - [Drill-down](#drill-down)
+  - [Query console](#query-console)
+  - [Preferences](#preferences)
+  - [URL state and bookmarks](#url-state-and-bookmarks)
+
+---
+
+## Sources GUI
+
+The Sources GUI lives at `/sources/`. It provides full CRUD for datasources,
+ETL monitoring, and warehouse inspection — all without Django ORM (pure
+SQLAlchemy against `starcubes_meta`).
+
+### Login
+
+`/sources/` and `/admin/` require authentication. The chart page at `/` is
+public, but per-user preferences (bar pixel target) require login. Create a
+superuser with `manage.py createsuperuser`, then log in at `/login/`.
+`RequireLoginMiddleware` enforces authentication; logging out redirects back
+to the login page.
+
+### Datasource list
+
+`/sources/` shows a card with one row per datasource:
+
+| Column | Description |
+|--------|-------------|
+| Name | Links to the detail page |
+| Dialect | Oracle, PostgreSQL, MySQL, or MSSQL (green if connection OK, red if failed) |
+| Schema | Postgres schema name (`starcubes_<name>`) |
+| Last Run | Status badge: green check (ok), red X (failed), pulsing dot (running), grey dash (never). Timestamps shown in local timezone. |
+| Rows | Total rows from last successful ETL |
+| Actions | View button (links to detail) |
+
+Connection status badges auto-check each source DB on page load. While any
+ETL is running, the page polls every 3 seconds and updates the status badge
+automatically.
+
+### Creating a datasource
+
+Click **+ New Datasource** on the list page. The form has four cards:
+
+#### Identity
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| Name | yes | Short identifier used in URLs and schema names (e.g. `mydb`) |
+| Schema Name | yes | Postgres schema for warehouse tables (e.g. `starcubes_mydb`) |
+| Dialect | yes | Source database dialect: `oracle`, `postgresql`, `mysql`, or `mssql` |
+
+#### Source Connection
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| Source DSN | yes | SQLAlchemy connection URL for the source database (shown as password field) |
+| Import Query | no | Full `SELECT ... FROM ...` without a WHERE clause. Leave blank and set Base Table to auto-compose. |
+| Base Table | no | FROM table used when Import Query is blank. Also used for the default watermark-max query. |
+| Small Window Hint | no | Dialect-specific SQL hint injected after `SELECT` for small-window loads (e.g. `/*+ ORDERED INDEX(txn, TXN3) */` for Oracle) |
+
+#### Watermark & Partitioning
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| Watermark Column | yes | Source-side column used for incremental ETL boundaries (e.g. `end_time`) |
+| Partition Column | yes | Fact column used for monthly RANGE partitioning (usually the same as the time column) |
+| Watermark Max Query | no | Custom `SELECT max(<wm>) FROM ...` query. Defaults to `SELECT max(<wm>) FROM <base_table>`. |
+
+#### ETL Performance
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| Chunk Size | no | Rows per extract chunk (default 10 000) |
+| Transform Processes | no | Parallel transform workers (default 1) |
+| Interval Ladder | no | Comma-separated seconds, finest to coarsest (default `1,60,3600,86400`). Controls which bar intervals the chart offers. |
+| Bar Pixel Target | no | Minimum bar width in pixels for auto-interval selection (default 5) |
+
+Click **Create Datasource** to save. You are redirected to the detail page.
+
+#### Seed Data
+
+The create form has a **Seed Data** card with a checkbox:
+
+- **Preload example Oracle configuration** — inserts 19 fact columns, 14
+  dimensions, and 1 index for the bundled Oracle payment-transaction example.
+  Only select this if your source dialect is Oracle (the seed data uses
+  Oracle-specific SQL like `to_number`, `nvl`, `extract`). A warning appears
+  if the dialect is not Oracle while the checkbox is checked.
+
+### Tab: Basics
+
+Read-only display of all 14 datasource fields (see
+[Source configuration reference](#source-configuration-reference)). Click
+**Edit** to go to the edit form. The dialect badge shows the connection status
+(green = reachable, red = unreachable) — checked on page load.
+
+**Preview Import** button on the Basics tab header runs the import query with
+`LIMIT 5` (or `ROWNUM <= 5` for Oracle) and shows the first 5 rows in a
+collapsible table below.
+
+### Tab: Fact Columns
+
+A data table with one row per fact column. Each row shows:
+
+- **Ordinal** — display/SELECT order
+- **Name** — column name in the warehouse fact table
+- **PG Type** — Postgres type (`smallint`, `bigint`, `integer`, `timestamptz`, `text`, `real`, `double precision`, `boolean`)
+- **Role** — `time`, `measure`, `dimension`, or `pk`
+- **Source Expr** — SQL projection in the source database; used to compose the import query when Base Table is set
+- **Actions** — edit (pencil) and delete (X) icons
+
+Click the pencil icon to toggle inline edit mode. The row becomes editable
+with Save/Cancel buttons. Delete asks for confirmation.
+
+For columns with role `dimension` that have no dimension table entry yet, a
+**cardinality** button appears — it estimates distinct values over the last
+24 hours to help decide whether the column belongs in a dim table (max 32 767
+values).
+
+**Add row**: the form at the bottom lets you add a new fact column with
+ordinal, name, PG type, role, and source expression. All changes happen via
+JSON POST — no page reload.
+
+### Tab: Dimensions
+
+**Import Dims** button in the tab header calls `import_dimensions` — populates
+or refreshes all dimension tables from the source DB (or inline CSV values).
+
+A data table with one row per dimension mapping:
+
+- **Fact Column** — which fact column this dim maps to
+- **Dim Table** — warehouse dimension table name
+- **Source Table / Key / Name / Desc** — source-side lookup table and columns
+- **Primary** — whether this row drives DDL and dim import (exactly one per dim table)
+- **Inline Values** — CSV lines (`source_id,name[,description]`). Lines starting with `#` are comments.
+- **Actions** — edit and delete
+
+**Mutual exclusivity**: Source fields (Source Table, Key, Name, Desc) and
+Inline Values are mutually exclusive. Typing in Inline Values disables and
+clears the source fields, and vice versa.
+
+- **Source-backed dimensions**: populate from a lookup table in the source
+  DB (e.g. `peer` table with columns `peer_id`, `peer_name`, `peer_desc`).
+- **Inline dimensions**: populate from a fixed CSV value set stored in
+  `inline_values`. Ideal for small enumerations like currency codes that
+  have no source lookup table (e.g. `978,EUR,Euro`).
+
+When multiple fact columns share one dim table, mark exactly one as Primary.
+The primary row drives DDL creation and dimension import; the others just
+link their fact column to the dim table for the transform stage.
+
+**Add row**: same fields as the edit form. All mutations via JSON POST.
+
+### Tab: Dim Data
+
+Lazy-loaded when you click the tab. Shows sub-tabs — one per primary
+dimension table, labeled `dim_table <-- fact_column` (inline dimensions
+get an "inline" badge). Each sub-tab loads on first click and displays:
+
+| Column | Description |
+|--------|-------------|
+| Index | `smallserial` primary key in the dim table |
+| Source ID | Original source identifier |
+| Name | Human-readable name |
+| Description | Description text |
+| Count | Approximate total fact rows referencing this value (refreshed after ETL) |
+
+If the dim table has not been created yet (Import Dims has not been run), the
+sub-tab shows "Table not yet created".
+
+### Tab: Group Dims
+
+**Requires login.** This tab is only visible to authenticated users.
+
+A **group dimension** buckets the values of one native dimension into named
+groups, so the chart can break down by "Approved / Declined / (other)" instead
+of by 1 200 individual response codes. A dimension can carry arbitrarily many
+of them — `peer` grouped by country *and* by peer type, side by side — and the
+same dim value may be used in each of them.
+
+The tab is split: the list of existing group dimensions on the left, the editor
+for the selected one on the right.
+
+1. **Create one**: click **+ New group dimension**. The editor opens with
+
+   - a **Name** — this is what the chart's Group By and filter dropdowns show.
+     It is preset to `<dimension> (grouped)` and keeps following the dimension
+     dropdown until you type your own name.
+   - a **Dimension** dropdown (only dimensions with a dim table are listed).
+
+   Switching the dimension of a group dimension that already has assignments
+   clears them after a confirmation — dim indices belong to one dimension.
+
+2. **Create groups**: click **+ Add Group**. Each group has:
+   - A color swatch (click to cycle through 12 preset colors)
+   - A name input
+   - A delete button
+   - Draggable chips for assigned values
+
+3. **Assign values** by:
+   - **Drag and drop**: drag a value chip from the Unassigned zone or from
+     one group into another group's zone.
+   - **Bulk add by filter**: in the "Bulk add to group" card, pick a target
+     group, choose an operator (starts with / contains), type a filter string,
+     and click Apply. All matching values are added to the group.
+   - **Search and add**: type in the search box, select from the dropdown
+     results, and click "Add selected".
+   - **Per-group "+ Add value"**: each group zone has a popover with search
+     and checkboxes for assigning individual values.
+
+4. **Unassigned zone**: values not in any group of *this* group dimension
+   appear in a collapsible section at the bottom. Drag a chip here to remove
+   it from its group.
+
+5. **Save**: click the button to save the name and all groups atomically. The
+   name and every group name must be non-empty, and within one group dimension
+   a value cannot appear in more than one group. The confirmation shows the
+   token the chart will use, e.g. `response:grouped:approved-declined`.
+
+6. **Delete** removes the group dimension and its groups; other group
+   dimensions on the same column are untouched.
+
+Values not assigned to any group appear as "(other)" in the grouped chart view.
+
+Renaming a group dimension changes its URL token, so chart links and saved
+per-source chart state that pointed at the old name fall back to the plain
+column. Links written before group dimensions were named (`?group_by=response:grouped`)
+keep working and resolve to the column's first group dimension.
+
+
+### Tab: Indices
+
+Data table with one row per index:
+
+| Column | Description |
+|--------|-------------|
+| Column Name | Fact column to index |
+| Method | `brin`, `btree`, or `hash` |
+| Actions | Edit and delete |
+
+**Create All Indices**: builds all FK constraints and indices defined in this
+tab for the datasource. This is a one-shot operation after the first ETL
+load — re-running it on existing indices will error. (Indices are created with
+`IF NOT EXISTS` so re-running is safe if no conflicting indices exist.)
+
+**Drop All Indices**: removes all FK constraints and indices. Requires you
+to type the datasource name to confirm. Useful before a bulk re-load.
+
+Both operations show their result in the action result panel below the header.
+
+### Tab: ETL History
+
+Shows the last 20 ETL runs:
+
+| Column | Description |
+|--------|-------------|
+| ID | Run ID |
+| Status | Badge: running (pulsing), ok (green), failed (red) |
+| Started | Start timestamp |
+| Finished | Finish timestamp |
+| Window Start | First end_time in the load window |
+| Window End | Last end_time in the load window |
+| Rows | Number of rows loaded |
+| Runtime (ms) | Wall-clock duration |
+| Error | Truncated error message (hover for full text) |
+| Log | **Log** button opens that run's log file in the ETL Log tab. A failed
+run also shows a collapsible **tail** with the last ~8 KB of the log
+(readable even without shell/volume access to the container). |
+
+The table refreshes live while an ETL is running. While a run is `running`,
+the statusbar at the bottom of the page shows live per-stage throughput
+(`E … T … L …`) and queue depths (`[tq n lq n]`) read from the run's `stats`
+— the four rate columns above are only filled in once the run finishes. If
+`no progress for Ns` appears in the statusbar, the run is stalled: something
+downstream (usually the load stage) has stopped making progress. Check the
+ETL Log tab for the traceback.
+
+### Tab: ETL Commands
+
+A card-based layout with all ETL and maintenance operations:
+
+**Run ETL** — Start an incremental ETL load. Optional fields:
+- **Start** — Override the high watermark start time
+- **End** — Override the end time (skip the source max query)
+- **Limit** — Cap the maximum number of rows to import
+
+**ETL Forever** — Run ETL continuously at a fixed interval. Enter the interval
+in seconds and click **Start Forever**. The card shows the current status
+(running/stopping/stopped/failed) and the latest run result. Click **Stop
+Forever** to signal the process to stop; it finishes the current iteration and
+then exits. Only one forever session can be active per datasource.
+
+**Data Cleanup**:
+- **Delete From** — Delete all fact rows at or after a given timestamp
+- **Vacuum Analyze** — Run `VACUUM ANALYZE` on the fact table
+
+**Metadata**:
+- **Set High Watermark** — Insert an `etl_run` row with `status=ok` and
+  `last_end_time` set to `max(partition_column)` from the fact table. Useful
+  for skipping historical data that has already been loaded externally.
+- **Clear ETL History** — Delete all `etl_run` rows for the datasource.
+
+**Schema**:
+- **Create Schema** — Create the fact table, dimension tables, and initial
+  monthly partitions. Must be run before the first ETL. Refused while ETL is
+  running.
+- **Sync Schema** — Compare the physical warehouse schema with the current
+  metadata configuration. Click **Check** for a dry-run diff (added columns,
+  type changes, missing dim tables). Then select columns/dim tables to drop
+  and click **Confirm** to execute the sync. Refused while ETL is running.
+- **Create Partitions** — Create N future partitions. Rarely needed now:
+  every ETL run already ensures the partitions its load window (plus one
+  period of runway) needs before it starts, including filling in a gap left
+  by a source that's been idle a while. This button remains for pre-creating
+  further ahead than that, or for a source that hasn't run yet.
+- **Import Dimensions** — Re-import all dimension tables from the source DB
+  or inline CSV values.
+
+All actions that modify data or schema require confirmation.
+
+### Tab: Storage
+
+Shows Postgres warehouse statistics for the datasource schema:
+
+**Tables card**:
+
+| Column | Description |
+|--------|-------------|
+| Table | Table name (sortable) |
+| Total Size | Total disk usage (sortable) |
+| Data Size | Data size (excludes toast/index) |
+| Index Size | Index size |
+| Approx Rows | Estimated row count |
+| Dead Rows | Dead tuples (highlighted if > 1000 — indicates a need for VACUUM) |
+| Last Vacuum | Most recent VACUUM date |
+| Last Analyze | Most recent ANALYZE date |
+| Actions | **Truncate** and **Drop** buttons for partition tables |
+
+Click column headers to sort. Partition tables (monthly fact partitions) have
+**Truncate** (empties the partition) and **Drop** (removes the partition
+entirely) action buttons.
+
+**Indexes card**:
+
+| Column | Description |
+|--------|-------------|
+| Index | Index name (sortable) |
+| Table | Table name |
+| Method | Index method badge |
+| Size | Disk size (sortable) |
+| Unique | Whether the index is unique |
+| Scans | Number of index scans |
+| Rows Read | Tuples read via index |
+| Rows Fetched | Tuples fetched (heap fetches) |
+
+### Tab: ETL Log
+
+Tails the raw log file of a spawned ETL process — every `manage.py etl_run`
+invocation started from the GUI (single run or forever) writes its own
+timestamped file under `STARCUBES_LOG_DIR` (`/app/logs` in the container
+image; mount a volume there to keep logs across `podman rm`).
+
+- The dropdown lists this datasource's log files, newest first, each
+  labelled with the run ID and status it belongs to.
+- **Follow** (checked by default) auto-scrolls to the bottom as new lines
+  arrive.
+- **Refresh** fetches immediately instead of waiting for the next 2s poll.
+  Polling only runs while this tab is open and the selected run is still
+  active.
+- Clicking **Log** on an ETL History row jumps here with that run's file
+  preselected.
+
+If a run stalls, this is the first place to look — every 30s (tunable via
+`STARCUBES_ETL_LOG_INTERVAL_S`) the ETL writes a heartbeat line with each
+stage's throughput, the two internal queue depths, and whether each worker
+process is still alive. A worker that died shows up here with its full
+traceback even though the process itself exited silently otherwise.
+
+### Editing and deleting a datasource
+
+- **Edit**: click **Edit Basics** on the detail page header (or the Edit link
+  on the Basics tab) to open the edit form. Same four cards as the create
+  form, pre-populated with current values. Schema name changes do not rename
+  the actual Postgres schema. The Source DSN field shows the current value
+  as-is (it contains credentials).
+
+- **Delete**: click the Delete button in the header. A confirmation dialog asks
+  whether to also drop the Postgres schema. Check **Drop schema and all data**
+  to cascade-delete the warehouse schema (`DROP SCHEMA ... CASCADE`); uncheck to
+  keep the schema (you must drop it manually later). Deletion always removes
+  all metadata: fact columns, dimensions, indices, and ETL history.
+
+---
+
+## Source configuration reference
+
+This section explains what each configuration field does and how to choose
+values for a new datasource.
+
+### Identity fields
+
+**Name** — A short identifier used in URLs, the chart's `?name=` parameter,
+and as a human-readable label. Must be unique. Example: `mydb`.
+
+**Schema Name** — The Postgres schema where warehouse tables (fact + dim
+tables) are created. Must be unique. Example: `starcubes_mydb`. Changing
+this in the GUI does **not** rename an existing schema — it only changes
+where future operations look for tables.
+
+**Dialect** — The source database dialect. Determines how the ETL engine
+generates SQL (e.g. Oracle's `ROWNUM` vs. Postgres `LIMIT`, Oracle's
+`to_timestamp` format strings, etc.). One of: `oracle`, `postgresql`,
+`mysql`, `mssql`.
+
+### Source connection fields
+
+**Source DSN** — A SQLAlchemy connection URL for the source database.
+Example: `oracle+oracledb://user:pass@host:1521/SID`. The password is
+masked in the GUI. Use the **Test Connection** button to verify connectivity
+before running ETL.
+
+**Import Query** — A bare `SELECT ... FROM ...` that projects every fact
+column you want to store. Must **not** include a WHERE clause — the ETL
+engine adds the watermark range filter automatically. If left blank, the
+engine composes the query from Base Table + per-column `source_expr` values.
+
+**Base Table** — The `FROM` table used when Import Query is blank. Also used
+as the default table for `watermark_max_query` and for the **Preview Import**
+button's query. Example: `txn`.
+
+**Small Window Hint** — A dialect-specific SQL hint injected after the first
+`SELECT` when the ETL load window is within one day. For Oracle, this is
+typically `/*+ ORDERED INDEX(txn, TXN3) */` to force index usage on small
+time ranges. Leave blank for non-Oracle sources.
+
+### Watermark and partitioning fields
+
+**Watermark Column** — The source-side column used for incremental ETL
+boundaries. The ETL loads rows where this column falls in `[last_hwm,
+current_hwm)`. Typically a timestamp column like `end_time`. It does **not**
+need to be in the SELECT list — the ETL adds it to the WHERE clause
+separately.
+
+**Partition Column** — The fact column used for monthly `RANGE` partitioning.
+Usually the same as the time fact column (e.g. `end_time`). The partitioning
+is declarative — the DDL creates monthly partitions automatically.
+
+**Watermark Max Query** — An optional `SELECT max(<wm>) FROM <base_table>`
+query. If blank, the ETL uses `SELECT max(<watermark_column>) FROM
+<base_table>`. Provide a custom query when the max watermark is expensive
+to compute on the base table (e.g. when the base table is a view or has
+complex partitioning).
+
+### ETL performance fields
+
+**Chunk Size** — Number of rows per extract chunk. The ETL reads the source
+in chunks of this size, transforms each chunk in a child process, and copies
+it to the warehouse. Default: 10 000. Larger chunks reduce overhead but use
+more memory.
+
+**Transform Processes** — Number of parallel transform workers. Each worker
+receives a chunk, applies dimension lookups and type conversions, and
+serialises it for the load stage. Default: 1. Increase for CPU-bound
+transform workloads.
+
+**Interval Ladder** — Comma-separated list of bar intervals in seconds,
+finest to coarsest. The chart auto-selects an interval from this list based
+on the current zoom level and the bar pixel target. Default: `1,60,3600,86400`
+(second, minute, hour, day). Example alternatives: `60,300,3600,86400`
+(minute, 5-minute, hour, day).
+
+**Bar Pixel Target** — Minimum bar width in pixels. When the chart viewport
+changes, it picks the coarsest interval from the ladder where bars would be
+at least this wide. Default: 5. A higher value (e.g. 10) favours fewer,
+wider bars; a lower value (e.g. 2) allows more, narrower bars.
+
+### Fact column fields
+
+Each fact column defines one column in the warehouse fact table:
+
+| Field | Description |
+|-------|-------------|
+| Name | Column name in the fact table (e.g. `end_time`, `response`, `amount`) |
+| PG Type | Postgres data type. Dimension columns should be `smallint` (they store dim table indices). |
+| Role | `time` (timestamp, one per source), `pk` (primary key, one per source), `measure` (numeric value), or `dimension` (smallint FK into a dim table) |
+| Ordinal | SELECT order. Determines column position in the fact table DDL. |
+| Source Expr | SQL projection in the source DB. When Base Table is set, the import query is composed as `SELECT <source_expr>, ... FROM <base_table>`. Leave blank to use the column Name as-is. |
+
+**Important**: dimension columns with role `dimension` should use PG Type `smallint`.
+They store indices into dim tables, not raw source values. The ETL transform
+stage maps source values to dim indices. The 32 767-value ceiling is a
+deliberate tradeoff — high-cardinality columns do not belong as dimensions.
+
+**Primary key columns** (role `pk`) are used for deduplication and for the
+drill-down transaction ID feature in the chart. There should be exactly one
+pk column per source.
+
+### Dimension fields
+
+Each dimension row maps a fact column to a dimension table:
+
+| Field | Description |
+|-------|-------------|
+| Fact Column | The fact column this dimension maps to (e.g. `response` → `dim_response`) |
+| Dim Table | Warehouse dimension table name (e.g. `dim_response`). Created by Import Dims. |
+| Source Table | Lookup table in the source DB (e.g. `result`). Mutually exclusive with Inline Values. |
+| Source Key | Key column in the source table (e.g. `result_id`). Maps to `source_id` in the dim table. |
+| Source Name | Name column in the source table (e.g. `result_name`). Maps to `name` in the dim table. |
+| Source Desc | Description column in the source table. Maps to `description` in the dim table. |
+| Primary | Exactly one dimension row per dim table is primary. It drives DDL creation and dim import. Other rows with the same dim table just link their fact column. |
+| Inline Values | CSV lines: `source_id,name[,description]`. Lines starting with `#` are comments. Mutually exclusive with Source Table. |
+
+**Source-backed vs. inline**:
+
+- **Source-backed**: set Source Table, Key, Name, Desc. Import Dims reads the
+  source DB and populates the dim table. Example: a `result` lookup table
+  with 20-30 rows in the Oracle database.
+- **Inline**: set Inline Values. Import Dims parses the CSV and populates the
+  dim table without touching the source DB. Example: currency codes
+  (`978,EUR,Euro` / `840,USD,US Dollar`).
+
+**Shared dimension tables**: when multiple fact columns map to the same dim
+table (e.g. `so_peer_1`, `so_peer_2`, `so_peer_3` all reference `dim_peer`),
+create one dimension row per fact column. Mark exactly one as Primary. The
+primary row owns the DDL and the source mapping; the others just tell the
+transform stage which dim table to look up for their fact column.
+
+### Index fields
+
+Indices define FK constraints and warehouse indexes on the fact table:
+
+| Field | Description |
+|-------|-------------|
+| Column Name | The fact column to index |
+| Method | Index method: `brin` (Block Range Index — best for time-series on large tables), `btree` (general-purpose), or `hash` (equality lookups) |
+
+After the first ETL load, click **Create All Indices** to build them. BRIN
+indices on the time/partition column are the default recommendation for
+time-series fact tables.
+
+To drop all indices (e.g. before a bulk re-load), click **Drop All Indices**
+and type the datasource name to confirm.
+
+---
+
+## Chart GUI
+
+The chart page at `/` (or `/viz/`) renders stacked-bar timeseries with
+filtering, drill-down, and follow mode. It supports multiple datasources
+with per-source state isolation.
+
+### Source tabs
+
+The navigation bar shows one tab per datasource. Clicking a tab switches
+the active source. The chart preserves per-source state:
+
+- **localStorage** (`starcubes-state-<name>`): stores group_by, measure, filters,
+  and viewport for each source.
+- **In-memory plot cache** (`sourceMemory`): stores non-trailing plot data so
+  switching back to a previously visited source restores the canvas instantly
+  without re-fetching from the server.
+- **Trailing-edge blocks** (data near "now") are always re-fetched fresh and
+  never cached, because they change between visits.
+
+When no cached data exists for a source, a loading overlay covers the chart
+until the first data arrives.
+
+### Control bar
+
+| Control | Description |
+|---------|-------------|
+| Group By | Dropdown of dimension columns, each followed by its group dimensions (see the Group Dims tab). A group dimension is listed under its own name, prefixed with the underlying column (`peer → Peer countries`). |
+| Filters | Toggle button to show/hide the filter panel. |
+| Measure | Aggregation: `count(*)` (default) or `sum`/`avg`/`min`/`max` of a measure column. |
+| From / To | Datetime pickers defining the chart viewport. Enter commits the value and advances focus. |
+| Legend | Opens the legend panel showing per-value totals. |
+| Follow | Toggles follow mode (seismograph-style auto-pan to "now"). Animated dot when active. |
+| Query | Opens the ad-hoc SQL console over the chart (logged-in users only). See [Query console](#query-console). |
+| Prefs (⚙) | Per-user bar pixel target override (logged-in users only). See [Preferences](#preferences). |
+
+The navigation bar also shows the logged-in username, a logout button (✕), and
+a theme toggle (☀/☾). Logged-out users see a Login link.
+
+### Filters
+
+Click **Filters** to expand the filter panel. Each filter row has:
+
+| Control | Description |
+|---------|-------------|
+| AND/OR | Click to toggle. OR groups are highlighted amber. Top-level rows default to AND. |
+| Indent / Dedent | Triangle brackets to nest filter rows into logical groups. |
+| Column | Dropdown of dimension columns, plus one entry per group dimension. Filtering on a group dimension offers its group names and `(other)` as values. |
+| Operator | `is in` (green), `is not in` (red), `starts with` (blue), `starts not with` (amber), `contains` (purple), `does not contain` (pink). |
+| Value | For `is in` / `is not in`: tag pills with search dropdown. For text operators: text input with 300ms debounce. |
+| Remove | X button to delete the filter row. |
+
+**Collapsed state**: when the panel is collapsed, active filters are shown as
+summary tags with remove buttons. OR groups are wrapped in parentheses.
+
+**Add filter**: click **+ Add filter** to append a new row.
+
+Filter state is serialised to URL parameters (`filter=`, `andor=`, `indent=`)
+and saved to per-source localStorage.
+
+### Follow mode
+
+Toggle the **Follow** button (or click when the chart is active) to enable
+seismograph-style auto-panning. When active:
+
+- The chart continuously pans right to keep the viewport edge at "now".
+- Trailing-edge data is polled at `max(5s, interval/3)` intervals.
+- Polling only fires when the viewport right edge is within 2x the bar
+  interval of the current time — scrolling to historical data stops network
+  traffic.
+
+### Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| ArrowLeft | Pan the viewport one "screen" left, snapping to calendar boundaries (second/minute/hour/day/week/month/year depending on zoom level) |
+| ArrowRight | Pan the viewport one "screen" right, same snapping |
+| Escape | Close the drill-down modal |
+| Enter | Commit datetime picker value and advance focus to the next input |
+
+Panning uses local-time calendar snapping, not fixed millisecond offsets.
+This means a "day" pan across a DST boundary is exactly 23 or 25 hours of
+wall-clock time, preserving visual alignment.
+
+### Legend
+
+Click **Legend** in the control bar to open the floating legend panel:
+
+- Sorted by total count (descending).
+- Click a color swatch to select/deselect that dimension value.
+- Selected values can be bulk-filtered via the **Filter** button.
+- **CSV** button copies all legend entries (name + total) to the clipboard.
+- The legend is draggable.
+
+### Drill-down
+
+Click any bar on the chart to open a drill-down modal:
+
+- **Header**: dimension name (clickable to add as a filter), value, interval,
+  date.
+- **Common section**: dimensions with exactly one value in the time slot
+  (clickable to add as filter).
+- **Per-dimension breakdown**: top-N values with counts (clickable to add as
+  filter).
+- **IDs button**: shows up to 1000 primary key values for the clicked slot.
+  "Copy all" copies them to the clipboard.
+- **Alert button**: mockup alert configuration (metric, condition, window,
+  notification channel).
+
+The modal is draggable. Press Escape to close.
+
+### Query console
+
+Click **Query** in the control bar to open a floating panel over the chart. It
+is visible to logged-in users only.
+
+The panel runs one SQL statement at a time against the **warehouse schema of
+the currently selected source** — the same `starcubes_<name>` schema the chart
+reads, so `fact`, the dimension tables and the partitions are all directly
+addressable by their bare names (the connection's `search_path` is already set
+for you).
+
+**What you can run.** Exactly one statement, and it must start with `SELECT` or
+`WITH`. Semicolons inside strings, dollar-quoted bodies and comments are
+understood, so `SELECT 'a;b'` is fine; `SELECT 1; SELECT 2` is not. The
+connection is opened read-only and the transaction is rolled back afterwards,
+so nothing you type can modify data — a `DELETE` hidden inside a `WITH` clause
+is refused by Postgres itself.
+
+That read-only guarantee is about *writes*, not about cost: the console can
+still read every table in the schema and can still run an expensive query. It
+is a tool for trusted operators, not a public endpoint.
+
+**Running and cancelling.** Press **Run** or `Ctrl`/`Cmd`+`Enter`. Plain
+`Enter` still inserts a newline, so multi-line SQL types normally. Nothing runs
+while you type. **Cancel** genuinely stops the query on the server, not just in
+the browser — it works even if another worker process picked up the request.
+Queries are also killed automatically after 30 seconds
+(`STARCUBES_QUERY_TIMEOUT_MS`).
+
+**Results** are capped at 1000 rows (`STARCUBES_QUERY_ROW_LIMIT`); the status
+line says so when a result was truncated, and also reports the row count and
+elapsed time. `NULL` is shown in italics, numbers are right-aligned, and the
+full value of a clipped cell is in its tooltip.
+
+**History** is stored per user and per source on the server, so it follows you
+between browsers. Expand **History** at the bottom of the panel to see every
+statement you have run against this source, newest first, with the date it last
+ran. Click a row to load it back into the editor; click `×` to remove it.
+
+The list is keyboard-navigable. `Tab` into it (expanding **History** focuses it
+for you), then:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Move the highlight. It stops at the ends rather than wrapping. |
+| `Home` / `End` | Jump to the newest / oldest entry. |
+| `Enter` | Load the highlighted statement into the editor and focus it. |
+| `Delete` / `Backspace` | Remove the highlighted entry. The highlight stays put, so repeated presses walk down the list. |
+
+`↑`/`↓` inside the SQL editor still move the caret between lines — the history
+keys only apply while the list itself has focus.
+Running the same statement again updates its date rather than adding a second
+entry, and only the 100 most recent are kept. A query that failed or timed out
+is still recorded — usually that is exactly the one you want back.
+
+**Panel chrome.** Drag the header to move the panel, drag the bottom-right
+corner to resize it. Position, size, open state and whether History is expanded
+are remembered in this browser. `Escape` deliberately does *not* close the
+panel — it would discard whatever you had typed; use the `×`.
+
+### Preferences
+
+The gear button (⚙) in the navigation bar opens a preferences popover.
+
+**Y axis** — the chart's y-axis is a *density*, so bars of different time
+resolutions stay the same height and only the numbers change when the chart
+switches resolution. This picks which unit those numbers are in:
+
+| Option | Axis |
+|--------|------|
+| Rate, unit follows zoom (default) | `txns/min` while minute bars are drawn, `txns/h` once hourly bars take over — the numbers change with a short dissolve, the bars do not move |
+| Rate, fixed per second/minute/hour/day | never switches unit; useful when comparing two zoom levels by eye |
+| Count per bar | the raw count in each bar; the axis then rescales when the resolution changes |
+
+The setting applies to counts and sums only — an average or a percentile is
+already per-unit and is never rescaled. Tooltips, the legend and the drill-down
+always show absolute counts; the tooltip adds the rate (`≙ 9.32/min`) when it
+differs from the count. The choice is remembered in the browser and can be put
+in a shared link with `?yaxis=auto|s|min|h|d|count`. No account needed.
+
+**Bar pixel target** — the source ships with a default (set via **Sources →
+Edit**). The chart's preferences popover lets every visitor override it for
+the current browser via **Save** (stored in `localStorage['starcubes-bar-target']`)
+or clear it via **Reset** (falls back to the source default). Per-browser,
+no account needed.
+
+### URL state and bookmarks
+
+All chart parameters are serialised to the URL query string:
+
+```
+?name=mydb&group_by=response&measure=count(*)&from=2026-04-27+00:00&to=2026-04-27+12:00&filter=response:is_in:ok&andor=AND&indent=0
+```
+
+- `name` — datasource
+- `group_by` — dimension column
+- `measure` — aggregation function
+- `from` / `to` — viewport time range
+- `filter` / `andor` / `indent` — active filters
+- `yaxis` — y-axis mode (omitted when it is the default `auto`)
+
+Bookmarking or sharing this URL restores the exact chart state. The browser
+back/forward buttons also work — `popstate` events re-apply the saved
+parameters.

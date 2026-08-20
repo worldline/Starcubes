@@ -1,0 +1,960 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}starcubes sources{% endblock %}</title>
+<link rel="icon" type="image/svg+xml" href="{% static 'viz/starcubes_icon.svg' %}" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/svg+xml" href="{% static 'viz/starcubes_icon_dark.svg' %}" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" sizes="32x32" href="{% static 'viz/favicon/favicon-32.png' %}" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" sizes="32x32" href="{% static 'viz/favicon/favicon-32-dark.png' %}" media="(prefers-color-scheme: dark)">
+<link rel="icon" type="image/png" sizes="16x16" href="{% static 'viz/favicon/favicon-16.png' %}" media="(prefers-color-scheme: light)">
+<link rel="icon" type="image/png" sizes="16x16" href="{% static 'viz/favicon/favicon-16-dark.png' %}" media="(prefers-color-scheme: dark)">
+<link rel="alternate icon" href="{% static 'viz/favicon/favicon.ico' %}">
+<link rel="apple-touch-icon" href="{% static 'viz/favicon/apple-touch-icon.png' %}">
+<script>
+(function(){var t=localStorage.getItem('starcubes-theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');})();
+</script>
+<style>
+:root {
+  --bg: #fff;
+  --fg: #1a1a1a;
+  --bg2: #f5f5f5;
+  --bg3: #e8e8e8;
+  --border: #d0d0d0;
+  --accent: #2c5282;
+  --accent-fg: #fff;
+  --accent-hover: #1a3a5c;
+  --muted: #666;
+  --danger: #c53030;
+  --danger-hover: #9b2c2c;
+  --success: #2f855a;
+  --warn: #c05621;
+  --badge-running-bg: #fffbeb;
+  --badge-running-fg: #92400e;
+  --badge-ok-bg: #f0fff4;
+  --badge-ok-fg: #276749;
+  --badge-failed-bg: #fff5f5;
+  --badge-failed-fg: #c53030;
+  --badge-none-bg: #f7f7f7;
+  --badge-none-fg: #888;
+  --input-bg: #fff;
+  --input-border: #ccc;
+  --shadow: rgba(0,0,0,0.08);
+  --dtp-bg: #fff;
+  --dtp-border: #ccc;
+  --dtp-shadow: rgba(0,0,0,0.15);
+  --dtp-header-bg: #f5f5f5;
+  --dtp-header-color: #333;
+  --dtp-arrow-color: #555;
+  --dtp-arrow-hover: #2c5282;
+  --dtp-day-color: #333;
+  --dtp-day-hover-bg: #e8e8e8;
+  --dtp-day-selected-bg: #2c5282;
+  --dtp-day-selected-text: #fff;
+  --dtp-day-today-bg: #e3f2fd;
+  --dtp-day-other-color: #bbb;
+  --dtp-dow-color: #888;
+  --dtp-time-bg: #fff;
+  --dtp-time-border: #ccc;
+  --dtp-time-color: #333;
+  --dtp-btn-bg: #2c5282;
+  --dtp-btn-color: #fff;
+  --dtp-btn-hover: #2a4365;
+  /* Active-tab tint — soft accent wash behind the open tab (both tiers). */
+  --tab-active-bg: #e8f0fb;
+  --tab-active-fg: #1f4068;
+  --tab-active-hover-bg: #edf2fa;
+  /* Left edge of the nav's first source tab, measured from the viewport's
+     left. Drives the content column AND both sub-tab rows so they share one
+     vertical left edge. = nav padding-left (16px) + brand-logo rendered width
+     (28px tall SVG, viewBox 260x110 ⇒ 28 × 260/110 ≈ 66px) + .nav-brand
+     margin-right (12px). Adjust here if the logo/nav padding/brand margin
+     change. (The 1px .source-tab / .tab-btn left margin is shared by all
+     tiers, so the tab fill boxes line up once their containers share this x.) */
+  --tabs-left: calc(16px + 66px + 12px);
+  /* Aliases so chart.html-style nav CSS resolves to sources/base.html vars */
+  --label-color: var(--muted);
+  --body-color: var(--fg);
+  --btn-bg: var(--accent);
+}
+[data-theme="dark"] {
+  --bg: #0f1117;
+  --fg: #e8e8e8;
+  --bg2: #1a1d27;
+  --bg3: #252836;
+  --border: #333;
+  --accent: #4a7fd4;
+  --accent-fg: #fff;
+  --accent-hover: #6295e0;
+  --muted: #888;
+  --danger: #fc8181;
+  --danger-hover: #feb2b2;
+  --success: #68d391;
+  --warn: #f6ad55;
+  --badge-running-bg: #3d2c00;
+  --badge-running-fg: #f6e05e;
+  --badge-ok-bg: #1a3d29;
+  --badge-ok-fg: #68d391;
+  --badge-failed-bg: #3d1a1a;
+  --badge-failed-fg: #fc8181;
+  --badge-none-bg: #252836;
+  --badge-none-fg: #666;
+  --input-bg: #1a1d27;
+  --input-border: #444;
+  --shadow: rgba(0,0,0,0.4);
+  --dtp-bg: #2a2a2a;
+  --dtp-border: #555;
+  --dtp-shadow: rgba(0,0,0,0.4);
+  --dtp-header-bg: #333;
+  --dtp-header-color: #ddd;
+  --dtp-arrow-color: #aaa;
+  --dtp-arrow-hover: #5a9bd5;
+  --dtp-day-color: #ddd;
+  --dtp-day-hover-bg: #444;
+  --dtp-day-selected-bg: #2c5282;
+  --dtp-day-selected-text: #fff;
+  --dtp-day-today-bg: #1e3a5f;
+  --dtp-day-other-color: #666;
+  --dtp-dow-color: #888;
+  --dtp-time-bg: #333;
+  --dtp-time-border: #555;
+  --dtp-time-color: #ddd;
+  --dtp-btn-bg: #2c5282;
+  --dtp-btn-color: #fff;
+  --dtp-btn-hover: #3a6ba8;
+  /* Active-tab tint — soft accent wash behind the open tab (both tiers). */
+  --tab-active-bg: #1d2f4a;
+  --tab-active-fg: #aecbf0;
+  --tab-active-hover-bg: #233859;
+  /* Aliases so chart.html-style nav CSS resolves to sources/base.html vars */
+  --label-color: var(--muted);
+  --body-color: var(--fg);
+  --btn-bg: var(--accent);
+}
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 14px;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.5;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Nav — kept in sync with viz/chart.html #nav-tabs block */
+#nav-tabs, .nav {
+  display: flex; align-items: center;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  padding: 0 16px; flex-shrink: 0; height: 44px;
+}
+.nav-brand {
+  display: flex; align-items: center;
+  margin-right: 12px; text-decoration: none;
+}
+.nav-brand-logo { height: 36px; width: auto; }
+.nav-brand-logo-dark { display: none; }
+[data-theme="dark"] .nav-brand-logo-light { display: none; }
+[data-theme="dark"] .nav-brand-logo-dark { display: inline; }
+.source-tab {
+  padding: 0 14px; margin: 6px 1px 0; background: none; border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer; font: inherit; font-size: 13px; font-weight: 500;
+  color: var(--label-color); display: flex; align-items: center;
+  height: 38px; text-decoration: none;
+  transition: background 0.12s, color 0.12s;
+}
+.source-tab:hover { color: var(--body-color); background: var(--tab-active-hover-bg); text-decoration: none; }
+.source-tab.active {
+  color: var(--tab-active-fg); font-weight: 600;
+  background: var(--tab-active-bg);
+  border-bottom-color: var(--btn-bg);
+}
+.source-tab.active:hover { background: var(--tab-active-bg); }
+.nav-sep { width: 1px; background: var(--border); margin: 8px 4px; flex-shrink: 0; height: 24px; }
+.nav-link {
+  padding: 0 14px; height: 44px; display: flex; align-items: center;
+  color: var(--label-color); font-size: 13px; font-weight: 500;
+  border-bottom: 2px solid transparent; text-decoration: none;
+}
+.nav-link:hover { color: var(--body-color); text-decoration: none; }
+.nav-link.active { color: var(--body-color); border-bottom-color: var(--btn-bg); }
+.nav-spacer { flex: 1; }
+.nav-user { font-size: 12px; color: var(--muted); margin-right: 4px; }
+.nav-theme-btn {
+  background: none; border: none; cursor: pointer;
+  font-size: 16px; padding: 4px 8px; color: var(--label-color);
+}
+.nav-theme-btn:hover { color: var(--body-color); }
+
+/* Layout — left-anchored under the nav's first source tab (not centered),
+   so the content column, sub-tab row, and dim-tab row share one left edge.
+   Left padding = --tabs-left; the max-width grows by the same amount so the
+   usable content width stays ~1200px. */
+.page { max-width: calc(1200px + var(--tabs-left)); margin: 0; padding: 0 16px 64px var(--tabs-left); }
+.page-title { font-size: 20px; font-weight: 600; margin: 0; }
+
+/* Double-tab header — lower tier, full-bleed flush beneath the top nav.
+   Breaks out of the (left-anchored) .page so the bottom border/shadow spans
+   the full viewport, then re-pads its content back to the --tabs-left line so
+   the first sub-tab sits directly under the nav's first source tab.
+   .page offsets this bar's box --tabs-left from the viewport's left, so the
+   left bleed is just -(--tabs-left). On the right the bar must reach the
+   viewport edge in BOTH regimes: when .page fills the width its content box
+   ends 16px short of the edge (bleed 16px); once .page hits its max-width
+   (1200px + --tabs-left) the gap grows with the viewport, so the bleed is
+   100vw - --tabs-left - 1200px - (-16px). max() picks whichever applies, and
+   padding-right matches the bleed so content lands on the .page content edge
+   (16px in narrow regime, more once max-width clamps). */
+.subtabs-bar {
+  margin-left: calc(-1 * var(--tabs-left));
+  margin-right: calc(-1 * max(16px, 100vw - var(--tabs-left) - 1200px + 16px));
+  margin-bottom: 20px;
+  padding-left: var(--tabs-left);
+  padding-right: max(16px, 100vw - var(--tabs-left) - 1200px + 16px);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: background 0.1s;
+}
+.btn-primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); text-decoration: none; color: var(--accent-fg); }
+.btn-secondary { background: var(--bg2); color: var(--fg); border-color: var(--border); }
+.btn-secondary:hover { background: var(--bg3); text-decoration: none; }
+.btn-danger { background: var(--danger); color: #fff; border-color: var(--danger); }
+.btn-danger:hover { background: var(--danger-hover); border-color: var(--danger-hover); text-decoration: none; color: #fff; }
+.btn-sm { padding: 3px 10px; font-size: 12px; }
+.btn-icon { padding: 3px 6px; font-size: 14px; background: none; border: none; cursor: pointer; color: var(--muted); }
+.btn-icon:hover { color: var(--fg); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Tables */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.data-table th {
+  text-align: left;
+  padding: 8px 12px;
+  background: var(--bg2);
+  border-bottom: 2px solid var(--border);
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.data-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.data-table tr:last-child td { border-bottom: none; }
+.data-table tr:hover td { background: var(--bg2); }
+.data-table .actions { white-space: nowrap; text-align: right; }
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.badge-running { background: var(--badge-running-bg); color: var(--badge-running-fg); }
+.badge-ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); }
+.badge-failed { background: var(--badge-failed-bg); color: var(--badge-failed-fg); }
+.badge-none { background: var(--badge-none-bg); color: var(--badge-none-fg); }
+.badge-dialect { background: var(--bg3); color: var(--muted); font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+.badge-conn-ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+.badge-conn-fail { background: var(--badge-failed-bg); color: var(--badge-failed-fg); font-size: 11px; padding: 1px 6px; border-radius: 4px; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.badge-running .dot { animation: pulse 1.2s ease-in-out infinite; }
+
+/* Forms */
+.form-group { margin-bottom: 16px; }
+.form-label { display: block; font-size: 12px; font-weight: 600; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.04em; }
+.form-control {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 5px;
+  background: var(--input-bg);
+  color: var(--fg);
+  font-size: 13px;
+  font-family: inherit;
+}
+.form-control:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(74,127,212,0.2); }
+textarea.form-control { font-family: ui-monospace, monospace; min-height: 80px; resize: vertical; }
+select.form-control { cursor: pointer; }
+.form-hint { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.form-actions { display: flex; gap: 8px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+/* Cards */
+.card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 4px var(--shadow);
+  margin-bottom: 16px;
+}
+.card-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.card-title { font-size: 14px; font-weight: 600; margin: 0; flex: 1; }
+.card-body { padding: 16px; }
+
+/* Inline edit rows */
+.row-display { display: flex; }
+.row-edit { display: none; }
+tr.editing .row-display { display: none; }
+tr.editing .row-edit { display: flex; }
+
+/* Inline input cells */
+.cell-input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--fg);
+  font-size: 12px;
+  font-family: inherit;
+}
+.cell-input:focus { outline: none; border-color: var(--accent); }
+
+/* Tabs */
+.tabs { display: flex; align-items: stretch; flex-wrap: wrap; }
+.tab-btn {
+  padding: 7px 13px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: -1px;
+}
+.tab-btn:hover { color: var(--fg); }
+.tab-btn.active { color: var(--fg); border-bottom-color: var(--accent); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* Subordinate (lower) tier inside the double-tab header. Hover/active
+   indicator language mirrors the top nav's .source-tab, one level down:
+   slightly smaller, lighter, and aligned flush under the nav. */
+.subtabs-bar .tabs { margin: 0; border-bottom: none; }
+.subtabs-bar .tab-btn {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  margin: 4px 1px -1px;
+  border-radius: 5px 5px 0 0;
+  transition: background 0.12s, color 0.12s;
+}
+.subtabs-bar .tab-btn:hover { background: var(--tab-active-hover-bg); }
+/* Subordinate tier: same accent tint as the top nav but lighter weight,
+   so the lower tier still reads as one level down. */
+.subtabs-bar .tab-btn.active {
+  color: var(--tab-active-fg);
+  background: var(--tab-active-bg);
+  border-bottom-color: var(--btn-bg);
+}
+.subtabs-bar .tab-btn.active:hover { background: var(--tab-active-bg); }
+
+/* In-content dimension sub-tabs (Dim Data tab). Same colorized active
+   treatment as the .subtabs-bar tier so all tab rows read as one system. */
+/* Cancel .subtabs-bar's 20px content gap: this panel's first element is
+   itself a tab row, so the dim tabs should hug the bar with the same 4px
+   button headroom as the Basics tab sits under the nav, not 20px lower. */
+#dimDataTabs { margin-top: -20px; }
+#dimSubTabs.tabs { margin: 0; border-bottom: 1px solid var(--border); }
+#dimSubTabs .tab-btn {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  margin: 4px 1px -1px;
+  border-radius: 5px 5px 0 0;
+  transition: background 0.12s, color 0.12s;
+}
+#dimSubTabs .tab-btn:hover { color: var(--fg); background: var(--tab-active-hover-bg); }
+#dimSubTabs .tab-btn.active {
+  color: var(--tab-active-fg);
+  background: var(--tab-active-bg);
+  border-bottom-color: var(--btn-bg);
+}
+#dimSubTabs .tab-btn.active:hover { background: var(--tab-active-bg); }
+
+/* Action result panel */
+.action-result {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  display: none;
+}
+.action-result.ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); display: block; }
+.action-result.err { background: var(--badge-failed-bg); color: var(--badge-failed-fg); display: block; }
+
+/* Persistent bottom status bar — always visible, mirrors the canvas page
+   #info bar. Left region = ETL status segment (#etlStrip), right region =
+   dialect badge + schema name. */
+.statusbar {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  font-size: 11px;
+  min-height: 24px;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--fg);
+}
+.statusbar-meta {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.statusbar-schema { font-size: 11px; }
+
+/* ETL status segment — inline pill on the left of the status bar.
+   Hidden until JS adds .show; .running/.ok/.failed pick badge colour variants. */
+.etl-strip {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 8px;
+  border-radius: 99px;
+}
+.etl-strip.show { display: inline-flex; }
+.etl-strip.running { background: var(--badge-running-bg); color: var(--badge-running-fg); }
+.etl-strip.ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); }
+.etl-strip.failed { background: var(--badge-failed-bg); color: var(--badge-failed-fg); }
+
+/* dl-grid for basics display */
+.dl-grid { display: grid; grid-template-columns: 200px 1fr; gap: 4px 12px; }
+.dl-grid dt { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; display: flex; align-items: center; }
+.dl-grid dd { margin: 0; font-size: 13px; display: flex; align-items: center; word-break: break-all; }
+.dl-grid .mono { font-family: ui-monospace, monospace; font-size: 12px; }
+
+/* misc */
+.empty-state { text-align: center; padding: 32px; color: var(--muted); font-size: 13px; }
+.text-muted { color: var(--muted); }
+.text-mono { font-family: ui-monospace, monospace; font-size: 12px; }
+.ms-auto { margin-left: auto; }
+.preview-table { overflow-x: auto; margin-top: 10px; }
+.preview-table table { border-collapse: collapse; font-size: 12px; font-family: ui-monospace, monospace; }
+.preview-table td, .preview-table th { padding: 4px 8px; border: 1px solid var(--border); }
+.preview-table th { background: var(--bg2); }
+
+/* Group Dims */
+.group-dim-select { max-width: 300px; }
+
+/* Two-column shell: list of group dimensions left, editor for the selected
+   one right. Collapses to a single column on narrow viewports. */
+.group-dim-layout { display: flex; gap: 20px; align-items: flex-start; }
+.group-dim-list { flex: 0 0 220px; min-width: 0; }
+.group-dim-editor { flex: 1 1 auto; min-width: 0; }
+.group-dim-new { width: 100%; margin-bottom: 10px; }
+.group-dim-items { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.group-dim-items:empty { border: 0; }
+.group-dim-item { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; cursor: pointer; border-bottom: 1px solid var(--border); }
+.group-dim-item:last-child { border-bottom: 0; }
+.group-dim-item:hover { background: var(--bg2); }
+.group-dim-item.active { background: var(--bg3); box-shadow: inset 3px 0 0 var(--accent); }
+.group-dim-item-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-dim-item-sub { font-size: 11px; color: var(--muted); }
+.group-dim-empty { margin: 8px 2px 0; font-size: 12px; }
+.group-dim-head { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
+.group-dim-head-actions { margin-left: auto; }
+@media (max-width: 800px) {
+  .group-dim-layout { flex-direction: column; }
+  .group-dim-list { flex: 1 1 auto; width: 100%; }
+}
+
+/* Quick-assign sub-card: bundles target select + filter + search */
+.group-quick-assign { border: 1px solid var(--border); border-radius: 6px; background: var(--bg2); margin-bottom: 20px; }
+.group-quick-assign-header { padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg3); border-radius: 6px 6px 0 0; }
+.group-quick-assign-body { padding: 12px; }
+[data-theme="dark"] .group-quick-assign { background: #1a1d27; }
+[data-theme="dark"] .group-quick-assign-header { background: #252836; }
+
+.group-assign-target { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.group-assign-target .form-label { margin-bottom: 0; }
+.group-assign { margin-top: 0; }
+.group-assign-panel { margin-bottom: 12px; }
+.group-assign-panel:last-child { margin-bottom: 0; }
+.group-panel-label { display: block; font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+.group-assign-panel .form-control { font-size: 13px; }
+.group-filter-row { display: flex; gap: 6px; align-items: flex-end; }
+.group-filter-row select { width: 130px; }
+.group-filter-row input { flex: 1; }
+.group-filter-row button { flex-shrink: 0; }
+.group-search-wrap { position: relative; }
+.group-search-results { position: absolute; top: 100%; left: 0; right: 0; max-height: 200px; overflow-y: auto; background: var(--input-bg); border: 1px solid var(--border); border-top: none; border-radius: 0 0 3px 3px; box-shadow: 0 2px 6px var(--shadow); z-index: 100; display: none; }
+.group-search-results.visible { display: block; }
+.group-search-item { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
+.group-search-item:hover { background: var(--bg3); }
+.group-search-item input[type="checkbox"] { margin: 0; }
+
+/* Groups overview header */
+.group-overview-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+.group-overview-title { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.group-overview-header .btn { margin-left: auto; }
+
+.group-zone { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; background: var(--bg2); min-height: 40px; }
+.group-zone.drag-over { border-color: var(--accent); background: rgba(74,127,212,0.08); }
+.group-zone-empty { border-style: dashed; }
+.group-zone-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.group-zone-header input { flex: 1; }
+.group-zone-count { font-size: 11px; white-space: nowrap; }
+.group-color-swatch { width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--border); cursor: pointer; flex-shrink: 0; padding: 0; }
+.group-color-swatch:hover { border-color: var(--fg); }
+.group-palette { display: flex; gap: 4px; padding: 6px 8px; margin-top: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; flex-wrap: wrap; }
+.group-palette-color { width: 22px; height: 22px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.group-palette-color:hover { border-color: var(--fg); transform: scale(1.15); }
+[data-theme="dark"] .group-color-swatch { border-color: #555; }
+[data-theme="dark"] .group-color-swatch:hover { border-color: #aaa; }
+[data-theme="dark"] .group-palette { background: #1a1d27; border-color: #555; }
+.group-zone-delete { background: none; border: none; font-size: 16px; cursor: pointer; color: var(--muted); padding: 0 4px; line-height: 1; }
+.group-zone-delete:hover { color: var(--danger); }
+.group-chips { display: flex; flex-wrap: wrap; gap: 4px; min-height: 24px; align-items: center; }
+.group-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; padding: 2px 6px 2px 8px; border-radius: 10px; border: 1px solid var(--filter-tag-in-border, #34a853); background: var(--filter-tag-in-bg, #d4edda); color: var(--filter-tag-in-text, #155724); cursor: grab; user-select: none; }
+.group-chip .chip-remove { cursor: pointer; font-weight: bold; padding: 0 2px; border-radius: 50%; line-height: 1; }
+.group-chip .chip-remove:hover { background: var(--filter-tag-x-hover, rgba(0,0,0,0.15)); }
+.group-chip.dragging { opacity: 0.4; }
+
+/* Per-zone "+ Add value" picker */
+.group-zone-add-wrap { position: relative; display: inline-block; }
+.group-zone-add-btn { background: none; border: 1px dashed var(--border); border-radius: 10px; color: var(--muted); font-size: 11px; padding: 1px 8px; cursor: pointer; line-height: 1.4; }
+.group-zone-add-btn:hover { color: var(--fg); border-color: var(--fg); }
+.group-add-popover { position: absolute; top: 100%; left: 0; margin-top: 4px; width: 280px; max-height: 280px; display: none; flex-direction: column; background: var(--input-bg); border: 1px solid var(--border); border-radius: 5px; box-shadow: 0 4px 12px var(--shadow); z-index: 200; }
+.group-add-popover.visible { display: flex; }
+.group-add-popover-search { padding: 6px; border-bottom: 1px solid var(--border); }
+.group-add-popover-search .form-control { font-size: 12px; padding: 4px 8px; }
+.group-add-popover-list { flex: 1; overflow-y: auto; min-height: 60px; }
+.group-add-popover-item { display: flex; align-items: center; gap: 6px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
+.group-add-popover-item:hover { background: var(--bg3); }
+.group-add-popover-item input[type="checkbox"] { margin: 0; }
+.group-add-popover-empty { padding: 10px; font-size: 12px; color: var(--muted); text-align: center; }
+.group-add-popover-actions { display: flex; gap: 6px; padding: 6px; border-top: 1px solid var(--border); justify-content: flex-end; }
+
+/* Collapsed unassigned zone */
+.leftover-zone { border: 1px dashed var(--border); border-radius: 6px; margin-top: 16px; background: var(--bg); }
+.leftover-zone.drag-over { border-color: var(--accent); background: rgba(74,127,212,0.08); }
+.leftover-toggle { display: flex; align-items: center; gap: 10px; width: 100%; background: none; border: none; padding: 8px 12px; cursor: pointer; color: var(--fg); text-align: left; font: inherit; }
+.leftover-toggle:hover { background: var(--bg2); }
+.leftover-label { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.leftover-toggle-chevron { margin-left: auto; font-size: 11px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.04em; }
+.leftover-chips { padding: 0 12px 10px; max-height: 240px; overflow-y: auto; }
+.leftover-collapsed .leftover-chips { display: none; }
+.leftover-collapsed .leftover-toggle:hover { background: transparent; }
+
+[data-theme="dark"] .group-chip { border-color: #34a853; background: #1e3a2e; color: #a8e6b8; }
+[data-theme="dark"] .group-chip .chip-remove:hover { background: rgba(255,255,255,0.2); }
+[data-theme="dark"] .group-zone { background: #1a1d27; }
+[data-theme="dark"] .group-zone.drag-over { background: rgba(74,127,212,0.15); }
+[data-theme="dark"] .leftover-zone { background: #0f1117; }
+[data-theme="dark"] .leftover-zone.drag-over { background: rgba(74,127,212,0.15); }
+[data-theme="dark"] .leftover-toggle:hover { background: #1a1d27; }
+[data-theme="dark"] .group-dim-item:hover { background: #1a1d27; }
+[data-theme="dark"] .group-dim-item.active { background: #252836; }
+
+/* ETL Commands tab */
+.etl-cmd-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+@media (max-width: 768px) {
+  .etl-cmd-grid { grid-template-columns: 1fr; }
+}
+.card-accent { border-left: 3px solid var(--accent); }
+.card-danger-hint { border-left: 3px solid var(--danger); }
+.card-warn-hint { border-left: 3px solid var(--warn); }
+.cmd-result { margin-left: 8px; font-size: 13px; }
+.cmd-result.ok { color: var(--success); }
+.cmd-result.err { color: var(--danger); }
+
+/* DateTime picker */
+.dtp-label { position: relative; }
+.dtp-label input {
+  min-width: 11em;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--input-border);
+  border-radius: 5px;
+  background: var(--input-bg);
+  color: var(--fg);
+  font-size: 13px;
+  font-family: inherit;
+}
+.dtp-label input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(74,127,212,0.2); }
+.dtp-popup {
+  position: absolute; top: 100%; left: 0; margin-top: 2px;
+  background: var(--dtp-bg); border: 1px solid var(--dtp-border);
+  border-radius: 4px; box-shadow: 0 3px 10px var(--dtp-shadow);
+  z-index: 200; padding: 8px; font-size: 12px;
+  user-select: none; display: none; min-width: 220px;
+}
+.dtp-popup.open { display: block; }
+.dtp-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 6px; padding: 2px 0;
+}
+.dtp-header span { font-weight: 600; color: var(--dtp-header-color); }
+.dtp-arrow {
+  background: none; border: 1px solid var(--dtp-border); border-radius: 3px;
+  padding: 2px 8px; cursor: pointer; color: var(--dtp-arrow-color);
+  font: inherit; font-size: 12px; line-height: 1;
+}
+.dtp-arrow:hover { color: var(--dtp-arrow-hover); border-color: var(--dtp-arrow-hover); }
+.dtp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; text-align: center; }
+.dtp-dow { font-size: 10px; font-weight: 600; color: var(--dtp-dow-color); padding: 2px 0; }
+.dtp-day { padding: 3px 0; cursor: pointer; border-radius: 3px; color: var(--dtp-day-color); }
+.dtp-day:hover { background: var(--dtp-day-hover-bg); }
+.dtp-day.other-month { color: var(--dtp-day-other-color); cursor: default; }
+.dtp-day.today { background: var(--dtp-day-today-bg); font-weight: 600; }
+.dtp-day.selected { background: var(--dtp-day-selected-bg); color: var(--dtp-day-selected-text); font-weight: 600; }
+.dtp-day.today.selected { background: var(--dtp-day-selected-bg); color: var(--dtp-day-selected-text); }
+.dtp-time-row {
+  display: flex; align-items: center; gap: 4px;
+  margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--dtp-border);
+}
+.dtp-time-row label {
+  display: flex; flex-direction: row; align-items: center; gap: 4px;
+  font-size: 12px; color: var(--dtp-day-color);
+}
+.dtp-time-input {
+  width: 2.4em; text-align: center; font: inherit; font-size: 12px;
+  padding: 2px 3px; border: 1px solid var(--dtp-time-border); border-radius: 3px;
+  background: var(--dtp-time-bg); color: var(--dtp-time-color);
+}
+.dtp-apply-row { margin-top: 6px; display: flex; justify-content: flex-end; }
+.dtp-apply {
+  padding: 3px 12px; background: var(--dtp-btn-bg); color: var(--dtp-btn-color);
+  border: 0; border-radius: 3px; cursor: pointer; font: inherit; font-size: 12px;
+}
+.dtp-apply:hover { background: var(--dtp-btn-hover); }
+th.sortable { cursor: pointer; user-select: none; }
+th.sortable:hover { text-decoration: underline; }
+.sort-indicator { font-size: 10px; margin-left: 2px; }
+th.sortable.asc .sort-indicator::after { content: ' ▲'; }
+th.sortable.desc .sort-indicator::after { content: ' ▼'; }
+</style>
+</head>
+<body>
+<nav id="nav-tabs" class="nav">
+  <a class="nav-brand" href="/{% if current_source_name %}?name={{ current_source_name|urlencode }}{% endif %}" title="Back to chart">
+    <img class="nav-brand-logo nav-brand-logo-light" src="{% static 'viz/starcubes_lockup.svg' %}" alt="starcubes">
+    <img class="nav-brand-logo nav-brand-logo-dark" src="{% static 'viz/starcubes_lockup_dark.svg' %}" alt="starcubes">
+  </a>
+  {% for s in topbar_sources %}
+    <a class="source-tab {% if current_source_id == s.id %}active{% endif %}"
+       href="{% url 'sources:detail' s.id %}"
+       data-id="{{ s.id }}"
+       data-name="{{ s.name }}">{{ s.name }}</a>
+  {% endfor %}
+  <a class="source-tab {% if current_source_id == 'new' %}active{% endif %}"
+     href="{% url 'sources:new' %}"
+     title="Add datasource">+</a>
+  <span id="nav-spacer" class="nav-spacer"></span>
+  <span class="nav-sep"></span>
+  {% if user.is_authenticated %}
+  {% if user.is_superuser %}
+  <a class="nav-theme-btn{% if request.resolver_match.url_name == 'settings' %} active{% endif %}"
+     href="{% url 'sources:settings' %}" title="Settings" style="text-decoration:none;font-size:16px">⚙</a>
+  {% endif %}
+  <span class="nav-user">{{ user.username }}</span>
+  <form method="post" action="{% url 'logout' %}" style="display:inline">{% csrf_token %}
+    <button type="submit" class="nav-theme-btn" title="Logout {{ user.username }}" style="font-size:13px">&#x2715;</button>
+  </form>
+  {% endif %}
+  <button class="nav-theme-btn" id="themeToggle" title="Toggle theme" style="border:none">☀</button>
+</nav>
+<main class="page">
+  {% block content %}{% endblock %}
+</main>
+<script>
+(function(){
+  var btn = document.getElementById('themeToggle');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    btn.textContent = t === 'dark' ? '☀' : '☾';
+    localStorage.setItem('starcubes-theme', t);
+  }
+  var cur = localStorage.getItem('starcubes-theme') || 'light';
+  applyTheme(cur);
+  btn.addEventListener('click', function() {
+    applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  });
+})();
+
+function csrfToken() {
+  var m = document.cookie.match(/csrftoken=([^;]+)/);
+  return m ? m[1] : '';
+}
+
+function postJSON(url, formOrData) {
+  var body;
+  if (formOrData instanceof HTMLFormElement) {
+    body = new FormData(formOrData);
+  } else if (formOrData instanceof FormData) {
+    body = formOrData;
+  } else {
+    body = new FormData();
+    for (var k in formOrData) body.append(k, formOrData[k]);
+  }
+  return fetch(url, {
+    method: 'POST',
+    headers: {'X-CSRFToken': csrfToken()},
+    body: body,
+  }).then(function(r){ return r.json(); });
+}
+
+var _openPicker = null;
+
+class DateTimePicker {
+  constructor(input, { onChange, nextFocus }) {
+    this.input = input;
+    this.onChange = onChange;
+    this._nextFocus = nextFocus || null;
+    this._value = null;
+    this._pending = null;
+    this._pendingH = 0;
+    this._pendingM = 0;
+    this._viewY = 0;
+    this._viewM = 0;
+    this._isOpen = false;
+    this._popup = document.createElement('div');
+    this._popup.className = 'dtp-popup';
+    this._popup.innerHTML = this._html();
+    this._wire();
+    input.parentElement.style.position = 'relative';
+    input.parentElement.appendChild(this._popup);
+    input.addEventListener('focus', () => this.open());
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { this.close(true); e.preventDefault(); }
+      if (e.key === 'Enter') {
+        this._commitInput();
+        if (this._nextFocus) this._nextFocus.focus();
+        e.preventDefault();
+      }
+    });
+    input.addEventListener('blur', () => {
+      setTimeout(() => { if (!this._isOpen) this._commitInput(); }, 100);
+    });
+    document.addEventListener('mousedown', e => {
+      if (this._isOpen && !this._popup.contains(e.target) && e.target !== this.input) {
+        this.close(true);
+        this._commitInput();
+      }
+    });
+  }
+
+  _commitInput() {
+    var s = this.input.value.trim();
+    if (!s) return;
+    var d = this._parseUserInput(s);
+    if (!d) return;
+    var ms = d.getTime();
+    if (this._value && this._value.getTime() === ms) return;
+    this._value = d;
+    this.onChange(ms);
+  }
+
+  _parseUserInput(s) {
+    var m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}))?$/);
+    if (!m) return null;
+    var y = +m[1], mo = +m[2] - 1, dy = +m[3], h = m[4] != null ? +m[4] : 0, mi = m[5] != null ? +m[5] : 0;
+    if (mo < 0 || mo > 11 || dy < 1 || dy > 31 || h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+    var d = new Date(y, mo, dy, h, mi, 0, 0);
+    if (d.getMonth() !== mo || d.getDate() !== dy) return null;
+    return d;
+  }
+
+  _html() {
+    return '<div class="dtp-header">'
+      + '<button type="button" class="dtp-arrow" data-dir="-1">&larr;</button>'
+      + '<span class="dtp-month-year"></span>'
+      + '<button type="button" class="dtp-arrow" data-dir="1">&rarr;</button>'
+      + '</div>'
+      + '<div class="dtp-grid"><span class="dtp-dow">Mo</span><span class="dtp-dow">Tu</span>'
+      + '<span class="dtp-dow">We</span><span class="dtp-dow">Th</span>'
+      + '<span class="dtp-dow">Fr</span><span class="dtp-dow">Sa</span>'
+      + '<span class="dtp-dow">Su</span></div>'
+      + '<div class="dtp-grid dtp-days"></div>'
+      + '<div class="dtp-time-row"><label>Time '
+      + '<input type="number" class="dtp-time-input" data-f="h" min="0" max="23">'
+      + ' : <input type="number" class="dtp-time-input" data-f="m" min="0" max="59">'
+      + '</label></div>'
+      + '<div class="dtp-apply-row"><button type="button" class="dtp-apply">OK</button></div>';
+  }
+
+  _wire() {
+    var prev = this._popup.querySelector('.dtp-arrow[data-dir="-1"]');
+    var next = this._popup.querySelector('.dtp-arrow[data-dir="1"]');
+    prev.addEventListener('click', () => this._nav(-1));
+    next.addEventListener('click', () => this._nav(1));
+    this._myEl = this._popup.querySelector('.dtp-month-year');
+    this._daysEl = this._popup.querySelector('.dtp-days');
+    this._hIn = this._popup.querySelector('[data-f="h"]');
+    this._mIn = this._popup.querySelector('[data-f="m"]');
+    this._hIn.addEventListener('change', () => {
+      this._pendingH = this._clamp(this._hIn.value, 0, 23);
+      this._hIn.value = this._pad(this._pendingH);
+    });
+    this._mIn.addEventListener('change', () => {
+      this._pendingM = this._clamp(this._mIn.value, 0, 59);
+      this._mIn.value = this._pad(this._pendingM);
+    });
+    this._popup.querySelector('.dtp-apply').addEventListener('click', () => this.close(false));
+  }
+
+  _clamp(v, lo, hi) {
+    var n = parseInt(v, 10);
+    return isNaN(n) ? lo : Math.max(lo, Math.min(hi, n));
+  }
+
+  _pad(n) { return String(n).padStart(2, '0'); }
+
+  _nav(dir) {
+    this._viewM += dir;
+    if (this._viewM < 0) { this._viewM = 11; this._viewY--; }
+    if (this._viewM > 11) { this._viewM = 0; this._viewY++; }
+    this._render();
+  }
+
+  _render() {
+    var M = ['January','February','March','April','May','June',
+             'July','August','September','October','November','December'];
+    this._myEl.textContent = M[this._viewM] + ' ' + this._viewY;
+    var y = this._viewY, m = this._viewM;
+    var off = (new Date(y, m, 1).getDay() + 6) % 7;
+    var dim = new Date(y, m + 1, 0).getDate();
+    var pdim = new Date(y, m, 0).getDate();
+    var now = new Date();
+    var tk = now.getFullYear() * 1e4 + now.getMonth() * 100 + now.getDate();
+    var sk = this._pending
+      ? this._pending.getFullYear() * 1e4 + this._pending.getMonth() * 100 + this._pending.getDate()
+      : -1;
+    this._daysEl.innerHTML = '';
+    for (var i = off - 1; i >= 0; i--) this._cell(pdim - i, true, -1);
+    for (var d = 1; d <= dim; d++) {
+      var k = y * 1e4 + m * 100 + d;
+      this._cell(d, false, k, k === tk, k === sk);
+    }
+    var n = this._daysEl.children.length;
+    for (var d = 1, r = (7 - n % 7) % 7; d <= r; d++) this._cell(d, true, -1);
+  }
+
+  _cell(day, other, _key, today, sel) {
+    var el = document.createElement('span');
+    el.className = 'dtp-day';
+    if (other) el.classList.add('other-month');
+    if (today) el.classList.add('today');
+    if (sel) el.classList.add('selected');
+    el.textContent = day;
+    if (!other) el.addEventListener('click', () => {
+      this._pending = new Date(this._viewY, this._viewM, day);
+      this._render();
+    });
+    this._daysEl.appendChild(el);
+  }
+
+  open() {
+    if (this._isOpen) return;
+    if (_openPicker && _openPicker !== this) _openPicker.close(true);
+    _openPicker = this;
+    this._isOpen = true;
+    var src = this._value || new Date();
+    this._pending = this._value ? new Date(this._value) : null;
+    this._pendingH = src.getHours();
+    this._pendingM = src.getMinutes();
+    this._viewY = src.getFullYear();
+    this._viewM = src.getMonth();
+    this._render();
+    this._hIn.value = this._pad(this._pendingH);
+    this._mIn.value = this._pad(this._pendingM);
+    this._popup.classList.add('open');
+  }
+
+  close(revert) {
+    if (!this._isOpen) return;
+    this._isOpen = false;
+    _openPicker = null;
+    this._popup.classList.remove('open');
+    if (revert) return;
+    var d = this._pending ? new Date(this._pending) : new Date();
+    d.setHours(this._pendingH, this._pendingM, 0, 0);
+    var prev = this._value ? this._value.getTime() : null;
+    this._value = d;
+    this.input.value = this._fmt(d);
+    if (prev !== d.getTime()) this.onChange(d.getTime());
+  }
+
+  setValue(ms) {
+    if (ms == null) return;
+    var d = new Date(ms);
+    this._value = d;
+    this.input.value = this._fmt(d);
+  }
+
+  getValue() { return this._value ? this._value.getTime() : null; }
+
+  _fmt(d) {
+    return d.getFullYear() + '-' + this._pad(d.getMonth() + 1) + '-' + this._pad(d.getDate())
+      + ' ' + this._pad(d.getHours()) + ':' + this._pad(d.getMinutes());
+  }
+}
+</script>
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center">
+  <div id="modal-box" style="background:var(--card-bg,white);border-radius:8px;padding:24px;max-width:440px;width:90%;box-shadow:0 4px 24px rgba(0,0,0,.3)"></div>
+</div>
+<script>
+function showModal(html) {
+  document.getElementById('modal-box').innerHTML = html;
+  document.getElementById('modal-overlay').style.display = 'flex';
+}
+function closeModal() {
+  document.getElementById('modal-overlay').style.display = 'none';
+}
+document.getElementById('modal-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+</script>
+{% block extra_js %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,113 @@
+{% extends "sources/base.html" %}
+{% block title %}Settings — starcubes{% endblock %}
+
+{% block content %}
+<div class="subtabs-bar">
+  <div class="tabs" id="tabNav">
+    <button class="tab-btn active" data-tab="users">Users ({{ users|length }})</button>
+  </div>
+</div>
+
+{% if msg %}
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
+{% endif %}
+{% if err %}
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">{{ err }}</div>
+{% endif %}
+
+<!-- Users tab -->
+<div class="tab-panel active" id="tab-users">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Users</span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <table class="data-table" id="userTable">
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Superuser</th>
+            <th>Staff</th>
+            <th>Active</th>
+            <th>Date joined</th>
+            <th style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr data-uid="{{ u.pk }}">
+            <td>{{ u.username }}</td>
+            <td>{% if u.is_superuser %}✓{% else %}—{% endif %}</td>
+            <td>{% if u.is_staff %}✓{% else %}—{% endif %}</td>
+            <td>{% if u.is_active %}✓{% else %}—{% endif %}</td>
+            <td style="color:var(--muted);font-size:12px">{{ u.date_joined|date:"Y-m-d" }}</td>
+            <td style="text-align:right;white-space:nowrap">
+              <button class="btn-icon" onclick="togglePwForm(this)" title="Set password">🔑</button>
+              {% if u.pk != request.user.pk %}
+              <form method="post" style="display:inline"
+                    onsubmit="return confirm('Delete user \'{{ u.username }}\'?')">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="delete_user">
+                <input type="hidden" name="user_id" value="{{ u.pk }}">
+                <button type="submit" class="btn-icon" title="Delete user" style="color:var(--danger)">✕</button>
+              </form>
+              {% else %}
+              <span style="display:inline-block;width:22px"></span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr class="pw-form-row" id="pw-row-{{ u.pk }}" style="display:none">
+            <td colspan="6" style="padding:8px 12px;background:var(--card-bg)">
+              <form method="post" style="display:flex;gap:8px;align-items:center">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="set_password">
+                <input type="hidden" name="user_id" value="{{ u.pk }}">
+                <input class="form-control" type="password" name="new_password"
+                       placeholder="New password" required style="width:220px">
+                <button type="submit" class="btn btn-primary btn-sm">Set Password</button>
+                <button type="button" class="btn btn-secondary btn-sm"
+                        onclick="togglePwForm(this.closest('tr').previousElementSibling.querySelector('.btn-icon'))">Cancel</button>
+              </form>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" style="color:var(--muted);text-align:center;padding:16px">No users found.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Create user -->
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">
+      <span class="card-title">Create User</span>
+    </div>
+    <div class="card-body">
+      <form method="post" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="create_user">
+        <div>
+          <label class="form-label">Username</label>
+          <input class="form-control" name="username" required autocomplete="off" style="width:200px">
+        </div>
+        <div>
+          <label class="form-label">Password</label>
+          <input class="form-control" type="password" name="password" required autocomplete="new-password" style="width:200px">
+        </div>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function togglePwForm(btn) {
+  var row = btn.closest('tr');
+  var pwRow = document.getElementById('pw-row-' + row.dataset.uid);
+  var hidden = pwRow.style.display === 'none';
+  pwRow.style.display = hidden ? '' : 'none';
+  if (hidden) pwRow.querySelector('input[type=password]').focus();
+}
+</script>
+{% endblock %}

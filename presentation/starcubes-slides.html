@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>starcubes</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reset.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/theme/white.min.css">
+  <style>
+    :root {
+      --accent: #1a6fa8;
+      --dim:    #888;
+    }
+    .reveal .slides section { text-align: left; }
+    .reveal h1 { font-size: 2.2em; color: var(--accent); letter-spacing: -.02em; }
+    .reveal h2 { font-size: 1.5em; color: var(--accent); margin-bottom: .6em; }
+    .reveal p.tagline {
+      font-size: 1.15em; color: var(--dim);
+      margin: .3em 0 1.2em;
+      font-style: italic;
+    }
+    .reveal ul { list-style: none; padding: 0; margin: 0; }
+    .reveal ul li {
+      padding: .25em 0 .25em 1.4em;
+      position: relative;
+      font-size: .92em;
+      color: #333;
+    }
+    .reveal ul li::before {
+      content: "›";
+      position: absolute; left: 0;
+      color: var(--accent);
+      font-weight: bold;
+    }
+    .reveal ul li strong { color: #111; }
+
+    /* pipeline diagram */
+    .pipeline {
+      display: flex;
+      align-items: center;
+      gap: .5em;
+      margin: 1em 0 1.4em;
+      font-size: .88em;
+    }
+    .pipeline .box {
+      background: #e8f3fb;
+      border: 1px solid var(--accent);
+      border-radius: 6px;
+      padding: .4em .9em;
+      color: #1a1a1a;
+      white-space: nowrap;
+    }
+    .pipeline .arrow { color: var(--accent); font-size: 1.3em; }
+
+    /* schema grid */
+    .schema {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: .5em;
+      margin: .8em 0 1.2em;
+      font-size: .8em;
+    }
+    .schema .cell {
+      background: #f5f5f5;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      padding: .4em .7em;
+      color: #444;
+    }
+    .schema .cell strong { display: block; color: var(--accent); margin-bottom: .2em; }
+
+    .reveal .slide-number { color: var(--dim); }
+  </style>
+</head>
+<body>
+<div class="reveal">
+  <div class="slides">
+
+    <!-- Slide 1: What is starcubes? -->
+    <section>
+      <h1>starcubes</h1>
+      <p class="tagline">Any SQL source → compact star schema → interactive timeseries</p>
+      <ul>
+        <li><strong>Problem:</strong> operational DBs hold rich transactional data, but querying them for trends is slow, complex, and risky</li>
+        <li><strong>Solution:</strong> configure a datasource once — starcubes extracts, compresses, and loads it into Postgres; a chart UI renders it instantly</li>
+        <li><strong>Sources supported:</strong> Oracle, PostgreSQL, MySQL, MSSQL — anything SQLAlchemy speaks</li>
+        <li><strong>Self-contained:</strong> one Django app, one Postgres instance, no external queue or scheduler</li>
+      </ul>
+    </section>
+
+    <!-- Slide 2: Architecture -->
+    <section>
+      <h2>Architecture</h2>
+
+      <div class="pipeline">
+        <div class="box">Extract<br><small>pd.read_sql chunks</small></div>
+        <div class="arrow">→</div>
+        <div class="box">Transform<br><small>N worker procs</small></div>
+        <div class="arrow">→</div>
+        <div class="box">Load<br><small>psycopg COPY FROM</small></div>
+      </div>
+
+      <div class="schema">
+        <div class="cell"><strong>fact table</strong>RANGE partitions · BRIN index · UNLOGGED</div>
+        <div class="cell"><strong>dim tables</strong>smallint keys · ≤ 32 767 values · 2 bytes/row</div>
+        <div class="cell"><strong>starcubes_meta</strong>datasource config · ETL runs · measure catalog</div>
+      </div>
+
+      <ul>
+        <li>One Postgres <strong>schema per datasource</strong> — incompatible shapes stay isolated</li>
+        <li>Metadata-driven: dimensions, measures, filters defined as DB rows, no code changes</li>
+        <li>Server-side plot cache keyed on sha256 of query parameters + epoch</li>
+      </ul>
+    </section>
+
+    <!-- Slide 3: Key Features -->
+    <section>
+      <h2>Key Features</h2>
+      <ul>
+        <li><strong>Three dimension modes:</strong> source-table lookup · inline CSV · auto-discovered at ETL time</li>
+        <li><strong>Measure catalog:</strong> count, sum, avg, min, max, quantile-bands — pick style per measure</li>
+        <li><strong>Chart UI:</strong> stacked bars · drill-down · AND/OR filter builder · follow mode (live seismograph pan)</li>
+        <li><strong>GUI CRUD:</strong> datasource setup, ETL monitor with live progress, dimension inspection, partition lifecycle</li>
+        <li><strong>Incremental ETL:</strong> high-watermark resumption, crash-safe deduplication, optional forever-loop daemon</li>
+      </ul>
+    </section>
+
+  </div>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/reveal.js/5.1.0/reveal.min.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    slideNumber: true,
+    transition: 'fade',
+    transitionSpeed: 'fast',
+    controls: true,
+    progress: true,
+  });
+</script>
+</body>
+</html>

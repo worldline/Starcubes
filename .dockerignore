@@ -1,0 +1,20 @@
+__pycache__
+*.pyc
+.git
+.gitignore
+.claude
+*.md
+.dockerignore
+Dockerfile_orig
+__pycache__
+*.egg-info
+.eggs
+*.sqlc
+*.log
+logs/
+*.swp
+*.swo
+*~
+# Top-level node_modules from `npm install` — installed at build time by the
+# jsbuilder Dockerfile stage, must not leak into the build context.
+node_modules

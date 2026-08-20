@@ -1,0 +1,122 @@
+{% extends "sources/base.html" %}
+{% block title %}starcubes — Sources{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1 class="page-title">Datasources</h1>
+  <span class="ms-auto">
+    <a class="btn btn-primary" href="{% url 'sources:new' %}">+ New Datasource</a>
+  </span>
+</div>
+
+{% if sources %}
+<div class="card">
+<table class="data-table" id="sourceTable">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Dialect</th>
+      <th>Schema</th>
+      <th>Last Run <span style="font-weight:normal;opacity:.6">local tz</span></th>
+      <th>Rows</th>
+      <th style="text-align:right">Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in sources %}
+    <tr data-pk="{{ s.id }}" data-status="{{ s.run_status|default:'' }}">
+      <td><a href="{% url 'sources:detail' s.id %}"><strong>{{ s.name }}</strong></a></td>
+      <td><span class="badge badge-dialect" id="conn-{{ s.id }}">{{ s.source_dialect }}</span></td>
+      <td class="text-mono text-muted">{{ s.schema_name }}</td>
+      <td>
+        <span class="badge badge-{{ s.run_status|default:'none' }}" id="badge-{{ s.id }}">
+          {% if s.run_status == 'running' %}<span class="dot">●</span> Running
+          {% elif s.run_status == 'ok' %}✓ <span data-ts="{{ s.run_finished_at|default:'' }}">{{ s.run_finished_at|default:'' }}</span>
+          {% elif s.run_status == 'failed' %}✗ Failed
+          {% else %}<span class="text-muted">—</span>{% endif %}
+        </span>
+      </td>
+      <td>{{ s.run_rows|default:'—' }}</td>
+      <td class="actions">
+        <a class="btn btn-secondary btn-sm" href="{% url 'sources:detail' s.id %}">View</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="empty-state">
+  <p>No datasources configured yet.</p>
+  <a class="btn btn-primary" href="{% url 'sources:new' %}">+ New Datasource</a>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function() {
+  function fmtLocal(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    return isNaN(d.getTime()) ? iso : d.toLocaleString();
+  }
+
+  // Convert server-rendered timestamps to local time
+  document.querySelectorAll('[data-ts]').forEach(function(el) {
+    var ts = el.getAttribute('data-ts');
+    if (ts) el.textContent = fmtLocal(ts);
+  });
+
+  // Auto-check connection status for each datasource
+  document.querySelectorAll('[id^="conn-"]').forEach(function(el) {
+    var pk = el.id.replace('conn-', '');
+    fetch('/sources/' + pk + '/connection-status/', {signal: AbortSignal.timeout(15000)}).then(function(r){ return r.json(); }).then(function(d) {
+      el.className = 'badge ' + (d.ok ? 'badge-conn-ok' : 'badge-conn-fail');
+      el.textContent = el.textContent.replace(' …', '').trim();
+      if (!d.ok) el.title = d.error || 'Connection failed';
+    }).catch(function() {
+      el.className = 'badge badge-conn-fail';
+      el.textContent = el.textContent.replace(' …', '').trim();
+    });
+  });
+
+  // Poll status for any 'running' rows
+  var runningRows = [];
+  document.querySelectorAll('#sourceTable tr[data-status="running"]').forEach(function(tr) {
+    runningRows.push(parseInt(tr.dataset.pk, 10));
+  });
+  if (!runningRows.length) return;
+
+  function updateBadge(pk, run) {
+    var badge = document.getElementById('badge-' + pk);
+    if (!badge) return;
+    var tr = badge.closest('tr');
+    badge.className = 'badge badge-' + (run ? run.status : 'none');
+    if (!run || !run.status) { badge.textContent = '—'; return; }
+    if (run.status === 'running') {
+      badge.innerHTML = '<span class="dot">●</span> Running';
+    } else if (run.status === 'ok') {
+      badge.textContent = '✓ ' + fmtLocal(run.finished_at);
+      if (tr) tr.dataset.status = 'ok';
+      runningRows = runningRows.filter(function(p){ return p !== pk; });
+    } else if (run.status === 'failed') {
+      badge.textContent = '✗ Failed';
+      if (tr) tr.dataset.status = 'failed';
+      runningRows = runningRows.filter(function(p){ return p !== pk; });
+    }
+  }
+
+  var timer = setInterval(function() {
+    if (!runningRows.length) { clearInterval(timer); return; }
+    runningRows.slice().forEach(function(pk) {
+      fetch('/sources/' + pk + '/etl/status/')
+        .then(function(r){ return r.json(); })
+        .then(function(data) {
+          if (data.runs && data.runs.length) updateBadge(pk, data.runs[0]);
+        });
+    });
+  }, 3000);
+})();
+</script>
+{% endblock %}
