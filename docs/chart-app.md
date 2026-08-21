@@ -228,13 +228,10 @@ series' full distribution (which the legend finalizes to its
 median / p25–p75 anyway). It does not run anything; the user still has to
 click Run.
 
-**Panel chrome.** `#query-panel` is a `position: fixed` body-level sibling, not
-a child of `#wrap` — `#wrap` has padding and is a `flex: 1` item, so a child
-would be laid out against a box that moves with the toolbar and filter panel,
-and dragging would be clamped to the chart area. `#legend` is fixed for the
-same reason. `z-index: 1500` sits above the legend (1000) and below
-`#drill-overlay` (3000), so clicking a bar still brings the drill modal
-forward.
+**Panel chrome.** The console is one of the shared floating panels — chrome,
+header, drag, stacking and Escape all come from `.fpanel` /
+`makeFloatingPanel()`. See **Floating panels** below; only geometry
+persistence and `resize: both` are console-specific.
 
 Resizing is CSS `resize: both` — the first use of `resize:` in the repo. Two
 mechanics: it is ignored unless `overflow` is something other than `visible`
@@ -242,17 +239,20 @@ mechanics: it is ignored unless `overflow` is something other than `visible`
 regions), and the native gripper writes **inline** `width`/`height`, which is
 what reduces persistence to a debounced `ResizeObserver` reading
 `panel.style.width`. A custom handle would be ~40 lines of `setPointerCapture`
-arithmetic for behaviour the browser already ships. Dragging by the header
-*does* use the pointer-capture pattern, copied from `#drill-header`.
+arithmetic for behaviour the browser already ships. Dragging is the shared
+panel handler, which *does* use pointer capture.
 
 Geometry lives in `localStorage['starcubes-query-panel']` as
 `{open, historyOpen, left, top, width, height}` — per browser, unlike the
-history. Re-clamped into the viewport on load and on `window.resize`, since a
-fixed panel does not reflow.
+history. This is the only panel whose position survives a reload, which is the
+whole content of its `onMove` hook; placement and the resize re-clamp are the
+shared ones.
 
-Escape is deliberately **not** wired. The global `keydown` handler closes the
-drill modal; hanging the panel off it would silently discard a half-typed
-query. The `×` is the only close affordance. `Ctrl/Cmd+Enter` in the textarea
+Escape closes the console like any other panel — but **only from outside the
+textarea**. The shared handler ignores the key when the event target is an
+`INPUT`/`TEXTAREA`/`SELECT`, which is what keeps it from discarding a
+half-typed query; before the panels were unified, the console was simply left
+out of the Escape wiring for that one reason. `Ctrl/Cmd+Enter` in the textarea
 runs; plain `Enter` is left alone so multi-line SQL still types normally, and
 `Shift+Enter` is deliberately not bound — a textarea treats it as a plain
 newline, which is what someone mid-statement expects.
@@ -520,3 +520,75 @@ numbers printed on the axis, over a 300 ms dissolve of the tick set.
   visibly the same fact — suppressed when the axis unit equals the bin length,
   where the two numbers are identical anyway. `updateLegend` reads `plot.data`
   raw and is untouched: a window total is tier-independent.
+
+
+## Floating panels
+
+Three draggable boxes float over the canvas — the legend, the drill-down panel
+and the query console — and there will be more. They share one CSS ruleset
+(`.fpanel`, `.fpanel-header`, `.fpanel-title`, `.fpanel-actions`,
+`.fpanel-close`) and one JS registration (`makeFloatingPanel(el, opts)`), both
+in `chart.html`. A new panel is two classes in the markup and one call; it must
+not bring its own drag handler, z-index, clamp or Escape wiring.
+
+```
+<div id="my-panel" class="fpanel">
+  <div class="fpanel-header">
+    <span class="fpanel-title">Title</span>
+    <span class="fpanel-actions">…buttons…</span>
+    <button class="fpanel-close" type="button">&times;</button>
+  </div>
+  <div id="my-body">…</div>
+</div>
+```
+
+```js
+makeFloatingPanel(el, { onClose, onMove });   // onMove only if the position persists
+el.classList.add('fp-open'); fpBringToFront(el);
+```
+
+What the shared layer decides, and why:
+
+- **They are body-level `position: fixed` siblings**, never children of
+  `#wrap`. `#wrap` has padding and is a `flex: 1` item, so a child would be
+  laid out against a box that moves with the toolbar and the filter panel, and
+  dragging would be clamped to the chart area.
+
+- **None of them is modal, and there is no backdrop.** The drill-down used to
+  live inside a `#drill-overlay` that greyed the whole canvas out and closed on
+  a background click. Both were wrong for this panel: it exists to be read
+  *against* the chart it came from, and "background" is the canvas, so panning,
+  zooming or picking the next bar destroyed its contents. Closing is the `×` or
+  Escape. Removing the overlay also removed the only element that was capturing
+  canvas clicks while a panel was open.
+
+- **Stacking is click order, not a ladder of magic numbers.** Every panel sits
+  at the same base `z-index: 1000` and `fpBringToFront()` raises whichever was
+  clicked last. The listener is on the panel in the **capture** phase, so a
+  click on a button inside it raises the panel too, even where the button's own
+  handler stops propagation. The old fixed ladder (legend 1000, console 1500,
+  drill 3000) meant the drill panel could never be put behind the legend.
+
+- **A panel may be dragged off the left, right and bottom edge**, keeping
+  `FP_KEEP_VISIBLE` (56 px) on screen — but its top never goes above 0. The
+  header *is* the drag handle, so a panel whose header left the viewport could
+  never be dragged back. That asymmetry is the whole clamp: `fpMoveTo()` is the
+  only place any of it is expressed, and `fpReclamp()` re-applies it after a
+  window resize or a content change.
+
+- **`fpMoved` marks a position as the user's.** Panels that place themselves
+  (the legend anchors to the plot area's right edge; the drill panel centres on
+  the plot area) check the flag first and stop moving once the user has dragged
+  them — the drill panel re-renders its body on every navigation step and would
+  otherwise jump back to the centre each time. It is also why the resize
+  re-clamp skips unmoved panels: rewriting the legend's `right` anchor to a
+  `left` would silently break its edge tracking.
+
+- **Escape closes the top-most open panel**, chosen by the same `z-index` the
+  click order produced, and skips the key entirely when it was typed into an
+  `INPUT`/`TEXTAREA`/`SELECT`.
+
+The legend is the one behaviour change from before the unification: it used to
+be draggable by its whole body (with a hand-maintained list of child elements
+that were exempt), and now drags by its header like the other two. It gained
+the header rule the other two already had.

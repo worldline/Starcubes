@@ -432,34 +432,67 @@
   }
   #loading-overlay.visible { display: flex; }
 
+  /* ── Floating panels ──────────────────────────────────────────────────
+     One chrome, one header, one drag/stack behaviour for every draggable
+     box over the canvas (legend, drill-down, query console, and whatever
+     comes next). Panels are body-level `position: fixed` siblings rather
+     than children of #wrap: #wrap has padding and is a flex:1 item, so a
+     child would be laid out against a box that moves with the toolbar and
+     filter panel, and dragging would be clamped to the chart area.
+
+     None of them is modal — there is deliberately no backdrop. A drill-down
+     that greys the chart out cannot be read against the chart it came from,
+     and a backdrop click that closes it makes every stray click on the
+     canvas destroy the panel's contents. Closing is the close button (or
+     Escape).
+
+     `z-index` is not assigned per panel here: the base is the same for all
+     of them and `fpBringToFront()` in the JS raises whichever was clicked
+     last, so the stacking order is the user's click order. Panels open with
+     `.fp-open` (display:flex) and are `display:none` otherwise. */
+  .fpanel {
+    position: fixed; z-index: 1000; display: none; flex-direction: column;
+    background: var(--legend-bg); border: 1px solid var(--legend-border);
+    border-radius: 6px; box-shadow: 0 4px 20px var(--legend-shadow);
+    backdrop-filter: blur(6px); font-size: 12px;
+  }
+  .fpanel.fp-open     { display: flex; }
+  .fpanel.fp-dragging { opacity: 0.9; }
+  .fpanel-header {
+    display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+    padding: 8px 12px; border-bottom: 1px solid var(--filter-row-border);
+    cursor: move; user-select: none;
+  }
+  .fpanel-title {
+    flex: 1 1 auto; min-width: 0; font-weight: 600; font-size: 11px;
+    color: var(--legend-title-color);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fpanel-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+  .fpanel-close {
+    background: none; border: none; font-size: 18px; cursor: pointer;
+    color: var(--legend-close-color); padding: 0 0 0 8px; line-height: 1;
+  }
+  .fpanel-close:hover { color: var(--legend-close-hover); }
+
   /* ── Legend ─────────────────────────────────────────────────────────── */
-  #legend   { position: fixed; z-index: 1000; background: var(--legend-bg);
-              border: 1px solid var(--legend-border); border-radius: 6px; padding: 8px 12px;
-              font-size: 12px; box-shadow: 0 2px 8px var(--legend-shadow);
-              cursor: grab; user-select: none; overflow-y: auto;
-              backdrop-filter: blur(4px); display: none; }
-  #legend.dragging { cursor: grabbing; opacity: 0.85; }
-  #legend-header { display: flex; justify-content: space-between; align-items: center;
-                   margin-bottom: 4px; }
-  #legend-title { font-weight: 600; font-size: 11px; color: var(--legend-title-color); }
-  #legend-close { background: none; border: none; font-size: 16px; cursor: pointer;
-                  padding: 0 2px; line-height: 1; color: var(--legend-close-color); }
-  #legend-close:hover { color: var(--legend-close-hover); }
+  #legend { width: max-content; max-width: 90vw; }
   #legend-copy { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
-                 font-size: 10px; cursor: pointer; padding: 1px 6px; margin-right: 4px;
+                 font-size: 10px; cursor: pointer; padding: 1px 6px;
                  color: var(--legend-copy-color); line-height: 1.4; }
   #legend-copy:hover { background: var(--legend-copy-hover-bg); color: var(--legend-copy-hover-color); }
   #legend-copy.copied { background: var(--legend-copy-ok-bg); border-color: var(--legend-copy-ok-border); color: var(--legend-copy-ok-color); }
   #legend-split { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
-                  font-size: 10px; padding: 1px 6px; cursor: pointer; margin-right: 4px;
+                  font-size: 10px; padding: 1px 6px; cursor: pointer;
                   color: var(--legend-copy-color); line-height: 1.4; }
   #legend-split:hover { background: var(--legend-copy-hover-bg); color: var(--legend-copy-hover-color); }
   .legend-down { margin-left: 4px; color: var(--legend-total-color); font-size: 11px; }
   #legend-filter { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
-                   font-size: 10px; cursor: pointer; padding: 1px 6px; margin-right: 4px;
+                   font-size: 10px; cursor: pointer; padding: 1px 6px;
                    color: var(--legend-copy-color); line-height: 1.4; }
   #legend-filter:hover { background: var(--legend-copy-hover-bg); color: var(--legend-copy-hover-color); }
-  #legend-items { display: flex; flex-direction: column; gap: 2px; }
+  #legend-items { display: flex; flex-direction: column; gap: 2px;
+                  padding: 8px 12px; overflow-y: auto; }
   .legend-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; }
   .legend-item:hover { background: var(--legend-hover-bg, rgba(128,128,128,0.15)); border-radius: 3px; }
   .legend-item.selected .legend-swatch { outline: 2px solid var(--toggle-color); outline-offset: 1px; }
@@ -486,31 +519,13 @@
   @keyframes follow-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
   /* ── Drill-down modal ───────────────────────────────────────────────── */
-  #drill-overlay {
-    display: none; position: fixed; inset: 0; z-index: 3000;
-    background: rgba(0,0,0,0.45);
-  }
-  #drill-modal {
-    position: absolute;
-    background: var(--legend-bg); border: 1px solid var(--legend-border);
-    border-radius: 6px; box-shadow: 0 4px 20px var(--legend-shadow);
-    backdrop-filter: blur(6px);
-    display: flex; flex-direction: column;
-    max-height: 80vh; width: 340px; font-size: 12px;
-  }
-  #drill-header {
-    padding: 10px 12px 8px; border-bottom: 1px solid var(--filter-row-border);
-    display: flex; justify-content: space-between; align-items: flex-start;
-    cursor: move; user-select: none;
-  }
-  #drill-header-info { flex: 1; }
+  #drill-modal { max-height: 80vh; width: 340px; }
+  /* Two lines of context in the header, so it aligns to the top rather than
+     centring like the other panels' single-line headers. */
+  #drill-header { align-items: flex-start; padding-top: 10px; }
+  #drill-header-info { flex: 1 1 auto; min-width: 0; }
   #drill-header-info .btt-dim { font-size: 13px; margin-bottom: 2px; }
-  #drill-close {
-    background: none; border: none; font-size: 18px; cursor: pointer;
-    color: var(--legend-close-color); padding: 0 0 0 8px; line-height: 1;
-  }
-  #drill-close:hover { color: var(--legend-close-hover); }
-  #drill-body { overflow-y: auto; padding: 8px 12px 12px; flex: 1; }
+  #drill-body { overflow-y: auto; padding: 8px 12px 12px; flex: 1 1 auto; min-height: 0; }
   .drill-section { margin-top: 10px; }
   .drill-section:first-child { margin-top: 0; }
   .drill-section-title {
@@ -628,13 +643,9 @@
 
 
   /* ── Query console ────────────────────────────────────────────────────────
-     A floating, resizable ad-hoc SQL panel. It is a body-level sibling with
-     position:fixed rather than a child of #wrap: #wrap has padding and is a
-     flex:1 item, so a child would be laid out against a box that moves with
-     the toolbar and filter panel, and dragging would be clamped to the chart
-     area. #legend is fixed for exactly the same reason. z-index sits above
-     the legend (1000) and below #drill-overlay (3000), so clicking a bar
-     still brings the drill modal to the front. */
+     A resizable ad-hoc SQL panel. Chrome, header and drag/stack behaviour
+     come from `.fpanel` (see there); only geometry and the console's own
+     widgets live below. */
   #query-toggle { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
                   padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
                   color: var(--toggle-color); }
@@ -642,30 +653,13 @@
   #query-toggle.active { background: var(--toggle-hover); border-color: var(--accent); }
 
   #query-panel {
-    display: none; position: fixed; z-index: 1500;
     left: 60px; top: 120px; width: 640px; height: 460px;
     min-width: 380px; min-height: 240px;
-    background: var(--legend-bg); border: 1px solid var(--legend-border);
-    border-radius: 6px; box-shadow: 0 4px 20px var(--legend-shadow);
-    backdrop-filter: blur(6px);
-    flex-direction: column; font-size: 12px;
     /* Native resize: the browser writes inline width/height, which is what
        makes persistence a two-line ResizeObserver. It is ignored unless
        overflow is something other than visible. */
     resize: both; overflow: hidden;
   }
-  #query-panel.open { display: flex; }
-  #query-header {
-    padding: 8px 12px; border-bottom: 1px solid var(--filter-row-border);
-    display: flex; justify-content: space-between; align-items: center;
-    cursor: move; user-select: none; flex: 0 0 auto;
-  }
-  #query-title { font-weight: 600; color: var(--legend-title-color); }
-  #query-close {
-    background: none; border: none; font-size: 18px; cursor: pointer;
-    color: var(--legend-close-color); padding: 0 0 0 8px; line-height: 1;
-  }
-  #query-close:hover { color: var(--legend-close-hover); }
 
   #query-editor { padding: 8px 12px 0; flex: 0 0 auto; }
   #query-sql {
@@ -937,34 +931,32 @@
 </div>
 <div id="wrap"><canvas id="chart"></canvas><div id="loading-overlay">Loading…</div></div>
 <div id="info"><span id="info-text"></span></div>
-<div id="drill-overlay">
-  <div id="drill-modal">
-    <div id="drill-header">
-      <div id="drill-header-info"></div>
-      <div id="drill-action-btns">
-        <button id="drill-txn-btn"   type="button" title="Show transaction IDs">IDs</button>
-        <button id="drill-alarm-btn" type="button" title="Set up alert">Alert</button>
-      </div>
-      <button id="drill-close" type="button" title="Close">&times;</button>
+<div id="drill-modal" class="fpanel">
+  <div id="drill-header" class="fpanel-header">
+    <div id="drill-header-info"></div>
+    <div id="drill-action-btns" class="fpanel-actions">
+      <button id="drill-txn-btn"   type="button" title="Show transaction IDs">IDs</button>
+      <button id="drill-alarm-btn" type="button" title="Set up alert">Alert</button>
     </div>
-    <div id="drill-body"><div id="drill-status">Loading&hellip;</div></div>
+    <button id="drill-close" class="fpanel-close" type="button" title="Close">&times;</button>
   </div>
+  <div id="drill-body"><div id="drill-status">Loading&hellip;</div></div>
 </div>
-<div id="legend">
-  <div id="legend-header">
-    <span id="legend-title"></span>
-    <span style="display: flex; align-items: center;">
+<div id="legend" class="fpanel">
+  <div id="legend-header" class="fpanel-header">
+    <span id="legend-title" class="fpanel-title"></span>
+    <span class="fpanel-actions">
       <button id="legend-filter" type="button" title="Filter selected" style="display:none">Filter</button>
       <button id="legend-split" type="button" title="Move selected to lower half of butterfly stack" style="display:none">Split</button>
       <button id="legend-copy" type="button" title="Copy legend as CSV">CSV</button>
-      <button id="legend-close" type="button" title="Close legend">&times;</button>
+      <button id="legend-close" class="fpanel-close" type="button" title="Close legend">&times;</button>
     </span>
   </div>
   <div id="legend-items"></div>
 </div>
 
 {% if user.is_authenticated %}
-<div id="query-panel">
+<div id="query-panel" class="fpanel">
   {% comment %}
      Guarantees the csrftoken cookie exists on this page. The logout form is
      the only other place that emits the token, and it carries the same auth
@@ -977,9 +969,9 @@
      inside it still executes.
   {% endcomment %}
   {% csrf_token %}
-  <div id="query-header">
-    <span id="query-title">Query</span>
-    <button id="query-close" type="button" title="Close">&times;</button>
+  <div id="query-header" class="fpanel-header">
+    <span id="query-title" class="fpanel-title">Query</span>
+    <button id="query-close" class="fpanel-close" type="button" title="Close">&times;</button>
   </div>
   <div id="query-editor">
     <textarea id="query-sql" spellcheck="false" placeholder="SELECT ... — one read-only statement"></textarea>
@@ -2284,6 +2276,127 @@ function initTs() {
   if (_initTmin != null && _initTmax != null) { ts.zoom(_initTmin, _initTmax); ts.stop(); }
 }
 
+// ── Floating panels ───────────────────────────────────────────────────────
+// Drag, stacking order and open/close for every `.fpanel` floating over the
+// canvas — legend, drill-down, query console, and whatever comes next. See the
+// `.fpanel` CSS block for the chrome and for why none of them is modal.
+//
+// Panels register themselves with `makeFloatingPanel()`; everything below
+// works off that one list, so a new panel needs the two CSS classes and one
+// call, not its own copy of drag/clamp/z-index/Escape logic.
+const fpPanels = [];
+
+// Every panel sits at the `.fpanel` base z-index and is raised above the rest
+// when clicked, so the stacking order is the user's click order rather than a
+// hand-maintained ladder of magic numbers (it used to be legend 1000, query
+// 1500, drill 3000 — which fixed the drill modal on top forever).
+const FP_Z_BASE = 1000;
+let _fpZ = FP_Z_BASE;
+
+// A panel may be dragged off the left, right and bottom edge — that is the
+// point of "draggable out of range" — but this much of it stays on screen,
+// and its top never goes above 0: the header is the drag handle, so a panel
+// whose header left the viewport could never be dragged back.
+const FP_KEEP_VISIBLE = 56;
+
+function fpBringToFront(el) {
+  if (Number(el.style.zIndex) === _fpZ) return;
+  el.style.zIndex = ++_fpZ;
+}
+
+function fpIsOpen(el) { return el.classList.contains('fp-open'); }
+
+// Move a panel to viewport coordinates, clamped only as far as
+// recoverability requires. `right`/`bottom` are cleared because the legend is
+// first placed by `right` (it tracks the plot area's right edge) and the
+// first drag has to switch it over to `left`.
+function fpMoveTo(el, left, top) {
+  const w = el.offsetWidth || 0, h = el.offsetHeight || 0;
+  const keepX = Math.min(FP_KEEP_VISIBLE, w);
+  const keepY = Math.min(FP_KEEP_VISIBLE, h);
+  el.style.left   = Math.max(keepX - w, Math.min(window.innerWidth - keepX, left)) + 'px';
+  el.style.top    = Math.max(0, Math.min(window.innerHeight - keepY, top)) + 'px';
+  el.style.right  = 'auto';
+  el.style.bottom = 'auto';
+}
+
+// Re-apply the clamp where the panel already is — after a window resize, or
+// after its own content changed its size.
+function fpReclamp(el) {
+  const r = el.getBoundingClientRect();
+  fpMoveTo(el, r.left, r.top);
+  const entry = fpPanels.find(x => x.el === el);
+  if (entry && entry.onMove) entry.onMove(el);
+}
+
+// opts.handle  drag handle, default the panel's own `.fpanel-header`
+// opts.onMove  called after every move (persistence hook)
+// opts.onClose called by Escape; also wire it to the close button
+function makeFloatingPanel(el, opts) {
+  opts = opts || {};
+  const handle = opts.handle || el.querySelector('.fpanel-header') || el;
+
+  // Capture phase, on the whole panel: clicking a button inside it must raise
+  // it too, and those handlers may stop propagation.
+  el.addEventListener('pointerdown', () => fpBringToFront(el), true);
+
+  let drag = null;
+  handle.addEventListener('pointerdown', e => {
+    // Header controls keep their own clicks; the rest of the header drags.
+    if (e.button !== 0 || e.target.closest('button, a, input, textarea, select')) return;
+    const r = el.getBoundingClientRect();
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    // Marks the position as the user's: placement helpers stop overriding it.
+    el.dataset.fpMoved = '1';
+    el.classList.add('fp-dragging');
+    // Throws NotFoundError if the pointer is no longer active — nothing to
+    // recover from, the pointermove listeners sit on the handle either way.
+    try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+    e.preventDefault();
+  });
+  handle.addEventListener('pointermove', e => {
+    if (!drag) return;
+    fpMoveTo(el, e.clientX - drag.dx, e.clientY - drag.dy);
+    if (opts.onMove) opts.onMove(el);
+  });
+  function endDrag(e) {
+    if (!drag) return;
+    drag = null;
+    el.classList.remove('fp-dragging');
+    try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+    if (opts.onMove) opts.onMove(el);
+  }
+  handle.addEventListener('pointerup', endDrag);
+  handle.addEventListener('pointercancel', endDrag);
+
+  const entry = { el, onMove: opts.onMove || null, close: opts.onClose || null };
+  fpPanels.push(entry);
+  return entry;
+}
+
+// Only user-placed panels are re-clamped on resize. The others are positioned
+// by their own code on every open (the legend even anchors to `right` so it
+// follows the plot area), and rewriting that to `left` here would break it.
+window.addEventListener('resize', () => {
+  for (const pnl of fpPanels) {
+    if (pnl.el.dataset.fpMoved && fpIsOpen(pnl.el)) fpReclamp(pnl.el);
+  }
+});
+
+// Escape closes the top-most open panel — one rule for all of them. Text
+// inputs are exempt: the query console's textarea would otherwise lose a
+// half-written statement to a stray Escape.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+  const open = fpPanels.filter(pnl => pnl.close && fpIsOpen(pnl.el));
+  if (!open.length) return;
+  const z = pnl => Number(pnl.el.style.zIndex) || FP_Z_BASE;
+  open.sort((a, b) => z(a) - z(b));
+  open[open.length - 1].close();
+});
+
 // ── Legend ────────────────────────────────────────────────────────────────
 
 const legendEl = document.getElementById('legend');
@@ -2297,7 +2410,6 @@ const legendSplitBtn = document.getElementById('legend-split');
 // this from the plots actually rendered so the click handler can gate Split.
 let legendStackable = false;
 const followToggle = document.getElementById('follow-toggle');
-let legendDrag = null;
 let lastLegendRows = []; // [{ name, total }] in current display order, for CSV copy
 
 // ── Follow mode toggle ───────────────────────────────────────────────────
@@ -2424,16 +2536,18 @@ themeToggle.addEventListener('click', () => {
 })();
 
 legendToggle.addEventListener('click', () => {
-  const showing = legendEl.style.display === 'block';
-  legendEl.style.display = showing ? 'none' : 'block';
-  if (!showing) updateLegend();
+  if (fpIsOpen(legendEl)) { closeLegend(); return; }
+  legendEl.classList.add('fp-open');
+  fpBringToFront(legendEl);
+  updateLegend();
 });
-legendClose.addEventListener('click', () => {
+function closeLegend() {
   legendSelected.clear();
   legendFilterBtn.style.display = 'none';
   legendSplitBtn.style.display = 'none';
-  legendEl.style.display = 'none';
-});
+  legendEl.classList.remove('fp-open');
+}
+legendClose.addEventListener('click', closeLegend);
 legendFilterBtn.addEventListener('click', () => {
   if (!currentMeta || !starcubesParams.group_by || !legendSelected.size) return;
   const col = starcubesParams.group_by;
@@ -2518,26 +2632,6 @@ legendCopy.addEventListener('click', async () => {
   }
 });
 
-function makeLegendDraggable() {
-  legendEl.addEventListener('mousedown', e => {
-    if (e.target.closest('.legend-swatch') || e.target.closest('#legend-close') || e.target.closest('#legend-copy') || e.target.closest('#legend-filter') || e.target.closest('#legend-split')) return;
-    legendDrag = { x: e.clientX - legendEl.offsetLeft,
-                   y: e.clientY - legendEl.offsetTop };
-    legendEl.classList.add('dragging');
-    e.preventDefault();
-  });
-  document.addEventListener('mousemove', e => {
-    if (!legendDrag) return;
-    legendEl.style.left = (e.clientX - legendDrag.x) + 'px';
-    legendEl.style.top  = (e.clientY - legendDrag.y) + 'px';
-    legendEl.style.right = 'auto';
-    delete legendEl.dataset.positioned;
-  });
-  document.addEventListener('mouseup', () => {
-    legendDrag = null;
-    legendEl.classList.remove('dragging');
-  });
-}
 
 function updateLegend() {
   if (!ts || !currentMeta) return;
@@ -2647,8 +2741,10 @@ function updateLegend() {
     const h = canvas.getBoundingClientRect().height;
     legendEl.style.maxHeight = Math.round(h * 0.8) + 'px';
   }
-  // Position: top-right of the chart's drawing area with 5px margin
-  if (!legendEl.dataset.positioned) {
+  // Position: top-right of the chart's drawing area with 5px margin.
+  // `fpMoved` (set by the shared drag handler) means the user placed it —
+  // then this must not move it back on the next legend refresh.
+  if (!legendEl.dataset.positioned && !legendEl.dataset.fpMoved) {
     const area = ts ? ts.getPlotArea() : null;
     const canvasRect = canvas.getBoundingClientRect();
     const scaleX = canvasRect.width / (canvas.width || 1);
@@ -2656,7 +2752,6 @@ function updateLegend() {
     const m = area ? area.margin : { top: 0, right: 0 };
     const rightOffset = (m.right * scaleX) + 5;
     const topOffset = (m.top * scaleY) + 5;
-    legendEl.style.position = 'fixed';
     legendEl.style.right = (window.innerWidth - canvasRect.right + rightOffset) + 'px';
     legendEl.style.top = (canvasRect.top + topOffset) + 'px';
     legendEl.style.left = 'auto';
@@ -2708,7 +2803,7 @@ function updateLegend() {
   });
 }
 
-makeLegendDraggable();
+makeFloatingPanel(legendEl, { onClose: closeLegend });
 
 // ── Bar hover tooltip ────────────────────────────────────────────────────
 // The card itself — DOM, positioning, theming — comes from the library
@@ -2791,40 +2886,22 @@ function _barHeaderHtml(dimNameHtml, slotSec, value, interval, color) {
 
 // ── Drill-down modal ─────────────────────────────────────────────────────
 
-const drillOverlay = document.getElementById('drill-overlay');
-const drillModal   = document.getElementById('drill-modal');
+const drillModal = document.getElementById('drill-modal');
 let _drillCtx = null;
 
-function closeDrillModal() { drillOverlay.style.display = 'none'; }
+// The modal used to sit inside a full-viewport `#drill-overlay` that greyed
+// the chart out and closed on a background click. Both are gone: the panel is
+// there to be read *against* the chart, and a click anywhere on the canvas
+// (panning, picking another bar) threw its contents away. It closes by its
+// button or by Escape — the latter through the shared handler.
+function closeDrillModal() { drillModal.classList.remove('fp-open'); }
 document.getElementById('drill-close').addEventListener('click', closeDrillModal);
-drillOverlay.addEventListener('click', e => { if (e.target === drillOverlay) closeDrillModal(); });
-document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') closeDrillModal();
-});
+makeFloatingPanel(drillModal, { onClose: closeDrillModal });
 document.getElementById('drill-header-info').addEventListener('click', e => {
   if (!e.target.closest('.drill-dimname-btn') || !_drillCtx) return;
   drillAddFilter(_drillCtx.groupBy, _drillCtx.rawKey);
 });
 
-// Drag to move
-document.getElementById('drill-header').addEventListener('pointerdown', e => {
-  if (e.target.closest('button')) return;
-  e.preventDefault();
-  const rect = drillModal.getBoundingClientRect();
-  const ox = e.clientX - rect.left, oy = e.clientY - rect.top;
-  e.currentTarget.setPointerCapture(e.pointerId);
-  function onMove(ev) {
-    const mw = drillModal.offsetWidth, mh = drillModal.offsetHeight;
-    drillModal.style.left = Math.max(0, Math.min(window.innerWidth  - mw, ev.clientX - ox)) + 'px';
-    drillModal.style.top  = Math.max(0, Math.min(window.innerHeight - mh, ev.clientY - oy)) + 'px';
-  }
-  function onUp() {
-    document.removeEventListener('pointermove', onMove);
-    document.removeEventListener('pointerup',   onUp);
-  }
-  document.addEventListener('pointermove', onMove);
-  document.addEventListener('pointerup',   onUp);
-});
 document.getElementById('drill-body').addEventListener('click', e => {
   if (e.target.closest('.drill-back-btn'))  { _fetchDrillContent(); return; }
   if (e.target.closest('.drill-alarm-save')) {
@@ -2845,6 +2922,8 @@ document.getElementById('drill-txn-btn').addEventListener('click',   openTxnView
 document.getElementById('drill-alarm-btn').addEventListener('click', openAlarmView);
 
 function positionDrillModal() {
+  // Dragged by the user? Then only keep it reachable — never re-centre it.
+  if (drillModal.dataset.fpMoved) { fpReclamp(drillModal); return; }
   const canvas = document.getElementById('chart');
   const rect   = canvas.getBoundingClientRect();
   const area   = ts ? ts.getPlotArea()
@@ -2920,7 +2999,8 @@ async function openDrillModal(plot, n, key, value) {
     _barHeaderHtml(dimBtn, slotSec, value, plot.interval, color);
 
   _drillCtx = { rawKey, slotSec, interval: plot.interval, groupBy: starcubesParams.group_by };
-  drillOverlay.style.display = 'block';
+  drillModal.classList.add('fp-open');
+  fpBringToFront(drillModal);
   positionDrillModal();
   await _fetchDrillContent();
 }
@@ -3917,13 +3997,22 @@ window.addEventListener('popstate', async () => {
   }
 
   // ── Panel geometry ────────────────────────────────────────────────────
-  function clampIntoViewport() {
-    const w = panel.offsetWidth || 640, h = panel.offsetHeight || 460;
-    const left = Math.max(0, Math.min(window.innerWidth  - w, state.left ?? 60));
-    const top  = Math.max(0, Math.min(window.innerHeight - h, state.top  ?? 120));
-    panel.style.left = left + 'px';
-    panel.style.top  = top  + 'px';
-    state.left = left; state.top = top;
+  // Position comes from the shared panel helper (clamping, out-of-viewport
+  // overhang and the resize re-clamp are all defined once, in fpMoveTo);
+  // this only persists the result.
+  function persistPosition() {
+    state.left = panel.offsetLeft;
+    state.top  = panel.offsetTop;
+    saveState();
+  }
+
+  function placePanel() {
+    fpMoveTo(panel, state.left ?? 60, state.top ?? 120);
+    // The panel is always where the user last left it, so it takes part in
+    // the shared resize re-clamp from the first render on.
+    panel.dataset.fpMoved = '1';
+    state.left = panel.offsetLeft;
+    state.top  = panel.offsetTop;
   }
 
   function applyGeometry() {
@@ -3935,10 +4024,11 @@ window.addEventListener('popstate', async () => {
 
   function setOpen(open) {
     state.open = open;
-    panel.classList.toggle('open', open);
+    panel.classList.toggle('fp-open', open);
     toggle.classList.toggle('active', open);
     if (open) {
-      clampIntoViewport();
+      fpBringToFront(panel);
+      placePanel();
       if (!historyLoaded) loadHistory();
       updateTitle();
       sqlBox.focus();
@@ -3955,40 +4045,17 @@ window.addEventListener('popstate', async () => {
     new ResizeObserver(() => {
       clearTimeout(pending);
       pending = setTimeout(() => {
-        if (!panel.classList.contains('open')) return;
+        if (!fpIsOpen(panel)) return;
         state.width  = panel.style.width  || state.width;
         state.height = panel.style.height || state.height;
         saveState();
       }, 200);
     }).observe(panel);
   }
-  window.addEventListener('resize', () => {
-    if (panel.classList.contains('open')) { clampIntoViewport(); saveState(); }
-  });
-
-  // Drag by the header — same pointer-capture shape as the drill modal.
-  const header = document.getElementById('query-header');
-  let drag = null;
-  header.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('button')) return;
-    drag = { dx: e.clientX - panel.offsetLeft, dy: e.clientY - panel.offsetTop };
-    header.setPointerCapture(e.pointerId);
-    e.preventDefault();
-  });
-  header.addEventListener('pointermove', (e) => {
-    if (!drag) return;
-    const w = panel.offsetWidth, h = panel.offsetHeight;
-    state.left = Math.max(0, Math.min(window.innerWidth  - w, e.clientX - drag.dx));
-    state.top  = Math.max(0, Math.min(window.innerHeight - h, e.clientY - drag.dy));
-    panel.style.left = state.left + 'px';
-    panel.style.top  = state.top  + 'px';
-  });
-  header.addEventListener('pointerup', (e) => {
-    if (!drag) return;
-    drag = null;
-    header.releasePointerCapture(e.pointerId);
-    saveState();
-  });
+  // Drag, stacking and the resize re-clamp: shared with the legend and the
+  // drill-down panel. `onMove` is the only console-specific part — this is
+  // the one panel whose position is remembered across page loads.
+  makeFloatingPanel(panel, { onMove: persistPosition, onClose: () => setOpen(false) });
 
   // starcubesParams is a top-level `let` declared far above this block;
   // it is always initialized by the time any handler here runs.
@@ -4262,7 +4329,7 @@ window.addEventListener('popstate', async () => {
   });
 
   // ── Wiring ────────────────────────────────────────────────────────────
-  toggle.addEventListener('click', () => setOpen(!panel.classList.contains('open')));
+  toggle.addEventListener('click', () => setOpen(!fpIsOpen(panel)));
   document.getElementById('query-close').addEventListener('click', () => setOpen(false));
   runBtn.addEventListener('click', runQuery);
   cancelBtn.addEventListener('click', cancelQuery);
@@ -4313,7 +4380,7 @@ window.addEventListener('popstate', async () => {
     renderResults({ columns: [], rows: [] });
     setStatus('');
     historyLoaded = false;
-    if (panel.classList.contains('open') || state.historyOpen) loadHistory();
+    if (fpIsOpen(panel) || state.historyOpen) loadHistory();
   };
 })();
 </script>

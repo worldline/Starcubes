@@ -994,6 +994,32 @@ any of the systems it covers.
   instead. `_barHeaderHtml()` and the `.btt-*` classes survive because the
   drill-modal header still uses them. See `docs/chart-app.md`.
 
+- **Every draggable box over the canvas is one `.fpanel`, not three
+  implementations.** The legend, the drill-down panel and the query console
+  (and whatever lands next) share one CSS ruleset and one
+  `makeFloatingPanel()` registration in `chart.html`; a new panel is two
+  classes in the markup plus one call, and must not bring its own drag
+  handler, clamp, z-index or Escape wiring. Four decisions live in that shared
+  layer and are easy to re-break individually:
+    - **No backdrop, and none of them is modal.** The drill-down used to sit
+      inside a `#drill-overlay` that greyed the whole canvas and closed on a
+      background click. A panel whose job is to explain one bar has to be
+      readable *against* the chart, and here "background" is the canvas — so
+      panning, zooming or picking the next bar threw its contents away.
+    - **Stacking is the user's click order**, via one counter raised on a
+      capture-phase `pointerdown` (so a click on a button *inside* a panel
+      raises it too). The previous fixed ladder — legend 1000, console 1500,
+      drill 3000 — meant the drill panel could never be put behind the legend.
+    - **Panels may hang off the left, right and bottom edge but never above
+      `top: 0`.** The header is the drag handle, so a panel dragged past the
+      top edge could never be dragged back. `fpMoveTo()` is the only place the
+      clamp is expressed.
+    - **`dataset.fpMoved` marks a position as the user's**, which is what stops
+      the self-placing panels from overriding it — the drill panel re-renders
+      its body on every navigation step and used to re-centre itself each time,
+      and the resize re-clamp skips unmoved panels so the legend keeps its
+      `right` anchor to the plot area. See `docs/chart-app.md`.
+
 - **Quantile-bands are a distinct plot type, not a multibar measure.** A
   measure with `graph_style='quantile-bands'` and `agg='quantile(col)'` routes
   `plot_json` to `core/query.timeseries_quantiles` (not `timeseries_multibar`).
