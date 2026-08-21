@@ -421,6 +421,33 @@ def api_sources(request):
     return JsonResponse({"sources": [dict(r) for r in rows]})
 
 
+def _existing_relations(conn, qualified_names):
+    """Subset of ``qualified_names`` that actually exists in the warehouse.
+
+    A datasource is fully configurable before any of its DDL exists: the GUI's
+    ``source_new`` only INSERTs the metadata row, and ``create_fact`` /
+    ``create_dim_tables`` run later from ``/sources/<id>/`` — or never, for a
+    half-configured source. So a ``dimension`` row routinely names a table, and
+    a ``datasource`` row a schema, that is not there yet. Callers use this to
+    serve such a dimension as empty instead of dying on it.
+
+    The names are passed to ``to_regclass`` **unquoted**, exactly as the
+    queries this guards interpolate them (``f"{schema}.{table}"``): the
+    existence test has to fold identifiers the same way the access it protects
+    does, or it would answer a different question than the one being asked.
+    (In ``migrations/starcubes_meta.sql`` the mirror-image is right — the ALTER
+    there quotes with ``%I``, so its test quotes too.) ``to_regclass`` returns
+    NULL for a missing table and a missing schema alike, without raising.
+    """
+    names = list(qualified_names)
+    if not names:
+        return set()
+    return {r[0] for r in conn.execute(text(
+        "SELECT q FROM unnest(CAST(:names AS text[])) AS t(q) "
+        " WHERE to_regclass(q) IS NOT NULL"
+    ), {"names": names}).all()}
+
+
 def api_source_meta(request):
     """Per-source metadata for the chart form: fact columns (role-tagged so
     the UI can split into time / pk / measure / dimension), the dim values
@@ -434,101 +461,118 @@ def api_source_meta(request):
     if not name:
         return HttpResponseBadRequest("missing ?name=")
 
-    source = Source.load(_meta_engine(),
-                         dest_dsn=settings.STARCUBES_POSTGRES_DSN,
-                         name_or_id=name)
+    # Same shape as plot_json / drill_json / txn_json: a failure here has to
+    # reach the chart as JSON. Without it Django answers with its HTML 500
+    # page, and the status line prints "<!doctype html> ..." instead of the
+    # error -- which is how a missing dim table read as an unrelated problem.
+    try:
+        source = Source.load(_meta_engine(),
+                             dest_dsn=settings.STARCUBES_POSTGRES_DSN,
+                             name_or_id=name)
 
-    dim_for_fc = {d.fact_column: d.dim_table
-                  for d in source.dimensions if d.dim_table}
-    fact_cols = [{
-        "name":      c.name,
-        "role":      c.role,
-        "pg_type":   c.pg_type,
-        "ordinal":   c.ordinal,
-        "dim_table": dim_for_fc.get(c.name),
-    } for c in sorted(source.fact_columns, key=lambda c: c.ordinal)]
+        dim_for_fc = {d.fact_column: d.dim_table
+                      for d in source.dimensions if d.dim_table}
+        fact_cols = [{
+            "name":      c.name,
+            "role":      c.role,
+            "pg_type":   c.pg_type,
+            "ordinal":   c.ordinal,
+            "dim_table": dim_for_fc.get(c.name),
+        } for c in sorted(source.fact_columns, key=lambda c: c.ordinal)]
 
-    dimensions: dict[str, list] = {}
-    with source.dest_engine().begin() as conn:
-        for d in source.primary_dimensions():
-            rows = conn.execute(text(
-                f"SELECT source_id, name, description "
-                f"  FROM {source.schema_name}.{d.dim_table} "
-                f" WHERE source_id != :unk "
-                f" ORDER BY name NULLS LAST, source_id"
-            ), {"unk": UNKNOWN_SOURCE_ID}).all()
-            dimensions[d.dim_table] = [[r[0], r[1], r[2]] for r in rows]
+        dimensions: dict[str, list] = {}
+        with source.dest_engine().begin() as conn:
+            present = _existing_relations(
+                conn, [f"{source.schema_name}.{d.dim_table}"
+                       for d in source.primary_dimensions()])
+            for d in source.primary_dimensions():
+                if f"{source.schema_name}.{d.dim_table}" not in present:
+                    dimensions[d.dim_table] = []
+                    continue
+                rows = conn.execute(text(
+                    f"SELECT source_id, name, description "
+                    f"  FROM {source.schema_name}.{d.dim_table} "
+                    f" WHERE source_id != :unk "
+                    f" ORDER BY name NULLS LAST, source_id"
+                ), {"unk": UNKNOWN_SOURCE_ID}).all()
+                dimensions[d.dim_table] = [[r[0], r[1], r[2]] for r in rows]
 
-    # One entry per group dimension (dim_group_set), in the order the
-    # dimension carries them. `token` is what the chart puts in group_by and
-    # in filter columns; `label` is how it prints in both dropdowns. Counts
-    # are fetched once per dimension, not once per set, since several sets on
-    # one column all read the same dim table.
-    dim_group_sets: list[dict] = []
-    for d in source.dimensions:
-        if not d.group_sets:
-            continue
-        idx_counts: dict[int, int] = {}
-        if d.dim_table:
-            all_indices = {m.dim_index for gs in d.group_sets
-                           for g in gs.groups for m in g.members}
-            if all_indices:
-                idx_list = ",".join(str(i) for i in sorted(all_indices))
-                with source.dest_engine().begin() as dconn:
-                    rows = dconn.execute(text(
-                        f"SELECT index, count "
-                        f"  FROM {source.schema_name}.{d.dim_table} "
-                        f" WHERE index IN ({idx_list})"
-                    )).mappings().all()
-                idx_counts = {r["index"]: r["count"] for r in rows}
-        for gs in d.group_sets:
-            group_list = []
-            for g in gs.groups:
-                members = [m.dim_index for m in g.members]
-                group_list.append({
-                    "group_name": g.group_name,
-                    "color":      g.color,
-                    "members":    members,
-                    "count":      sum(idx_counts.get(i, 0) for i in members),
+        # One entry per group dimension (dim_group_set), in the order the
+        # dimension carries them. `token` is what the chart puts in group_by and
+        # in filter columns; `label` is how it prints in both dropdowns. Counts
+        # are fetched once per dimension, not once per set, since several sets on
+        # one column all read the same dim table.
+        dim_group_sets: list[dict] = []
+        for d in source.dimensions:
+            if not d.group_sets:
+                continue
+            idx_counts: dict[int, int] = {}
+            if d.dim_table:
+                all_indices = {m.dim_index for gs in d.group_sets
+                               for g in gs.groups for m in g.members}
+                if all_indices:
+                    idx_list = ",".join(str(i) for i in sorted(all_indices))
+                    with source.dest_engine().begin() as dconn:
+                        # Same guard as the dim-value loop above: a group dimension
+                        # can be configured before the dim table it buckets exists.
+                        if _existing_relations(
+                                dconn, [f"{source.schema_name}.{d.dim_table}"]):
+                            rows = dconn.execute(text(
+                                f"SELECT index, count "
+                                f"  FROM {source.schema_name}.{d.dim_table} "
+                                f" WHERE index IN ({idx_list})"
+                            )).mappings().all()
+                            idx_counts = {r["index"]: r["count"] for r in rows}
+            for gs in d.group_sets:
+                group_list = []
+                for g in gs.groups:
+                    members = [m.dim_index for m in g.members]
+                    group_list.append({
+                        "group_name": g.group_name,
+                        "color":      g.color,
+                        "members":    members,
+                        "count":      sum(idx_counts.get(i, 0) for i in members),
+                    })
+                dim_group_sets.append({
+                    "col":    d.fact_column,
+                    "slug":   gs.slug,
+                    "name":   gs.name,
+                    "token":  grouped_token(d.fact_column, gs.slug),
+                    "label":  grouped_label(d.fact_column, gs.name),
+                    "groups": group_list,
                 })
-            dim_group_sets.append({
-                "col":    d.fact_column,
-                "slug":   gs.slug,
-                "name":   gs.name,
-                "token":  grouped_token(d.fact_column, gs.slug),
-                "label":  grouped_label(d.fact_column, gs.name),
-                "groups": group_list,
-            })
 
-    with _meta_engine().begin() as conn:
-        wm = conn.execute(text(
-            "SELECT min(first_end_time) AS lo, "
-            "       max(last_end_time)  AS hi "
-            "  FROM starcubes_meta.etl_run "
-            " WHERE datasource_id = :ds AND status = 'ok'"
-        ), {"ds": source.id}).mappings().one()
+        with _meta_engine().begin() as conn:
+            wm = conn.execute(text(
+                "SELECT min(first_end_time) AS lo, "
+                "       max(last_end_time)  AS hi "
+                "  FROM starcubes_meta.etl_run "
+                " WHERE datasource_id = :ds AND status = 'ok'"
+            ), {"ds": source.id}).mappings().one()
 
-    return JsonResponse({
-        "name":                     source.name,
-        "schema_name":              source.schema_name,
-        "partition_column":         source.partition_column,
-        "fact_columns":             fact_cols,
-        "dimensions":               dimensions,
-        "dim_group_sets":           dim_group_sets,
-        "measures":                 [{
-            "name":        m.name,
-            "agg":         m.agg,
-            "graph_style": m.graph_style,
-            "is_default":  m.is_default,
-        } for m in source.measures],
-        "interval_ladder":          source.interval_ladder,
-        "bar_pixel_target":          source.bar_pixel_target,
-        "pk_format":                source.pk_format,
-        "time_range": {
-            "min": wm["lo"].isoformat() if wm["lo"] else None,
-            "max": wm["hi"].isoformat() if wm["hi"] else None,
-        },
-    }, json_dumps_params={"default": str})
+        return JsonResponse({
+            "name":                     source.name,
+            "schema_name":              source.schema_name,
+            "partition_column":         source.partition_column,
+            "fact_columns":             fact_cols,
+            "dimensions":               dimensions,
+            "dim_group_sets":           dim_group_sets,
+            "measures":                 [{
+                "name":        m.name,
+                "agg":         m.agg,
+                "graph_style": m.graph_style,
+                "is_default":  m.is_default,
+            } for m in source.measures],
+            "interval_ladder":          source.interval_ladder,
+            "bar_pixel_target":          source.bar_pixel_target,
+            "pk_format":                source.pk_format,
+            "time_range": {
+                "min": wm["lo"].isoformat() if wm["lo"] else None,
+                "max": wm["hi"].isoformat() if wm["hi"] else None,
+            },
+        }, json_dumps_params={"default": str})
+    except Exception as exc:
+        return JsonResponse({"error": repr(exc)}, status=500)
 
 
 # ── Query console ───────────────────────────────────────────────────────────

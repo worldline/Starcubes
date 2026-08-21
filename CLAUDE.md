@@ -1013,6 +1013,32 @@ any of the systems it covers.
   instead. `_barHeaderHtml()` and the `.btt-*` classes survive because the
   drill-modal header still uses them. See `docs/chart-app.md`.
 
+- **A datasource's metadata legitimately precedes its DDL, and code that
+  touches the warehouse has to survive that.** `sources/views.py:source_new`
+  only INSERTs the `datasource` row (plus whatever `fact_column` / `dimension`
+  rows the admin then configures); `create_fact` / `create_dim_tables` run
+  later from a separate endpoint under `/sources/<id>/` — or never, for a
+  source someone half-configured and left. So `schema_name` routinely names a
+  schema that does not exist and `dimension.dim_table` a table that does not
+  exist. This has bitten twice, in code written years apart, both times fatally
+  out of proportion to the cause:
+    - `migrations/starcubes_meta.sql`'s count-column retrofit ALTERed such a
+      table, and since `ensure_starcubes_meta` runs the whole script in one
+      transaction, that rolled back every later migration block *and* — via
+      `bootstrap.py` step 0, ahead of `migrate`/`collectstatic` — kept the
+      container from starting at all.
+    - `viz/views.py:api_source_meta` SELECTed from such a table. The chart
+      awaits it during init, so one unprovisioned datasource killed the whole
+      page, including every healthy source on it — and because it sorts
+      first by name it was picked by default.
+  Both now test with `to_regclass` first (`viz/views.py:_existing_relations`
+  for the Python side). **The test has to use the same quoting as the access it
+  protects**: `api_source_meta` interpolates `f"{schema}.{table}"` unquoted, so
+  its probe passes the name unquoted; the migration's `ALTER` uses `format('%I')`,
+  so its probe quotes. Getting that backwards silently answers a different
+  question — see the `schema_name` backlog entry for why the two halves of the
+  codebase disagree about quoting in the first place.
+
 - **Every draggable box over the canvas is one `.fpanel`, not three
   implementations.** The legend, the drill-down panel and the query console
   (and whatever lands next) share one CSS ruleset and one
