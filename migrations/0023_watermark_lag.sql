@@ -57,13 +57,18 @@
 -- term still closes the window right up to max(watermark), which is all there
 -- is to load. It only stops it running off into empty time.
 --
--- The wall clock is LOCALTIMESTAMP on the *source* connection, so that
--- connection's session timezone must match the one the watermark column is
--- written in. A session in Europe/Berlin against watermarks written in UTC
--- shifts the term by the full UTC offset and makes it win every run. It is
--- not automatically detectable -- nothing says what clock the writer used --
--- so core/etl.py logs the measured src_now - max_wm skew alongside both
--- candidates instead.
+-- The wall clock is read as UTC on the source connection (Source.
+-- source_now_sql(): SYS_EXTRACT_UTC(SYSTIMESTAMP), CURRENT_TIMESTAMP AT TIME
+-- ZONE 'UTC', ...), so the source session's timezone does not matter. It has
+-- to be UTC because naive source timestamps are treated as UTC everywhere
+-- else in the pipeline. An earlier revision used LOCALTIMESTAMP -- the
+-- *session* clock -- which put a production Oracle source 7203s ahead of its
+-- own data.
+--
+-- What is still not detectable is a source whose time columns do not hold
+-- UTC at all. The clamp above bounds the damage to freshness, and core/etl.py
+-- logs the measured src_now - max_wm skew next to both candidates so the
+-- misconfiguration is at least visible.
 --
 -- wallclock_lag_s = 0 drops the second term entirely rather than setting it
 -- to a zero-length deadline. max(max_wm, source_now) would be source_now,

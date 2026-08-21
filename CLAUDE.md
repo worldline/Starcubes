@@ -69,6 +69,17 @@ structural changes.
   spawned subprocess — a CLI argument will not hold it, so it needs a temp
   file or a `starcubes_meta` staging row — plus chunking the IN-list at 1000
   for Oracle.
+- **A source whose time columns do not hold UTC.** The pipeline treats every
+  naive source timestamp as UTC — `parse_dates={pc: {"utc": True}}` in the
+  extract, `_as_utc` in `core/audit.py`, `_parse_dt` in `core/utils.py`, and
+  a dozen `replace(tzinfo=timezone.utc)` calls. A source writing local time
+  therefore shows up shifted by its UTC offset everywhere: chart, audit
+  buckets, partition routing. Nothing detects it. Supporting it needs a
+  `source_timezone` column that converts on the way in, and it has to reach
+  all of those places at once — declaring it for the wall-clock term alone
+  would only move the inconsistency. The `end_time > max_wm` clamp in
+  `import_fact` bounds such a source to a freshness problem rather than data
+  loss, which is why this is a backlog item and not an open wound.
 - **Source schema drift guard.** No pre-flight validation that upstream
   columns still match `source_expr` / `base_table` before the extract loop.
   A dropped/renamed source column fails mid-run.
@@ -382,32 +393,37 @@ any of the systems it covers.
   wall-clock time throughout; it rides along as a second column on the
   existing max-query, so it costs no extra round-trip except when
   `watermark_max_query` is set and therefore opaque.
-  **The connection's session timezone must match the one the watermark
-  column is written in** — this is a real deployment prerequisite, not a
-  detail. `LOCALTIMESTAMP` reads the *session* clock, so a source DSN whose
-  session sits in `Europe/Berlin` while the watermarks are written in UTC
-  shifts the whole term by the UTC offset, permanently, and the wall-clock
-  term then wins every single run. This is not hypothetical and not a
-  laboratory finding: the end-to-end verification hit it on the first pass
-  with a constant +7200 s, and the first production source it was enabled on
-  (Oracle, `end_time` written in UTC, session in `Europe/Berlin`) hit exactly
-  the same +7203 s and pulled its HWM two hours past the data.
-  It cannot be detected automatically — nothing in the source tells you what
-  clock the *writer* used, and "wall clock wins while rows flow" is also the
-  legitimate sporadic-source case this feature exists for. Two things are
-  done about it instead, and the split matters:
-    - **The damage is bounded**, by the `end_time > max_wm` clamp above. A
-      skew can now cost freshness, never data. That clamp is the reason a
-      timezone mismatch is a misconfiguration rather than an incident.
-    - **The diagnosis is made possible**, by the window log line printing
-      both candidates, which one won, and the measured `src_now − max_wm`
-      skew — plus a warning whenever the clamp actually fires. A skew parked
-      at a round 3600/7200 while rows keep arriving is a timezone mismatch,
-      not a quiet source. The correct response is `wallclock_lag_s = 0`
-      (or aligning the session timezone); `watermark_lag_s` is unaffected,
-      since it never touches a wall clock.
-  A clock *behind* its own data is the one case that is unambiguous, and
-  there the term is dropped before it is even considered, with a warning.
+  **The source connection's session timezone is irrelevant, and making it so
+  was the whole fix.** `source_now_sql()` used to return `LOCALTIMESTAMP`,
+  which reads the *session* clock rather than the content of the time
+  columns. Every dialect has a direct UTC expression instead
+  (`SYS_EXTRACT_UTC(SYSTIMESTAMP)`, `CURRENT_TIMESTAMP AT TIME ZONE 'UTC'`,
+  `UTC_TIMESTAMP()`, `SYSUTCDATETIME()`), and using it removes the
+  assumption rather than documenting it — which is also why there is no
+  `source_timezone` config column: **naive source timestamps are already
+  treated as UTC everywhere** (`parse_dates={pc: {"utc": True}}` in the
+  extract, `_as_utc` in `core/audit.py`, `_parse_dt` in `core/utils.py`, and
+  a dozen `replace(tzinfo=timezone.utc)` calls). `source_now_sql()` was the
+  single place that broke that, and the cost was not theoretical: the first
+  production source it was enabled on (Oracle, `end_time` in UTC, session in
+  `Europe/Berlin`) came back +7203 s ahead, so the wall-clock term won every
+  run, pulled the HWM two hours past the data, and left `watermark_lag_s`
+  with no effect at all.
+  What remains, and is *not* fixed by this, is a source whose time columns
+  genuinely do not hold UTC. That cannot be detected — nothing tells you what
+  clock the writer used, and "wall clock wins while rows flow" is also the
+  legitimate sporadic-source case the term exists for. Two things cover it:
+    - **The damage is bounded** by the `end_time > max_wm` clamp above. Such
+      a source costs freshness, never data.
+    - **The diagnosis is possible**: the window log line prints both
+      candidates, which one won, and the measured `src_now − max_wm` skew,
+      plus a warning whenever the clamp fires. Since `src_now` is now read
+      as UTC, a skew parked near a whole-hour offset while rows keep
+      arriving means the watermark column does not hold UTC — the response
+      is `wallclock_lag_s = 0`. `watermark_lag_s` is unaffected either way,
+      as it never touches a wall clock.
+  A clock *behind* its own data is the one unambiguous case, and there the
+  term is dropped before it is even considered, with a warning.
   Note also that `sources/management/commands/etl_run.py` loads the `Source`
   **once, before** the forever loop — so changing either column in the GUI
   does not affect a running session; it has to be restarted.
@@ -1054,7 +1070,7 @@ any of the systems it covers.
 
 | File | Purpose |
 |------|---------|
-| `core/source.py` | `Source` / `Dimension` / `FactColumn` / `FactIndex` dataclasses + `Source.load` + `_get_cached_engine` + `init_oracle_client` + `watermark_fact_sql()` (fact-side watermark expression, falls back to `partition_column`) + `source_now_sql()` (dialect spelling of the source's naive wall clock, for the window's second upper-bound term). Splits `dim_fact_to_table()` (regular) from `auto_dim_fact_to_table()` (auto-dims, resolved in the parent ETL process). |
+| `core/source.py` | `Source` / `Dimension` / `FactColumn` / `FactIndex` dataclasses + `Source.load` + `_get_cached_engine` + `init_oracle_client` + `watermark_fact_sql()` (fact-side watermark expression, falls back to `partition_column`) + `source_now_sql()` (the source's current time as naive **UTC**, per dialect, for the window's second upper-bound term — deliberately not the session clock). Splits `dim_fact_to_table()` (regular) from `auto_dim_fact_to_table()` (auto-dims, resolved in the parent ETL process). |
 | `core/schema.py` | `create_fact`, `create_indices`, `drop_indices`, `import_dimensions`, `read_dimensions`, `ensure_starcubes_meta(engine, force=)`. Partition lifecycle: `list_fact_partitions`, `create_future_partitions` (append-only, manual), `ensure_partitions_for` (gap-filling, called every `import_fact` run), `vacuum_analyze_fact`. |
 | `core/etl.py` | `import_fact` — the three-stage pipeline; calls `ensure_partitions_for` before starting workers. `_resume_state` returns `(last_end_time, extract_from, existing_pks)`; `_overlap_pks` loads the PK set for the late-arrival overlap. The window's upper bound is `max(max_wm − watermark_lag_s, src_now − wallclock_lag_s)`, clamped up to the HWM so it can never rewind. `backfill=True` re-loads a closed window without moving the HWM. `_load_auto_dim_maps` + `_resolve_auto_dim_chunk` for parent-process auto-dim discovery. `EtlAborted` for user-initiated kills; `EtlStageFailed` (+ `_put_with_abort`/`_join_with_abort`/`_raise_if_failed`) for a dead transform/load worker. Throughput metrics: `_snapshot_stats`/`_build_stats_payload` read the shared `mp.Array` into the `stats` jsonb shape (now including live `queues`/`workers`); `_rate`/`_fmt_rate` compute/format rows-per-second; `_bound_log_size` truncates the process's own log file in place. Uses `logging.getLogger(__name__)`, never `print()`. Maintenance: `truncate_last_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`. |
 | `core/query.py` | `timeseries_multibar` — multibar JSON producer. Bars ordered ascending by dim count. `split_grouped_col`/`resolve_group_set`/`slugify_group_set`/`grouped_token`/`grouped_label` own the `<col>:grouped:<slug>` token; `build_group_by_indices` resolves group names for grouped drill-down. |

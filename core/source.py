@@ -427,28 +427,41 @@ class Source:
         return self.watermark_fact_expr or self.partition_column
 
     def source_now_sql(self) -> str:
-        """Dialect spelling of the source DB's *naive* wall clock.
+        """Dialect spelling of the source DB's current time, **as naive UTC**.
 
-        The watermark column is read in source wall-clock time throughout
-        (see `_source_counts` in core/audit.py and the ETL's WHERE clause),
-        so the second term of the load window's upper bound has to be read
-        the same way -- an offset-aware `CURRENT_TIMESTAMP` would compare
-        against naive watermarks.
+        The return value is compared against ``max(watermark_column)`` to form
+        the second term of the load window's upper bound, so it has to sit on
+        the same clock as that column. And that clock is UTC: naive source
+        timestamps are treated as UTC everywhere in this codebase --
+        ``pd.read_sql(..., parse_dates={pc: {"utc": True}})`` in
+        ``core/etl.py``, ``_as_utc`` in ``core/audit.py``,
+        ``replace(tzinfo=timezone.utc)`` in ``core/utils.py:_parse_dt`` and a
+        dozen more. So this must read UTC too.
 
-        Spelled from `source_dialect` rather than via
-        `sqlalchemy.func.localtimestamp()`: whether the Oracle dialect
-        appends its own `FROM dual` would have to be verified at runtime,
-        and MSSQL has no LOCALTIMESTAMP at all. `source_dialect` already
-        exists and is CHECK-constrained, so this adds no new ground to the
-        open multi-dialect item in CLAUDE.md's backlog.
+        **The source connection's session timezone is irrelevant, and that is
+        the point.** This used to return ``LOCALTIMESTAMP``, which reads the
+        *session* clock rather than the content of the time columns. On a
+        production Oracle source writing ``end_time`` in UTC from a session
+        sitting in ``Europe/Berlin``, that came back +7203s ahead, the
+        wall-clock term won every run, and ``watermark_lag_s`` was left with
+        no effect at all (see CLAUDE.md's note on the two-term bound). Every
+        dialect has a direct UTC expression; using it removes the assumption
+        instead of documenting it, which is also why no ``source_timezone``
+        config column is needed -- the code already asserts UTC everywhere.
+
+        All four return a *naive* timestamp, matching how the watermark
+        column itself is read.
 
         Returns the bare expression -- callers that need it without a FROM
         clause (see `core/etl.py`, the watermark_max_query branch) must add
         Oracle's `FROM dual` themselves.
         """
-        if self.source_dialect == "mssql":
-            return "SYSDATETIME()"
-        return "LOCALTIMESTAMP"
+        return {
+            "oracle": "SYS_EXTRACT_UTC(SYSTIMESTAMP)",
+            "postgresql": "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'",
+            "mysql": "UTC_TIMESTAMP()",
+            "mssql": "SYSUTCDATETIME()",
+        }.get(self.source_dialect, "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'")
 
     def pk_column(self) -> Optional[str]:
         return next((c.name for c in self.fact_columns if c.role == "pk"), None)

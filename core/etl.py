@@ -981,15 +981,18 @@ def import_fact(source: Source, meta_engine, *,
             # every row that later arrives in that range is below the HWM
             # and silently lost forever.
             #
-            # This clamp is not theoretical. The wall-clock term reads
-            # LOCALTIMESTAMP on the *source session*, and there is no way to
-            # know which timezone the watermark column was written in. A
-            # production Oracle source writing end_time in UTC while its
-            # session sits in Europe/Berlin skews src_now by +7200s, so the
-            # wall-clock term wins every run and drags the HWM two hours
-            # past the data. That is exactly what happened, and it is why
-            # the "a named deadline may carry the HWM" argument was wrong:
-            # it silently assumed both values share a clock.
+            # This clamp is not theoretical: it shipped as a hotfix after a
+            # production Oracle source dragged its HWM two hours past the
+            # data. That particular cause -- source_now_sql() returning
+            # LOCALTIMESTAMP, i.e. the *session* clock -- is fixed at the
+            # root now (it reads UTC explicitly, matching how every naive
+            # source timestamp is treated in this codebase).
+            #
+            # The clamp stays as the net underneath, because the root fix
+            # rests on an assumption the clamp does not need: that the
+            # source writes its time columns in UTC. If one ever does not,
+            # max_wm and src_now part company again and only this line
+            # stands between that and silent, permanent data loss.
             #
             # The clamp costs nothing real. Under a genuine standstill the
             # wall-clock term still closes the window right up to max_wm,
@@ -998,11 +1001,11 @@ def import_fact(source: Source, meta_engine, *,
             if end_time > max_wm:
                 logger.warning(
                     "%s: wall-clock bound %s is past max(%s)=%s -- clamping. "
-                    "src_now=%s is %.0fs ahead of the newest row; if that "
-                    "figure stays near a whole-hour offset while rows keep "
-                    "arriving, the source session's timezone does not match "
-                    "the one %s is written in, and wallclock_lag_s should "
-                    "be set to 0.",
+                    "src_now=%s (read as UTC) is %.0fs ahead of the newest "
+                    "row; if that figure stays near a whole-hour offset "
+                    "while rows keep arriving, %s does not hold UTC values, "
+                    "which the rest of the pipeline assumes it does. Set "
+                    "wallclock_lag_s to 0 in that case.",
                     source.name, end_time, wm, max_wm, src_now,
                     (src_now - max_wm).total_seconds(), wm)
                 end_time = max_wm
@@ -1109,11 +1112,12 @@ def import_fact(source: Source, meta_engine, *,
             _cand_wm = max_wm - timedelta(seconds=lag_wm)
             if lag_now and src_now is not None and src_now >= max_wm:
                 _cand_now = src_now - timedelta(seconds=lag_now)
-                # The skew is printed because a source session whose timezone
-                # differs from the one the watermark column was written in
-                # shifts this term by the whole UTC offset, silently and
-                # permanently. A skew sitting at a round 3600/7200 while rows
-                # keep flowing is that, not a quiet source.
+                # The skew is printed because it is the one number that
+                # exposes a clock mismatch. src_now is read as UTC, so a
+                # skew parked near a whole-hour offset while rows keep
+                # flowing means the watermark column does not hold UTC --
+                # not that the source went quiet. Under a healthy source it
+                # tracks how far behind the data tip trails real time.
                 _skew = (src_now - max_wm).total_seconds()
                 _who = 'wall-clock' if _cand_now > _cand_wm else 'watermark'
                 _bound = (f"bound wm={_cand_wm} now={_cand_now} "

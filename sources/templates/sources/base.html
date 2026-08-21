@@ -946,6 +946,28 @@ class DateTimePicker {
 
   getValue() { return this._value ? this._value.getTime() : null; }
 
+  // The picked instant as an ISO UTC string, or null.
+  //
+  // Everything the user sees is local time -- the picker formats local parts,
+  // _parseUserInput builds a local Date, and the tables render with
+  // toLocaleString(). But the server's _parse_dt reads a naive string as UTC,
+  // so sending the raw field text made every ETL dialog off by the UTC
+  // offset: type 15:00, get 15:00 UTC. Send the actual instant instead and
+  // input finally agrees with display.
+  //
+  // _commitInput() first as a belt-and-braces: the document mousedown handler
+  // already commits synchronously before a button's click fires, but the blur
+  // path runs behind a setTimeout(.., 100) and would not be in time on its
+  // own. Calling it twice is harmless -- it returns early when nothing moved.
+  //
+  // Milliseconds are sliced off because the picker always zeroes them, and
+  // the shorter form reads better in logs and as a CLI argument. _parse_dt
+  // handles the Z suffix explicitly.
+  getUTCISO() {
+    this._commitInput();
+    return this._value ? this._value.toISOString().slice(0, 19) + 'Z' : null;
+  }
+
   _fmt(d) {
     return d.getFullYear() + '-' + this._pad(d.getMonth() + 1) + '-' + this._pad(d.getDate())
       + ' ' + this._pad(d.getHours()) + ':' + this._pad(d.getMinutes());

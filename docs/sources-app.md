@@ -211,7 +211,12 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   the table doesn't keep showing deleted rows after a clear.
 - **Audit tab** (`tab-audit`): reconciles source vs fact row counts per time
   bucket, so late-arriving transactions that slipped past
-  `datasource.late_arrival_overlap_s` become visible. Bucket edges come back
+  `datasource.late_arrival_overlap_s` become visible. The From/To fields — and
+  every other `DateTimePicker` in the ETL tabs — are read in the **browser's
+  local timezone**, matching the tables, and sent as ISO UTC via
+  `DateTimePicker.getUTCISO()`. Sending the raw field text instead used to
+  make every dialog off by the UTC offset, since `core/utils.py:_parse_dt`
+  reads a naive string as UTC while the picker formats local parts. Bucket edges come back
   from the server as ISO strings and are handed *straight back* to
   `etl/backfill/` — the window round-trips exactly instead of being
   re-derived in JS, where a rounding difference would backfill the wrong

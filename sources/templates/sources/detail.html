@@ -1455,8 +1455,10 @@ document.getElementById('etlCmdRun').addEventListener('click', function() {
     }
     // Proceed with normal ETL run
     var data = {};
-    var start = document.getElementById('etlCmdStart').value;
-    var end = document.getElementById('etlCmdEnd').value;
+    // ISO UTC from the picker, not the field text: the text is local time
+    // and _parse_dt would read it as UTC. See DateTimePicker.getUTCISO.
+    var start = dtpStart.getUTCISO();
+    var end = dtpEnd.getUTCISO();
     var limit = document.getElementById('etlCmdLimit').value;
     if (start) data.start = start;
     if (end) data.end = end;
@@ -2664,7 +2666,7 @@ function showCmdResult(el, ok, msg) {
 
 // Delete From
 document.getElementById('etlCmdDeleteBtn').addEventListener('click', function() {
-  var val = document.getElementById('etlCmdDeleteFrom').value;
+  var val = dtpDeleteFrom.getUTCISO();
   if (!val) { alert('Select a timestamp.'); return; }
   if (!confirm('Delete all fact rows at or after this timestamp?')) return;
   var btn = this;
@@ -2962,8 +2964,8 @@ function auditCompareIds(from, to, btn) {
 }
 
 document.getElementById('auditIdsBtn').addEventListener('click', function() {
-  var from = document.getElementById('auditFrom').value;
-  var to = document.getElementById('auditTo').value;
+  var from = dtpAuditFrom.getUTCISO();
+  var to = dtpAuditTo.getUTCISO();
   if (!from || !to) { alert('Pick a From and To timestamp.'); return; }
   auditCompareIds(from, to, this);
 });
@@ -2975,8 +2977,8 @@ document.getElementById('auditIdBackfillBtn').addEventListener('click', function
 
 document.getElementById('auditRunBtn').addEventListener('click', function() {
   var btn = this;
-  var from = document.getElementById('auditFrom').value;
-  var to = document.getElementById('auditTo').value;
+  var from = dtpAuditFrom.getUTCISO();
+  var to = dtpAuditTo.getUTCISO();
   var buckets = document.getElementById('auditBuckets').value || '24';
   var resultEl = document.getElementById('result-audit');
   var backfillAllBtn = document.getElementById('auditBackfillAllBtn');
