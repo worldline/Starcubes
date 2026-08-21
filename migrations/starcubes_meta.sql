@@ -323,7 +323,6 @@ CREATE TRIGGER trg_datasource_updated_at
 DO $$
 DECLARE
     rec  RECORD;
-    col  text;
 BEGIN
     FOR rec IN
         SELECT DISTINCT d.dim_table, ds.schema_name
@@ -331,12 +330,35 @@ BEGIN
           JOIN starcubes_meta.datasource ds ON ds.id = d.datasource_id
          WHERE d.is_primary AND d.dim_table IS NOT NULL
     LOOP
-        SELECT column_name INTO col
-          FROM information_schema.columns
-         WHERE table_schema = rec.schema_name
-           AND table_name   = rec.dim_table
-           AND column_name   = 'count';
-        IF col IS NULL THEN
+        -- A datasource's metadata rows legitimately precede its DDL: the GUI's
+        -- source_new only INSERTs the datasource, and create_fact /
+        -- create_dim_tables run later from a separate endpoint -- or never, for
+        -- a half-configured source. So schema_name routinely names a schema
+        -- that does not exist yet, and dim_table a table that does not exist
+        -- yet. to_regclass returns NULL for both without raising.
+        --
+        -- The information_schema probe below cannot make that distinction on
+        -- its own: "no such column" and "no such table" and "no such schema"
+        -- all come back as no rows, and this block used to ALTER in all three
+        -- cases. The ALTER then failed the *whole* script -- ensure_starcubes_meta
+        -- runs it in one transaction, so a single half-created datasource
+        -- rolled back every later migration block and, since bootstrap.py runs
+        -- this before migrate/collectstatic, stopped the container from
+        -- starting at all.
+        --
+        -- Skipping loses nothing: create_dim_tables spells out `count bigint
+        -- NOT NULL DEFAULT 0` in its own CREATE TABLE, so a table that appears
+        -- later already has the column. This block is purely retrofitting
+        -- tables that predate it.
+        CONTINUE WHEN to_regclass(
+            format('%I.%I', rec.schema_name, rec.dim_table)) IS NULL;
+
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+             WHERE table_schema = rec.schema_name
+               AND table_name   = rec.dim_table
+               AND column_name  = 'count'
+        ) THEN
             EXECUTE format(
                 'ALTER TABLE %I.%I ADD COLUMN count bigint NOT NULL DEFAULT 0',
                 rec.schema_name, rec.dim_table);
