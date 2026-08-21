@@ -975,6 +975,38 @@ def import_fact(source: Source, meta_engine, *,
                         bounds.append(src_now - timedelta(seconds=lag_now))
             end_time = max(bounds)
 
+            # HARD INVARIANT: the window's upper bound never passes the
+            # newest row that actually exists. Violating it means the HWM
+            # advances over a range the source has not produced yet, and
+            # every row that later arrives in that range is below the HWM
+            # and silently lost forever.
+            #
+            # This clamp is not theoretical. The wall-clock term reads
+            # LOCALTIMESTAMP on the *source session*, and there is no way to
+            # know which timezone the watermark column was written in. A
+            # production Oracle source writing end_time in UTC while its
+            # session sits in Europe/Berlin skews src_now by +7200s, so the
+            # wall-clock term wins every run and drags the HWM two hours
+            # past the data. That is exactly what happened, and it is why
+            # the "a named deadline may carry the HWM" argument was wrong:
+            # it silently assumed both values share a clock.
+            #
+            # The clamp costs nothing real. Under a genuine standstill the
+            # wall-clock term still closes the window right up to max_wm,
+            # which is all there is to load; it just may no longer run off
+            # into empty time.
+            if end_time > max_wm:
+                logger.warning(
+                    "%s: wall-clock bound %s is past max(%s)=%s -- clamping. "
+                    "src_now=%s is %.0fs ahead of the newest row; if that "
+                    "figure stays near a whole-hour offset while rows keep "
+                    "arriving, the source session's timezone does not match "
+                    "the one %s is written in, and wallclock_lag_s should "
+                    "be set to 0.",
+                    source.name, end_time, wm, max_wm, src_now,
+                    (src_now - max_wm).total_seconds(), wm)
+                end_time = max_wm
+
         if backfill:
             # A backfill owns its window outright: no HWM lookup, and the
             # whole window is de-duped against what is already in fact so

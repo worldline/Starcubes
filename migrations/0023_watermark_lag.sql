@@ -38,11 +38,24 @@
 -- clock term would win even under running traffic (where max(wm) ~ now) and
 -- watermark_lag_s would have no effect at all.
 --
--- The wall-clock term is deliberately NOT capped at max(watermark). It is a
--- named deadline, not a by-product: a row whose watermark is below
--- now - wallclock_lag_s and which is still invisible has missed its deadline
--- by definition -- that is a case for the overlap and the Audit tab, not for
--- the lag. So the HWM may advance past the newest row that actually exists.
+-- The result is then clamped: end_time never exceeds max(watermark). This is
+-- a hard invariant, not a refinement -- letting the HWM advance over a range
+-- the source has not produced yet means every row later arriving in that
+-- range sits below the HWM and is lost silently and permanently.
+--
+-- The clamp exists because of a real incident. The wall-clock term reads
+-- LOCALTIMESTAMP on the *source session*, and nothing tells us which timezone
+-- the watermark column was written in. An Oracle source writing end_time in
+-- UTC while its session sat in Europe/Berlin skewed src_now by +7200s, so the
+-- wall-clock term won every run and dragged the HWM two hours past the data;
+-- every subsequent run then loaded an empty future window while live rows
+-- fell below the watermark. An earlier revision argued the term was "a named
+-- deadline and may therefore carry the HWM" -- that argument silently assumed
+-- both values share a clock, and was wrong.
+--
+-- The clamp costs nothing real: under a genuine standstill the wall-clock
+-- term still closes the window right up to max(watermark), which is all there
+-- is to load. It only stops it running off into empty time.
 --
 -- The wall clock is LOCALTIMESTAMP on the *source* connection, so that
 -- connection's session timezone must match the one the watermark column is

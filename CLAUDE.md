@@ -358,11 +358,21 @@ any of the systems it covers.
       500). Otherwise the wall-clock term would win even under running
       traffic, where `max_wm ≈ now`, and `watermark_lag_s` would have no
       effect at all.
-    - **The wall-clock term is deliberately not capped at `max(wm)`.** It is
-      a named deadline, not a by-product, so it may carry the HWM past the
-      newest row that actually exists. A row below `now − wallclock_lag_s`
-      that is still invisible has missed its deadline by definition — that
-      is a case for the overlap and the Audit tab, not for the lag.
+    - **The result is clamped: `end_time` never exceeds `max(wm)`.** A hard
+      invariant, not a refinement — if the HWM advances over a range the
+      source has not produced yet, every row later arriving in that range is
+      below the HWM and lost silently and permanently. An earlier revision
+      argued the wall-clock term was "a named deadline and may therefore
+      carry the HWM"; that assumed both values share a clock, and a
+      production incident proved it wrong within a day. An Oracle source
+      writing `end_time` in UTC while its session sat in `Europe/Berlin`
+      skewed `src_now` by +7200s, so the wall-clock term won every run and
+      pulled the HWM two hours past the data — after which every run loaded
+      an empty future window while live rows fell below the watermark. The
+      clamp costs nothing: under a real standstill the term still closes the
+      window right up to `max(wm)`, which is all there is to load. It only
+      stops it running off into empty time. When it fires, the run logs a
+      warning naming the measured skew.
     - **`wallclock_lag_s = 0` drops the second term rather than zeroing
       it.** `max(max_wm, src_now)` would be `src_now` — not "no lag" but its
       opposite. With both columns 0 the window is computed exactly as it was
@@ -377,16 +387,30 @@ any of the systems it covers.
   detail. `LOCALTIMESTAMP` reads the *session* clock, so a source DSN whose
   session sits in `Europe/Berlin` while the watermarks are written in UTC
   shifts the whole term by the UTC offset, permanently, and the wall-clock
-  term then wins every single run. This is not hypothetical: it is what the
-  end-to-end verification hit on the first pass, with a constant +7200 s.
+  term then wins every single run. This is not hypothetical and not a
+  laboratory finding: the end-to-end verification hit it on the first pass
+  with a constant +7200 s, and the first production source it was enabled on
+  (Oracle, `end_time` written in UTC, session in `Europe/Berlin`) hit exactly
+  the same +7203 s and pulled its HWM two hours past the data.
   It cannot be detected automatically — nothing in the source tells you what
   clock the *writer* used, and "wall clock wins while rows flow" is also the
-  legitimate sporadic-source case this feature exists for. So the window log
-  line prints both candidates, which one won, **and the measured
-  `src_now − max_wm` skew**; a skew parked at a round 3600/7200 while rows
-  keep arriving is a timezone mismatch, not a quiet source. A clock
-  *behind* its own data is the one case that is unambiguous, and there the
-  term is dropped with a warning.
+  legitimate sporadic-source case this feature exists for. Two things are
+  done about it instead, and the split matters:
+    - **The damage is bounded**, by the `end_time > max_wm` clamp above. A
+      skew can now cost freshness, never data. That clamp is the reason a
+      timezone mismatch is a misconfiguration rather than an incident.
+    - **The diagnosis is made possible**, by the window log line printing
+      both candidates, which one won, and the measured `src_now − max_wm`
+      skew — plus a warning whenever the clamp actually fires. A skew parked
+      at a round 3600/7200 while rows keep arriving is a timezone mismatch,
+      not a quiet source. The correct response is `wallclock_lag_s = 0`
+      (or aligning the session timezone); `watermark_lag_s` is unaffected,
+      since it never touches a wall clock.
+  A clock *behind* its own data is the one case that is unambiguous, and
+  there the term is dropped before it is even considered, with a warning.
+  Note also that `sources/management/commands/etl_run.py` loads the `Source`
+  **once, before** the forever loop — so changing either column in the GUI
+  does not affect a running session; it has to be restarted.
   The known residual risk: a hung feeder is indistinguishable from a genuine
   traffic pause — both just freeze `max(wm)` — so a backlog arriving with old
   watermarks after `wallclock_lag_s` has elapsed lands below the HWM.
