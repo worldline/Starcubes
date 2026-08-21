@@ -30,7 +30,7 @@ from core.etl import (truncate_last_partition, truncate_partition,
                       clear_etl_history, set_highwatermark)
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user
-from core.audit import audit_ids, audit_window
+from core.audit import audit_id_details, audit_ids, audit_window
 from core.query import grouped_label, grouped_token, slugify_group_set
 from core.source import Source, _get_cached_engine
 from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
@@ -158,11 +158,36 @@ def source_list(request):
     })
 
 
+def _lag_pair(p):
+    """(watermark_lag_s, wallclock_lag_s) from a POST, validated.
+
+    Mirrors datasource_wallclock_lag_check. Validating here rather than
+    catching the IntegrityError keeps the message readable and matches how
+    the partition_period change is rejected a few lines down; the CHECK
+    stays as the backstop for writes that do not come through this form.
+    """
+    lag_wm = int(p.get("watermark_lag_s") or 0)
+    lag_now = int(p.get("wallclock_lag_s") or 0)
+    if lag_wm < 0 or lag_now < 0:
+        raise ValueError("Lag values cannot be negative.")
+    if lag_now and lag_now <= lag_wm:
+        raise ValueError(
+            f"Wall-clock lag ({lag_now}s) must be greater than watermark lag "
+            f"({lag_wm}s), or 0 to disable it. Otherwise the wall-clock term "
+            f"would win even under running traffic and the watermark lag "
+            f"would have no effect.")
+    return lag_wm, lag_now
+
+
 def source_new(request):
     if request.method == "POST":
         p = request.POST
         ladder = _str_to_ladder_sql(p.get("interval_ladder", "1,60,3600,86400"))
         preload_seed = p.get("preload_seed_example") == "on"
+        try:
+            lag_wm, lag_now = _lag_pair(p)
+        except ValueError as exc:
+            return HttpResponseBadRequest(str(exc))
         with _meta_engine().begin() as conn:
             row = conn.execute(text("""
                 INSERT INTO starcubes_meta.datasource
@@ -172,7 +197,8 @@ def source_new(request):
                      partition_column, partition_period,
                      chunksize, transform_procs,
                      small_window_hint, interval_ladder, bar_pixel_target, pk_format,
-                     late_arrival_overlap_s, watermark_fact_expr)
+                     late_arrival_overlap_s, watermark_fact_expr,
+                     watermark_lag_s, wallclock_lag_s)
                 VALUES
                     (:name, :schema_name, :dialect, :dsn,
                      NULLIF(:import_query, ''), NULLIF(:base_table, ''),
@@ -181,7 +207,8 @@ def source_new(request):
                      :chunksize, :transform_procs,
                      NULLIF(:small_window_hint, ''),
                      CAST(:ladder AS int[]), :bar_pixel_target, NULLIF(:pk_format, ''),
-                     :late_arrival_overlap_s, NULLIF(:watermark_fact_expr, ''))
+                     :late_arrival_overlap_s, NULLIF(:watermark_fact_expr, ''),
+                     :watermark_lag_s, :wallclock_lag_s)
                 RETURNING id
             """), {
                 "name":               p["name"],
@@ -202,6 +229,8 @@ def source_new(request):
                 "pk_format":          p.get("pk_format", ""),
                 "late_arrival_overlap_s": int(p.get("late_arrival_overlap_s") or 0),
                 "watermark_fact_expr": p.get("watermark_fact_expr", ""),
+                "watermark_lag_s":    lag_wm,
+                "wallclock_lag_s":    lag_now,
             }).mappings().one()
             if preload_seed:
                 _insert_seed_children(conn, row["id"])
@@ -368,6 +397,10 @@ def source_edit(request, pk: int):
         p = request.POST
         ladder = _str_to_ladder_sql(p.get("interval_ladder", "1,60,3600,86400"))
         new_period = p.get("partition_period", "month")
+        try:
+            lag_wm, lag_now = _lag_pair(p)
+        except ValueError as exc:
+            return HttpResponseBadRequest(str(exc))
         with _meta_engine().begin() as conn:
             current_period = conn.execute(text(
                 "SELECT partition_period FROM starcubes_meta.datasource WHERE id = :id"
@@ -406,6 +439,8 @@ def source_edit(request, pk: int):
                     pk_format          = NULLIF(:pk_format, ''),
                     late_arrival_overlap_s = :late_arrival_overlap_s,
                     watermark_fact_expr = NULLIF(:watermark_fact_expr, ''),
+                    watermark_lag_s    = :watermark_lag_s,
+                    wallclock_lag_s    = :wallclock_lag_s,
                     updated_at         = now()
                 WHERE id = :id
             """), {
@@ -428,6 +463,8 @@ def source_edit(request, pk: int):
                 "pk_format":          p.get("pk_format", ""),
                 "late_arrival_overlap_s": int(p.get("late_arrival_overlap_s") or 0),
                 "watermark_fact_expr": p.get("watermark_fact_expr", ""),
+                "watermark_lag_s":    lag_wm,
+                "wallclock_lag_s":    lag_now,
             })
         return redirect("sources:detail", pk=pk)
     ds = _load_datasource(pk)
@@ -1236,6 +1273,30 @@ def etl_audit_ids(request, pk: int):
         source, _ = _load_source(pk)
         result = audit_ids(source, source.dest_engine(),
                            start=from_time, end=to_time, sample=sample)
+        return JsonResponse({"ok": True, **result})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+def etl_audit_id_details(request, pk: int):
+    """Source watermark + responsible ETL run for ids the audit already named.
+
+    A separate endpoint rather than more fields on `etl_audit_ids`: the set
+    difference has to stay cheap enough to run over a wide window, and this
+    hits the source once more per id batch. Identify first, then look up.
+    """
+    try:
+        from_time = _parse_dt(request.POST["from_time"])
+        to_time = _parse_dt(request.POST["to_time"])
+        ids = [i for i in request.POST.getlist("ids") if i != ""]
+        if not ids:
+            # The browser may send one comma-joined field instead of a list.
+            ids = [i.strip() for i in request.POST.get("ids_csv", "").split(",")
+                   if i.strip()]
+        source, _ = _load_source(pk)
+        result = audit_id_details(source, _meta_engine(), ids=ids,
+                                  start=from_time, end=to_time)
         return JsonResponse({"ok": True, **result})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})

@@ -90,6 +90,18 @@ crashed/orphaned sessions are revived.
   markup only when it differs from the raw id, the same test
   `chart.html`'s drill list uses. Bounded by `STARCUBES_MAX_AUDIT_IDS`
   (2M/side).
+- `POST .../etl/audit-id-details/` — `from_time`, `to_time`, repeated `ids`
+  (falls back to a comma-joined `ids_csv`). Targeted second pass over ids
+  `audit-ids/` already named: one `WHERE <pk_expr> IN (…)` per 1000 ids
+  against the source — chunked for Oracle's IN-list limit, with the time
+  window kept in the predicate so the watermark index carries it — plus one
+  `etl_run` lookup. Returns `{rows: [{pk, pk_display, watermark, run_id,
+  run_started_at, needed_lag_s, covering_runs}], resolved, unresolved,
+  not_in_source, needed_lag: {median, p99, max, n}}`. `needed_lag_s` is
+  `run.started_at − watermark`: how long after the row's watermark the ETL
+  read its window and still did not see it. It is a *lower* bound and is the
+  number `wallclock_lag_s` gets set from. Rows in no run window at all land
+  in `unresolved` and stay out of the percentiles.
 - `POST .../etl/backfill/` — `from_time`, `to_time`. Spawns
   `manage.py etl_run --backfill --start … --end …` through the same
   `spawn_etl_subprocess` path as a normal run, so the per-run log file, ETL
@@ -203,6 +215,13 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   window. The result card separates *missing*, *surplus* and *duplicate*,
   and only *missing* offers a Backfill — a backfill inserts, it never
   deletes.
+  The missing list additionally carries a **Details** button
+  (`auditIdDetails`), which is how `wallclock_lag_s` is measured rather than
+  guessed: it renders each missing row's source watermark, the `etl_run`
+  that should have caught it and `started_at − watermark`, plus a p99 across
+  the sample. The wording says "at least" throughout on purpose — all that
+  is known is the row was invisible when its window was read, not how much
+  longer it stayed invisible.
 - **ETL Log tab** (`tab-etl-log`): lazy-loaded on first activation via
   `etlLogActivate()` — populates the `<select>` from `etl/logs/`, then tails
   the selected file from `etl/log/`. Polls every 2s only while the tab is

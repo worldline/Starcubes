@@ -135,6 +135,16 @@
         <div class="form-hint">Seconds the incremental load window reaches back past the high watermark, so transactions that become visible out of watermark order are still picked up. Duplicates are filtered by primary key, so a fact column with role=pk is required. 0 disables it. Use the Audit tab to measure the real skew before choosing a value.</div>
       </div>
       <div class="form-group">
+        <label class="form-label">Watermark Lag (s)</label>
+        <input class="form-control" name="watermark_lag_s" type="number" min="0" step="1" value="0">
+        <div class="form-hint">Seconds the load window's upper bound stays <em>below</em> max(watermark), so a row that becomes visible a little late is still ahead of the window when it is read. Unlike the overlap above, nothing is re-fetched and no PK check runs &mdash; the window just advances more slowly. Only works while the source keeps producing: if traffic stops, this term freezes.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Wall-clock Lag (s)</label>
+        <input class="form-control" name="wallclock_lag_s" type="number" min="0" step="1" value="0">
+        <div class="form-hint">Absolute deadline in <em>source</em> wall-clock seconds: every row gets this long to become visible. The window's upper bound is the later of the two lags, so this one keeps the window moving when traffic pauses and the watermark lag freezes. Must be greater than the watermark lag. <strong>0 disables the term entirely</strong> &mdash; that is not the same as a zero-length deadline. Measure it with the Audit tab's &ldquo;Details&rdquo; button on missing IDs. Reads <code>LOCALTIMESTAMP</code> on the source connection, so that session's timezone must match the one the watermark column is written in &mdash; a mismatch shifts this term by the whole UTC offset and makes it win every run.</div>
+      </div>
+      <div class="form-group">
         <label class="form-label">Watermark Fact Expression</label>
         <input class="form-control mono" name="watermark_fact_expr" placeholder="e.g. create_time + total * interval &#39;1 millisecond&#39;">
         <div class="form-hint">Fact-side SQL reproducing the watermark column, used to find already-loaded rows in the overlap window and by the Audit tab. Leave blank to use the partition column. Example: <code>create_time + total * interval &#39;1 millisecond&#39;</code></div>

@@ -842,6 +842,9 @@ def import_fact(source: Source, meta_engine, *,
     end_time: Optional[datetime] = None
     last_end_time: Optional[datetime] = None
     extract_from: Optional[datetime] = None
+    # Upper-bound inputs; only set on the non-override path (see below).
+    max_wm: Optional[datetime] = None
+    src_now: Optional[datetime] = None
     manager = None
     workers: list[mp.Process] = []
     progress_thread: Optional[threading.Thread] = None
@@ -879,6 +882,8 @@ def import_fact(source: Source, meta_engine, *,
         pk_column = source.pk_column()
         wm = source.watermark_column
         pc = source.partition_column
+        lag_wm = max(0, int(source.watermark_lag_s or 0))
+        lag_now = max(0, int(source.wallclock_lag_s or 0))
 
         # discover source max(watermark). Prefer the explicit max query if set,
         # then a direct max() against base_table (cheap), and finally fall back
@@ -890,14 +895,35 @@ def import_fact(source: Source, meta_engine, *,
                 end_time = end_time.replace(tzinfo=timezone.utc)
             end_time = _ceil_second(end_time)
         else:
+            # The wall-clock term of the upper bound (below) reads the
+            # source DB's own clock, not this host's -- watermarks are
+            # source wall-clock time throughout. For the two generated
+            # query shapes it rides along as a second column, so it costs
+            # no extra round-trip; only a user-supplied watermark_max_query
+            # is opaque and needs its own statement.
+            want_now = lag_now > 0
+            now_expr = source.source_now_sql()
+            standalone_now = None
             if source.watermark_max_query:
                 max_query = source.watermark_max_query
+                if want_now:
+                    standalone_now = (
+                        f"SELECT {now_expr} FROM dual"
+                        if source.source_dialect == "oracle"
+                        else f"SELECT {now_expr}")
             elif source.base_table:
-                max_query = f"SELECT max({wm}) FROM {source.base_table}"
+                _cols = f"max({wm})" + (f", {now_expr}" if want_now else "")
+                max_query = f"SELECT {_cols} FROM {source.base_table}"
             else:
-                max_query = f"SELECT max({wm}) FROM ({source.import_query}) q"
+                _cols = f"max({wm})" + (f", {now_expr}" if want_now else "")
+                max_query = f"SELECT {_cols} FROM ({source.import_query}) q"
             with source_engine.begin() as src:
-                end_time = src.execute(text(max_query)).scalar()
+                _row = src.execute(text(max_query)).first()
+                end_time = _row[0] if _row is not None else None
+                if want_now and standalone_now is None:
+                    src_now = _row[1] if _row is not None else None
+                elif standalone_now is not None:
+                    src_now = src.execute(text(standalone_now)).scalar()
             if end_time is None:
                 logger.log(logging.DEBUG if quiet else logging.INFO,
                           "%s: source has no data for watermark %s",
@@ -906,6 +932,48 @@ def import_fact(source: Source, meta_engine, *,
             if end_time.tzinfo is None:
                 end_time = end_time.replace(tzinfo=timezone.utc)
             end_time = _ceil_second(end_time)
+            max_wm = end_time
+
+            # Upper bound = the later of two independent guarantees:
+            #   max(wm) - lag_wm   relative buffer under the data tip. Takes
+            #                      the tip as proof of freshness and is fast,
+            #                      but only advances while the tip moves.
+            #   now     - lag_now  absolute deadline: every row gets this long
+            #                      in source wall-clock time to become visible.
+            #                      Independent of traffic, so it keeps the
+            #                      window moving when the first term freezes.
+            # The crossover is not configured, it falls out: the terms are
+            # equal at now - max_wm == lag_now - lag_wm. lag_now == 0 drops
+            # the second term rather than zeroing it -- max(max_wm, now)
+            # would be `now`, i.e. no lag at all but its opposite.
+            bounds = [max_wm - timedelta(seconds=lag_wm)]
+            if lag_now:
+                if src_now is None:
+                    logger.warning(
+                        "%s: source returned no wall-clock value; "
+                        "wallclock_lag_s=%ds not applied this run",
+                        source.name, lag_now)
+                else:
+                    if src_now.tzinfo is None:
+                        src_now = src_now.replace(tzinfo=timezone.utc)
+                    # _resume_state and the WHERE clause assume second-
+                    # granularity bounds; a raw clock reading would carry
+                    # sub-second parts straight into the HWM.
+                    src_now = _ceil_second(src_now)
+                    skew = (src_now - max_wm).total_seconds()
+                    if skew < 0:
+                        # Source clock behind its own data -- almost always a
+                        # timezone mismatch. Do not act on it. The reverse
+                        # skew (clock ahead) is not detectable here and would
+                        # keep the wall-clock term winning; that is what the
+                        # window log line below is for.
+                        logger.warning(
+                            "%s: source clock %.0fs behind max(watermark) "
+                            "(%s vs %s) -- wall-clock bound not applied",
+                            source.name, -skew, src_now, max_wm)
+                    else:
+                        bounds.append(src_now - timedelta(seconds=lag_now))
+            end_time = max(bounds)
 
         if backfill:
             # A backfill owns its window outright: no HWM lookup, and the
@@ -926,6 +994,26 @@ def import_fact(source: Source, meta_engine, *,
                 # Explicit user-chosen window: no overlap, no de-dupe.
                 last_end_time = extract_from = _ceil_second(start_time)
                 existing_pks = set()
+
+        if (not backfill and last_end_time is not None
+                and end_time < last_end_time):
+            # Both bounds are normally monotonic across runs, so this is a
+            # guard, not the common path: it catches upstream deletions
+            # lowering max(watermark), a watermark_lag_s raised at runtime,
+            # and a preceding --start/--end run that set a higher HWM.
+            #
+            # The final UPDATE writes `last_end_time = end_time` from the
+            # finally block, so an end_time below the existing HWM would
+            # move the watermark *backwards* -- and _resume_state reads that
+            # value back, making the next run re-pull everything in between.
+            # Clamping keeps the HWM put; the window degenerates to the
+            # overlap span, or to nothing at all when overlap is 0. A bare
+            # `return 0` would not do: it would still run through the
+            # finally and write the withdrawn end_time anyway.
+            logger.info("%s: upper bound %s is below the HWM %s -- clamping "
+                        "(nothing new to load)",
+                        source.name, end_time, last_end_time)
+            end_time = last_end_time
 
         # Update first_end_time now that we know it
         with meta_engine.begin() as meta:
@@ -981,10 +1069,32 @@ def import_fact(source: Source, meta_engine, *,
             _mode = "initial"
         else:
             _mode = "incremental"
+        # Print both upper-bound candidates and which one won, not just the
+        # result: a source clock running *ahead* is undetectable at the point
+        # it is read and would silently let the wall-clock term win every
+        # run. Seeing "wall-clock" here under healthy traffic is the symptom.
+        if max_wm is not None and (lag_wm or lag_now):
+            _cand_wm = max_wm - timedelta(seconds=lag_wm)
+            if lag_now and src_now is not None and src_now >= max_wm:
+                _cand_now = src_now - timedelta(seconds=lag_now)
+                # The skew is printed because a source session whose timezone
+                # differs from the one the watermark column was written in
+                # shifts this term by the whole UTC offset, silently and
+                # permanently. A skew sitting at a round 3600/7200 while rows
+                # keep flowing is that, not a quiet source.
+                _skew = (src_now - max_wm).total_seconds()
+                _who = 'wall-clock' if _cand_now > _cand_wm else 'watermark'
+                _bound = (f"bound wm={_cand_wm} now={_cand_now} "
+                          f"(skew {_skew:+.0f}s, {_who} wins), ")
+            else:
+                _bound = f"bound wm={_cand_wm} (watermark only), "
+        else:
+            _bound = ""
         logger.log(logging.DEBUG if quiet else logging.INFO,
-                  "%s: window [%s, %s)  (%s, hwm=%s, overlap=%ss, "
-                  "dedupe against %d pk%s)",
+                  "%s: window [%s, %s)  (%s, hwm=%s, %slag=%s/%ss, "
+                  "overlap=%ss, dedupe against %d pk%s)",
                   source.name, extract_from, end_time, _mode, last_end_time,
+                  _bound, lag_wm, lag_now,
                   source.late_arrival_overlap_s, len(existing_pks),
                   "" if len(existing_pks) == 1 else "s")
 

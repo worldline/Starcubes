@@ -73,6 +73,14 @@ def is_cacheable(
     high watermark: with an overlap configured, every incremental run may
     still insert late-arriving rows into that span, so a payload cached
     there would go stale without any invalidation event to catch it.
+
+    ``watermark_lag_s`` / ``wallclock_lag_s`` deliberately do *not* appear
+    here, and subtracting them too would be wrong. The overlap writes
+    *behind* the HWM, which is what makes that span uncacheable; the lags
+    do the opposite -- they hold the window's upper bound back so nothing
+    lands behind the HWM in the first place. They make the watermark more
+    honest, not less, so a second subtraction would only shorten the
+    cacheable horizon for no reason.
     """
     if measure not in (None, "", "count(*)"):
         return False

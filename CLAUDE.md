@@ -45,9 +45,13 @@ structural changes.
 - **Test coverage.** No unit or integration tests for `core/etl.py`,
   `core/query.py`, or the three-stage multiprocessing pipeline. The
   `_resume_state` deduplication logic and `copy_from` path are especially
-  risky to change without tests. (The late-arrival overlap work was verified
-  with a throwaway end-to-end script against a local Postgres acting as both
-  source and warehouse — that shape is worth keeping if a suite ever lands.)
+  risky to change without tests. (Both the late-arrival overlap work and the
+  two-term window bound were verified with throwaway end-to-end scripts
+  against a local Postgres acting as both source and warehouse — that shape
+  is worth keeping if a suite ever lands. It earns its keep: that run is what
+  caught the source-session timezone skew, and what caught
+  `audit_id_details` excluding the initial load's `first_end_time IS NULL`
+  run and so reporting every first-load row as unattributable.)
 - **Late arrivals beyond the overlap are only found on demand.** The Audit
   tab has to be run by a human over a chosen window; nothing schedules it,
   and nothing alerts on a gap. A periodic audit of the trailing N hours
@@ -127,6 +131,15 @@ structural changes.
   because the source does not promise that rows become visible in watermark
   order. Rows already loaded are dropped by PK in the extract loop. Default
   0 (historical behaviour). See the design-decision note below.
+- **Watermark lag / wall-clock lag** — `datasource.watermark_lag_s` and
+  `wallclock_lag_s`. The window's *upper* bound is
+  `max(max_wm − watermark_lag_s, src_now − wallclock_lag_s)`, the second
+  term only when it is non-zero. Unlike the overlap this never re-fetches
+  and never needs a PK check, and nothing is written behind the HWM — which
+  is why `core/cache.py` subtracts the overlap but not these. `wallclock_lag_s`
+  must exceed `watermark_lag_s` (CHECK `datasource_wallclock_lag_check`).
+  Both default 0, which reproduces the pre-0023 window exactly. See the
+  design-decision note below.
 - **Backfill run** — `import_fact(..., backfill=True)` /
   `manage.py etl_run --backfill --start … --end …`. Re-loads one closed
   historical window, de-duping the whole window by PK, and is recorded with
@@ -286,10 +299,11 @@ any of the systems it covers.
   fact across that span so the extract loop drops them per chunk. The
   re-fetch is therefore idempotent: rerunning changes nothing.
   Three things this deliberately is *not*:
-    - **Not a lag.** Holding the window's *upper* bound back below
-      `max(watermark_column)` would buy the same safety by making the chart
-      permanently stale. The overlap loads the tip immediately and collects
-      stragglers on the next pass instead.
+    - **Not a lag *on its own* — but the lag is now the primary instrument.**
+      See the next note. The overlap alone loads the tip immediately and
+      collects stragglers on the next pass; the lag holds the tip back and
+      never re-fetches. They are complementary, and with a lag configured
+      the overlap can usually go to 0, which removes the PK check entirely.
     - **Not a unique index + `ON CONFLICT`.** That is the airtight fix, and
       it costs the `copy_from` fast path (see the three-stage-pipeline note)
       plus a btree on an UNLOGGED billion-row table. The PK set is matched
@@ -302,6 +316,87 @@ any of the systems it covers.
   run (silently duplicating rows would be worse than the bug), and a PK set
   above `_MAX_OVERLAP_PKS` (5M, `STARCUBES_MAX_OVERLAP_PKS`) fails rather
   than OOM-killing the parent.
+
+- **The window's upper bound is the later of two terms, and that is the
+  primary late-arrival defence — the overlap is the second line.** The
+  overlap costs a fact-side PK scan on every run (no BRIN, no partition
+  pruning when `watermark_fact_expr` is derived), re-extracts rows only to
+  drop them, and leaves the HWM dishonest — which is *why* `core/cache.py`
+  has to shorten the cacheable horizon by it. Holding the *upper* bound
+  back instead is idempotent by construction: the window advances
+  monotonically, every watermark value falls in exactly one window,
+  duplicates are impossible. `core/etl.py:import_fact` computes
+
+      end_time = max(max_wm  - watermark_lag_s,
+                     src_now - wallclock_lag_s)   # 2nd term only if > 0
+
+  The two terms are two separate guarantees, not a value plus a trigger:
+    - **`max(wm) − watermark_lag_s`** takes the data tip as proof of
+      freshness and is therefore fast — but only advances while the tip
+      moves. If source traffic stops, this term freezes and the last
+      `watermark_lag_s` seconds would sit unloaded until traffic resumes.
+    - **`src_now − wallclock_lag_s`** is an absolute deadline: every row
+      gets that long in source wall-clock time to become visible.
+      Independent of traffic, so it keeps the window moving when the first
+      term freezes.
+  Four things that are not obvious:
+    - **The crossover is not configured, it falls out.** Setting the terms
+      equal gives `now − max_wm = wallclock_lag_s − watermark_lag_s`: the
+      wall clock takes over exactly once the standstill exceeds the
+      difference of the two lags. No trigger, no threshold, no hysteresis —
+      the formula is continuous and monotonic across runs. An earlier design
+      with an explicit idle trigger plus a minimum-idle column needed three
+      columns to express what these two express by construction.
+    - **`wallclock_lag_s` must exceed `watermark_lag_s`** (CHECK
+      `datasource_wallclock_lag_check`, pre-validated in
+      `sources/views.py:_lag_pair` so the GUI gets a sentence rather than a
+      500). Otherwise the wall-clock term would win even under running
+      traffic, where `max_wm ≈ now`, and `watermark_lag_s` would have no
+      effect at all.
+    - **The wall-clock term is deliberately not capped at `max(wm)`.** It is
+      a named deadline, not a by-product, so it may carry the HWM past the
+      newest row that actually exists. A row below `now − wallclock_lag_s`
+      that is still invisible has missed its deadline by definition — that
+      is a case for the overlap and the Audit tab, not for the lag.
+    - **`wallclock_lag_s = 0` drops the second term rather than zeroing
+      it.** `max(max_wm, src_now)` would be `src_now` — not "no lag" but its
+      opposite. With both columns 0 the window is computed exactly as it was
+      before migration 0023.
+  The wall clock is read from the *source* DB (`Source.source_now_sql()`,
+  spelled from the existing `source_dialect`), because watermarks are source
+  wall-clock time throughout; it rides along as a second column on the
+  existing max-query, so it costs no extra round-trip except when
+  `watermark_max_query` is set and therefore opaque.
+  **The connection's session timezone must match the one the watermark
+  column is written in** — this is a real deployment prerequisite, not a
+  detail. `LOCALTIMESTAMP` reads the *session* clock, so a source DSN whose
+  session sits in `Europe/Berlin` while the watermarks are written in UTC
+  shifts the whole term by the UTC offset, permanently, and the wall-clock
+  term then wins every single run. This is not hypothetical: it is what the
+  end-to-end verification hit on the first pass, with a constant +7200 s.
+  It cannot be detected automatically — nothing in the source tells you what
+  clock the *writer* used, and "wall clock wins while rows flow" is also the
+  legitimate sporadic-source case this feature exists for. So the window log
+  line prints both candidates, which one won, **and the measured
+  `src_now − max_wm` skew**; a skew parked at a round 3600/7200 while rows
+  keep arriving is a timezone mismatch, not a quiet source. A clock
+  *behind* its own data is the one case that is unambiguous, and there the
+  term is dropped with a warning.
+  The known residual risk: a hung feeder is indistinguishable from a genuine
+  traffic pause — both just freeze `max(wm)` — so a backlog arriving with old
+  watermarks after `wallclock_lag_s` has elapsed lands below the HWM.
+  `wallclock_lag_s` *is* the knob for that: it is the maximum grace a row is
+  granted. The overlap remains the net underneath.
+  One guard survives from the overlap-only design and is still needed:
+  `import_fact` clamps `end_time` up to `last_end_time` when it would fall
+  below it. Both terms are normally monotonic, so this is not the common
+  path — it catches upstream deletions lowering `max(wm)`, a
+  `watermark_lag_s` raised at runtime, and a preceding `--start/--end` run
+  that set a higher HWM. It has to *clamp* rather than return early: the
+  final `UPDATE` writes `last_end_time = end_time` from the `finally` block,
+  so a bare `return 0` would still write the withdrawn bound and rewind the
+  watermark. Neither term applies on the `end_time_override` path
+  (`--start/--end`, every backfill) — there the user owns the window.
 
 - **`datasource.watermark_fact_expr` exists because the watermark is not
   always a projected fact column.** The example Oracle source watermarks on
@@ -339,7 +434,8 @@ any of the systems it covers.
   go uncounted — dim counts only drive the chart's stacking order, are
   approximate by contract, and `--refresh-counts` recomputes them.
 
-- **The audit has two modes because counting has a blind spot.**
+- **The audit has three modes, because each one sees what the previous
+  cannot.**
   `audit_window` compares row *counts* per bucket: cheap (both DBs
   aggregate, only totals cross the wire) and unbounded in window size, so it
   is the sweep that says *where* to look. But equal counts do not prove a
@@ -353,6 +449,24 @@ any of the systems it covers.
   point because the ID mode is bounded by RAM; every bucket row in the GUI
   carries an `IDs` button, deliberately including the ones the counts call
   clean.
+  `audit_id_details` is the third: a *targeted* follow-up on ids `audit_ids`
+  has already named — kept separate precisely so the set difference stays at
+  the ~46 B/id that lets it run over a wide window. It fetches each row's
+  source watermark (one `WHERE <pk_expr> IN (…)` per 1000 ids, with the time
+  window kept in the predicate because `<pk_expr>` is an expression and only
+  the watermark column is indexed) and pairs it with the `etl_run` whose
+  window covered that watermark. `started_at − watermark` is then how long
+  after a row's watermark the ETL read its window and still did not see it —
+  the measurement `wallclock_lag_s` is set from instead of guessed. Two
+  deliberate choices: `started_at`, not `finished_at`, because the extract
+  began then and that is the bound guaranteed to hold; and the *last*
+  covering run, not the first, because every covering run missed the row and
+  the latest gives the tightest bound (with `late_arrival_overlap_s = 0` the
+  windows do not overlap and there is only one). The number is a **lower
+  bound**, not an answer — the row may have stayed invisible far longer —
+  and rows that fall in *no* run window are counted separately and kept out
+  of the percentiles, since those are a hole in the run history, a different
+  failure entirely.
 
 - **Reading a column of ids costs ~46 B/id, not the 8 B an int64 suggests —
   and `Result.partitions()` does not stream.** Measured over 1M int64 PKs,
@@ -881,11 +995,11 @@ any of the systems it covers.
 
 | File | Purpose |
 |------|---------|
-| `core/source.py` | `Source` / `Dimension` / `FactColumn` / `FactIndex` dataclasses + `Source.load` + `_get_cached_engine` + `init_oracle_client` + `watermark_fact_sql()` (fact-side watermark expression, falls back to `partition_column`). Splits `dim_fact_to_table()` (regular) from `auto_dim_fact_to_table()` (auto-dims, resolved in the parent ETL process). |
+| `core/source.py` | `Source` / `Dimension` / `FactColumn` / `FactIndex` dataclasses + `Source.load` + `_get_cached_engine` + `init_oracle_client` + `watermark_fact_sql()` (fact-side watermark expression, falls back to `partition_column`) + `source_now_sql()` (dialect spelling of the source's naive wall clock, for the window's second upper-bound term). Splits `dim_fact_to_table()` (regular) from `auto_dim_fact_to_table()` (auto-dims, resolved in the parent ETL process). |
 | `core/schema.py` | `create_fact`, `create_indices`, `drop_indices`, `import_dimensions`, `read_dimensions`, `ensure_starcubes_meta(engine, force=)`. Partition lifecycle: `list_fact_partitions`, `create_future_partitions` (append-only, manual), `ensure_partitions_for` (gap-filling, called every `import_fact` run), `vacuum_analyze_fact`. |
-| `core/etl.py` | `import_fact` — the three-stage pipeline; calls `ensure_partitions_for` before starting workers. `_resume_state` returns `(last_end_time, extract_from, existing_pks)`; `_overlap_pks` loads the PK set for the late-arrival overlap. `backfill=True` re-loads a closed window without moving the HWM. `_load_auto_dim_maps` + `_resolve_auto_dim_chunk` for parent-process auto-dim discovery. `EtlAborted` for user-initiated kills; `EtlStageFailed` (+ `_put_with_abort`/`_join_with_abort`/`_raise_if_failed`) for a dead transform/load worker. Throughput metrics: `_snapshot_stats`/`_build_stats_payload` read the shared `mp.Array` into the `stats` jsonb shape (now including live `queues`/`workers`); `_rate`/`_fmt_rate` compute/format rows-per-second; `_bound_log_size` truncates the process's own log file in place. Uses `logging.getLogger(__name__)`, never `print()`. Maintenance: `truncate_last_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`. |
+| `core/etl.py` | `import_fact` — the three-stage pipeline; calls `ensure_partitions_for` before starting workers. `_resume_state` returns `(last_end_time, extract_from, existing_pks)`; `_overlap_pks` loads the PK set for the late-arrival overlap. The window's upper bound is `max(max_wm − watermark_lag_s, src_now − wallclock_lag_s)`, clamped up to the HWM so it can never rewind. `backfill=True` re-loads a closed window without moving the HWM. `_load_auto_dim_maps` + `_resolve_auto_dim_chunk` for parent-process auto-dim discovery. `EtlAborted` for user-initiated kills; `EtlStageFailed` (+ `_put_with_abort`/`_join_with_abort`/`_raise_if_failed`) for a dead transform/load worker. Throughput metrics: `_snapshot_stats`/`_build_stats_payload` read the shared `mp.Array` into the `stats` jsonb shape (now including live `queues`/`workers`); `_rate`/`_fmt_rate` compute/format rows-per-second; `_bound_log_size` truncates the process's own log file in place. Uses `logging.getLogger(__name__)`, never `print()`. Maintenance: `truncate_last_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`. |
 | `core/query.py` | `timeseries_multibar` — multibar JSON producer. Bars ordered ascending by dim count. `split_grouped_col`/`resolve_group_set`/`slugify_group_set`/`grouped_token`/`grouped_label` own the `<col>:grouped:<slug>` token; `build_group_by_indices` resolves group names for grouped drill-down. |
-| `core/audit.py` | `audit_window` — per-bucket source-vs-fact row-count reconciliation; `audit_ids` — PK set difference naming the exact missing/surplus/duplicate rows; `_fetch_id_array` — the streaming id reader (see the memory note); `gap_span` folds the gap buckets into one backfill window. No Django imports. |
+| `core/audit.py` | `audit_window` — per-bucket source-vs-fact row-count reconciliation; `audit_ids` — PK set difference naming the exact missing/surplus/duplicate rows; `audit_id_details` — targeted second pass giving each named id its source watermark, the `etl_run` that should have caught it, and the resulting lower bound on the needed lag; `_fetch_id_array` — the streaming id reader (see the memory note); `gap_span` folds the gap buckets into one backfill window. No Django imports. |
 | `core/cache.py` | Server-side `plot_json` cache helpers. `make_cache_key`, `is_cacheable`, `get_cached_plot`, `put_cached_plot`, `bump_cache_epoch`, `clear_cache`. No Django imports. |
 | `core/utils.py` | `_parse_dt`, `_pid_alive`, `tail_file`, `format_pks` (applies `datasource.pk_format` to a list of raw PKs — shared by the chart drill-down and the Audit tab's id lists). No Django imports. |
 | `core/adhoc.py` | Query console backend: `validate_sql` (single-statement SELECT/WITH lexer), `run_query` (read-only txn + server-side cursor + `application_name` tag), `cancel_query` (`pg_stat_activity` → `pg_cancel_backend`), `history_*`. No Django imports. |

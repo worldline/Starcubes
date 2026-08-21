@@ -57,6 +57,7 @@
         <dt>Bar Pixel Target</dt><dd>{{ ds.bar_pixel_target }}</dd>
         <dt>PK Format</dt><dd class="mono">{{ ds.pk_format|default:'—' }}</dd>
         <dt>Late Arrival Overlap</dt><dd>{% if ds.late_arrival_overlap_s %}{{ ds.late_arrival_overlap_s }} s{% else %}off{% endif %}</dd>
+        <dt>Window Lag</dt><dd>{% if ds.watermark_lag_s or ds.wallclock_lag_s %}{{ ds.watermark_lag_s|default:0 }} s below tip{% if ds.wallclock_lag_s %} / {{ ds.wallclock_lag_s }} s absolute{% endif %}{% else %}off{% endif %}</dd>
         <dt>Watermark Fact Expr</dt><dd class="mono">{{ ds.watermark_fact_expr|default:'— (partition column)' }}</dd>
       </dl>
     </div>
@@ -882,6 +883,7 @@
     <div class="card-body">
       <dl class="dl-grid" id="auditIdSummary"></dl>
       <div id="auditIdLists"></div>
+      <div id="auditDetailBox"></div>
       <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-secondary btn-sm" id="auditIdBackfillBtn" style="display:none">Backfill this window</button>
         <span class="cmd-result" id="result-audit-ids"></span>
@@ -2786,6 +2788,7 @@ function auditBackfill(from, to, btn) {
 // injected as markup only when it actually differs from the raw id — the
 // same test the chart's drill-down list uses.
 var auditIdWindowRange = null;
+var auditMissingIds = [];
 
 function auditIdList(title, hint, raw, display, total, sample) {
   if (!total) return '';
@@ -2803,10 +2806,85 @@ function auditIdList(title, hint, raw, display, total, sample) {
     ? ' <span class="text-muted">(showing first ' + shown + ' of '
       + total.toLocaleString() + ')</span>'
     : '';
+  var extra = (title.indexOf('Missing') === 0 && shown)
+    ? '<div style="margin-top:6px">'
+      + '<button class="btn btn-secondary btn-sm" id="auditDetailBtn">'
+      + 'Details — source timestamps &amp; responsible run</button></div>'
+    : '';
   return '<div style="margin-top:12px"><label class="form-label">' + title
        + ' — ' + total.toLocaleString() + more + '</label>'
        + '<p style="margin:0 0 6px;color:var(--muted);font-size:12px">' + hint + '</p>'
-       + body + '</div>';
+       + body + extra + '</div>';
+}
+
+function fmtLagSecs(v) {
+  if (v === null || v === undefined) return '—';
+  if (v < 90) return v.toFixed(0) + ' s';
+  if (v < 5400) return (v / 60).toFixed(1) + ' min';
+  return (v / 3600).toFixed(1) + ' h';
+}
+
+// Second, targeted pass over ids audit_ids already named: fetch each row's
+// source watermark and the etl_run whose window covered it. started_at minus
+// watermark is how long after the row's watermark the ETL read that window
+// and still did not see it — a *lower* bound on the lag that would have been
+// needed, which is what wallclock_lag_s gets set from.
+function auditIdDetails(btn) {
+  var box = document.getElementById('auditDetailBox');
+  if (!auditIdWindowRange || !auditMissingIds.length) return;
+  if (btn) btn.disabled = true;
+  box.innerHTML = '<p class="text-muted" style="font-size:12px">Looking up '
+                + auditMissingIds.length + ' row(s) in the source…</p>';
+  var fd = new FormData();
+  fd.append('from_time', auditIdWindowRange[0]);
+  fd.append('to_time', auditIdWindowRange[1]);
+  auditMissingIds.forEach(function(i) { fd.append('ids', i); });
+  postJSON('/sources/' + DS_PK + '/etl/audit-id-details/', fd).then(function(d) {
+    if (btn) btn.disabled = false;
+    if (!d.ok) {
+      box.innerHTML = '<p class="cmd-result err">✗ ' + d.error + '</p>';
+      return;
+    }
+    var rows = d.rows.map(function(r) {
+      return '<tr>'
+        + '<td class="mono">' + r.pk_display + '</td>'
+        + '<td>' + (r.watermark ? fmtLocal(r.watermark) : '<span class="text-muted">not in source</span>') + '</td>'
+        + '<td>' + (r.run_id ? '#' + r.run_id : '<span class="text-muted">no covering run</span>') + '</td>'
+        + '<td>' + (r.run_started_at ? fmtLocal(r.run_started_at) : '—') + '</td>'
+        + '<td>' + fmtLagSecs(r.needed_lag_s) + '</td>'
+        + '</tr>';
+    }).join('');
+    var summary = '';
+    if (d.needed_lag) {
+      summary += '<p style="margin:8px 0 0"><strong>At least '
+        + fmtLagSecs(d.needed_lag.p99) + '</strong> would have been needed for '
+        + '99% of these rows (median ' + fmtLagSecs(d.needed_lag.median)
+        + ', worst ' + fmtLagSecs(d.needed_lag.max) + ', n=' + d.needed_lag.n
+        + '). Set <code>wallclock_lag_s</code> to at least that.</p>'
+        + '<p class="text-muted" style="font-size:12px;margin:4px 0 0">'
+        + 'A lower bound, not the answer: all that is known is the row was '
+        + 'invisible when its window was read, not how much longer it stayed '
+        + 'invisible.</p>';
+    }
+    if (d.unresolved) {
+      summary += '<p class="cmd-result err" style="margin:6px 0 0">'
+        + d.unresolved + ' row(s) fall in no run window at all — a gap in the '
+        + 'run history or a watermark jump, not a late arrival. Excluded from '
+        + 'the figures above.</p>';
+    }
+    if (d.not_in_source) {
+      summary += '<p class="text-muted" style="font-size:12px;margin:6px 0 0">'
+        + d.not_in_source + ' row(s) are no longer in the source — deleted '
+        + 'upstream between the ID comparison and this lookup.</p>';
+    }
+    box.innerHTML = '<div style="margin-top:12px">'
+      + '<label class="form-label">Missing rows in detail</label>'
+      + '<table class="data-table"><thead><tr>'
+      + '<th>PK</th><th>Watermark (source)</th><th>Run</th>'
+      + '<th>Run started</th><th>At least needed</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>'
+      + summary + '</div>';
+  });
 }
 
 function auditCompareIds(from, to, btn) {
@@ -2822,6 +2900,9 @@ function auditCompareIds(from, to, btn) {
       return;
     }
     auditIdWindowRange = [d.start, d.end];
+    auditMissingIds = d.missing_ids || [];
+    // A previous window's detail table must not survive a new comparison.
+    document.getElementById('auditDetailBox').innerHTML = '';
     document.getElementById('auditIdWindow').textContent =
       fmtLocal(d.start) + ' → ' + fmtLocal(d.end);
     document.getElementById('auditIdSummary').innerHTML =
@@ -2844,6 +2925,8 @@ function auditCompareIds(from, to, btn) {
                     + 'will not remove these.',
                     d.surplus_ids, d.surplus_display, d.surplus_count, d.sample);
     card.style.display = '';
+    var db = document.getElementById('auditDetailBtn');
+    if (db) db.addEventListener('click', function() { auditIdDetails(db); });
     var bf = document.getElementById('auditIdBackfillBtn');
     bf.style.display = d.missing_count ? '' : 'none';
     document.getElementById('result-audit-ids').textContent = '';

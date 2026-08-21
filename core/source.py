@@ -216,6 +216,8 @@ class Source:
     pk_format: Optional[str] = None   # Python format string for PK display in chart drill-down
     late_arrival_overlap_s: int = 0   # seconds the load window reaches back past the HWM
     watermark_fact_expr: Optional[str] = None  # fact-side SQL reproducing watermark_column
+    watermark_lag_s: int = 0          # seconds the window's upper bound stays below max(watermark)
+    wallclock_lag_s: int = 0          # absolute visibility deadline in source wall-clock seconds
 
     @classmethod
     def load(cls, meta_engine, dest_dsn: str, name_or_id) -> "Source":
@@ -231,6 +233,7 @@ class Source:
                 f"       small_window_hint, "
                 f"       interval_ladder, bar_pixel_target, pk_format, "
                 f"       late_arrival_overlap_s, watermark_fact_expr, "
+                f"       watermark_lag_s, wallclock_lag_s, "
                 f"       is_default "
                 f"  FROM starcubes_meta.datasource WHERE {key_sql}"
             ), {"k": name_or_id}).mappings().first()
@@ -422,6 +425,30 @@ class Source:
         (`core/etl.py:_resume_state`) and by `core/audit.py`.
         """
         return self.watermark_fact_expr or self.partition_column
+
+    def source_now_sql(self) -> str:
+        """Dialect spelling of the source DB's *naive* wall clock.
+
+        The watermark column is read in source wall-clock time throughout
+        (see `_source_counts` in core/audit.py and the ETL's WHERE clause),
+        so the second term of the load window's upper bound has to be read
+        the same way -- an offset-aware `CURRENT_TIMESTAMP` would compare
+        against naive watermarks.
+
+        Spelled from `source_dialect` rather than via
+        `sqlalchemy.func.localtimestamp()`: whether the Oracle dialect
+        appends its own `FROM dual` would have to be verified at runtime,
+        and MSSQL has no LOCALTIMESTAMP at all. `source_dialect` already
+        exists and is CHECK-constrained, so this adds no new ground to the
+        open multi-dialect item in CLAUDE.md's backlog.
+
+        Returns the bare expression -- callers that need it without a FROM
+        clause (see `core/etl.py`, the watermark_max_query branch) must add
+        Oracle's `FROM dual` themselves.
+        """
+        if self.source_dialect == "mssql":
+            return "SYSDATETIME()"
+        return "LOCALTIMESTAMP"
 
     def pk_column(self) -> Optional[str]:
         return next((c.name for c in self.fact_columns if c.role == "pk"), None)

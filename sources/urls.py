@@ -34,6 +34,7 @@ urlpatterns = [
     path("<int:pk>/etl/refresh-counts/",                views.etl_refresh_counts,    name="etl_refresh_counts"),
     path("<int:pk>/etl/audit/",                         views.etl_audit,             name="etl_audit"),
     path("<int:pk>/etl/audit-ids/",                     views.etl_audit_ids,         name="etl_audit_ids"),
+    path("<int:pk>/etl/audit-id-details/",              views.etl_audit_id_details,  name="etl_audit_id_details"),
     path("<int:pk>/etl/backfill/",                      views.etl_backfill,          name="etl_backfill"),
     path("<int:pk>/cache/clear/",                       views.cache_clear,           name="cache_clear"),
     # Fact columns CRUD (JSON)

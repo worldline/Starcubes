@@ -21,6 +21,12 @@ Two modes:
     names the exact rows. It also closes a real blind spot in counting: a
     bucket that lost 100 rows and had 100 deleted upstream nets to zero and
     reads as clean. Bounded by RAM, hence ``MAX_AUDIT_IDS``.
+  * ``audit_id_details`` — a targeted follow-up on ids ``audit_ids`` already
+    named. It fetches each row's source watermark and pairs it with the
+    ``etl_run`` whose window covered that watermark, turning "these rows are
+    missing" into "the ETL read that window N seconds after their watermark
+    and still did not see them". That number is what ``wallclock_lag_s``
+    gets set from.
 
 The two sides are counted differently on purpose:
 
@@ -38,7 +44,9 @@ from __future__ import annotations
 
 import logging
 import os
+from bisect import bisect_right
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 import numpy as np
@@ -382,3 +390,196 @@ def gap_span(rows: list[dict]) -> Optional[tuple[str, str]]:
     if not gaps:
         return None
     return gaps[0]["start"], gaps[-1]["end"]
+
+
+def _norm_pk(v) -> Optional[str]:
+    """One PK value in the same string form `audit_ids` hands back.
+
+    `audit_ids` returns `str(v)` over an int64/object numpy array, while the
+    source driver may hand the same id back as int, float or Decimal
+    depending on dialect and column scale. Comparing those directly would
+    make every row look unmatched, so both sides go through here.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, (float, Decimal)):
+        try:
+            iv = int(v)
+            if iv == v:
+                return str(iv)
+        except (ValueError, OverflowError, InvalidOperation):
+            pass
+    return str(v)
+
+
+def _bind_pk(raw: str):
+    """Bind a PK back in its native type where possible.
+
+    `<pk_expr>` is numeric for the example source (`to_number(txn_id)`), and
+    binding a string against it would force a per-row cast on the source
+    side. Falls back to the string when the id is not an integer.
+    """
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return raw
+
+
+def audit_id_details(source: Source, meta_engine, *, ids: list,
+                     start: datetime, end: datetime,
+                     chunk: int = 1000) -> dict:
+    """Source watermark + responsible ETL run for already-identified ids.
+
+    Deliberately a *second* step on top of `audit_ids`, not part of it: the
+    set difference is bounded by the ~46 B/id measured in `_fetch_id_array`
+    and has to stay that cheap to be usable over a wide window. This runs
+    only on the handful of ids that came back from it.
+
+    What it answers that the id list alone cannot: *when* should the row
+    have been loaded. `audit_ids` says a row is missing; pairing its source
+    watermark with the `etl_run` whose window covered that watermark gives
+    ``started_at - watermark`` -- how long after the row's watermark the ETL
+    read that window and still did not see it. That is the measurement
+    ``wallclock_lag_s`` is chosen from, instead of guessed.
+
+    Two things the returned number is not:
+
+      * It is a **lower bound**, not the answer. All that is known is that
+        the row was invisible when its window was read; it may have stayed
+        invisible far longer. ``started_at`` is used rather than
+        ``finished_at`` for exactly that reason -- the extract began then,
+        so it is the bound guaranteed to hold, where ``finished_at`` would
+        overstate it on any long-running run.
+      * It is meaningless for a row **no run covered**. That is a hole in
+        the run history or a watermark jump -- a different failure -- so
+        those rows are counted separately and kept out of the percentiles.
+
+    No ``dest_engine`` parameter: unlike `audit_window` and `audit_ids`,
+    this reads only the source and `starcubes_meta`. Fact was already
+    established to *not* hold these rows.
+    """
+    start = _as_utc(start)
+    end = _as_utc(end)
+    if end <= start:
+        raise ValueError("audit window end must be after start")
+    ids = [str(i) for i in (ids or [])]
+    if not ids:
+        return {"rows": [], "resolved": 0, "unresolved": 0,
+                "not_in_source": 0, "needed_lag": None}
+
+    pk_sql = _source_pk_sql(source)
+    wm = source.watermark_column
+
+    # The window predicate stays in even though the ids alone would identify
+    # the rows: <pk_expr> is an expression, so no index covers it, while the
+    # watermark column is indexed and the window is already known. That
+    # turns a full scan into an index range plus a filter.
+    wm_by_pk: dict = {}
+    engine = source.source_engine()
+    with engine.begin() as conn:
+        for i in range(0, len(ids), chunk):
+            batch = ids[i:i + chunk]      # chunked at 1000 for Oracle's
+            names = [f"p{j}" for j in range(len(batch))]   # IN-list limit
+            params = {n: _bind_pk(v) for n, v in zip(names, batch)}
+            # Naive timestamps: the source reads its watermark in its own
+            # wall-clock time, same convention as _source_counts.
+            params["a"] = start.replace(tzinfo=None)
+            params["b"] = end.replace(tzinfo=None)
+            placeholders = ", ".join(f":{n}" for n in names)
+            rows = conn.execute(text(
+                f"SELECT {pk_sql} AS pk, {wm} AS wm "
+                f"  FROM {_source_from(source)} "
+                f" WHERE {wm} >= :a AND {wm} < :b "
+                f"   AND {pk_sql} IN ({placeholders})"
+            ), params).all()
+            for r in rows:
+                key = _norm_pk(r[0])
+                if key is not None and r[1] is not None:
+                    wm_by_pk[key] = _as_utc(r[1])
+
+    # Runs whose window overlaps [start, end). Only status='ok' incremental
+    # runs: a failed run proves nothing about visibility, and a backfill
+    # never had the chance to catch the row on its way in.
+    #
+    # A NULL first_end_time is not a broken row to skip -- it is how the
+    # *initial* load of a datasource is recorded (`extract_from` is None,
+    # so the window has no lower bound at all and everything below
+    # last_end_time was in scope). Excluding those runs would report every
+    # row from the first load as "no covering run", i.e. as a hole in the
+    # run history, which is precisely the opposite of the truth. They are
+    # kept and given an open lower bound instead.
+    with meta_engine.begin() as meta:
+        runs = [dict(r) for r in meta.execute(text(
+            "SELECT id, started_at, finished_at, first_end_time, last_end_time "
+            "  FROM starcubes_meta.etl_run "
+            " WHERE datasource_id = :ds AND kind = 'incremental' "
+            "   AND status = 'ok' AND last_end_time IS NOT NULL "
+            "   AND last_end_time > :a "
+            "   AND (first_end_time IS NULL OR first_end_time < :b) "
+            " ORDER BY first_end_time NULLS FIRST"
+        ), {"ds": source.id, "a": start, "b": end}).mappings().all()]
+    open_lower = datetime.min.replace(tzinfo=timezone.utc)
+    for r in runs:
+        for k in ("started_at", "finished_at", "first_end_time", "last_end_time"):
+            if r[k] is not None:
+                r[k] = _as_utc(r[k])
+        if r["first_end_time"] is None:
+            r["first_end_time"] = open_lower
+    firsts = [r["first_end_time"] for r in runs]
+
+    def covering(w):
+        """(last run whose window contains w, how many such runs there are).
+
+        The *last* one, not the first: the row is still missing, so every
+        covering run missed it, and the latest one yields the tightest lower
+        bound on the lag that would have been needed. With
+        late_arrival_overlap_s = 0 the windows do not overlap and there is
+        only ever one.
+        """
+        hit, n = None, 0
+        for idx in range(bisect_right(firsts, w) - 1, -1, -1):
+            if runs[idx]["last_end_time"] > w:
+                n += 1
+                if hit is None:
+                    hit = runs[idx]
+        return hit, n
+
+    display = format_pks(ids, source.pk_format)
+    out, lags, unresolved, not_in_source = [], [], 0, 0
+    for raw, disp in zip(ids, display):
+        w = wm_by_pk.get(raw)
+        row = {"pk": raw, "pk_display": disp,
+               "watermark": w.isoformat() if w else None,
+               "run_id": None, "run_started_at": None,
+               "needed_lag_s": None, "covering_runs": 0}
+        if w is None:
+            not_in_source += 1
+            out.append(row)
+            continue
+        run, n = covering(w)
+        row["covering_runs"] = n
+        if run is None:
+            unresolved += 1
+        else:
+            row["run_id"] = run["id"]
+            row["run_started_at"] = run["started_at"].isoformat()
+            row["needed_lag_s"] = (run["started_at"] - w).total_seconds()
+            lags.append(row["needed_lag_s"])
+        out.append(row)
+
+    needed = None
+    if lags:
+        arr = np.asarray(lags, dtype=np.float64)
+        needed = {"median": float(np.percentile(arr, 50)),
+                  "p99": float(np.percentile(arr, 99)),
+                  "max": float(arr.max()),
+                  "n": int(arr.size)}
+    return {"rows": out,
+            "resolved": len(lags),
+            "unresolved": unresolved,
+            "not_in_source": not_in_source,
+            "needed_lag": needed}
