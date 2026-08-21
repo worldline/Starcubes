@@ -43,6 +43,7 @@ from sqlalchemy import text
 
 from .schema import UNKNOWN_SOURCE_ID
 from .source import Source
+from .utils import format_pks
 
 MEASURE_FUNCS = {"sum", "avg", "min", "max"}
 
@@ -1460,15 +1461,4 @@ def list_transactions(
         rows = conn.execute(sql, params).all()
     raw_ids = [str(r[0]) for r in rows]
 
-    if pk_format:
-        display = []
-        for pk in raw_ids:
-            try:
-                display.append(pk_format.format(int(pk)))
-            except (ValueError, TypeError):
-                try:
-                    display.append(pk_format.format(pk))
-                except (ValueError, IndexError, KeyError):
-                    display.append(pk)
-        return raw_ids, display
-    return raw_ids, raw_ids
+    return raw_ids, format_pks(raw_ids, pk_format)

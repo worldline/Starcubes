@@ -80,6 +80,16 @@ crashed/orphaned sessions are revived.
   `{buckets: [{start, end, source_rows, fact_rows, missing, surplus}],
   total_missing, total_surplus, unreadable_buckets}`. A bucket whose source
   query failed carries `source_rows: null` rather than a bogus gap.
+- `POST .../etl/audit-ids/` — `from_time`, `to_time`, `sample`. Pulls both
+  PK sets and diffs them, returning `{source_rows, fact_rows, fact_distinct,
+  duplicate_rows, missing_count, missing_ids, missing_display, surplus_count,
+  surplus_ids, surplus_display, sample, truncated}`. Counts are always
+  exact; the `*_ids` lists are capped at `sample`. `*_display` has
+  `datasource.pk_format` applied (via `core/utils.py:format_pks`, shared
+  with the chart drill-down), so it may carry HTML — the GUI injects it as
+  markup only when it differs from the raw id, the same test
+  `chart.html`'s drill list uses. Bounded by `STARCUBES_MAX_AUDIT_IDS`
+  (2M/side).
 - `POST .../etl/backfill/` — `from_time`, `to_time`. Spawns
   `manage.py etl_run --backfill --start … --end …` through the same
   `spawn_etl_subprocess` path as a normal run, so the per-run log file, ETL
@@ -186,6 +196,13 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   Backfill button; "Backfill all gaps" spans the first to the last gap
   bucket. Running an audit is the intended way to *measure*
   `late_arrival_overlap_s` before setting it.
+  Every bucket row also carries an **IDs** button — deliberately including
+  the ones the counts call clean, because equal counts do not prove a bucket
+  is intact (N lost plus N deleted upstream cancel out, and duplicate PKs
+  are invisible to counting). "Compare IDs" does the same for the whole
+  window. The result card separates *missing*, *surplus* and *duplicate*,
+  and only *missing* offers a Backfill — a backfill inserts, it never
+  deletes.
 - **ETL Log tab** (`tab-etl-log`): lazy-loaded on first activation via
   `etlLogActivate()` — populates the `<select>` from `etl/logs/`, then tails
   the selected file from `etl/log/`. Polls every 2s only while the tab is

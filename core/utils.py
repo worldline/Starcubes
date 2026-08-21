@@ -19,6 +19,28 @@ def _parse_dt(s: str) -> datetime:
     return dt
 
 
+def format_pks(raw_ids, pk_format):
+    """Apply a datasource's ``pk_format`` to a list of raw PK strings.
+
+    ``{0}`` receives the PK — as an int when it parses as one, so a format
+    like ``{0:012d}`` works, else as the raw string. A format that does not
+    apply falls through to the raw value rather than failing the response.
+    Returns the raw list unchanged when ``pk_format`` is empty.
+    """
+    if not pk_format:
+        return list(raw_ids)
+    out = []
+    for pk in raw_ids:
+        try:
+            out.append(pk_format.format(int(pk)))
+        except (ValueError, TypeError):
+            try:
+                out.append(pk_format.format(pk))
+            except (ValueError, IndexError, KeyError):
+                out.append(pk)
+    return out
+
+
 def _pid_alive(pid: int) -> bool:
     """Return True if the process with *pid* is still running."""
     try:

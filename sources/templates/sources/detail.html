@@ -815,11 +815,19 @@
     <div class="card-header"><span class="card-title">&#128269; Gap Audit</span></div>
     <div class="card-body">
       <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
-        Counts rows on both sides per time bucket and reports the difference.
-        The source is counted on <span class="mono">{{ ds.watermark_column }}</span>,
-        the fact table on <span class="mono">{{ ds.watermark_fact_expr|default:ds.partition_column }}</span>.
-        Missing rows are closed with Backfill, which re-loads the window and
-        skips everything already present (matched by primary key).
+        <strong>Run Audit</strong> counts rows on both sides per time bucket —
+        cheap, and unbounded in window size, so it is the sweep that shows
+        <em>where</em> to look. The source is counted on
+        <span class="mono">{{ ds.watermark_column }}</span>, the fact table on
+        <span class="mono">{{ ds.watermark_fact_expr|default:ds.partition_column }}</span>.
+      </p>
+      <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+        <strong>Compare IDs</strong> pulls both primary-key sets and diffs
+        them, naming the exact rows. Use it on a bucket the count flagged —
+        or on one it did not, because counting has a blind spot: a window
+        that lost 100 rows and had 100 deleted upstream nets to zero and
+        reads as clean. It also finds duplicate PKs in fact, which counting
+        cannot see at all. Bounded by memory, so keep the window tight.
       </p>
       <div class="form-row">
         <div>
@@ -840,6 +848,7 @@
       </div>
       <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-primary" id="auditRunBtn">Run Audit</button>
+        <button class="btn btn-secondary" id="auditIdsBtn">Compare IDs</button>
         <button class="btn btn-secondary" id="auditBackfillAllBtn" style="display:none">Backfill all gaps</button>
         <span class="cmd-result" id="result-audit"></span>
       </div>
@@ -863,6 +872,21 @@
       </thead>
       <tbody id="auditTbody"></tbody>
     </table>
+  </div>
+
+  <div class="card" id="auditIdCard" style="display:none">
+    <div class="card-header">
+      <span class="card-title">ID comparison</span>
+      <span class="text-muted" style="font-size:11px;margin-left:auto" id="auditIdWindow"></span>
+    </div>
+    <div class="card-body">
+      <dl class="dl-grid" id="auditIdSummary"></dl>
+      <div id="auditIdLists"></div>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" id="auditIdBackfillBtn" style="display:none">Backfill this window</button>
+        <span class="cmd-result" id="result-audit-ids"></span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -2716,6 +2740,17 @@ function auditRenderRows(rows) {
     tr.appendChild(tdDiff);
 
     var tdAct = document.createElement('td');
+    tdAct.style.whiteSpace = 'nowrap';
+    // The IDs button sits on every row, not just flagged ones: equal counts
+    // do not prove a bucket is intact (N lost + N deleted upstream cancel).
+    var idBtn = document.createElement('button');
+    idBtn.className = 'btn btn-secondary btn-sm';
+    idBtn.textContent = 'IDs';
+    idBtn.style.marginRight = '6px';
+    idBtn.addEventListener('click', function() {
+      auditCompareIds(r.start, r.end, idBtn);
+    });
+    tdAct.appendChild(idBtn);
     if (missing) {
       var b = document.createElement('button');
       b.className = 'btn btn-secondary btn-sm';
@@ -2746,6 +2781,100 @@ function auditBackfill(from, to, btn) {
     .finally(function() { if (btn) btn.disabled = false; });
 }
 
+// Diff the two PK sets for one window and render what differs. `display`
+// may carry pk_format HTML (a link into the source system), so it is
+// injected as markup only when it actually differs from the raw id — the
+// same test the chart's drill-down list uses.
+var auditIdWindowRange = null;
+
+function auditIdList(title, hint, raw, display, total, sample) {
+  if (!total) return '';
+  var shown = raw.length;
+  var body;
+  var hasHtml = display.some(function(d, i) { return d !== raw[i]; });
+  if (hasHtml) {
+    body = '<div class="audit-id-list">' + display.join('<br>') + '</div>';
+  } else {
+    var esc = document.createElement('div');
+    esc.textContent = raw.join('\n');
+    body = '<pre class="audit-id-list">' + esc.innerHTML + '</pre>';
+  }
+  var more = (total > shown)
+    ? ' <span class="text-muted">(showing first ' + shown + ' of '
+      + total.toLocaleString() + ')</span>'
+    : '';
+  return '<div style="margin-top:12px"><label class="form-label">' + title
+       + ' — ' + total.toLocaleString() + more + '</label>'
+       + '<p style="margin:0 0 6px;color:var(--muted);font-size:12px">' + hint + '</p>'
+       + body + '</div>';
+}
+
+function auditCompareIds(from, to, btn) {
+  var resultEl = document.getElementById('result-audit');
+  var card = document.getElementById('auditIdCard');
+  if (btn) btn.disabled = true;
+  showCmdResult(resultEl, true, 'Comparing IDs…');
+  postJSON('/sources/' + DS_PK + '/etl/audit-ids/',
+           {from_time: from, to_time: to, sample: 200}).then(function(d) {
+    if (!d.ok) {
+      card.style.display = 'none';
+      showCmdResult(resultEl, false, '✗ ' + d.error);
+      return;
+    }
+    auditIdWindowRange = [d.start, d.end];
+    document.getElementById('auditIdWindow').textContent =
+      fmtLocal(d.start) + ' → ' + fmtLocal(d.end);
+    document.getElementById('auditIdSummary').innerHTML =
+        '<dt>Source rows</dt><dd>' + d.source_rows.toLocaleString() + '</dd>'
+      + '<dt>Fact rows</dt><dd>' + d.fact_rows.toLocaleString()
+      + (d.duplicate_rows
+          ? ' <span class="cmd-result err">(' + d.duplicate_rows.toLocaleString()
+            + ' duplicate PK' + (d.duplicate_rows === 1 ? '' : 's') + ')</span>'
+          : '') + '</dd>'
+      + '<dt>Missing</dt><dd>' + d.missing_count.toLocaleString() + '</dd>'
+      + '<dt>Surplus</dt><dd>' + d.surplus_count.toLocaleString() + '</dd>';
+    document.getElementById('auditIdLists').innerHTML =
+        auditIdList('Missing from fact',
+                    'In the source, never loaded. Backfill inserts exactly these.',
+                    d.missing_ids, d.missing_display, d.missing_count, d.sample)
+      + auditIdList('Surplus in fact',
+                    'Loaded, but no longer in the source for this window — '
+                    + 'deleted upstream, or the watermark expression puts them '
+                    + 'in a different window than the source does. Backfill '
+                    + 'will not remove these.',
+                    d.surplus_ids, d.surplus_display, d.surplus_count, d.sample);
+    card.style.display = '';
+    var bf = document.getElementById('auditIdBackfillBtn');
+    bf.style.display = d.missing_count ? '' : 'none';
+    document.getElementById('result-audit-ids').textContent = '';
+    var msg;
+    if (d.missing_count) {
+      msg = '✗ ' + d.missing_count.toLocaleString() + ' row(s) missing';
+    } else if (d.surplus_count || d.duplicate_rows) {
+      msg = '✓ nothing missing';
+    } else {
+      msg = '✓ IDs match exactly';
+    }
+    if (d.surplus_count) { msg += ' — ' + d.surplus_count.toLocaleString() + ' surplus'; }
+    if (d.duplicate_rows) { msg += ' — ' + d.duplicate_rows.toLocaleString() + ' duplicate PK(s)'; }
+    showCmdResult(resultEl, !d.missing_count, msg);
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { if (btn) btn.disabled = false; });
+}
+
+document.getElementById('auditIdsBtn').addEventListener('click', function() {
+  var from = document.getElementById('auditFrom').value;
+  var to = document.getElementById('auditTo').value;
+  if (!from || !to) { alert('Pick a From and To timestamp.'); return; }
+  auditCompareIds(from, to, this);
+});
+
+document.getElementById('auditIdBackfillBtn').addEventListener('click', function() {
+  if (!auditIdWindowRange) return;
+  auditBackfill(auditIdWindowRange[0], auditIdWindowRange[1], this);
+});
+
 document.getElementById('auditRunBtn').addEventListener('click', function() {
   var btn = this;
   var from = document.getElementById('auditFrom').value;
@@ -2757,6 +2886,7 @@ document.getElementById('auditRunBtn').addEventListener('click', function() {
 
   btn.disabled = true;
   backfillAllBtn.style.display = 'none';
+  document.getElementById('auditIdCard').style.display = 'none';
   auditGapSpan = null;
   showCmdResult(resultEl, true, 'Counting…');
   postJSON('/sources/' + DS_PK + '/etl/audit/',

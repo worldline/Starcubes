@@ -52,6 +52,14 @@ structural changes.
   tab has to be run by a human over a chosen window; nothing schedules it,
   and nothing alerts on a gap. A periodic audit of the trailing N hours
   (with the result stored per run) would close that.
+- **Backfill re-scans the window even when the exact ids are known.**
+  `audit_ids` names the missing rows, but `import_fact(backfill=True)` still
+  re-extracts the whole window and drops what it already has. For a sparse
+  gap (37 rows in an hour) a targeted `WHERE pk IN (…)` extract would be
+  orders of magnitude cheaper. The blocker is handing the id list to the
+  spawned subprocess — a CLI argument will not hold it, so it needs a temp
+  file or a `starcubes_meta` staging row — plus chunking the IN-list at 1000
+  for Oracle.
 - **Source schema drift guard.** No pre-flight validation that upstream
   columns still match `source_expr` / `base_table` before the extract loop.
   A dropped/renamed source column fails mid-run.
@@ -330,6 +338,39 @@ any of the systems it covers.
   re-add the same rows on every pass. Late arrivals below the HWM therefore
   go uncounted — dim counts only drive the chart's stacking order, are
   approximate by contract, and `--refresh-counts` recomputes them.
+
+- **The audit has two modes because counting has a blind spot.**
+  `audit_window` compares row *counts* per bucket: cheap (both DBs
+  aggregate, only totals cross the wire) and unbounded in window size, so it
+  is the sweep that says *where* to look. But equal counts do not prove a
+  bucket is intact — a window that lost 100 rows and had 100 deleted
+  upstream nets to zero and reads as clean, and duplicate PKs in fact (there
+  is no unique constraint to prevent them) are invisible to it entirely.
+  `audit_ids` pulls both PK sets and takes the set difference, so it names
+  the exact rows and separates the three cases: *missing* (in the source,
+  never loaded), *surplus* (in fact, no longer in the source) and
+  *duplicate* (same PK stored twice). The count mode stays the default entry
+  point because the ID mode is bounded by RAM; every bucket row in the GUI
+  carries an `IDs` button, deliberately including the ones the counts call
+  clean.
+
+- **Reading a column of ids costs ~46 B/id, not the 8 B an int64 suggests —
+  and `Result.partitions()` does not stream.** Measured over 1M int64 PKs,
+  peak RSS per id: `pd.read_sql` 264 B, buffered `.all()` 193 B,
+  `stream_results` + `partitions()` 193 B, `stream_results` +
+  `fetchmany()` 46 B, raw psycopg2 named cursor + `fetchmany` 31.5 B.
+  `core/audit.py:_fetch_id_array` therefore puts `stream_results` on the
+  *connection* and pulls batches with `fetchmany`, folding each batch
+  straight into an int64 array via `np.fromiter` — one batch of driver
+  tuples alive at a time, plus the array's own 8 B/id and a transient
+  doubling at the final `concatenate`. The named cursor is faster still but
+  is psycopg2-only, and the same function reads the (possibly Oracle) source
+  side, where `stream_results` maps onto the driver's arraysize.
+  `MAX_AUDIT_IDS` (2M/side, ~190 MB across both) is set from that measured
+  46 B, not from the nominal 8. A Python `set` of the same ids measures
+  73 B/id on its own, which is why this path uses arrays — while the ETL's
+  overlap filter keeps its set, because there the access pattern is repeated
+  per-chunk membership tests and a hash table earns its overhead.
 
 - **`core/audit.py` counts the two sides differently on purpose.** Any
   *bounded* overlap can be exceeded, so the Audit tab compares source and
@@ -844,8 +885,9 @@ any of the systems it covers.
 | `core/schema.py` | `create_fact`, `create_indices`, `drop_indices`, `import_dimensions`, `read_dimensions`, `ensure_starcubes_meta(engine, force=)`. Partition lifecycle: `list_fact_partitions`, `create_future_partitions` (append-only, manual), `ensure_partitions_for` (gap-filling, called every `import_fact` run), `vacuum_analyze_fact`. |
 | `core/etl.py` | `import_fact` — the three-stage pipeline; calls `ensure_partitions_for` before starting workers. `_resume_state` returns `(last_end_time, extract_from, existing_pks)`; `_overlap_pks` loads the PK set for the late-arrival overlap. `backfill=True` re-loads a closed window without moving the HWM. `_load_auto_dim_maps` + `_resolve_auto_dim_chunk` for parent-process auto-dim discovery. `EtlAborted` for user-initiated kills; `EtlStageFailed` (+ `_put_with_abort`/`_join_with_abort`/`_raise_if_failed`) for a dead transform/load worker. Throughput metrics: `_snapshot_stats`/`_build_stats_payload` read the shared `mp.Array` into the `stats` jsonb shape (now including live `queues`/`workers`); `_rate`/`_fmt_rate` compute/format rows-per-second; `_bound_log_size` truncates the process's own log file in place. Uses `logging.getLogger(__name__)`, never `print()`. Maintenance: `truncate_last_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`. |
 | `core/query.py` | `timeseries_multibar` — multibar JSON producer. Bars ordered ascending by dim count. `split_grouped_col`/`resolve_group_set`/`slugify_group_set`/`grouped_token`/`grouped_label` own the `<col>:grouped:<slug>` token; `build_group_by_indices` resolves group names for grouped drill-down. |
-| `core/audit.py` | `audit_window` — per-bucket source-vs-fact row-count reconciliation behind the Audit tab; `gap_span` folds the gap buckets into one backfill window. No Django imports. |
+| `core/audit.py` | `audit_window` — per-bucket source-vs-fact row-count reconciliation; `audit_ids` — PK set difference naming the exact missing/surplus/duplicate rows; `_fetch_id_array` — the streaming id reader (see the memory note); `gap_span` folds the gap buckets into one backfill window. No Django imports. |
 | `core/cache.py` | Server-side `plot_json` cache helpers. `make_cache_key`, `is_cacheable`, `get_cached_plot`, `put_cached_plot`, `bump_cache_epoch`, `clear_cache`. No Django imports. |
+| `core/utils.py` | `_parse_dt`, `_pid_alive`, `tail_file`, `format_pks` (applies `datasource.pk_format` to a list of raw PKs — shared by the chart drill-down and the Audit tab's id lists). No Django imports. |
 | `core/adhoc.py` | Query console backend: `validate_sql` (single-statement SELECT/WITH lexer), `run_query` (read-only txn + server-side cursor + `application_name` tag), `cancel_query` (`pg_stat_activity` → `pg_cancel_backend`), `history_*`. No Django imports. |
 | `migrations/starcubes_meta.sql` | Consolidated idempotent meta-schema (0001–0019 combined). Used by `core/schema.py`. Per-step migrations live in `migrations/000N_*.sql`. |
 | `starcubes/settings.py` | Reads `STARCUBES_POSTGRES_DSN` from env. Custom DB backend, `CsrfViewMiddleware` in MIDDLEWARE. |

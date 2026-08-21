@@ -608,6 +608,14 @@ tr.editing .row-edit { display: flex; }
 .cmd-result.ok { color: var(--success); }
 .cmd-result.err { color: var(--danger); }
 
+.audit-id-list {
+  max-height: 260px; overflow: auto; margin: 0;
+  font-family: var(--mono, monospace); font-size: 12px; line-height: 1.6;
+  padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--code-bg, var(--bg));
+  white-space: pre-wrap; word-break: break-all;
+}
+
 /* Audit tab: a bucket whose source row count exceeds the fact row count */
 .audit-gap td { color: var(--danger); }
 .audit-gap td:first-child { border-left: 3px solid var(--danger); }

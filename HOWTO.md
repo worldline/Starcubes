@@ -532,6 +532,28 @@ the fact table, bucket by bucket, over a window you choose:
    present, matched by primary key. It runs as a normal background ETL
    subprocess, so progress shows up in the ETL Log and ETL History tabs.
 
+**Compare IDs** is the precise follow-up, and worth reaching for even when
+the counts look clean. Counting cannot tell a healthy bucket from one that
+lost 100 rows and had 100 deleted upstream — the two cancel — and it cannot
+see duplicate primary keys in the fact table at all. Comparing IDs pulls
+both primary-key sets and reports three separate things:
+
+- **Missing** — in the source, never loaded. Backfill inserts exactly these.
+- **Surplus** — in the fact table, no longer in the source for this window.
+  Usually deleted upstream after being loaded. Backfill will not remove
+  them; that is a `Delete From` decision.
+- **Duplicate** — the same primary key stored twice in fact. There is no
+  unique constraint preventing it.
+
+If `PK Format` is set on the datasource, the listed IDs are rendered with
+it, so a format that produces a link takes you straight to the transaction
+in the source system.
+
+Comparing IDs holds both key sets in memory (roughly 46 bytes per ID per
+side, measured) and is capped at 2 million rows per side. Above that it
+refuses rather than exhausting the web worker — narrow the window, or raise
+`STARCUBES_MAX_AUDIT_IDS`.
+
 A backfill never moves the high watermark, so it is safe to run against old
 windows while incremental loading continues. It does leave the dimension
 `count` columns stale (they only affect the chart's stacking order) — run

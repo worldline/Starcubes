@@ -30,7 +30,7 @@ from core.etl import (truncate_last_partition, truncate_partition,
                       clear_etl_history, set_highwatermark)
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user
-from core.audit import audit_window
+from core.audit import audit_ids, audit_window
 from core.query import grouped_label, grouped_token, slugify_group_set
 from core.source import Source, _get_cached_engine
 from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
@@ -1216,6 +1216,27 @@ def etl_audit(request, pk: int):
                              "total_missing": total_missing,
                              "total_surplus": total_surplus,
                              "unreadable_buckets": unreadable})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+def etl_audit_ids(request, pk: int):
+    """Name the exact rows that differ between source and fact in a window.
+
+    The count-based audit is the cheap sweep; this is the precise follow-up.
+    It also sees what counting cannot: a window that lost N rows and had N
+    deleted upstream nets to zero and reads as clean, and duplicate PKs in
+    fact are invisible to counting entirely.
+    """
+    try:
+        from_time = _parse_dt(request.POST["from_time"])
+        to_time = _parse_dt(request.POST["to_time"])
+        sample = int(request.POST.get("sample", 200))
+        source, _ = _load_source(pk)
+        result = audit_ids(source, source.dest_engine(),
+                           start=from_time, end=to_time, sample=sample)
+        return JsonResponse({"ok": True, **result})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
 
