@@ -51,7 +51,12 @@ structural changes.
   is worth keeping if a suite ever lands. It earns its keep: that run is what
   caught the source-session timezone skew, and what caught
   `audit_id_details` excluding the initial load's `first_end_time IS NULL`
-  run and so reporting every first-load row as unattributable.)
+  run and so reporting every first-load row as unattributable. It also
+  showed the opposite lesson — a fixture that forces `timezone=UTC` on both
+  the source and the warehouse connection cannot see clock-mixing bugs at
+  all, and duly hid one in `needed_lag_s` until it was read by hand. Any
+  successor suite wants at least one source connection deliberately *not* on
+  UTC.)
 - **Late arrivals beyond the overlap are only found on demand.** The Audit
   tab has to be run by a human over a chosen window; nothing schedules it,
   and nothing alerts on a gap. A periodic audit of the trailing N hours
@@ -455,18 +460,48 @@ any of the systems it covers.
   source watermark (one `WHERE <pk_expr> IN (…)` per 1000 ids, with the time
   window kept in the predicate because `<pk_expr>` is an expression and only
   the watermark column is indexed) and pairs it with the `etl_run` whose
-  window covered that watermark. `started_at − watermark` is then how long
-  after a row's watermark the ETL read its window and still did not see it —
-  the measurement `wallclock_lag_s` is set from instead of guessed. Two
-  deliberate choices: `started_at`, not `finished_at`, because the extract
-  began then and that is the bound guaranteed to hold; and the *last*
-  covering run, not the first, because every covering run missed the row and
-  the latest gives the tightest bound (with `late_arrival_overlap_s = 0` the
-  windows do not overlap and there is only one). The number is a **lower
-  bound**, not an answer — the row may have stayed invisible far longer —
-  and rows that fall in *no* run window are counted separately and kept out
-  of the percentiles, since those are a hole in the run history, a different
-  failure entirely.
+  window covered that watermark:
+
+      needed_lag_s = etl_run.last_end_time − the transaction's watermark value
+
+  `last_end_time` is exactly the upper bound of the WHERE that run read the
+  source with (`import_fact` stores the same `end_time` it put in the
+  clause; `first_end_time` is the lower bound), so the difference reads:
+  *the window's upper edge had already moved this far past the transaction,
+  and it still was not visible.* That is the measurement `watermark_lag_s`
+  is sized from instead of guessed.
+  **The single most important property is that both operands come from the
+  source's own watermark column.** The obvious-looking `started_at −
+  watermark` — which this first shipped as — subtracts two different clocks:
+  the watermark is source wall-clock time that `_as_utc` only *labels* UTC,
+  while `etl_run.started_at` is `datetime.now(timezone.utc)` on the
+  starcubes host. Against a source writing in `Europe/Berlin` it is off by
+  the full UTC offset and goes negative. Worse, the end-to-end test *hid*
+  it by forcing `timezone=UTC` on both connections — a test that normalises
+  away the very axis it is checking. `started_at` is still returned and
+  shown, muted and labelled as the local clock, purely as "when did this
+  actually run"; it must never re-enter the subtraction.
+  Three consequences worth keeping straight:
+    - **It cannot be negative**, since a run is only attributed when
+      `txn_wm < last_end_time`. The clock-mixing version would have needed a
+      sanity check; this one is correct by construction.
+    - **It sizes an *increase*.** With lag `L_old` in force,
+      `last_end_time = M − L_old`, so catching the row needs
+      `L_new ≥ M − w = (last_end_time − w) + L_old`. In the normal case —
+      measuring *before* setting a lag, `L_old = 0` — the difference is the
+      target outright, which is why the GUI says "raise by", not "set to".
+    - **The *last* covering run is used, not the first.** Every covering run
+      missed the row, and the latest has the largest `last_end_time`, hence
+      the tightest bound. With `late_arrival_overlap_s = 0` the windows do
+      not overlap and there is only one anyway.
+  It stays a **lower bound** — the row may have remained invisible far
+  longer — and rows that fall in *no* run window are counted separately and
+  kept out of the percentiles, since those are a hole in the run history, a
+  different failure entirely. When the wall-clock term set the bound, the
+  figure is still valid (it is what the WHERE compared against either way),
+  it just no longer maps onto one specific knob; recording `max_wm` per run
+  would disambiguate that at the price of a column, without making the
+  figure itself any sounder.
 
 - **Reading a column of ids costs ~46 B/id, not the 8 B an int64 suggests —
   and `Result.partitions()` does not stream.** Measured over 1M int64 PKs,
@@ -999,7 +1034,7 @@ any of the systems it covers.
 | `core/schema.py` | `create_fact`, `create_indices`, `drop_indices`, `import_dimensions`, `read_dimensions`, `ensure_starcubes_meta(engine, force=)`. Partition lifecycle: `list_fact_partitions`, `create_future_partitions` (append-only, manual), `ensure_partitions_for` (gap-filling, called every `import_fact` run), `vacuum_analyze_fact`. |
 | `core/etl.py` | `import_fact` — the three-stage pipeline; calls `ensure_partitions_for` before starting workers. `_resume_state` returns `(last_end_time, extract_from, existing_pks)`; `_overlap_pks` loads the PK set for the late-arrival overlap. The window's upper bound is `max(max_wm − watermark_lag_s, src_now − wallclock_lag_s)`, clamped up to the HWM so it can never rewind. `backfill=True` re-loads a closed window without moving the HWM. `_load_auto_dim_maps` + `_resolve_auto_dim_chunk` for parent-process auto-dim discovery. `EtlAborted` for user-initiated kills; `EtlStageFailed` (+ `_put_with_abort`/`_join_with_abort`/`_raise_if_failed`) for a dead transform/load worker. Throughput metrics: `_snapshot_stats`/`_build_stats_payload` read the shared `mp.Array` into the `stats` jsonb shape (now including live `queues`/`workers`); `_rate`/`_fmt_rate` compute/format rows-per-second; `_bound_log_size` truncates the process's own log file in place. Uses `logging.getLogger(__name__)`, never `print()`. Maintenance: `truncate_last_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`. |
 | `core/query.py` | `timeseries_multibar` — multibar JSON producer. Bars ordered ascending by dim count. `split_grouped_col`/`resolve_group_set`/`slugify_group_set`/`grouped_token`/`grouped_label` own the `<col>:grouped:<slug>` token; `build_group_by_indices` resolves group names for grouped drill-down. |
-| `core/audit.py` | `audit_window` — per-bucket source-vs-fact row-count reconciliation; `audit_ids` — PK set difference naming the exact missing/surplus/duplicate rows; `audit_id_details` — targeted second pass giving each named id its source watermark, the `etl_run` that should have caught it, and the resulting lower bound on the needed lag; `_fetch_id_array` — the streaming id reader (see the memory note); `gap_span` folds the gap buckets into one backfill window. No Django imports. |
+| `core/audit.py` | `audit_window` — per-bucket source-vs-fact row-count reconciliation; `audit_ids` — PK set difference naming the exact missing/surplus/duplicate rows; `audit_id_details` — targeted second pass giving each named id its own watermark-column value, the `etl_run` that should have caught it, and `last_end_time − that value` as the lower bound on the needed lag (both operands source-clock, so no skew); `_fetch_id_array` — the streaming id reader (see the memory note); `gap_span` folds the gap buckets into one backfill window. No Django imports. |
 | `core/cache.py` | Server-side `plot_json` cache helpers. `make_cache_key`, `is_cacheable`, `get_cached_plot`, `put_cached_plot`, `bump_cache_epoch`, `clear_cache`. No Django imports. |
 | `core/utils.py` | `_parse_dt`, `_pid_alive`, `tail_file`, `format_pks` (applies `datasource.pk_format` to a list of raw PKs — shared by the chart drill-down and the Audit tab's id lists). No Django imports. |
 | `core/adhoc.py` | Query console backend: `validate_sql` (single-statement SELECT/WITH lexer), `run_query` (read-only txn + server-side cursor + `application_name` tag), `cancel_query` (`pg_stat_activity` → `pg_cancel_backend`), `history_*`. No Django imports. |

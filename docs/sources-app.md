@@ -95,13 +95,24 @@ crashed/orphaned sessions are revived.
   `audit-ids/` already named: one `WHERE <pk_expr> IN (…)` per 1000 ids
   against the source — chunked for Oracle's IN-list limit, with the time
   window kept in the predicate so the watermark index carries it — plus one
-  `etl_run` lookup. Returns `{rows: [{pk, pk_display, watermark, run_id,
-  run_started_at, needed_lag_s, covering_runs}], resolved, unresolved,
-  not_in_source, needed_lag: {median, p99, max, n}}`. `needed_lag_s` is
-  `run.started_at − watermark`: how long after the row's watermark the ETL
-  read its window and still did not see it. It is a *lower* bound and is the
-  number `wallclock_lag_s` gets set from. Rows in no run window at all land
-  in `unresolved` and stay out of the percentiles.
+  `etl_run` lookup. Returns `{rows: [{pk, pk_display, txn_wm, run_id,
+  run_watermark, run_started_at, needed_lag_s, covering_runs}],
+  watermark_column, resolved, unresolved, not_in_source,
+  needed_lag: {median, p99, max, n}}`.
+  `txn_wm` is the transaction's own value in `watermark_column`;
+  `run_watermark` is `etl_run.last_end_time`, the upper bound of the WHERE
+  that run read the source with. `needed_lag_s` is the difference between
+  them: how far the window's upper edge had already moved past the
+  transaction while it still was not visible.
+  **Both operands come from the source's watermark column**, so the figure
+  carries no clock skew. `run_started_at` is returned for diagnostics only —
+  it is the starcubes host's clock and must not be subtracted from a source
+  timestamp. `watermark_column` is echoed back so the GUI can head the
+  column with the name the source really uses.
+  The number cannot be negative (a run is only attributed when
+  `txn_wm < last_end_time`), is a *lower* bound, and sizes an **increase**
+  of `watermark_lag_s` rather than an absolute target. Rows in no run window
+  land in `unresolved` and stay out of the percentiles.
 - `POST .../etl/backfill/` — `from_time`, `to_time`. Spawns
   `manage.py etl_run --backfill --start … --end …` through the same
   `spawn_etl_subprocess` path as a normal run, so the per-run log file, ETL
@@ -216,12 +227,20 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   and only *missing* offers a Backfill — a backfill inserts, it never
   deletes.
   The missing list additionally carries a **Details** button
-  (`auditIdDetails`), which is how `wallclock_lag_s` is measured rather than
-  guessed: it renders each missing row's source watermark, the `etl_run`
-  that should have caught it and `started_at − watermark`, plus a p99 across
-  the sample. The wording says "at least" throughout on purpose — all that
-  is known is the row was invisible when its window was read, not how much
-  longer it stayed invisible.
+  (`auditIdDetails`), which is how `watermark_lag_s` is measured rather than
+  guessed. Six columns, each headed by whose value it is — a transaction has
+  no watermark, it has a value in the watermark column; the *run* is what
+  has a watermark, and naming both the same made the first version of this
+  table unreadable:
+  `PK | Txn <watermark_column> | Run watermark | Run | Run started (local) |
+  Watermark − <watermark_column>`.
+  Columns 2, 3 and 6 are source-clock; column 5 is the starcubes host's
+  clock, muted and carrying a `title=` saying so, because it deliberately
+  plays no part in the difference. "Run watermark" carries a `title=` noting
+  it is the WHERE's upper bound, equal to `max(<watermark_column>)` at that
+  moment when no lag is configured.
+  The summary says **raise by**, not set to: with a lag already in force the
+  figure is the additional amount, and it is a lower bound either way.
 - **ETL Log tab** (`tab-etl-log`): lazy-loaded on first activation via
   `etlLogActivate()` — populates the `<select>` from `etl/logs/`, then tails
   the selected file from `etl/log/`. Polls every 2s only while the tab is

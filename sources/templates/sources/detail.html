@@ -2848,22 +2848,24 @@ function auditIdDetails(btn) {
     var rows = d.rows.map(function(r) {
       return '<tr>'
         + '<td class="mono">' + r.pk_display + '</td>'
-        + '<td>' + (r.watermark ? fmtLocal(r.watermark) : '<span class="text-muted">not in source</span>') + '</td>'
-        + '<td>' + (r.run_id ? '#' + r.run_id : '<span class="text-muted">no covering run</span>') + '</td>'
-        + '<td>' + (r.run_started_at ? fmtLocal(r.run_started_at) : '—') + '</td>'
+        + '<td>' + (r.txn_wm ? fmtLocal(r.txn_wm) : '<span class="text-muted">not in source</span>') + '</td>'
+        + '<td>' + (r.run_watermark ? fmtLocal(r.run_watermark) : '<span class="text-muted">no covering run</span>') + '</td>'
+        + '<td>' + (r.run_id ? '#' + r.run_id : '—') + '</td>'
+        + '<td class="text-muted">' + (r.run_started_at ? fmtLocal(r.run_started_at) : '—') + '</td>'
         + '<td>' + fmtLagSecs(r.needed_lag_s) + '</td>'
         + '</tr>';
     }).join('');
     var summary = '';
     if (d.needed_lag) {
-      summary += '<p style="margin:8px 0 0"><strong>At least '
-        + fmtLagSecs(d.needed_lag.p99) + '</strong> would have been needed for '
-        + '99% of these rows (median ' + fmtLagSecs(d.needed_lag.median)
+      summary += '<p style="margin:8px 0 0">The window would have had to reach '
+        + '<strong>' + fmtLagSecs(d.needed_lag.p99) + '</strong> further back '
+        + 'to catch 99% of these rows (median ' + fmtLagSecs(d.needed_lag.median)
         + ', worst ' + fmtLagSecs(d.needed_lag.max) + ', n=' + d.needed_lag.n
-        + '). Set <code>wallclock_lag_s</code> to at least that.</p>'
+        + '). Raise <code>watermark_lag_s</code> by at least that much.</p>'
         + '<p class="text-muted" style="font-size:12px;margin:4px 0 0">'
-        + 'A lower bound, not the answer: all that is known is the row was '
-        + 'invisible when its window was read, not how much longer it stayed '
+        + 'By, not to: if a lag is already configured, this is the additional '
+        + 'amount. And it is a lower bound — all that is known is the row was '
+        + 'still missing at that run, not how much longer it stayed '
         + 'invisible.</p>';
     }
     if (d.unresolved) {
@@ -2877,11 +2879,24 @@ function auditIdDetails(btn) {
         + d.not_in_source + ' row(s) are no longer in the source — deleted '
         + 'upstream between the ID comparison and this lookup.</p>';
     }
+    // Every header says whose value it is. A transaction does not have a
+    // watermark -- it has a value in the watermark column; the run is what
+    // has a watermark. Naming both "watermark" is what made the first
+    // version of this table unreadable.
+    var wmCol = esc(d.watermark_column || 'watermark');
     box.innerHTML = '<div style="margin-top:12px">'
       + '<label class="form-label">Missing rows in detail</label>'
       + '<table class="data-table"><thead><tr>'
-      + '<th>PK</th><th>Watermark (source)</th><th>Run</th>'
-      + '<th>Run started</th><th>At least needed</th>'
+      + '<th>PK</th>'
+      + '<th>Txn ' + wmCol + '</th>'
+      + '<th title="Upper bound of the WHERE this run read the source with. '
+      + 'With no lag configured this equals max(' + wmCol + ') at that moment.">'
+      + 'Run watermark</th>'
+      + '<th>Run</th>'
+      + '<th title="Clock of the starcubes host, not the source. May be offset '
+      + 'against the other timestamps — deliberately not used in the difference.">'
+      + 'Run started (local)</th>'
+      + '<th>Watermark &minus; ' + wmCol + '</th>'
       + '</tr></thead><tbody>' + rows + '</tbody></table>'
       + summary + '</div>';
   });

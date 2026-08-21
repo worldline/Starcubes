@@ -439,24 +439,56 @@ def audit_id_details(source: Source, meta_engine, *, ids: list,
     and has to stay that cheap to be usable over a wide window. This runs
     only on the handful of ids that came back from it.
 
-    What it answers that the id list alone cannot: *when* should the row
-    have been loaded. `audit_ids` says a row is missing; pairing its source
-    watermark with the `etl_run` whose window covered that watermark gives
-    ``started_at - watermark`` -- how long after the row's watermark the ETL
-    read that window and still did not see it. That is the measurement
-    ``wallclock_lag_s`` is chosen from, instead of guessed.
+    What it answers that the id list alone cannot: *how much further back*
+    the window would have had to reach. `audit_ids` says a row is missing;
+    pairing the row's own watermark-column value with the `etl_run` whose
+    window covered it gives
 
-    Two things the returned number is not:
+        needed_lag_s = etl_run.last_end_time - txn watermark value
 
-      * It is a **lower bound**, not the answer. All that is known is that
-        the row was invisible when its window was read; it may have stayed
-        invisible far longer. ``started_at`` is used rather than
-        ``finished_at`` for exactly that reason -- the extract began then,
-        so it is the bound guaranteed to hold, where ``finished_at`` would
-        overstate it on any long-running run.
-      * It is meaningless for a row **no run covered**. That is a hole in
-        the run history or a watermark jump -- a different failure -- so
-        those rows are counted separately and kept out of the percentiles.
+    ``last_end_time`` is exactly the upper bound of the WHERE that run read
+    the source with (`import_fact` builds ``WHERE wm >= ... AND wm <
+    end_time`` and stores that same ``end_time`` here; ``first_end_time`` is
+    the lower bound). So the difference reads: *the window's upper edge had
+    already moved this far past the transaction, and it still was not
+    visible.*
+
+    **Both operands come from the source's own watermark column, and that is
+    the whole point.** The obvious-looking alternative, ``started_at -
+    watermark``, subtracts two different clocks: the watermark is source
+    wall-clock time that `_as_utc` only *labels* as UTC, while
+    ``etl_run.started_at`` is ``datetime.now(timezone.utc)`` on the starcubes
+    host (`core/etl.py`). With a source writing in Europe/Berlin that is off
+    by the full UTC offset and goes negative. ``started_at`` is still
+    returned, for diagnostics ("when did this actually run"), but it must
+    never enter the subtraction.
+
+    Three properties worth knowing:
+
+      * **It cannot be negative.** `covering()` only attributes a run when
+        ``w < last_end_time``, so the difference is positive by
+        construction. The clock-mixing version needed a sanity check here;
+        this one does not.
+      * **It is a lower bound**, not the answer. All that is known is that
+        the row was missing at *that* run; when it actually became visible
+        is unknowable from here.
+      * **It sizes an increase of** ``watermark_lag_s``, not an absolute
+        target. With lag ``L_old`` in force at the time,
+        ``last_end_time = M - L_old`` (M = max(watermark) then), so catching
+        the row needs ``L_new >= M - w = (last_end_time - w) + L_old``. In
+        the usual case -- measuring *before* setting a lag, ``L_old = 0`` --
+        the difference is the target outright, which is why the GUI says
+        "raise by", not "set to".
+
+    A row **no run covered** is excluded: that is a hole in the run history
+    or a watermark jump, a different failure, so those are counted
+    separately and kept out of the percentiles.
+
+    When the wall-clock term set the bound (``last_end_time = src_now -
+    wallclock_lag_s``) the number is still a valid lower bound -- it is what
+    the WHERE compared against either way -- it just no longer maps onto one
+    specific knob. Recording ``max_wm`` per run would disambiguate that, at
+    the price of a column, without making the figure itself any sounder.
 
     No ``dest_engine`` parameter: unlike `audit_window` and `audit_ids`,
     this reads only the source and `starcubes_meta`. Fact was already
@@ -552,9 +584,13 @@ def audit_id_details(source: Source, meta_engine, *, ids: list,
     out, lags, unresolved, not_in_source = [], [], 0, 0
     for raw, disp in zip(ids, display):
         w = wm_by_pk.get(raw)
+        # `txn_wm` is the row's own watermark-column value (end_time for the
+        # example source). `run_watermark` is the run's -- the upper bound of
+        # the WHERE it read the source with. Deliberately not both called
+        # "watermark": a transaction does not have one, a run does.
         row = {"pk": raw, "pk_display": disp,
-               "watermark": w.isoformat() if w else None,
-               "run_id": None, "run_started_at": None,
+               "txn_wm": w.isoformat() if w else None,
+               "run_id": None, "run_watermark": None, "run_started_at": None,
                "needed_lag_s": None, "covering_runs": 0}
         if w is None:
             not_in_source += 1
@@ -566,8 +602,11 @@ def audit_id_details(source: Source, meta_engine, *, ids: list,
             unresolved += 1
         else:
             row["run_id"] = run["id"]
+            row["run_watermark"] = run["last_end_time"].isoformat()
+            # started_at is carried for diagnostics only and must stay out of
+            # this subtraction -- see the docstring's two-clocks note.
             row["run_started_at"] = run["started_at"].isoformat()
-            row["needed_lag_s"] = (run["started_at"] - w).total_seconds()
+            row["needed_lag_s"] = (run["last_end_time"] - w).total_seconds()
             lags.append(row["needed_lag_s"])
         out.append(row)
 
@@ -579,6 +618,9 @@ def audit_id_details(source: Source, meta_engine, *, ids: list,
                   "max": float(arr.max()),
                   "n": int(arr.size)}
     return {"rows": out,
+            # So the GUI can head the column with the name the source
+            # actually uses ("end_time" here) instead of a generic word.
+            "watermark_column": wm,
             "resolved": len(lags),
             "unresolved": unresolved,
             "not_in_source": not_in_source,
