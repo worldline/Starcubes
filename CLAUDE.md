@@ -849,6 +849,21 @@ any of the systems it covers.
   `npm update @hgruber/timeseries.js` (or edit the version in `package.json`)
   and rebuild.
 
+- **`requirements.txt` is version-pinned (`==`), not left bare.** It
+  originally listed bare package names, so every image build re-resolved
+  latest-on-the-day — `docker/build.sh` → `Dockerfile`'s builder stage runs
+  `pip install --no-cache-dir -r requirements.txt` with no lockfile. That
+  silently pulled in Django 6.0 (dropped support for PostgreSQL < 15) against
+  a deployment still on PostgreSQL 14.10, and broke `manage.py migrate` at
+  container start with `NotSupportedError: PostgreSQL 15 or later is
+  required` — the same class of surprise the pinned `@hgruber/timeseries.js`
+  dependency above already avoids for the JS side. `django==5.2.17` is
+  pinned specifically to the 5.2 LTS line (PostgreSQL 13+) rather than to
+  whatever 6.x is newest at pin time; the other seven pins just freeze
+  whatever resolved cleanly against it. Bumping Django past 5.2 requires
+  confirming the deployment's PostgreSQL version first, not just checking
+  the Django changelog.
+
 - **The starcubes logo/icon ships as light/dark asset pairs, not a single
   `currentColor` SVG.** `viz/static/viz/starcubes_icon.svg` /
   `starcubes_lockup.svg` (icon-only vs. icon+wordmark) are duotone with
