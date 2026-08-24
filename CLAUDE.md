@@ -769,6 +769,66 @@ any of the systems it covers.
   must be set per deployment (e.g. `http://127.0.0.1:8080` for local docker
   access, plus any other hostname/IP used to reach it).
 
+- **Keycloak/OIDC SSO configuration lives in `STARCUBES_OIDC_*` env vars,
+  not a `starcubes_meta` table, even though every other piece of
+  GUI-editable config in the app is DB-backed.** Two reasons, not one:
+  first, there is no existing global/singleton config table anywhere in
+  `starcubes_meta.sql` — every table is either per-datasource (FK'd to
+  `datasource_id`) or per-user history (`query_history`), so a DB-backed
+  version would introduce a wholly new kind of table for one feature.
+  Second, and more binding: `mozilla-django-oidc` reads
+  `OIDC_RP_CLIENT_ID`/`OIDC_OP_*_ENDPOINT`/etc. from `django.conf.settings`
+  once at process start, not per-request from a DB — making it
+  DB-configurable would mean abandoning the library for a hand-rolled OIDC
+  client, which is exactly the kind of "engine must not import Django, and
+  don't hand-roll what a library already does correctly" tradeoff this
+  file elsewhere argues against paying without a forcing reason. Presence
+  of all three required vars (`STARCUBES_OIDC_ISSUER`,
+  `STARCUBES_OIDC_CLIENT_ID`, `STARCUBES_OIDC_CLIENT_SECRET`) *is* the
+  on/off switch — no separate boolean — the same shape as
+  `STARCUBES_CSRF_TRUSTED_ORIGINS` above being empty meaning "not
+  configured". `starcubes/settings.py` derives all four Keycloak OP
+  endpoints (`.../protocol/openid-connect/{auth,token,userinfo,certs}`)
+  from the single `STARCUBES_OIDC_ISSUER` realm URL by string
+  concatenation — no discovery HTTP call at Django boot, no dependency on
+  Keycloak being reachable to start the app — mirroring
+  `STARCUBES_POSTGRES_DSN`'s "one URL implies everything" shape rather
+  than exposing four endpoint settings the operator could get out of sync.
+  `OIDC_RP_SIGN_ALGO` is set explicitly to `RS256`: the library defaults
+  to `HS256`, and Keycloak signs with `RS256` by default, so leaving it
+  unset fails every login's token verification. `starcubes/urls.py` mounts
+  `mozilla_django_oidc.urls` under `/oidc/` only when configured, so an
+  unconfigured deployment 404s there rather than exposing a route that
+  500s on missing settings; `RequireLoginMiddleware`'s
+  `_PROTECTED_PREFIXES` (`/sources/`, `/admin/`) don't cover `/oidc/`, so
+  no middleware change was needed. `starcubes/oidc.py:KeycloakOIDCBackend`
+  overrides `get_username()` to key the Django username on Keycloak's
+  `preferred_username` claim (needs `OIDC_RP_SCOPES = "openid email
+  profile"` — the library's default scope list omits `profile`, and
+  without it Keycloak may not send the claim at all) instead of the
+  library's default email-hash username, and force-clears
+  `is_superuser`/`is_staff` in `create_user()` so an auto-provisioned SSO
+  account can never come back privileged — `sources/views.py:2246`'s
+  `settings_page` is still the only place `is_superuser` is checked
+  anywhere in the app, and it stays a manually-granted local flag for
+  both password and SSO accounts alike. `filter_users_by_claims()` is
+  deliberately left at the library default (matches existing users by
+  email, case-insensitive): a local password account and a Keycloak
+  identity sharing an email merge into one account on first SSO login,
+  which is treated as intentional rather than worked around — the one
+  sharp edge is a local *username* colliding with a `preferred_username`
+  claim whose email differs, which hits Django's unique-username
+  constraint on that identity's first SSO login instead of merging (a
+  500, not a silent failure). Deliberately **not** set anywhere is
+  `SECURE_PROXY_SSL_HEADER`: `mozilla_django_oidc.utils.absolutify()`
+  builds the OIDC `redirect_uri` from `request.is_secure()`, so behind a
+  TLS-terminating proxy Django needs to trust `X-Forwarded-Proto` or it
+  computes `http://...` and Keycloak rejects the redirect URI as a
+  mismatch — but that setting also flips CSRF cookie `Secure` flags
+  app-wide and would be wrong for a non-proxied (e.g. local) deployment,
+  so it's a documented manual step in `HOWTO.md` ("SSO login") rather than
+  inferred, same posture as `STARCUBES_CSRF_TRUSTED_ORIGINS` itself.
+
 - **Always build the container image via `docker/build.sh`, never
   `podman build`/`docker build` directly.** The wrapper exists for two
   reasons: (a) it defaults the container engine to `podman` (`CONTAINER_ENGINE`
@@ -1153,6 +1213,7 @@ any of the systems it covers.
 | `starcubes/settings.py` | Reads `STARCUBES_POSTGRES_DSN` from env. Custom DB backend, `CsrfViewMiddleware` in MIDDLEWARE. |
 | `starcubes/db_backends.py` | Custom PG backend — ensures `starcubes_meta` schema exists, sets search_path. |
 | `starcubes/middleware.py` | `RequireLoginMiddleware` — gates `/sources/` and `/admin/`. |
+| `starcubes/oidc.py` | `KeycloakOIDCBackend` — optional SSO auth backend, active only when `STARCUBES_OIDC_*` env vars are set. Maps username from `preferred_username`, force-clears `is_superuser`/`is_staff` on auto-created users. |
 | `viz/views.py` | Chart page, plot/drill/txn JSON endpoints (handle `:grouped`), source list + meta APIs. `plot_json` consults `core.cache` for cacheable `count(*)`. The four `query_*` console endpoints gate themselves with `_login_required_json` (403 JSON, not a 302) and answer user SQL errors with HTTP 200. |
 | `viz/templates/viz/chart.html` | Multi-source chart UI — see `docs/chart-app.md`. |
 | `sources/views.py` | Datasource CRUD + ETL JSON endpoints. Group dimensions live under `group-dims/` (list/detail/add/save/delete). Six historical-mutation endpoints call `bump_cache_epoch`. `etl_kill` sends SIGTERM/SIGKILL and cleans up a dead-PID or force-killed `etl_run` row (a live-SIGTERM'd parent writes its own row via `EtlAborted`). `etl_logs`/`etl_log_tail` serve the per-run log files under `etl/logs/`/`etl/log/`. See `docs/sources-app.md`. |
