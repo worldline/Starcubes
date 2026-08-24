@@ -2271,7 +2271,7 @@ function initTs() {
   ts.onFollow(() => followToggle.classList.add('active'));
   attachBarTooltip();
   ts.onClickDataCallback((plot, n, key, value) => openDrillModal(plot, n, key, value));
-  chartSqlBtn.disabled = !currentMeta;
+  if (chartSqlBtn) chartSqlBtn.disabled = !currentMeta;
 
   if (_initTmin != null && _initTmax != null) { ts.zoom(_initTmin, _initTmax); ts.stop(); }
 }
@@ -3540,7 +3540,7 @@ function buildOption(value, label) {
 async function loadMeta(name) {
   const meta = await fetchJson(`${META_URL}?name=${encodeURIComponent(name)}`);
   currentMeta = meta;
-  chartSqlBtn.disabled = !ts;
+  if (chartSqlBtn) chartSqlBtn.disabled = !ts;
   starcubesIntervalLadder = meta.interval_ladder || [1, 60, 3600, 86400];
   // applyBarTargetPref() (defined in the popover IIFE) honours localStorage;
   // empty there falls back to meta.bar_pixel_target. setFadeBand is called
