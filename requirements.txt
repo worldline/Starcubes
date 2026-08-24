@@ -5,3 +5,4 @@ tqdm
 django
 psycopg2-binary
 django-htmx
+mozilla-django-oidc

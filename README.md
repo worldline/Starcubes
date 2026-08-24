@@ -27,7 +27,7 @@ datasource lives as metadata rows in `starcubes_meta`, editable from a GUI).
 - `manage.py query_multibar` — produces a multibar JSON file for offline testing against `timeseries.js`.
 - `manage.py create_indices` / `manage.py drop_indices` — build or remove FK constraints + indices for a datasource.
 - `manage.py query_cache_clear` — flush the server-side plot cache (whole DB or single datasource).
-- `starcubes/` — Django project (`settings.py`, `urls.py`, `wsgi.py`, `middleware.py`). Login system with `RequireLoginMiddleware` (protects `/sources/` and `/admin/`). `SQLAlchemyPoolMiddleware` logs warnings for leaked connections.
+- `starcubes/` — Django project (`settings.py`, `urls.py`, `wsgi.py`, `middleware.py`). Login system with `RequireLoginMiddleware` (protects `/sources/` and `/admin/`), plus optional Keycloak/OIDC SSO (`mozilla-django-oidc`, `starcubes/oidc.py`) alongside password login — off by default, auto-provisions non-privileged users on first login when configured. `SQLAlchemyPoolMiddleware` logs warnings for leaked connections.
 - `sources/` — Django app: full datasource CRUD + ETL monitor GUI. Inline CRUD for fact columns, dimensions, indices. ETL Commands tab with Run ETL (window overrides), Forever ETL, Data Cleanup, Metadata, and Schema actions. Schema creation, sync (dry-run/confirm), and drop. Connection status badges. Seed-data preload on create.
 - `viz/` — Django app: filter UI + JSON endpoint + vendored `@hgruber/timeseries.js@~0.9.0` (npm dep). Chart has follow-mode toggle, seismograph auto-refresh, arrow-key viewport panning, per-user bar preferences, and login-gated Group Dims tab.
 - SQLAlchemy engine cache prevents connection leaks — one pool per (dsn, connect_args) pair.

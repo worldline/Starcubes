@@ -149,6 +149,74 @@ TIME_ZONE = "Europe/Berlin"
 USE_TZ = True
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
+# ── Keycloak / OIDC SSO (optional) ──────────────────────────────────────────
+# Off by default: ModelBackend (password login) always works regardless of
+# these vars. SSO becomes available only once STARCUBES_OIDC_ISSUER,
+# STARCUBES_OIDC_CLIENT_ID, and STARCUBES_OIDC_CLIENT_SECRET are ALL set —
+# that presence check IS the on/off switch, no separate boolean flag, same
+# pattern as CSRF_TRUSTED_ORIGINS being empty meaning "not configured".
+#
+# mozilla-django-oidc wants each OP endpoint (authorize/token/userinfo/jwks)
+# as a separate setting; it does not do dynamic discovery at request time.
+# Keycloak's endpoint layout is fixed relative to the realm issuer URL, so
+# rather than making the operator hand-configure four URLs that can drift
+# out of sync, derive them all from one STARCUBES_OIDC_ISSUER — same
+# "one value implies everything" shape as STARCUBES_POSTGRES_DSN. This is
+# string concatenation only, no network call, so Django boot never depends
+# on Keycloak being reachable.
+#
+# STARCUBES_OIDC_ISSUER is the realm URL with no trailing slash, e.g.
+# https://keycloak.example.com/realms/starcubes (Keycloak Admin Console >
+# Realm Settings > General > Endpoints, or {issuer}/.well-known/openid-configuration).
+#
+# The redirect URI registered on the Keycloak client MUST match what Django
+# computes at request time: https://<host>/oidc/callback/. If a TLS-terminating
+# proxy sits in front of this container, it must forward X-Forwarded-Proto and
+# SECURE_PROXY_SSL_HEADER must be set for that deployment, or Django will
+# compute http://... and Keycloak will reject the redirect_uri as a mismatch.
+# See HOWTO.md "SSO login" for the full checklist — this is deployment-specific
+# in the same way STARCUBES_CSRF_TRUSTED_ORIGINS is, so it isn't auto-derived.
+STARCUBES_OIDC_ISSUER = os.environ.get("STARCUBES_OIDC_ISSUER", "").rstrip("/")
+STARCUBES_OIDC_CLIENT_ID = os.environ.get("STARCUBES_OIDC_CLIENT_ID", "")
+STARCUBES_OIDC_CLIENT_SECRET = os.environ.get("STARCUBES_OIDC_CLIENT_SECRET", "")
+# White-labels the login-page button text without a template edit.
+STARCUBES_OIDC_DISPLAY_NAME = os.environ.get("STARCUBES_OIDC_DISPLAY_NAME", "Keycloak")
+
+OIDC_ENABLED = bool(
+    STARCUBES_OIDC_ISSUER and STARCUBES_OIDC_CLIENT_ID and STARCUBES_OIDC_CLIENT_SECRET
+)
+
+# Password login must keep working regardless of OIDC_ENABLED (both
+# coexist). ModelBackend here reproduces Django's implicit default (no
+# AUTHENTICATION_BACKENDS today == ["...ModelBackend"]) so the OFF path is
+# byte-for-byte the same auth behaviour as before this setting existed.
+AUTHENTICATION_BACKENDS = ["django.contrib.auth.backends.ModelBackend"]
+
+if OIDC_ENABLED:
+    AUTHENTICATION_BACKENDS = [
+        "starcubes.oidc.KeycloakOIDCBackend",
+        "django.contrib.auth.backends.ModelBackend",
+    ]
+
+    OIDC_RP_CLIENT_ID = STARCUBES_OIDC_CLIENT_ID
+    OIDC_RP_CLIENT_SECRET = STARCUBES_OIDC_CLIENT_SECRET
+    # Keycloak signs ID tokens with RS256 by default; mozilla-django-oidc
+    # defaults to HS256 — token verification fails unless set explicitly.
+    OIDC_RP_SIGN_ALGO = "RS256"
+    # "profile" is required for the preferred_username claim the custom
+    # backend keys the Django username on (see starcubes/oidc.py). Without
+    # it, Keycloak may omit preferred_username and login falls back to the
+    # library's email-hash username.
+    OIDC_RP_SCOPES = "openid email profile"
+
+    OIDC_OP_AUTHORIZATION_ENDPOINT = f"{STARCUBES_OIDC_ISSUER}/protocol/openid-connect/auth"
+    OIDC_OP_TOKEN_ENDPOINT         = f"{STARCUBES_OIDC_ISSUER}/protocol/openid-connect/token"
+    OIDC_OP_USER_ENDPOINT          = f"{STARCUBES_OIDC_ISSUER}/protocol/openid-connect/userinfo"
+    OIDC_OP_JWKS_ENDPOINT          = f"{STARCUBES_OIDC_ISSUER}/protocol/openid-connect/certs"
+    # RP-initiated logout at Keycloak's own /protocol/openid-connect/logout
+    # is intentionally not wired up — local Django session logout (existing
+    # LogoutView) is enough for now.
+
 LOGIN_URL = "/login/"
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/"

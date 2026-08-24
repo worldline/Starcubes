@@ -66,6 +66,13 @@ ENV STARCUBES_POSTGRES_DSN="" \
     STARCUBES_LOG_DIR="/app/logs" \
     STARCUBES_ETL_LOG_STDOUT="1"
 
+# Keycloak/OIDC SSO — off by default (empty ISSUER/CLIENT_ID/CLIENT_SECRET
+# means the login page shows password-only). See HOWTO.md "SSO login".
+ENV STARCUBES_OIDC_ISSUER="" \
+    STARCUBES_OIDC_CLIENT_ID="" \
+    STARCUBES_OIDC_CLIENT_SECRET="" \
+    STARCUBES_OIDC_DISPLAY_NAME="Keycloak"
+
 EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -7,6 +7,7 @@ and internals, see `README.md` and `CLAUDE.md`.
 
 - [Sources GUI](#sources-gui)
   - [Login](#login)
+  - [SSO login (optional, Keycloak/OIDC)](#sso-login-optional-keycloakoidc)
   - [Datasource list](#datasource-list)
   - [Creating a datasource](#creating-a-datasource)
   - [Tab: Basics](#tab-basics)
@@ -55,6 +56,55 @@ public, but per-user preferences (bar pixel target) require login. Create a
 superuser with `manage.py createsuperuser`, then log in at `/login/`.
 `RequireLoginMiddleware` enforces authentication; logging out redirects back
 to the login page.
+
+### SSO login (optional, Keycloak/OIDC)
+
+The login page can additionally offer "Sign in with Keycloak" next to the
+password form — it's a pure add-on: the password form always stays, and the
+button only appears once SSO is configured. There is no separate on/off
+flag; setting all three required environment variables *is* what enables it.
+
+Required env vars:
+
+- `STARCUBES_OIDC_ISSUER` — the realm URL, no trailing slash, e.g.
+  `https://keycloak.example.com/realms/starcubes`. Keycloak's endpoints
+  under a realm are derived from this automatically
+  (`{issuer}/protocol/openid-connect/{auth,token,userinfo,certs}`) — no
+  need to configure them individually.
+- `STARCUBES_OIDC_CLIENT_ID`, `STARCUBES_OIDC_CLIENT_SECRET` — from the
+  Keycloak client's Credentials tab.
+- `STARCUBES_OIDC_DISPLAY_NAME` (optional, default `Keycloak`) — the text
+  on the login button, e.g. `"Red Hat SSO"`.
+
+Keycloak-side client configuration:
+
+- **Confidential** client (not public — a client secret is required).
+- **Standard flow** (authorization code) enabled.
+- **Valid redirect URI**: exactly `https://<host>/oidc/callback/`, matching
+  the externally-reachable host of this deployment.
+
+**Behind a TLS-terminating proxy**, Django must be told to trust the
+forwarded scheme, or it will compute `redirect_uri=http://...` and Keycloak
+will reject it as a mismatch. This is a manual step, not set by default —
+the same posture as `STARCUBES_CSRF_TRUSTED_ORIGINS` (see the comment above
+it in `starcubes/settings.py`), which similarly can't be safely guessed for
+every deployment topology: the proxy must send `X-Forwarded-Proto: https`, and
+`SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")` must be
+added to `starcubes/settings.py` for that deployment.
+
+First successful SSO login auto-creates a Django user — no pre-created
+account needed — always as a plain non-superuser/non-staff account, exactly
+like a manually-created password account. A superuser still has to grant
+`is_superuser` by hand (via `/admin/` or `manage.py`) for `/sources/settings/`
+access; SSO grants no special privileges.
+
+The Django username is taken from Keycloak's `preferred_username` claim. If
+a local password account shares its email address with a Keycloak identity,
+the two merge into one account on first SSO login — this is intentional.
+If instead a local *username* collides with a Keycloak `preferred_username`
+but the emails differ, first SSO login for that identity fails with a
+uniqueness error; keep Keycloak usernames distinct from pre-existing local
+usernames, or align the account's email first.
 
 ### Datasource list
 

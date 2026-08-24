@@ -113,6 +113,15 @@ a:hover { text-decoration: underline; }
       <input type="password" name="password" id="id_password" autocomplete="current-password">
       <button type="submit" class="btn btn-primary" style="width:100%;justify-content:center;margin-top:4px">Sign in</button>
     </form>
+    {% if oidc_enabled %}
+    <div style="display:flex;align-items:center;gap:10px;margin:18px 0;color:var(--muted);font-size:12px">
+      <span style="flex:1;border-top:1px solid var(--border)"></span>OR<span style="flex:1;border-top:1px solid var(--border)"></span>
+    </div>
+    <a href="{% url 'oidc_authentication_init' %}{% if next %}?next={{ next|urlencode }}{% endif %}"
+       class="btn btn-primary" style="width:100%;justify-content:center">
+      Sign in with {{ oidc_display_name }}
+    </a>
+    {% endif %}
   </div>
 </div>
 <script>
