@@ -441,6 +441,36 @@ between passes.
 not the data horizon" for why that breaks `pushData`, the `covered` test, and
 the client's ability to tell "no rows here" from "not loaded yet".
 
+### Drawing the partial bin
+
+Everything above draws the *coverage* consequence of "the bin containing the HWM
+is only partially loaded". The drawing consequence is a separate, later step:
+that bin holds part of a bin's worth of data, so at full width the bar is both
+too short and too long at once — too short because the count is incomplete, too
+long because it runs past where the data ends, into the near future.
+
+`fetchRange` therefore also hands the horizon to the canvas, as
+`plot.data_until = hwmSeen`, set next to `plot.extensive` just before
+`starcubesPush`. The HWM read moved above the push for exactly this reason; the
+monotonic `hwmSeen` rather than the per-response `hwm`, so a briefly regressing
+watermark cannot make the bar flicker wider and back on every poll.
+
+The library (`@hgruber/timeseries.js` ≥ 0.9.1) does the rest: `setPartialBins`
+`'scale'` draws that one bar only as wide as its bin is filled and divides its
+height by the same fraction, so its **area** is still the count it carries and
+its height reads as the same density as its neighbours. That factor is also the
+rate-correct one — a count accumulated over `interval * f` seconds *is* a rate of
+`count / (interval * f)` — so it composes with `setRateUnit` without a special
+case. Only `extensive` blocks are scaled; an `avg`/`quantile` merely clips. A bin
+filled below 10 % is dropped entirely, since `1/f` explodes there.
+
+The toggle follows the `yAxisMode` pattern exactly: `partialBins` state,
+`localStorage['starcubes-partial-bins']`, a `?partialbins=0` override that is not
+written back, a checkbox in the gear popover. It defaults **on** here while the
+library defaults to `'full'` — the library must not change any existing
+consumer's picture, whereas in the chart this bar is on screen whenever anyone
+watches a live source.
+
 ## Resolution tiers and the cross-fade
 
 Blocks at different `interval`s live side by side in `ts.data[]` (`pushData`

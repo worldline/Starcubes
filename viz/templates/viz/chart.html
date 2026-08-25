@@ -898,6 +898,12 @@
     <option value="count">Count per bar</option>
   </select>
   <div style="font-size:11px;margin-top:5px;color:var(--muted)">A rate keeps bar heights stable across a resolution change; only the numbers switch.</div>
+  <div style="font-weight:600;margin:12px 0 8px">Latest bar</div>
+  <label style="display:flex;align-items:flex-start;gap:7px;cursor:pointer">
+    <input type="checkbox" id="prefs-partial" style="margin-top:2px;cursor:pointer">
+    <span style="font-size:13px">Trim to loaded data</span>
+  </label>
+  <div style="font-size:11px;margin-top:5px;color:var(--muted)">The newest bar covers a bin the ETL has only partly loaded. Trimmed, it ends where the data does and its height is scaled to match, instead of running into the future at the wrong height.</div>
   <div style="font-weight:600;margin:12px 0 8px">Bar pixel target</div>
   <div style="display:flex;align-items:center;gap:8px">
     <input type="number" id="prefs-bar-target" min="1" max="100" step="0.5" style="width:70px;padding:4px 6px;border:1px solid var(--input-border);border-radius:3px;background:var(--input-bg);color:var(--fg);font-size:13px">
@@ -1671,6 +1677,37 @@ function setYAxisMode(mode) {
     history.replaceState(null, '', '?' + buildHistoryParams().toString());
 }
 
+// ── partial bins ────────────────────────────────────────────────────────────
+// The bin holding the ETL high-water mark is only partly loaded, so drawn at
+// full width it is both too short and too long: it holds a fraction of a bin's
+// worth of data, and it reaches past where the data ends into a stretch that
+// holds none. On, the canvas draws that bar only as wide as the bin is filled
+// and scales its height to match, so its area is still the count it carries and
+// its height reads as the same density as the bars beside it.
+//
+// Default on: this bar is in view whenever anyone watches a live chart, which is
+// most of the time. The library defaults the other way, since there it must not
+// change any existing consumer's picture.
+let partialBins = true;
+
+function loadPartialBins() {
+  let stored = null;
+  try { stored = localStorage.getItem('starcubes-partial-bins'); } catch(e) { /* private mode */ }
+  const v = new URLSearchParams(location.search).get('partialbins') ?? stored;
+  partialBins = v === null ? true : v !== '0';
+}
+
+function setPartialBins(on) {
+  on = !!on;
+  if (on === partialBins) return;
+  partialBins = on;
+  try { localStorage.setItem('starcubes-partial-bins', on ? '1' : '0'); } catch(e) { /* private mode */ }
+  if (ts && ts.setPartialBins) ts.setPartialBins(on ? 'scale' : 'full');
+  if (starcubesRedraw) starcubesRedraw();
+  if (starcubesParams.name)
+    history.replaceState(null, '', '?' + buildHistoryParams().toString());
+}
+
 // Resolve the axis unit for the tier the user is actually reading and hand it
 // to the canvas. Deliberately **one** unit for both active tiers — that is what
 // makes their bars the same height through the dissolve.
@@ -1909,6 +1946,22 @@ async function fetchRange(from, to, interval, signal) {
   // (ts.setRateUnit). An avg/min/max/quantile is already per-unit — marking it
   // extensive would scale it by 60 on every tier switch.
   plot.extensive = isExtensiveMeasure(starcubesParams.measure);
+  // hwm = the ETL high-water mark this plot was answered against. rawTo (below)
+  // can be past it — the server always reports what was *asked* for, not how far
+  // the data actually goes (see CLAUDE.md, "interval_end is the requested window
+  // end, not the data horizon"). hwmSeen tracks the max hwm observed for this
+  // source so a momentarily-regressing value can't flap blocks open/closed.
+  //
+  // Read here rather than after the push, because the canvas needs it *on* the
+  // block: data_until is what lets it draw the bin holding the mark narrow and
+  // area-true instead of at full width, where that bar is both too short (it
+  // holds part of a bin's worth of data) and too long (it reaches past where the
+  // data ends). The monotonic value, not the raw one, for the same reason the
+  // blocks below use it — a briefly regressing watermark would otherwise make
+  // the bar flicker wider and back on every poll.
+  const hwm = (typeof plot.incomplete_until === 'number') ? plot.incomplete_until : null;
+  if (hwm !== null) hwmSeen = Math.max(hwmSeen ?? hwm, hwm);
+  if (hwmSeen !== null) plot.data_until = hwmSeen;
   // Store group colors for legend rendering
   starcubesSeriesColors = plot.series_colors || null;
   starcubesPush(plot);
@@ -1937,14 +1990,9 @@ async function fetchRange(from, to, interval, signal) {
     : (maxSlot >= 0
         ? plot.interval_start + plot.interval * (maxSlot + 1)
         : plot.interval_start);
-  // hwm = the ETL high-water mark this plot was answered against. rawTo can
-  // be past it — the server always reports what was *asked* for, not how far
-  // the data actually goes (see CLAUDE.md, "interval_end is the requested
-  // window end, not the data horizon"). hwmSeen tracks the max hwm observed
-  // for this source so a momentarily-regressing value can't flap blocks
-  // open/closed.
-  const hwm = (typeof plot.incomplete_until === 'number') ? plot.incomplete_until : null;
-  if (hwm !== null) hwmSeen = Math.max(hwmSeen ?? hwm, hwm);
+  // `hwm` and `hwmSeen` were read above, before the push — the canvas needs the
+  // horizon on the block itself. Both are still in scope here.
+  //
   // Only TRAILING fetches get their claimed coverage clamped to the HWM.
   // Floor, not ceil: the bin containing the HWM is only partially loaded, so
   // its start is the last point we can honestly call "final". Non-trailing
@@ -2257,6 +2305,9 @@ function initTs() {
     // here covers the case where initTs() runs first.
     fadeHi: starcubesBarTarget,
     fadeLo: fadeLoPx(),
+    // Same reason as fadeHi/fadeLo above: setPartialBins() may not have run yet
+    // when initTs() does.
+    partialBins: partialBins ? 'scale' : 'full',
     watermark: _isDark
       ? '{% static "viz/starcubes_lockup_dark.svg" %}'
       : '{% static "viz/starcubes_lockup.svg" %}',
@@ -2460,6 +2511,7 @@ themeToggle.addEventListener('click', () => {
   const prefsPopover = document.getElementById('prefs-popover');
   if (!prefsToggle || !prefsPopover) return;
   const prefsYAxis = document.getElementById('prefs-yaxis');
+  const prefsPartial = document.getElementById('prefs-partial');
   const prefsInput = document.getElementById('prefs-bar-target');
   const prefsSave  = document.getElementById('prefs-save');
   const prefsReset = document.getElementById('prefs-reset');
@@ -2499,6 +2551,7 @@ themeToggle.addEventListener('click', () => {
     prefsPopover.style.display = open ? 'block' : 'none';
     if (open) {
       prefsYAxis.value = yAxisMode;
+      if (prefsPartial) prefsPartial.checked = partialBins;
       if (prefsInput) prefsInput.value = starcubesBarTarget;
     }
   });
@@ -2510,6 +2563,9 @@ themeToggle.addEventListener('click', () => {
   });
 
   prefsYAxis.addEventListener('change', () => setYAxisMode(prefsYAxis.value));
+
+  if (prefsPartial)
+    prefsPartial.addEventListener('change', () => setPartialBins(prefsPartial.checked));
 
   if (prefsClose) prefsClose.addEventListener('click', closePrefs);
 
@@ -3612,6 +3668,8 @@ function applyUrlParams() {
   // the sender saw. Not written back to localStorage — a link should not
   // silently reconfigure the recipient's chart for good.
   loadYAxisMode();
+  // ?partialbins=0 likewise, so a link can show the plain full-width bar.
+  loadPartialBins();
   for (const k of ['name', 'group_by', 'measure']) {
     let v = params.get(k);
     if (k === 'group_by' && v != null) v = normalizeGbToken(v);
@@ -3728,6 +3786,7 @@ function buildHistoryParams() {
   if (starcubesParams.measure) p.set('measure', starcubesParams.measure);
   // Carried in the URL so a shared link reproduces the axis the sender saw.
   if (yAxisMode !== 'auto') p.set('yaxis', yAxisMode);
+  if (!partialBins) p.set('partialbins', '0');
   for (const row of starcubesParams.filterRows || []) {
     let sep;
     if (row.op === 'not_in') sep = '!=';

@@ -1168,6 +1168,25 @@ any of the systems it covers.
   {group_by}"`), so only same-source/same-group-by/same-interval blocks merge.
   Multibar bars are discrete so it does not need this.
 
+- **The bin holding the HWM is drawn narrow and area-true, not full width.**
+  The clamp described in the next note is about *coverage* — which spans count
+  as loaded. The same fact has a drawing consequence that took longer to
+  address: a partly-loaded bin drawn at full width is simultaneously too short
+  (its count is incomplete) and too long (it reaches past the data into the
+  future). `chart.html:fetchRange` hands the horizon to the canvas as
+  `plot.data_until = hwmSeen` — set beside `plot.extensive`, which is why the
+  HWM read moved *above* `starcubesPush` — and the library
+  (`@hgruber/timeseries.js` ≥ 0.9.1, `setPartialBins('scale')`) draws that bar
+  as wide as the bin is filled and divides its height by the same fraction, so
+  the bar's area still equals its count. The monotonic `hwmSeen` is used rather
+  than the per-response `hwm` so a briefly regressing watermark cannot flicker
+  the bar's width. Only `extensive` blocks are scaled — an `avg`/`quantile`
+  clips but is never extrapolated, the same line the rate axis draws. Toggle
+  follows the `yAxisMode` pattern (`localStorage`, `?partialbins=0`, gear
+  popover); it defaults **on** in the chart and `'full'` in the library, which
+  must not change any existing consumer's picture. See `docs/chart-app.md`,
+  "Drawing the partial bin".
+
 - **`interval_end` is the requested window end, not the data horizon —
   deliberately.** `core/query.py` reports both `interval_end` (the client's
   requested `to`) and `incomplete_until` (the last `status='ok'` ETL
