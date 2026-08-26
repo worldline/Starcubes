@@ -2262,13 +2262,6 @@ function updateInfo() {
 // ── Timeseries init ─────────────────────────────────────────────────────
 
 function initTs() {
-  const tmp = document.createElement('canvas');
-  tmp.id = '__ts_bootstrap';
-  tmp.style.cssText = 'position:fixed;left:-9999px;width:1px;height:1px;';
-  document.body.appendChild(tmp);
-  new TimeSeries({ canvas: '__ts_bootstrap', sources: [] });
-  tmp.remove();
-
   TimeSeries.registerSource({
     type: 'starcubes-data',
     init(_src, cb) {
@@ -2324,7 +2317,20 @@ function initTs() {
   ts.onClickDataCallback((plot, n, key, value) => openDrillModal(plot, n, key, value));
   if (chartSqlBtn) chartSqlBtn.disabled = !currentMeta;
 
-  if (_initTmin != null && _initTmax != null) { ts.zoom(_initTmin, _initTmax); ts.stop(); }
+  // The library has no constructor option for a start window: it always comes up
+  // on `now-24h … now` (its own tmin/tmax defaults) and paints that synchronously
+  // before returning. The `0` is what keeps that frame off the screen — a
+  // zero-duration zoom runs to completion inside animate() on the spot (span 0 →
+  // t 1, no rAF, no setTimeout), so the corrected picture is drawn in this same
+  // task and the browser never composites the 24h one. Give it a duration, or
+  // move it behind an await/setTimeout, and the initial window visibly slides.
+  if (_initTmin != null && _initTmax != null) { ts.zoom(_initTmin, _initTmax, 0); ts.stop(); }
+  // Unreachable today — both callers run after loadMeta(), which always sets
+  // currentViewport. If it ever is reachable, adopt the window the constructor
+  // chose rather than leaving currentViewport null: autoFetch() would bail out
+  // and the 300 ms-throttled onViewportChange would fill it in late, which is
+  // the same jump again in slower motion.
+  else currentViewport = ts.getViewport();
 }
 
 // ── Floating panels ───────────────────────────────────────────────────────

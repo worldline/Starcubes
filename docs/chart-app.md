@@ -35,6 +35,53 @@ modal header (`#drill-header-info`) still renders through them, as does
 `fmtInterval()` for the alarm UI. Only the `#bar-tooltip` element, its CSS and
 `showBarTooltip()` were removed.
 
+## Init and the start window
+
+`initTs()` builds the `TimeSeries` instance, and by then the window it should
+show is already decided: the boot IIFE awaits `loadSources()` and `loadMeta()`
+first, and `loadMeta()` sets `currentViewport` to today 00:00 → tomorrow 00:00
+whenever it is still null; `applyUrlParams()` then lets `?from=`/`?to=` override
+it. `resetAndFetch()` is the second entry point and runs just as late.
+
+The library has **no constructor option for a start window**. It always comes up
+on its own `tmin = now - 24h` / `tmax = now` defaults and paints that
+synchronously before the constructor returns, so starcubes has to correct the
+window afterwards — which is why `initTs()` stashes `_initTmin`/`_initTmax`
+before the `new TimeSeries({...})` call: constructing it fires
+`onViewportChange`, whose handler overwrites `currentViewport` with the
+library's 24 h default.
+
+The correction is `ts.zoom(_initTmin, _initTmax, 0)`, and **the `0` is the whole
+point**. `zoom()` without a duration animates over `zoomDuration` (500 ms), so
+the page opened on "last 24 hours" and visibly slid to the real window. A
+zero-duration zoom instead runs to completion inside the library's `animate()`
+on the spot — span 0 → factor 1, no `requestAnimationFrame`, no `setTimeout` —
+so the corrected picture is drawn in the same task as the constructor's, and the
+browser never composites the 24 h frame. Anything that reintroduces a duration
+here, or moves the call behind an `await` / `setTimeout` / `requestAnimationFrame`,
+brings the jump straight back.
+
+Two smaller consequences of the same shape:
+
+- `ts.stop()` follows the zoom because the constructor does not start in a
+  stopped state; it also fires the `onStop` callback that clears the follow
+  toggle's `active` class.
+- If `currentViewport` were ever null at this point (unreachable today — both
+  callers run after `loadMeta()`), the `else` branch adopts `ts.getViewport()`
+  rather than leaving it null. Otherwise `_autoFetchOnce()` bails at `if (!vp)
+  return` and the 300 ms-throttled `onViewportChange` fills it in late, which is
+  the same jump in slower motion.
+
+There is deliberately **no bootstrap instance**. `initTs()` used to construct a
+throwaway `TimeSeries` on an off-screen canvas before calling
+`TimeSeries.registerSource(...)`, from a time when the statics only existed once
+an instance had been built. They have been module-scope since 0.9.1
+(`registerSource`, `themes`, `attachTooltip`, `seriesColor` — every static the
+chart uses), and the throwaway instance was actively harmful: it passed no
+`initialView`, so it got the `'last24'` default, which starts a self-rearming
+`follower_tick` loop on a canvas that `tmp.remove()` had already detached — one
+`plotAll()` per tick for the lifetime of the page.
+
 ## Per-source localStorage state
 
 `starcubes-state-{name}` stores `{ group_by, measure, filterRows, viewport }`.

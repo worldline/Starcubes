@@ -1220,6 +1220,32 @@ any of the systems it covers.
   `await`, so an unaborted response landing after a switch would be
   mislabelled with the new params and painted onto the just-cleared canvas.
 
+- **The chart's initial zoom must have an explicit duration of `0`, and the
+  library's start window is not configurable.** `TimeSeries` always constructs
+  on `tmin = now - 24h` / `tmax = now` — there is no constructor option for a
+  concrete window, and `initialView` only names a navigation *method*, dispatched
+  from a `setTimeout(…, 0)` after the first paint. So `chart.html:initTs()`
+  corrects the window after construction, with `ts.zoom(_initTmin, _initTmax, 0)`.
+  Without the `0` the call falls back to `zoomDuration` (500 ms) and the page
+  opens on "last 24 hours" and visibly slides to the real window — the bug this
+  replaced. A zero-duration zoom runs to completion inside the library's
+  `animate()` synchronously (span 0 → factor 1, no rAF, no `setTimeout`), so the
+  corrected frame is painted in the same task as the constructor's and the 24 h
+  one is never composited. Reintroducing a duration, or moving the call behind an
+  `await`/`setTimeout`/`requestAnimationFrame`, brings the jump back. The
+  `_initTmin`/`_initTmax` locals exist for the same reason: constructing the
+  instance fires `onViewportChange`, whose handler would otherwise overwrite
+  `currentViewport` with the library's default before it can be read.
+  `initTs()` also deliberately has **no** bootstrap instance any more. It used to
+  build a throwaway `TimeSeries` on an off-screen canvas before calling
+  `TimeSeries.registerSource(...)`, back when the statics only existed once an
+  instance had been constructed; they are module-scope since 0.9.1 (every static
+  the chart uses — `registerSource`, `themes`, `attachTooltip`, `seriesColor`).
+  It was not merely redundant: it passed no `initialView`, so it got `'last24'`,
+  which starts a self-rearming `follower_tick` loop — one `plotAll()` per tick,
+  for the lifetime of the page, on a canvas already detached by `tmp.remove()`.
+  See `docs/chart-app.md`, "Init and the start window".
+
 ## Code conventions
 
 - SQLAlchemy 2.x idioms: `text()`, `engine.begin() as conn`, `.mappings()`
