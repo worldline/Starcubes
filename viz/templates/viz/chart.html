@@ -2719,7 +2719,9 @@ function updateLegend() {
   legendStackable = false;
   for (const plot of data) {
     if (!plot || (plot.type !== 'multibar' && plot.type !== 'multiline'
-                  && plot.type !== 'multipoint' && plot.type !== 'quantile-bands')) continue;
+                  && plot.type !== 'multipoint'
+                  && plot.type !== 'quantile-bands' && plot.type !== 'quantile-steps'
+                  && plot.type !== 'error-bars' && plot.type !== 'candlestick')) continue;
     // Skip blocks tagged with a previous group_by — their series keys
     // belong to a different dimension and would pollute the legend.
     if (plot._starcubesGroupBy && plot._starcubesGroupBy !== groupBy) continue;
@@ -2728,12 +2730,16 @@ function updateLegend() {
     if (plot.type === 'multibar') legendStackable = true;
     const start = plot.interval_start;
     const step  = plot.interval;
-    // quantile-bands store a percentile array per series. Locate this plot's
-    // p50/p25/p75 entries so the legend can show "median (p25–p75)" averaged
-    // over the visible window (see the band finalize pass below).
-    const isBands = plot.type === 'quantile-bands';
+    // Ladder styles (quantile-bands, quantile-steps, error-bars, candlestick)
+    // all store a percentile array per series. Locate this plot's p50/p25/p75
+    // entries so the legend can show "median (p25–p75)" averaged over the
+    // visible window (see the band finalize pass below). quantile-steps-open
+    // is the same plot type on the library side; the renderer just draws
+    // freestanding segments without risers.
+    const isLadder = (plot.type === 'quantile-bands' || plot.type === 'quantile-steps'
+                      || plot.type === 'error-bars' || plot.type === 'candlestick');
     let bandIdx = null;
-    if (isBands) {
+    if (isLadder) {
       const ps = plot.percentiles || [];
       const nearest = (target) => {
         let bi = 0, bd = Infinity;
@@ -2751,7 +2757,7 @@ function updateLegend() {
       }
       for (const [key, val] of Object.entries(bars)) {
         const entry = seriesMap.get(key) || { name: key, total: 0 };
-        if (isBands && bandIdx && Array.isArray(val)) {
+        if (isLadder && bandIdx && Array.isArray(val)) {
           // Sum the median and quartiles to average across visible slots.
           const b = entry.band || (entry.band = { p50: 0, p25: 0, p75: 0, n: 0 });
           b.p50 += val[bandIdx.p50];
@@ -2769,7 +2775,7 @@ function updateLegend() {
       }
     }
   }
-  // Finalize quantile-bands legend values: "median (p25–p75)" from the mean of
+  // Finalize ladder-style legend values: "median (p25–p75)" from the mean of
   // each percentile over the visible window; sort key is the typical median.
   const fmtNum = (x) => (x % 1 === 0 ? x.toLocaleString() : x.toFixed(1));
   for (const entry of seriesMap.values()) {

@@ -467,7 +467,9 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.measure (
     name          text NOT NULL,
     agg           text NOT NULL,
     graph_style   text NOT NULL DEFAULT 'multibar'
-        CHECK (graph_style IN ('multibar', 'multiline', 'multipoint', 'quantile-bands')),
+        CHECK (graph_style IN ('multibar', 'multiline', 'multipoint',
+                               'quantile-bands', 'quantile-steps',
+                               'quantile-steps-open', 'error-bars', 'candlestick')),
     is_default    boolean NOT NULL DEFAULT false,
     ordinal       int  NOT NULL DEFAULT 0,
     percentiles   text,
@@ -475,8 +477,9 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.measure (
 );
 
 -- Widen the graph_style CHECK on databases created before 'quantile-bands'
--- (and before 'multipoint'/'multiline'). Keyed on the newest value so earlier
--- widenings still get upgraded.
+-- (and before 'multipoint'/'multiline' / 'quantile-steps' / 'error-bars' /
+-- 'candlestick'). Keyed on the newest value so earlier widenings still get
+-- upgraded.
 DO $$
 DECLARE cdef text;
 BEGIN
@@ -486,11 +489,13 @@ BEGIN
       JOIN pg_namespace n ON n.oid = t.relnamespace
      WHERE n.nspname = 'starcubes_meta' AND t.relname = 'measure'
        AND c.conname = 'measure_graph_style_check';
-    IF cdef IS NOT NULL AND position('quantile-bands' in cdef) = 0 THEN
+    IF cdef IS NOT NULL AND position('candlestick' in cdef) = 0 THEN
         ALTER TABLE starcubes_meta.measure DROP CONSTRAINT measure_graph_style_check;
         ALTER TABLE starcubes_meta.measure
             ADD CONSTRAINT measure_graph_style_check
-            CHECK (graph_style IN ('multibar', 'multiline', 'multipoint', 'quantile-bands'));
+            CHECK (graph_style IN ('multibar', 'multiline', 'multipoint',
+                                   'quantile-bands', 'quantile-steps',
+                                   'quantile-steps-open', 'error-bars', 'candlestick'));
     END IF;
 END $$;
 
@@ -505,9 +510,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_measure_default
 COMMENT ON TABLE starcubes_meta.measure IS
   'User-facing catalog of measurements offered in the chart measure dropdown. agg is an aggregation expression: the literal count(*) or func(col) where func in sum/avg/min/max and col is a fact_column with role=measure. graph_style picks the timeseries.js plot type.';
 COMMENT ON COLUMN starcubes_meta.measure.agg IS
-  'Aggregation expression. count(*) maps to the empty measure param (count). func(col) is passed through to core.query._parse_measure. For graph_style=quantile-bands the form is quantile(col), naming the numeric column the percentiles are computed over.';
+  'Aggregation expression. count(*) maps to the empty measure param (count). func(col) is passed through to core.query._parse_measure. For ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick) the form is quantile(col), naming the numeric column the percentiles are computed over.';
 COMMENT ON COLUMN starcubes_meta.measure.percentiles IS
-  'Comma-separated ascending percentile ladder for graph_style=quantile-bands, e.g. ''25,50,75'' or ''5,25,50,75,95''. NULL for other styles (the query falls back to 5,25,50,75,95).';
+  'Comma-separated ascending percentile ladder used by all ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick), e.g. ''25,50,75'' or ''5,25,50,75,95''. NULL for other styles (the query falls back to 5,25,50,75,95).';
 
 -- ETL throughput metrics + live progress (migration 0017). Same columns
 -- exist in CREATE TABLE above so fresh installs get them; this block

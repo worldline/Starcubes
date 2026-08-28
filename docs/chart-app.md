@@ -502,7 +502,7 @@ long because it runs past where the data ends, into the near future.
 monotonic `hwmSeen` rather than the per-response `hwm`, so a briefly regressing
 watermark cannot make the bar flicker wider and back on every poll.
 
-The library (`@hgruber/timeseries.js` ≥ 0.9.1) does the rest: `setPartialBins`
+The library (`@hgruber/timeseries.js` ≥ 0.10.0) does the rest: `setPartialBins`
 `'scale'` draws that one bar only as wide as its bin is filled and divides its
 height by the same fraction, so its **area** is still the count it carries and
 its height reads as the same density as its neighbours. That factor is also the

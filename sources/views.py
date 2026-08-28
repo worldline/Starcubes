@@ -52,7 +52,9 @@ DIALECTS = ["oracle", "postgresql", "mysql", "mssql"]
 PG_TYPES = ["smallint", "bigint", "integer", "timestamptz", "text", "real", "double precision", "boolean"]
 ROLES = ["time", "measure", "dimension", "auto-dimension", "pk"]
 INDEX_METHODS = ["brin", "btree", "hash"]
-GRAPH_STYLES = ["multibar", "multiline", "multipoint", "quantile-bands"]
+GRAPH_STYLES = ["multibar", "multiline", "multipoint",
+                "quantile-bands", "quantile-steps", "quantile-steps-open",
+                "error-bars", "candlestick"]
 
 
 def _meta_engine():
@@ -1614,7 +1616,9 @@ def _validate_agg(agg: str, measure_cols: set[str]) -> str:
 
     Accepts the literal ``count(*)`` or ``func(col)`` where func is one of
     sum/avg/min/max/quantile and col is a fact column with role='measure'.
-    ``quantile(col)`` is only meaningful with graph_style=quantile-bands.
+    ``quantile(col)`` is only meaningful with one of the ladder graph styles
+    (quantile-bands, quantile-steps, quantile-steps-open, error-bars,
+    candlestick); the pairing is enforced in `_resolve_measure_fields`.
     """
     agg = (agg or "").strip()
     if agg == "count(*)":
@@ -1653,21 +1657,30 @@ def _validate_percentiles(s: str) -> str | None:
 def _resolve_measure_fields(p, conn, pk: int) -> tuple[str, str, str | None]:
     """Validate (graph_style, agg, percentiles) for a measure create/edit.
 
-    quantile-bands requires a ``quantile(col)`` agg and carries a percentile
-    ladder (defaulting to 5,25,50,75,95); other styles store NULL percentiles.
+    Ladder styles (quantile-bands, quantile-steps, quantile-steps-open,
+    error-bars, candlestick) require a ``quantile(col)`` agg and carry a
+    percentile ladder (defaulting to 5,25,50,75,95); other styles store NULL
+    percentiles.
     """
     graph_style = p.get("graph_style", "multibar")
     if graph_style not in GRAPH_STYLES:
         raise ValueError(f"graph_style must be one of {GRAPH_STYLES}")
     agg = _validate_agg(p.get("agg", ""), _measure_columns(conn, pk))
     is_quantile = agg.startswith("quantile(")
-    if graph_style == "quantile-bands":
+    is_ladder = graph_style in (
+        "quantile-bands", "quantile-steps", "quantile-steps-open",
+        "error-bars", "candlestick")
+    if is_ladder:
         if not is_quantile:
-            raise ValueError("quantile-bands measures need a quantile(col) agg")
+            raise ValueError(
+                f"{graph_style} measures need a quantile(col) agg")
         percentiles = _validate_percentiles(p.get("percentiles", "")) or "5,25,50,75,95"
     else:
         if is_quantile:
-            raise ValueError("quantile(col) agg requires graph_style=quantile-bands")
+            raise ValueError(
+                f"quantile(col) agg requires a ladder graph_style "
+                f"(quantile-bands/quantile-steps/quantile-steps-open/"
+                f"error-bars/candlestick), got {graph_style!r}")
         percentiles = None
     return graph_style, agg, percentiles
 

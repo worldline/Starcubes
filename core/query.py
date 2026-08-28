@@ -47,6 +47,34 @@ from .utils import format_pks
 
 MEASURE_FUNCS = {"sum", "avg", "min", "max"}
 
+# The five `measure.graph_style` values that read a percentile ladder from the
+# fact table. `quantile-steps-open` is a starcubes-only config value: the
+# library distinguishes it from `quantile-steps` via the `plot["connect"]`
+# flag (False → freistehende Segmente ohne Riser).
+#
+# Every member requires `agg = quantile(col)` and a populated `percentiles`
+# ladder; the SQL is identical (one `percentile_cont(ARRAY[...])` per slot),
+# only `plot["type"]` (and sometimes `plot["connect"]`) differ between them.
+LADDER_STYLES = frozenset({
+    "quantile-bands",
+    "quantile-steps",
+    "quantile-steps-open",
+    "error-bars",
+    "candlestick",
+})
+
+
+def _ladder_plot_type(graph_style: str) -> tuple[str, bool]:
+    """Map a starcubes `graph_style` to `(lib_type, connect)`.
+
+    `connect=False` requests the open variant of `quantile-steps`
+    (freistehende horizontale Segmente ohne Riser). All other ladder
+    styles pass `True` and let the library pick its default connector.
+    """
+    if graph_style == "quantile-steps-open":
+        return "quantile-steps", False
+    return graph_style, True
+
 
 def _parse_measure(measure: str) -> tuple[str, str]:
     """Parse 'avg(stay)' → ('avg', 'stay'), 'stay' → ('sum', 'stay')."""
@@ -427,9 +455,9 @@ def build_chart_sql(
 
     group_by_none = not group_by
     fact_cols = {c.name for c in source.fact_columns}
-    if graph_style == "quantile-bands":
+    if graph_style in LADDER_STYLES:
         if not measure_col:
-            raise ValueError("quantile-bands needs measure_col")
+            raise ValueError(f"{graph_style} needs measure_col")
         if measure_col not in fact_cols:
             raise ValueError(
                 f"measure column {measure_col!r} is not a fact column of "
@@ -463,14 +491,14 @@ def build_chart_sql(
     series_expr = ""
     if group_by_none:
         series_expr = "'(all)'"
-    elif graph_style != "quantile-bands" and group_by_groups and group_dim and group_dim.dim_table:
+    elif graph_style not in LADDER_STYLES and group_by_groups and group_dim and group_dim.dim_table:
         # multibar / multiline / multipoint — Python-side merge path.
         group_by_grouped = True
         for idx, (gname, gcolor) in group_by_groups.items():
             index_to_group[idx] = gname
             group_colors[gname] = gcolor
         series_expr = f"f.{group_by}::int"
-    elif graph_style == "quantile-bands" and group_by_groups and group_dim and group_dim.dim_table:
+    elif graph_style in LADDER_STYLES and group_by_groups and group_dim and group_dim.dim_table:
         # quantile-bands — SQL-side CASE mapping (percentile_cont can't merge).
         name_to_indices = _indices_by_group(group_by_groups)
         for idx, (gname, gcolor) in group_by_groups.items():
@@ -507,7 +535,7 @@ def build_chart_sql(
         **flt_params,
     }
 
-    if graph_style == "quantile-bands":
+    if graph_style in LADDER_STYLES:
         pct = sorted({int(p) for p in (percentiles or [])})
         if not pct or any(not (0 < p < 100) for p in pct):
             raise ValueError(
@@ -620,9 +648,9 @@ def build_chart_legend_sql(
 
     group_by_none = not group_by
     fact_cols = {c.name for c in source.fact_columns}
-    if graph_style == "quantile-bands":
+    if graph_style in LADDER_STYLES:
         if not measure_col:
-            raise ValueError("quantile-bands needs measure_col")
+            raise ValueError(f"{graph_style} needs measure_col")
         if measure_col not in fact_cols:
             raise ValueError(
                 f"measure column {measure_col!r} is not a fact column of "
@@ -699,7 +727,7 @@ def build_chart_legend_sql(
         filter_tree=filter_tree)
     params: dict = {**flt_params}
 
-    if graph_style == "quantile-bands":
+    if graph_style in LADDER_STYLES:
         pct = sorted({int(p) for p in (percentiles or [])})
         if not pct or any(not (0 < p < 100) for p in pct):
             raise ValueError(
@@ -1183,14 +1211,22 @@ def timeseries_quantiles(
     meta_engine=None,
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
     group_counts: Optional[dict[str, int]] = None,
+    graph_style: str = "quantile-bands",
 ) -> dict:
-    """Build a 'quantile-bands' plot dict for `timeseries.js`.
+    """Build a ladder plot dict for `timeseries.js`.
 
     Like `timeseries_multibar`, but instead of one aggregate per slot/series it
     computes a percentile ladder of `measure_col` per slot/series via Postgres
     `percentile_cont`. The plot's `data[slot][series]` is a list of floats
     aligned to the (sorted, ascending) `percentiles` ladder; the renderer draws
-    one line per percentile and shades the bands between them.
+    one line per percentile (and shades the bands between them for
+    ``quantile-bands``).
+
+    ``graph_style`` selects one of the ladder styles in `LADDER_STYLES`:
+    ``quantile-bands``, ``quantile-steps`` (+ ``-open`` → no risers),
+    ``error-bars`` and ``candlestick``. All of them read the same per-slot
+    percentile array — only ``plot["type"]`` (and sometimes ``plot["connect"]``)
+    differs. See `_ladder_plot_type`.
 
     Series come from `group_by` exactly as in multibar: empty → a single
     "(all)" series; a plain dimension → one series per dim value; a grouped
@@ -1212,6 +1248,10 @@ def timeseries_quantiles(
         raise ValueError(
             f"series_label must be 'source_id'|'name'|'index', "
             f"got {series_label!r}")
+    if graph_style not in LADDER_STYLES:
+        raise ValueError(
+            f"graph_style={graph_style!r} is not a ladder style; "
+            f"choose from {sorted(LADDER_STYLES)}")
 
     pct = sorted({int(p) for p in percentiles})
     if not pct or any(not (0 < p < 100) for p in pct):
@@ -1220,7 +1260,7 @@ def timeseries_quantiles(
 
     sql, params, _index_to_group, group_colors = build_chart_sql(
         source,
-        graph_style="quantile-bands",
+        graph_style=graph_style,
         group_by=group_by,
         measure=None,
         t_from=t_from, t_to=t_to, interval=interval,
@@ -1251,8 +1291,9 @@ def timeseries_quantiles(
         v_min = lo if v_min is None else min(v_min, lo)
         v_max = hi if v_max is None else max(v_max, hi)
 
+    lib_type, connect = _ladder_plot_type(graph_style)
     plot: dict = {
-        "type":           "quantile-bands",
+        "type":           lib_type,
         "interval_start": interval_start,
         "interval_end":   epoch_to,
         "interval":       interval,
@@ -1262,6 +1303,8 @@ def timeseries_quantiles(
         "percentiles":    pct,
         "data":           data,
     }
+    if not connect:
+        plot["connect"] = False
     if name is not None:
         plot["name"] = name
     if group_colors:

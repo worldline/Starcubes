@@ -23,7 +23,7 @@ from core.cache import (get_cached_plot, is_cacheable, make_cache_key,
 from core.query import (build_chart_sql, build_chart_sql_rendered,
                            build_chart_legend_sql, build_chart_legend_sql_rendered,
                         build_group_by_indices, drill_down, grouped_label,
-                        grouped_token,
+                        grouped_token, LADDER_STYLES,
                         list_transactions, resolve_group_set,
                         split_grouped_col, timeseries_multibar,
                         timeseries_quantiles)
@@ -256,14 +256,14 @@ def plot_json(request):
         agg_form = measure if measure else "count(*)"
         graph_style = source.graph_style_for(agg_form)
 
-        if graph_style == "quantile-bands":
-            # A quantile-bands measure's agg is quantile(<col>); the percentile
+        if graph_style in LADDER_STYLES:
+            # A ladder-style measure's agg is quantile(<col>); the percentile
             # ladder comes from the measure catalog. percentile_cont isn't
             # cacheable (is_cacheable already rejects non-count measures).
             mq = re.match(r"quantile\((\w+)\)$", agg_form or "")
             if not mq:
                 return HttpResponseBadRequest(
-                    "quantile-bands measure needs a quantile(col) agg")
+                    f"{graph_style} measure needs a quantile(col) agg")
             plot = timeseries_quantiles(
                 source,
                 measure_col=mq.group(1),
@@ -278,6 +278,7 @@ def plot_json(request):
                 meta_engine=meta,
                 group_by_groups=group_by_groups,
                 group_counts=group_counts,
+                graph_style=graph_style,
             )
         else:
             plot = timeseries_multibar(
@@ -767,15 +768,16 @@ def chart_sql(request):
         # Graph style / quantile routing — mirrors plot_json's dispatch
         # (viz/views.py around the agg_form + graph_style switch). The
         # helper expects `measure=None` and explicit `percentiles` /
-        # `measure_col` for the quantile-bands branch.
+        # `measure_col` for ladder-style branches (quantile-bands /
+        # quantile-steps / quantile-steps-open / error-bars / candlestick).
         agg_form = measure if measure else "count(*)"
         graph_style = source.graph_style_for(agg_form)
         measure_col = percentiles = None
-        if graph_style == "quantile-bands":
+        if graph_style in LADDER_STYLES:
             mq = re.match(r"quantile\((\w+)\)$", agg_form)
             if not mq:
                 return HttpResponseBadRequest(
-                    f"quantile-bands needs quantile(col), got {agg_form!r}")
+                    f"{graph_style} needs quantile(col), got {agg_form!r}")
             measure_col = mq.group(1)
             percentiles = source.quantiles_for(agg_form)
             measure = None

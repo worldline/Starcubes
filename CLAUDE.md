@@ -200,10 +200,17 @@ structural changes.
   measurements in the chart's measure dropdown. `agg` is an aggregation
   expression — the literal `count(*)` or `func(col)` (func ∈ sum/avg/min/max/
   quantile, col a `role='measure'` fact column). `name` is the dropdown label;
-  `graph_style` picks the `timeseries.js` plot type (`'multibar'`, `'multiline'`,
-  `'multipoint'`, `'quantile-bands'`; the CHECK widens as types land).
+  `graph_style` picks the `timeseries.js` plot type. The eight values fall
+  into two families:
+    - **Multibar family** (one scalar per slot/series): `'multibar'`,
+      `'multiline'`, `'multipoint'`.
+    - **Ladder family** (one percentile array per slot/series, fed by
+      `agg = quantile(col)` + `percentiles` ladder): `'quantile-bands'`,
+      `'quantile-steps'`, `'quantile-steps-open'`, `'error-bars'`,
+      `'candlestick'`. All five read the same per-slot array; only the
+      renderer differs (see the ladder-plot design note below).
   `percentiles` is a comma-separated ladder (`'25,50,75'` or `'5,25,50,75,95'`)
-  used only by `quantile-bands` (see the quantile-bands design note below).
+  consumed by every ladder style.
   One row may be `is_default`
   (partial unique index `ux_measure_default`). Distinct from
   `fact_column.role='measure'`, which stays the low-level "aggregatable +
@@ -834,13 +841,13 @@ any of the systems it covers.
   reasons: (a) it defaults the container engine to `podman` (`CONTAINER_ENGINE`
   overrides), and (b) it pins the working directory to the repo root before
   delegating. There's no longer a submodule to initialize at build time —
-  the JS dependency (`@hgruber/timeseries.js@~0.9.0`) is pinned via the
+  the JS dependency (`@hgruber/timeseries.js@~0.10.0`) is pinned via the
   top-level `package.json`/`package-lock.json` pair and pulled by the
   `jsbuilder` Dockerfile stage through `npm ci`.
 
 - **Frontend JS dependencies live at the repo root.** Top-level
   `package.json`/`package-lock.json` declare the only frontend JS dep
-  (`@hgruber/timeseries.js`, pinned `~0.9.0`). The Dockerfile's `jsbuilder`
+  (`@hgruber/timeseries.js`, pinned `~0.10.0`). The Dockerfile's `jsbuilder`
   stage runs `npm ci --omit=dev` and copies `dist/timeseries.min.js` into
   `viz/static/timeseries/timeseries.js`, which `STATICFILES_DIRS` exposes to
   Django's `collectstatic`. `chart.html` loads it via
@@ -1140,33 +1147,50 @@ any of the systems it covers.
       and the resize re-clamp skips unmoved panels so the legend keeps its
       `right` anchor to the plot area. See `docs/chart-app.md`.
 
-- **Quantile-bands are a distinct plot type, not a multibar measure.** A
-  measure with `graph_style='quantile-bands'` and `agg='quantile(col)'` routes
-  `plot_json` to `core/query.timeseries_quantiles` (not `timeseries_multibar`).
-  The plot's `data[slot][series]` is a **list** of `percentile_cont` values
-  aligned to `plot['percentiles']` (the per-measure ladder from
-  `Source.quantiles_for`), not a scalar. The `quantile-bands` renderer in the
-  `timeseries.js` vendored bundle draws one line per percentile from each slot's
-  **center** and shades the bands at fixed per-band alpha (darkest at the
-  median). Because the per-slot value is an array, three spots in
-  `timeseries.js` branch on the type: `prepare_grid` y-range (max/min array
-  entry per slot), `pushData` block-concat min/max, and `get_element`
-  hit-testing (skipped — no per-bar target, so no drill/tooltip). Grouped
-  (`:grouped`) percentiles are computed **SQL-side** via a `CASE` mapping dim
-  index → group name before `percentile_cont` — percentiles cannot be merged
-  in Python the way counts are. Not server-cacheable (`is_cacheable` rejects
-  non-`count(*)` measures). The vendored bundle lives in
-  `viz/static/timeseries/timeseries.js` (rebuild via `./docker/build.sh`);
+- **Ladder plot types (`quantile-bands`, `quantile-steps`, `quantile-steps-open`,
+  `error-bars`, `candlestick`) are a distinct plot family, not multibar measures.**
+  A measure with one of these `graph_style` values and `agg='quantile(col)'`
+  routes `plot_json` to `core/query.timeseries_quantiles` (not
+  `timeseries_multibar`). The plot's `data[slot][series]` is a **list** of
+  `percentile_cont` values aligned to `plot['percentiles']` (the per-measure
+  ladder from `Source.quantiles_for`), not a scalar — every ladder style reads
+  the same shape and only differs in `plot["type"]` (and `plot["connect"]` for
+  `quantile-steps-open` → `False`, no risers). The library-side renderers:
+    - `quantile-bands` — shaded bands between consecutive percentile lines
+      (darkest at the median).
+    - `quantile-steps` — same lines, drawn as a step (default `connect=True`
+      draws risers; `connect=False` drops them — starcubes' `quantile-steps-open`).
+    - `error-bars` — central marker + symmetric whiskers over a percentile pair.
+    - `candlestick` — boxplot from the ladder (outer pair = whiskers, inner
+      pair = body, median tick); no `plot.roles`, so no OHLC shape.
+  Since 0.10 the library centralises the array-per-slot discriminator via the
+  `values: 'array'` renderer-plugin contract, exposed as
+  `TimeSeries.isBandedType(type)` and `TimeSeries.ladderPairs(n)`. Ladder
+  blocks are hit-testable from 0.10 on (hidden series excluded), so the chart's
+  `openDrillModal` keeps its `plot.type !== 'multibar'` guard — ladder blocks
+  have an array `value` and the modal would receive the wrong shape.
+  Because the per-slot value is an array, three spots in `timeseries.js` branch
+  on the type: `prepare_grid` y-range (max/min array entry per slot),
+  `pushData` block-concat min/max, and `get_element` hit-testing (skipped for
+  0.9.1, hit-testable from 0.10 on — but starcubes still opts out via the
+  multibar guard). Grouped (`:grouped`) percentiles are computed **SQL-side**
+  via a `CASE` mapping dim index → group name before `percentile_cont` —
+  percentiles cannot be merged in Python the way counts are. Not
+  server-cacheable (`is_cacheable` rejects non-`count(*)` measures). The
+  vendored bundle lives in `viz/static/timeseries/timeseries.js` (rebuild via
+  `./docker/build.sh`);
   Adjacent fetch blocks are stored as **separate** plot objects in `data[]`
-  (only multibar/quantile-bands are concat-trimmed on *overlap*, not on plain
+  (only multibar/ladder are concat-trimmed on *overlap*, not on plain
   adjacency). Connected renderers would otherwise leave a one-slot hole at each
   block margin, so `renderers.js:plotData` supports an opt-in `coalesce(plot)`
   key: active blocks of one type sharing the key are merged via `coalesceBlocks`
   (rebasing each block's slots onto the group's earliest `interval_start`, which
   is always a multiple of `interval`) into one synthetic plot drawn once.
-  quantile-bands opts in with key `name|interval` (`name` is `"{source}:
+  `quantile-bands` opts in with key `name|interval` (`name` is `"{source}:
   {group_by}"`), so only same-source/same-group-by/same-interval blocks merge.
-  Multibar bars are discrete so it does not need this.
+  `quantile-steps` opts in with the same key (step shape, like bands, is
+  contiguous); `error-bars` and `candlestick` are bin-local and do not opt in.
+  Multibar bars are discrete so they do not need this.
 
 - **The bin holding the HWM is drawn narrow and area-true, not full width.**
   The clamp described in the next note is about *coverage* — which spans count
@@ -1176,7 +1200,7 @@ any of the systems it covers.
   future). `chart.html:fetchRange` hands the horizon to the canvas as
   `plot.data_until = hwmSeen` — set beside `plot.extensive`, which is why the
   HWM read moved *above* `starcubesPush` — and the library
-  (`@hgruber/timeseries.js` ≥ 0.9.1, `setPartialBins('scale')`) draws that bar
+  (`@hgruber/timeseries.js` ≥ 0.10.0, `setPartialBins('scale')`) draws that bar
   as wide as the bin is filled and divides its height by the same fraction, so
   the bar's area still equals its count. The monotonic `hwmSeen` is used rather
   than the per-response `hwm` so a briefly regressing watermark cannot flicker

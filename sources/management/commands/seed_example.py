@@ -109,12 +109,21 @@ FACT_INDICES = [
     ("create_time", "brin"),
 ]
 
-# (name, agg, graph_style, is_default, ordinal)
+# (name, agg, graph_style, is_default, ordinal, percentiles or None)
 MEASURES = [
-    ("Transaction count", "count(*)",    "multibar", True,  1),
-    ("Total amount",      "sum(amount)", "multibar", False, 2),
-    ("Avg stay",          "avg(stay)",   "multibar", False, 3),
-    ("Avg duration (ms)", "avg(total)",  "multibar", False, 4),
+    ("Transaction count",  "count(*)",     "multibar",            True,  1, None),
+    ("Total amount",       "sum(amount)",  "multibar",            False, 2, None),
+    ("Avg stay",           "avg(stay)",    "multibar",            False, 3, None),
+    ("Avg duration (ms)",  "avg(total)",   "multibar",            False, 4, None),
+    # One demo measure per ladder style so a fresh install shows the new
+    # renderers in the chart's measure dropdown. Same numeric column,
+    # different graph_style / connect flag (the last one is the open
+    # variant of quantile-steps).
+    ("Stay (quantile-bands)",   "quantile(stay)",  "quantile-bands",      False, 5, "5,25,50,75,95"),
+    ("Stay (quantile-steps)",   "quantile(stay)",  "quantile-steps",      False, 6, "5,25,50,75,95"),
+    ("Stay (quantile-steps-open)", "quantile(stay)", "quantile-steps-open", False, 7, "5,25,50,75,95"),
+    ("Stay (error-bars)",       "quantile(stay)",  "error-bars",          False, 8, "5,25,50,75,95"),
+    ("Stay (candlestick)",      "quantile(stay)",  "candlestick",         False, 9, "5,25,50,75,95"),
 ]
 
 
@@ -185,10 +194,10 @@ def _upsert_datasource(meta_engine, name, schema, source_dsn, force):
 
         conn.execute(text(
             "INSERT INTO starcubes_meta.measure "
-            "  (datasource_id, name, agg, graph_style, is_default, ordinal) "
-            "VALUES (:ds, :n, :a, :gs, :d, :o)"
-        ), [{"ds": ds_id, "n": n, "a": a, "gs": gs, "d": d, "o": o}
-            for (n, a, gs, d, o) in MEASURES])
+            "  (datasource_id, name, agg, graph_style, is_default, ordinal, percentiles) "
+            "VALUES (:ds, :n, :a, :gs, :d, :o, :p)"
+        ), [{"ds": ds_id, "n": n, "a": a, "gs": gs, "d": d, "o": o, "p": p}
+            for (n, a, gs, d, o, p) in MEASURES])
 
     return ds_id
 

@@ -369,7 +369,7 @@
   <div class="card">
     <div class="card-header">
       <span class="card-title">Measures</span>
-      <span style="margin-left:auto;font-size:12px;color:var(--muted)">Chart measure dropdown. <code>agg</code> is <code>count(*)</code> or func(measure column). <code>multiline</code> draws one line per group series, <code>multipoint</code> one dot per slot per series; <code>multibar</code> stacks them. <code>quantile-bands</code> needs a <code>quantile(col)</code> agg and a <code>Percentiles</code> ladder (e.g. <code>5,25,50,75,95</code>); it draws percentile band lines per bin.</span>
+      <span style="margin-left:auto;font-size:12px;color:var(--muted)">Chart measure dropdown. <code>agg</code> is <code>count(*)</code> or func(measure column). <code>multiline</code> draws one line per group series, <code>multipoint</code> one dot per slot per series; <code>multibar</code> stacks them. The five <em>ladder styles</em> (<code>quantile-bands</code>, <code>quantile-steps</code>, <code>quantile-steps-open</code>, <code>error-bars</code>, <code>candlestick</code>) need a <code>quantile(col)</code> agg and a <code>Percentiles</code> ladder (e.g. <code>5,25,50,75,95</code>); they all read the same per-bin percentile array, only the renderer differs — <code>quantile-steps</code> connects the rungs with risers (default), <code>quantile-steps-open</code> drops them; <code>error-bars</code> marks each pair symmetric around the median; <code>candlestick</code> draws a boxplot (outer pair = whiskers, inner pair = body, median tick).</span>
     </div>
     <table class="data-table" id="measureTable">
       <thead>
@@ -412,7 +412,7 @@
           </td>
           <td>
             <span class="row-display text-mono">{{ m.percentiles|default:"—" }}</span>
-            <input class="row-edit cell-input" name="percentiles" value="{{ m.percentiles|default:'' }}" placeholder="5,25,50,75,95" title="Only used by quantile-bands">
+            <input class="row-edit cell-input" name="percentiles" value="{{ m.percentiles|default:'' }}" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick)">
           </td>
           <td class="actions">
             <span class="row-display">
@@ -449,7 +449,7 @@
         </div>
         <div style="width:130px">
           <label class="form-label">Percentiles</label>
-          <input class="form-control" name="percentiles" placeholder="5,25,50,75,95" title="Only used by quantile-bands">
+          <input class="form-control" name="percentiles" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick)">
         </div>
         <div style="padding-top:18px"><label style="font-size:12px;color:var(--muted)"><input type="checkbox" name="is_default"> default</label></div>
         <div style="padding-top:18px"><button type="submit" class="btn btn-primary">Add</button></div>
@@ -1664,7 +1664,7 @@ function buildMeasureRow(pk, r) {
     '<td><span class="row-display text-mono">' + esc(r.agg) + '</span><select class="row-edit cell-input" name="agg">' + aggOpts(r.agg) + '</select></td>' +
     '<td><span class="row-display"><span class="badge badge-dialect">' + esc(r.graph_style) + '</span></span><select class="row-edit cell-input" name="graph_style">' + graphStyleOpts(r.graph_style) + '</select></td>' +
     '<td style="text-align:center"><span class="row-display">' + (r.is_default ? '✓' : '—') + '</span><input class="row-edit" type="checkbox" name="is_default" ' + (r.is_default ? 'checked' : '') + ' style="margin:4px"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.percentiles || '—') + '</span><input class="row-edit cell-input" name="percentiles" value="' + esc(r.percentiles || '') + '" placeholder="5,25,50,75,95" title="Only used by quantile-bands"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.percentiles || '—') + '</span><input class="row-edit cell-input" name="percentiles" value="' + esc(r.percentiles || '') + '" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles"></td>' +
     '<td class="actions"><span class="row-display">' +
       '<button class="btn-icon" onclick="startEdit(this,\'measure\')" title="Edit">✏</button>' +
       '<button class="btn-icon" onclick="deleteRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
