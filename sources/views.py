@@ -21,11 +21,12 @@ from django.shortcuts import redirect, render
 from django.views.decorators.http import require_POST
 from sqlalchemy import text
 
-from core.schema import (UNKNOWN_SOURCE_ID, create_fact, create_dim_tables,
-                         create_indices, drop_indices, drop_schema, sync_schema,
-                         import_dimensions, create_future_partitions,
-                         list_fact_partitions, vacuum_analyze_fact,
-                         refresh_dim_counts)
+from core.schema import (UNKNOWN_SOURCE_ID, SchemaNameError, create_fact,
+                         create_dim_tables, create_indices, drop_indices,
+                         drop_schema, sync_schema, import_dimensions,
+                         create_future_partitions, list_fact_partitions,
+                         vacuum_analyze_fact, refresh_dim_counts,
+                         validate_schema_name)
 from core.cache import bump_cache_epoch, clear_cache
 from core.etl import (truncate_last_partition, truncate_partition,
                       drop_partition, delete_fact_from,
@@ -155,8 +156,11 @@ def source_new(request):
         # profile flow is the whole point of allowing that.
         preload = (p.get("preload_profile") or "").strip()
         try:
+            # The schema name is interpolated unquoted into the warehouse
+            # DDL, so it has to survive Postgres case-folding unchanged.
+            validate_schema_name(p.get("schema_name", ""))
             lag_wm, lag_now = _lag_pair(p)
-        except ValueError as exc:
+        except (SchemaNameError, ValueError) as exc:
             return HttpResponseBadRequest(str(exc))
         profile = None
         if preload:
@@ -382,8 +386,15 @@ def source_edit(request, pk: int):
         ladder = _str_to_ladder_sql(p.get("interval_ladder", "1,60,3600,86400"))
         new_period = p.get("partition_period", "month")
         try:
+            # Only validate a schema name the user is actually changing.
+            # Rows predating the check may hold a folded name that is now
+            # rejected; refusing to save them would make every other field
+            # on those datasources uneditable too.
+            submitted_schema = p.get("schema_name", "")
+            if submitted_schema != _load_datasource(pk)["schema_name"]:
+                validate_schema_name(submitted_schema)
             lag_wm, lag_now = _lag_pair(p)
-        except ValueError as exc:
+        except (SchemaNameError, ValueError) as exc:
             return HttpResponseBadRequest(str(exc))
         with _meta_engine().begin() as conn:
             current_period = conn.execute(text(

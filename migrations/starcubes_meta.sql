@@ -723,3 +723,26 @@ COMMENT ON COLUMN starcubes_meta.datasource.watermark_lag_s IS
   'Seconds the load window''s upper bound stays below max(watermark_column). Trades tip freshness for idempotence: no re-fetch, no PK de-dupe, and the HWM stays honest. Complements late_arrival_overlap_s, which instead reaches back below the HWM and pays a per-run PK check. 0 disables.';
 COMMENT ON COLUMN starcubes_meta.datasource.wallclock_lag_s IS
   'Absolute deadline in source wall-clock seconds: every row gets this long to become visible. The window''s upper bound is the later of max(watermark) - watermark_lag_s and source_now - wallclock_lag_s, so this term keeps the window advancing when source traffic pauses and the first term freezes. Must exceed watermark_lag_s. 0 disables the term entirely -- that is not the same as a zero-length deadline.';
+
+
+-- Backstop for datasource.schema_name (0024). The name is interpolated
+-- unquoted into the warehouse DDL while pandas' to_sql quotes it, so a name
+-- that is not case-fold-stable makes the two disagree ("CREATE SCHEMA Test"
+-- creates `test`; to_sql then looks for `"Test"`). The real guard is
+-- core.schema.validate_schema_name() at every write path. NOT VALID so
+-- installations holding an older folded name stay saveable.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint c
+          JOIN pg_class t ON t.oid = c.conrelid
+          JOIN pg_namespace n ON n.oid = t.relnamespace
+         WHERE n.nspname = 'starcubes_meta'
+           AND t.relname = 'datasource'
+           AND c.conname = 'datasource_schema_name_check'
+    ) THEN
+        ALTER TABLE starcubes_meta.datasource
+            ADD CONSTRAINT datasource_schema_name_check
+            CHECK (schema_name ~ '^[a-z_][a-z0-9_]{0,62}$') NOT VALID;
+    END IF;
+END $$;

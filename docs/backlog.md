@@ -60,25 +60,21 @@ discussion captures.
 - **Source schema drift guard.** No pre-flight validation that upstream
   columns still match `source_expr` / `base_table` before the extract loop.
   A dropped/renamed source column fails mid-run.
-- **`datasource.schema_name` is unvalidated free text that is interpolated
-  raw into SQL.** `sources/views.py` takes it straight from the form (both
-  `source_new` and `source_save`), and ~78 call sites across `core/` and
-  `sources/` build SQL with `f"{schema}.fact"` and friends — no quoting, no
-  charset check, no CHECK constraint on the column. Two consequences. A name
-  Postgres would fold (`Test`) is *created* folded by
-  `core/schema.py:create_fact`'s `CREATE SCHEMA IF NOT EXISTS {schema}` but
-  compared unfolded by every `information_schema` lookup, so the metadata and
-  the disk disagree from then on: `create_dim_tables` re-creates tables it
-  cannot see and fails with *already exists*, and `migrations/starcubes_meta.sql`
-  — the one place in the repo that quotes correctly, with `format('%I')` — was
-  the first thing to break outright. A name needing quotes at all (a hyphen, a
-  space) breaks the raw interpolation everywhere with a syntax error. The fix
-  is to **validate** on `^[a-z_][a-z0-9_]*$` at both write paths (plus a CHECK
-  as backstop), which makes the quoting question moot, and explicitly *not* to
-  convert the 78 sites to `%I`: they are consistently wrong and therefore
-  work, so quoting them would break every installation whose schema is already
-  sitting folded on disk. Validation has to skip unchanged values, or every
-  existing row with a folded name becomes unsaveable.
+- **`datasource.schema_name` quoting — resolved by validation, not by
+  quoting.** The name is still interpolated raw into ~70 `f"{schema}.fact"`
+  sites across `core/` and `sources/`, while pandas' `to_sql` quotes it.
+  Rather than convert those sites to `%I` — they are consistently unquoted
+  and therefore work, so quoting them would break every installation whose
+  schema is already sitting folded on disk — the name is restricted to what
+  survives Postgres case-folding unchanged:
+  `core/schema.py:validate_schema_name` on `^[a-z_][a-z0-9_]{0,62}$`, called
+  from `source_new`, `source_edit`, `profile_store.insert_datasource` and
+  `ensure_schema`, with a `NOT VALID` CHECK
+  (`migrations/0024_schema_name_check.sql`) as backstop. `source_edit` skips
+  the check when the submitted name is unchanged, so a row predating it stays
+  editable. Remaining gap: nothing repairs a datasource already holding a
+  folded name — its metadata and disk still disagree until someone edits the
+  field to the folded spelling.
 - **Partition retirement.** `import_fact` now ensures partitions forward of
   the load window exist on every run (`core/schema.py:ensure_partitions_for`,
   see [`docs/etl-engine.md`](etl-engine.md) "Importing ensures partitions

@@ -128,6 +128,28 @@ in the warehouse. They are stable unless this document changes.
   fact table. Sources have incompatible shapes; a shared fact would force
   a lowest-common-denominator model. Isolation is cheap.
 
+- **Schema names are validated, not quoted.** `datasource.schema_name` is
+  interpolated **unquoted** into ~70 f-string SQL statements across `core/`
+  (`f"{schema}.fact"` and friends), while pandas' `to_sql` quotes whatever it
+  is handed. Postgres case-folds an unquoted identifier, so a name that is
+  not already lower-case makes the two disagree: `CREATE SCHEMA Test` creates
+  `test`, every `information_schema` lookup then compares against `Test` and
+  finds nothing, and `to_sql` finally tries to create its table in a `"Test"`
+  that does not exist. The fix constrains the name rather than quoting the
+  call sites — `core/schema.py:validate_schema_name` on
+  `^[a-z_][a-z0-9_]{0,62}$`, with a `NOT VALID` CHECK as backstop. Those
+  sites are *consistently* unquoted and therefore correct for every name that
+  survives case-folding unchanged; quoting them would break each installation
+  whose schema already sits folded on disk. Validation also closes the
+  DDL-injection hole the raw interpolation leaves open. `source_edit` skips
+  the check when the name is unchanged, so rows predating it stay editable.
+
+- **`ensure_schema` is the one place that creates a datasource's schema.**
+  Called from `create_fact`, `create_dim_tables` *and* `import_dimensions`:
+  importing dimensions before the fact table exists is a legitimate order of
+  operations, and an inline dimension needs no source connection at all, so
+  no single one of them can be assumed to have run first.
+
 - **Partition naming sorts chronologically as a plain string within one
   period.** `core/schema.py:list_fact_partitions` orders by `relname`;
   `create_future_partitions` parses the last name to find the next

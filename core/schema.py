@@ -25,6 +25,39 @@ UNKNOWN_SOURCE_ID = "__unknown__"  # sentinel dim row for source values not
 
 _MIGRATION_SQL = Path(__file__).resolve().parent.parent / "migrations" / "starcubes_meta.sql"
 
+# A datasource's schema name is interpolated into ~70 f-string SQL statements
+# across core/, and pandas' ``to_sql`` quotes it while those do not. An
+# unquoted identifier is case-folded by Postgres, so a name that is not
+# already lower-case means the two disagree: ``CREATE SCHEMA Test`` makes
+# ``test``, then ``to_sql(schema="Test")`` looks for ``"Test"`` and fails
+# with "schema does not exist". Restricting the name to what survives
+# case-folding unchanged makes quoting irrelevant everywhere.
+_SCHEMA_NAME_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+
+class SchemaNameError(ValueError):
+    """Raised for a schema name that is not safe to interpolate unquoted."""
+
+
+def validate_schema_name(name: str) -> str:
+    """Return ``name`` if it is a safe, case-fold-stable schema identifier."""
+    if not isinstance(name, str) or not _SCHEMA_NAME_RE.match(name):
+        raise SchemaNameError(
+            f"invalid schema name {name!r}: use 1-63 characters, lower-case "
+            f"letters, digits and underscore, starting with a letter or "
+            f"underscore (e.g. 'starcubes_payments')")
+    return name
+
+
+def ensure_schema(conn, schema: str) -> None:
+    """Create the datasource's schema if it is not there yet.
+
+    Called by every entry point that creates objects inside it, not just
+    ``create_fact`` — importing dimensions into a datasource whose fact
+    table has not been created yet is a legitimate order of operations.
+    """
+    conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {validate_schema_name(schema)}"))
+
 # --- partition period helpers ------------------------------------------------
 #
 # A source's partition_period is one of 'day', 'week', 'month'. All four
@@ -188,7 +221,7 @@ def create_fact(source: Source, dest_engine, *, additional_partitions: int = 2) 
         boundaries.append(_next_period(boundaries[-1], period))
 
     with dest_engine.begin() as conn:
-        conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+        ensure_schema(conn, schema)
         conn.execute(text(
             f"CREATE TABLE IF NOT EXISTS {schema}.fact ({col_ddl}) "
             f"PARTITION BY RANGE ({pc})"
@@ -215,6 +248,7 @@ def create_dim_tables(source: Source, dest_engine, *, quiet: bool = False) -> li
     schema = source.schema_name
     created: list[str] = []
     with dest_engine.begin() as conn:
+        ensure_schema(conn, schema)
         for d in source.primary_dimensions():
             if not d.dim_table:
                 continue
@@ -483,6 +517,11 @@ def import_dimensions(source: Source, source_engine, dest_engine,
     with the dim table indices so the query layer can join correctly.
     """
     schema = source.schema_name
+    # Dimensions can legitimately be imported before the fact table exists
+    # (inline dimensions need no source connection at all), so this path
+    # cannot assume create_fact has already made the schema.
+    with dest_engine.begin() as conn:
+        ensure_schema(conn, schema)
     auto_dim_cols = {c.name for c in source.fact_columns
                      if c.role == "auto-dimension"}
     for d in source.dimensions:

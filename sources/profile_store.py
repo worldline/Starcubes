@@ -18,6 +18,7 @@ from __future__ import annotations
 from sqlalchemy import text
 
 from core.query import slugify_group_set
+from core.schema import validate_schema_name
 
 # Child tables a profile owns in full. ``dim_group_set`` and below hang off
 # ``dimension`` by ON DELETE CASCADE, so deleting dimensions clears them.
@@ -155,6 +156,10 @@ def insert_datasource(conn, profile, name: str, schema: str,
     edit any prefilled value before submitting, so the form is the source of
     truth and only the child rows come from the profile.
     """
+    # Interpolated unquoted into the warehouse DDL downstream, so it has to
+    # be case-fold stable — fail here rather than at create_fact time.
+    validate_schema_name(schema)
+
     # Become the default source only when no other source claims it (the
     # partial unique index ux_datasource_default allows just one).
     has_default = conn.execute(text(

@@ -18,7 +18,7 @@ from django.core.management.base import BaseCommand, CommandError
 from sqlalchemy import text
 
 from core.profile import ProfileError, iter_profiles, load_profile
-from core.schema import create_fact, import_dimensions
+from core.schema import SchemaNameError, create_fact, import_dimensions
 from core.source import Source, _get_cached_engine
 from sources.profile_store import insert_datasource, insert_profile_children
 
@@ -105,9 +105,14 @@ class Command(BaseCommand):
                           f"{len(profile.measures)} measures")
 
         meta_engine = _get_cached_engine(dsn)
-        ds_id = _upsert_datasource(meta_engine, options["name"],
-                                    options["schema"], source_dsn,
-                                    options["force"], profile)
+        try:
+            ds_id = _upsert_datasource(meta_engine, options["name"],
+                                        options["schema"], source_dsn,
+                                        options["force"], profile)
+        except SchemaNameError as exc:
+            # Same treatment as ProfileError above: the message belongs on
+            # stderr, not in a traceback.
+            raise CommandError(str(exc)) from exc
         self.stdout.write(f"registered datasource {options['name']!r} "
                           f"(id={ds_id}) → schema {options['schema']}")
 
