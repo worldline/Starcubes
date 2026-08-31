@@ -196,7 +196,7 @@ Measured, so nobody re-derives it: a multi-statement string that bypassed layer
 inside one is still rejected by layers 1+2 with SQLSTATE 25006. Layer 3 is the
 only thing enforcing "one statement"; layers 1+2 are the only thing enforcing
 "no writes". None of it substitutes for a `SELECT`-only Postgres role — see the
-Backlog note in `CLAUDE.md`.
+Backlog note in `docs/backlog.md`.
 
 **Cancel is cross-process, via `pg_stat_activity`.** uWSGI runs
 `processes = 2`, so an in-memory `{token: pid}` map would frequently be
@@ -484,7 +484,7 @@ bin — useless against the 30–120 s lag a normal periodic ETL run leaves
 between passes.
 
 **Do not** cap `interval_end` at the HWM server-side instead — see the
-`CLAUDE.md` design-decision note "`interval_end` is the requested window end,
+`docs/chart-rendering.md` design-decision note "`interval_end` is the requested window end,
 not the data horizon" for why that breaks `pushData`, the `covered` test, and
 the client's ability to tell "no rows here" from "not loaded yet".
 
@@ -502,7 +502,7 @@ long because it runs past where the data ends, into the near future.
 monotonic `hwmSeen` rather than the per-response `hwm`, so a briefly regressing
 watermark cannot make the bar flicker wider and back on every poll.
 
-The library (`@hgruber/timeseries.js` ≥ 0.10.0) does the rest: `setPartialBins`
+The library (`@hgruber/timeseries.js` ≥ 0.10.2) does the rest: `setPartialBins`
 `'scale'` draws that one bar only as wide as its bin is filled and divides its
 height by the same fraction, so its **area** is still the count it carries and
 its height reads as the same density as its neighbours. That factor is also the
@@ -523,7 +523,7 @@ watches a live source.
 Blocks at different `interval`s live side by side in `ts.data[]` (`pushData`
 keeps both), and `prepare_grid` draws the finest tier whose bars are at least
 `fadeHi` px wide. Across the `fadeHi` → `fadeLo` band both tiers are drawn and
-dissolved into each other via `plot._fade` (see the library's CLAUDE.md).
+dissolved into each other via `plot._fade` (see the library's docs).
 
 **starcubes owns the threshold, the library owns the transition.** starcubes used to
 call `ts.setRenderInterval(interval)` on every `autoFetch`, which pins one tier

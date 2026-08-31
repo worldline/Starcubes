@@ -10,7 +10,7 @@ partitions), **maximum load throughput** (three-stage extract / transform /
 load pipeline with psycopg `COPY FROM`), and **configurability** (every
 datasource lives as metadata rows in `starcubes_meta`, editable from a GUI).
 
-## Status
+## Status <!-- maintainer -->
 
 **Built**
 
@@ -29,14 +29,14 @@ datasource lives as metadata rows in `starcubes_meta`, editable from a GUI).
 - `manage.py query_cache_clear` — flush the server-side plot cache (whole DB or single datasource).
 - `starcubes/` — Django project (`settings.py`, `urls.py`, `wsgi.py`, `middleware.py`). Login system with `RequireLoginMiddleware` (protects `/sources/` and `/admin/`), plus optional Keycloak/OIDC SSO (`mozilla-django-oidc`, `starcubes/oidc.py`) alongside password login — off by default, auto-provisions non-privileged users on first login when configured. `SQLAlchemyPoolMiddleware` logs warnings for leaked connections.
 - `sources/` — Django app: full datasource CRUD + ETL monitor GUI. Inline CRUD for fact columns, dimensions, indices. ETL Commands tab with Run ETL (window overrides), Forever ETL, Data Cleanup, Metadata, and Schema actions. Schema creation, sync (dry-run/confirm), and drop. Connection status badges. Seed-data preload on create.
-- `viz/` — Django app: filter UI + JSON endpoint + vendored `@hgruber/timeseries.js@~0.10.0` (npm dep). Chart has follow-mode toggle, seismograph auto-refresh, arrow-key viewport panning, per-user bar preferences, and login-gated Group Dims tab.
+- `viz/` — Django app: filter UI + JSON endpoint + vendored `@hgruber/timeseries.js@~0.10.2` (npm dep). Chart has follow-mode toggle, seismograph auto-refresh, arrow-key viewport panning, per-user bar preferences, and login-gated Group Dims tab.
 - SQLAlchemy engine cache prevents connection leaks — one pool per (dsn, connect_args) pair.
 
 **Not yet**
 
 - Multi-dialect `WHERE`-clause construction is still Oracle-only (`to_timestamp` literals). When a second non-Oracle source is wired up, switch to SQLAlchemy bind parameters.
 
-## Why this exists
+## Why this exists <!-- end user -->
 
 No single OSS project delivers "configure an arbitrary SQL source → compact
 star schema with smallint-keyed dimensions → fast filterable stacked-bar
@@ -45,7 +45,7 @@ but not the star-schema shape. Superset / Metabase / Grafana handle viz but
 expect data already modelled. The closest combo — Airbyte + dbt + Superset —
 is three tools, three UIs, and you still write the star models by hand.
 
-## Architecture
+## Architecture <!-- operator -->
 
 ```
                               starcubes_meta.*
@@ -76,7 +76,7 @@ is three tools, three UIs, and you still write the star models by hand.
   **auto-dimension** (no upfront values; the ETL discovers new source values
   on the fly and inserts dim rows for them).
 
-## Repo layout
+## Repo layout <!-- maintainer -->
 
 ```
 core/                       framework-agnostic ETL core (no Django imports)
@@ -117,14 +117,14 @@ sources/                      Django app: datasource CRUD + ETL monitor GUI
     query_cache_clear.py     manage.py query_cache_clear — flush server-side plot cache
 examples.sql                reference SQL for the viz JSON shape
 Dockerfile                  multi-stage: JS vendor (npm ci @hgruber/timeseries.js) → Python deps → nginx+uwsgi runtime
-package.json + package-lock.json  frontend JS dependency, pinned ~0.10.0
+package.json + package-lock.json  frontend JS dependency, pinned ~0.10.2
 docker/
   build.sh                  build wrapper — defaults CONTAINER_ENGINE=podman, delegates to the build engine
   entrypoint.sh              runs manage.py bootstrap (migrate + collectstatic), then nginx+uwsgi
 requirements.txt
 ```
 
-## Quick start
+## Quick start <!-- operator -->
 
 Prerequisites: a Postgres DB for the warehouse, and an Oracle source DB
 (for the example seed). The Dockerfile sets all three up.
@@ -140,7 +140,7 @@ CONTAINER_ENGINE=docker ./docker/build.sh
 ```
 
 The `jsbuilder` Dockerfile stage runs `npm ci` against the top-level
-`package.json`/`package-lock.json` to fetch `@hgruber/timeseries.js@~0.10.0`
+`package.json`/`package-lock.json` to fetch `@hgruber/timeseries.js@~0.10.2`
 from the npm registry and drops the pre-built bundle into
 `viz/static/timeseries/timeseries.js`.
 
@@ -228,7 +228,7 @@ If `--name` is omitted and only one datasource exists, it is auto-detected.
 The output matches the shape documented in `examples.sql:43–62` and consumed
 by `timeseries.js`.
 
-## Adding a new datasource
+## Adding a new datasource <!-- operator -->
 
 Use the GUI at `/sources/new/` or write a seed script modelled on
 `manage.py seed_example`. You need

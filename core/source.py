@@ -21,6 +21,19 @@ _engine_cache: dict[tuple, sqlalchemy.Engine] = {}
 
 _oracle_client_initialized = False
 
+# Whitelist of `measure.graph_style` values accepted by `Source.load`.
+# Ladder styles are duplicated here (rather than imported from `core.query`)
+# to avoid the circular import `query` → `source` → `query`. `quantile-steps`
+# is the canonical library type; the `-open` variant is a starcubes-side
+# spelling mapped to `quantile-steps` with `connect=False` in `query._ladder_plot_type`.
+_VALID_GRAPH_STYLES = frozenset({
+    # simple / non-ladder renderers
+    "multibar", "multiline", "multipoint", "stackarea", "waterfall",
+    # ladder renderers (one entry per distinct plot the library can draw)
+    "quantile-bands", "quantile-steps", "quantile-steps-open",
+    "error-bars", "candlestick",
+})
+
 
 def init_oracle_client() -> None:
     """Initialize oracledb thick mode if Oracle client libs are on
@@ -180,7 +193,7 @@ class Measure:
     """
     name: str          # display label, e.g. "Transaction count"
     agg: str           # 'count(*)' | 'sum(stay)' | 'avg(total)' | 'quantile(stay)'
-    graph_style: str   # timeseries.js plot type; only 'multibar' wired today
+    graph_style: str   # timeseries.js plot type; must be in _VALID_GRAPH_STYLES
     is_default: bool
     ordinal: int
     percentiles: Optional[str] = None  # 'a,b,c' ladder for graph_style=quantile-bands
@@ -314,6 +327,13 @@ class Source:
                 " ORDER BY ordinal, name"
             ), {"ds": ds["id"]}).mappings().all()]
 
+        for m in measures:
+            if m.graph_style not in _VALID_GRAPH_STYLES:
+                raise ValueError(
+                    f"datasource {ds['name']!r}: measure {m.name!r} has "
+                    f"graph_style={m.graph_style!r}; choose from "
+                    f"{sorted(_VALID_GRAPH_STYLES)}")
+
         if not ds["import_query"]:
             if not ds["base_table"]:
                 raise ValueError(
@@ -444,7 +464,8 @@ class Source:
         production Oracle source writing ``end_time`` in UTC from a session
         sitting in ``Europe/Berlin``, that came back +7203s ahead, the
         wall-clock term won every run, and ``watermark_lag_s`` was left with
-        no effect at all (see CLAUDE.md's note on the two-term bound). Every
+        no effect at all (see `docs/etl-engine.md`, "Window's upper bound is the
+        later of two terms"). Every
         dialect has a direct UTC expression; using it removes the assumption
         instead of documenting it, which is also why no ``source_timezone``
         config column is needed -- the code already asserts UTC everywhere.

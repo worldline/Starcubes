@@ -1150,11 +1150,11 @@ def timeseries_multibar(
             slot_totals[slot] = slot_totals.get(slot, 0) + v
 
     # Stacked plots (multibar) report the per-slot stacked total as the
-    # value extent; un-stacked plots (multiline, multipoint) plot each series
-    # independently, so the extent is the individual series values. The chart
-    # recomputes the visible y-range per type too, but a correct min/max keeps
-    # the off-screen fallback right.
-    if graph_style in ("multiline", "multipoint"):
+    # value extent; un-stacked plots (multiline, multipoint, stackarea,
+    # waterfall) plot each series independently, so the extent is the
+    # individual series values. The chart recomputes the visible y-range per
+    # type too, but a correct min/max keeps the off-screen fallback right.
+    if graph_style in ("multiline", "multipoint", "stackarea", "waterfall"):
         vals = [v for slot in data.values() for v in slot.values()]
         v_min = min(vals) if vals else 0
         v_max = max(vals) if vals else 0

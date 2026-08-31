@@ -1948,7 +1948,7 @@ async function fetchRange(from, to, interval, signal) {
   plot.extensive = isExtensiveMeasure(starcubesParams.measure);
   // hwm = the ETL high-water mark this plot was answered against. rawTo (below)
   // can be past it — the server always reports what was *asked* for, not how far
-  // the data actually goes (see CLAUDE.md, "interval_end is the requested window
+  // the data actually goes (see `docs/chart-rendering.md`, "interval_end is the requested window
   // end, not the data horizon"). hwmSeen tracks the max hwm observed for this
   // source so a momentarily-regressing value can't flap blocks open/closed.
   //
@@ -2289,10 +2289,18 @@ function initTs() {
   // support once drawn on canvas) can be picked before construction.
   const _isDark = document.documentElement.getAttribute('data-theme') === 'dark';
 
+  // Pin the constructor's first frame to the saved viewport. timeseries.js
+  // ≥ 0.10.2 accepts a [tmin, tmax] pair as `initialView` and applies it
+  // synchronously before paint, so we don't need the post-construction
+  // `ts.zoom(_, _, 0); ts.stop();` workaround any more.
+  const _initialView = (_initTmin != null && _initTmax != null)
+    ? [_initTmin, _initTmax]
+    : null;
+
   ts = new TimeSeries({
     canvas: 'chart',
     sources: [{ 'source-type': 'starcubes-data' }, { 'source-type': 'starcubes-tracker' }],
-    initialView: null,
+    initialView: _initialView,
     // Resolution-tier switch point + dissolve band. loadMeta() re-applies these
     // via setFadeBand once the per-source bar_pixel_target arrives; setting them
     // here covers the case where initTs() runs first.
@@ -2316,21 +2324,6 @@ function initTs() {
   attachBarTooltip();
   ts.onClickDataCallback((plot, n, key, value) => openDrillModal(plot, n, key, value));
   if (chartSqlBtn) chartSqlBtn.disabled = !currentMeta;
-
-  // The library has no constructor option for a start window: it always comes up
-  // on `now-24h … now` (its own tmin/tmax defaults) and paints that synchronously
-  // before returning. The `0` is what keeps that frame off the screen — a
-  // zero-duration zoom runs to completion inside animate() on the spot (span 0 →
-  // t 1, no rAF, no setTimeout), so the corrected picture is drawn in this same
-  // task and the browser never composites the 24h one. Give it a duration, or
-  // move it behind an await/setTimeout, and the initial window visibly slides.
-  if (_initTmin != null && _initTmax != null) { ts.zoom(_initTmin, _initTmax, 0); ts.stop(); }
-  // Unreachable today — both callers run after loadMeta(), which always sets
-  // currentViewport. If it ever is reachable, adopt the window the constructor
-  // chose rather than leaving currentViewport null: autoFetch() would bail out
-  // and the 300 ms-throttled onViewportChange would fill it in late, which is
-  // the same jump again in slower motion.
-  else currentViewport = ts.getViewport();
 }
 
 // ── Floating panels ───────────────────────────────────────────────────────
@@ -2720,6 +2713,7 @@ function updateLegend() {
   for (const plot of data) {
     if (!plot || (plot.type !== 'multibar' && plot.type !== 'multiline'
                   && plot.type !== 'multipoint'
+                  && plot.type !== 'stackarea' && plot.type !== 'waterfall'
                   && plot.type !== 'quantile-bands' && plot.type !== 'quantile-steps'
                   && plot.type !== 'error-bars' && plot.type !== 'candlestick')) continue;
     // Skip blocks tagged with a previous group_by — their series keys
