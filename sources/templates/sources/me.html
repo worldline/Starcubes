@@ -1,0 +1,90 @@
+{% extends "sources/base.html" %}
+{% block title %}Profile — {{ me.username }}{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1 class="page-title">My Profile</h1>
+</div>
+
+{% if msg %}
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
+{% endif %}
+{% if err %}
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">{{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-header"><span class="card-title">Account</span></div>
+  <div class="card-body">
+    <dl class="dl-grid">
+      <dt>Username</dt><dd>{{ me.username }}</dd>
+      <dt>Email</dt><dd class="mono">{{ me.email|default:'—' }}</dd>
+      <dt>Auth</dt><dd>{% if me.has_usable_password %}password{% else %}SSO only{% endif %}</dd>
+      <dt>Superuser</dt><dd>{% if me.is_superuser %}✓{% else %}—{% endif %}</dd>
+      <dt>Active</dt><dd>{% if me.is_active %}✓{% else %}—{% endif %}</dd>
+      <dt>Last login</dt><dd>{{ me.last_login|date:"Y-m-d H:i:s"|default:'—' }}</dd>
+      <dt>Date joined</dt><dd>{{ me.date_joined|date:"Y-m-d H:i:s" }}</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><span class="card-title">Change Password</span></div>
+  <div class="card-body">
+    <form method="post" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="change_password">
+      <div>
+        <label class="form-label">Current password</label>
+        <input class="form-control" type="password" name="current_password" required autocomplete="current-password" style="width:240px">
+      </div>
+      <div>
+        <label class="form-label">New password</label>
+        <input class="form-control" type="password" name="new_password" required autocomplete="new-password" style="width:240px">
+      </div>
+      <div>
+        <label class="form-label">Confirm new</label>
+        <input class="form-control" type="password" name="confirm_password" required autocomplete="new-password" style="width:240px">
+      </div>
+      <button type="submit" class="btn btn-primary">Update Password</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <span class="card-title">Recent Queries ({{ history|length }})</span>
+    <span style="margin-left:auto;font-size:12px;color:var(--muted)">Cross-datasource query-console history for the last 200 runs.</span>
+  </div>
+  <div class="card-body" style="padding:0">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th style="width:140px">When</th>
+          <th style="width:180px">Datasource</th>
+          <th>SQL</th>
+          <th style="width:80px;text-align:right">Runs</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in history %}
+        <tr>
+          <td style="color:var(--muted);font-size:12px">{{ h.last_run_at|date:"Y-m-d H:i:s" }}</td>
+          <td>
+            {% if h.datasource_id %}
+              <a href="{% url 'sources:detail' h.datasource_id %}">{{ h.datasource_name|default:h.datasource_id }}</a>
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
+          <td class="mono" style="font-size:12px;white-space:pre-wrap;word-break:break-all">{{ h.sql|truncatechars:200 }}</td>
+          <td style="text-align:right">{{ h.run_count }}</td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:16px">No query-console history yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

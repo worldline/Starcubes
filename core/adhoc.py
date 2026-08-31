@@ -363,6 +363,33 @@ def history_list(meta_engine, *, user_id: int, datasource_id: int,
             for r in rows]
 
 
+def history_list_user(meta_engine, *, user_id: int, limit: int = 200) -> list[dict]:
+    """User-wide query history, joined with datasource name.
+
+    Used by the /sources/me/ profile page so a user can see every query
+    they have run across every datasource in one list. The chart
+    page's drill-down only shows history for one (user, datasource);
+    this is the wider lens.
+
+    Ordered by ``last_run_at DESC``; capped at ``limit`` rows.
+    """
+    with meta_engine.begin() as conn:
+        rows = conn.execute(text(
+            "SELECT h.id, h.datasource_id, d.name AS datasource_name, "
+            "       h.sql_text, h.last_run_at, h.run_count "
+            "  FROM starcubes_meta.query_history h "
+            "  LEFT JOIN starcubes_meta.datasource d "
+            "         ON d.id = h.datasource_id "
+            " WHERE h.user_id = :u "
+            " ORDER BY h.last_run_at DESC LIMIT :lim"
+        ), {"u": int(user_id), "lim": int(limit)}).mappings().all()
+    return [{"id": r["id"], "datasource_id": r["datasource_id"],
+             "datasource_name": r["datasource_name"],
+             "sql": r["sql_text"],
+             "last_run_at": r["last_run_at"], "run_count": r["run_count"]}
+            for r in rows]
+
+
 def history_delete(meta_engine, *, user_id: int, entry_id: int) -> int:
     """Delete one history entry. Returns the number of rows removed.
 

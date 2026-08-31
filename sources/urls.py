@@ -6,6 +6,7 @@ app_name = "sources"
 urlpatterns = [
     # Pages
     path("",                                           views.source_list,    name="list"),
+    path("me/",                                        views.my_profile,     name="me"),
     path("settings/",                                  views.settings_page,  name="settings"),
     path("new/",                                       views.source_new,     name="new"),
     path("<int:pk>/",                                  views.source_detail,  name="detail"),

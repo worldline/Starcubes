@@ -33,7 +33,7 @@ from core.etl import (truncate_last_partition, truncate_partition,
                       drop_partition, delete_fact_from,
                       clear_etl_history, set_highwatermark)
 from core.utils import _parse_dt, _pid_alive
-from core.adhoc import history_delete_user
+from core.adhoc import history_delete_user, history_list_user
 from core.audit import audit_id_details, audit_ids, audit_window
 from core.profile import (ProfileError, delete_profile, dump_profile,
                           iter_profiles, load_profile, profile_origin,
@@ -2640,12 +2640,39 @@ def settings_page(request):
         if action == "create_user":
             username = request.POST.get("username", "").strip()
             password = request.POST.get("password", "")
+            email = (request.POST.get("email") or "").strip()
             if not username or not password:
                 return redirect(f"{request.path}?err=Username+and+password+are+required.")
             if User.objects.filter(username=username).exists():
                 return redirect(f"{request.path}?err=Username+already+exists.")
-            User.objects.create_user(username=username, password=password)
+            User.objects.create_user(username=username, password=password, email=email)
             return redirect(f"{request.path}?msg=User+%27{username}%27+created.")
+
+        elif action == "update_user":
+            user_id = request.POST.get("user_id", "")
+            try:
+                target = User.objects.get(pk=int(user_id))
+            except (User.DoesNotExist, ValueError):
+                return redirect(f"{request.path}?err=User+not+found.")
+            # Email — only write when the field was actually submitted; a
+            # missing field means "leave it alone". An empty string clears it.
+            email = request.POST.get("email")
+            if email is not None:
+                target.email = email.strip()
+            # is_active — checkbox: absent means False.
+            if "is_active" in request.POST:
+                target.is_active = (request.POST.get("is_active") == "on")
+            # is_superuser — never let an admin demote themselves, that
+            # would lock everyone out of the page that revokes the right.
+            if "is_superuser" in request.POST:
+                new_super = (request.POST.get("is_superuser") == "on")
+                if target.pk == request.user.pk and not new_super:
+                    return redirect(f"{request.path}?err=Cannot+demote+your+own+admin+rights.")
+                target.is_superuser = new_super
+                # Django's is_superuser implies is_staff; clearing superuser
+                # leaves staff alone — operators may want staff without admin.
+            target.save()
+            return redirect(f"{request.path}?msg=User+%27{target.username}%27+updated.")
 
         elif action == "delete_user":
             user_id = request.POST.get("user_id", "")
@@ -2683,6 +2710,52 @@ def settings_page(request):
     users = User.objects.all().order_by("username")
     return render(request, "sources/settings.html", {
         "users": users,
+        "msg": msg,
+        "err": err,
+    })
+
+
+def my_profile(request):
+    """The signed-in user's own profile page.
+
+    Per the Commit_4 plan, the page takes ``request.user`` only — there is
+    no user_id in the URL and no admin-only data on it. Anyone signed in
+    can see their own email, their last-login history (via the query
+    console's ``query_history`` table — useful for picking up where they
+    left off) and a form to change their own password.
+
+    Password change is the only mutation; it deliberately lives outside
+    the admin ``settings_page`` because a non-admin can still change
+    their own password (and only their own).
+    """
+    if not request.user.is_authenticated:
+        return redirect("/login/?next=/sources/me/")
+    msg = request.GET.get("msg", "")
+    err = request.GET.get("err", "")
+    if request.method == "POST":
+        action = request.POST.get("action", "")
+        if action == "change_password":
+            current = request.POST.get("current_password", "")
+            new = request.POST.get("new_password", "")
+            confirm = request.POST.get("confirm_password", "")
+            if not (current and new and confirm):
+                err = "All three password fields are required."
+            elif new != confirm:
+                err = "New password and confirmation do not match."
+            elif not request.user.check_password(current):
+                err = "Current password is incorrect."
+            elif len(new) < 8:
+                err = "New password must be at least 8 characters."
+            else:
+                request.user.set_password(new)
+                request.user.save()
+                return redirect("/sources/me/?msg=Password+updated.")
+        return redirect(f"{request.path}?err={err}" if err else f"{request.path}?msg=Updated.")
+
+    history = history_list_user(_meta_engine(), user_id=request.user.pk, limit=200)
+    return render(request, "sources/me.html", {
+        "me": request.user,
+        "history": history,
         "msg": msg,
         "err": err,
     })

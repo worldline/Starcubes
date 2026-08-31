@@ -26,6 +26,8 @@
         <thead>
           <tr>
             <th>Username</th>
+            <th>Email</th>
+            <th>Auth</th>
             <th>Superuser</th>
             <th>Staff</th>
             <th>Active</th>
@@ -37,12 +39,27 @@
           {% for u in users %}
           <tr data-uid="{{ u.pk }}">
             <td>{{ u.username }}</td>
-            <td>{% if u.is_superuser %}✓{% else %}—{% endif %}</td>
+            <td>
+              <span class="row-display text-muted">{{ u.email|default:"—" }}</span>
+              <input class="row-edit cell-input" name="email" value="{{ u.email|default:'' }}" placeholder="user@example.com">
+            </td>
+            <td>
+              <span class="row-display">{% if u.has_usable_password %}password{% else %}SSO{% endif %}</span>
+              <span class="row-edit text-muted" style="font-size:11px">{% if u.has_usable_password %}password set{% else %}SSO only{% endif %}</span>
+            </td>
+            <td>
+              <span class="row-display">{% if u.is_superuser %}✓{% else %}—{% endif %}</span>
+              <label class="row-edit" style="font-size:12px"><input type="checkbox" name="is_superuser" {% if u.is_superuser %}checked{% endif %}> admin</label>
+            </td>
             <td>{% if u.is_staff %}✓{% else %}—{% endif %}</td>
-            <td>{% if u.is_active %}✓{% else %}—{% endif %}</td>
+            <td>
+              <span class="row-display">{% if u.is_active %}✓{% else %}—{% endif %}</span>
+              <label class="row-edit" style="font-size:12px"><input type="checkbox" name="is_active" {% if u.is_active %}checked{% endif %}> active</label>
+            </td>
             <td style="color:var(--muted);font-size:12px">{{ u.date_joined|date:"Y-m-d" }}</td>
             <td style="text-align:right;white-space:nowrap">
               <button class="btn-icon" onclick="togglePwForm(this)" title="Set password">🔑</button>
+              <button class="btn-icon" onclick="startUserEdit(this)" title="Edit user">✏</button>
               {% if u.pk != request.user.pk %}
               <form method="post" style="display:inline"
                     onsubmit="return confirm('Delete user \'{{ u.username }}\'?')">
@@ -57,7 +74,7 @@
             </td>
           </tr>
           <tr class="pw-form-row" id="pw-row-{{ u.pk }}" style="display:none">
-            <td colspan="6" style="padding:8px 12px;background:var(--card-bg)">
+            <td colspan="8" style="padding:8px 12px;background:var(--card-bg)">
               <form method="post" style="display:flex;gap:8px;align-items:center">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="set_password">
@@ -70,8 +87,26 @@
               </form>
             </td>
           </tr>
+          <tr class="user-edit-row" id="user-edit-{{ u.pk }}" style="display:none">
+            <td colspan="8" style="padding:8px 12px;background:var(--card-bg)">
+              <form method="post" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+                {% csrf_token %}
+                <input type="hidden" name="action" value="update_user">
+                <input type="hidden" name="user_id" value="{{ u.pk }}">
+                <div>
+                  <label class="form-label">Email</label>
+                  <input class="form-control" name="email" value="{{ u.email|default:'' }}" style="width:240px">
+                </div>
+                <label style="font-size:12px"><input type="checkbox" name="is_superuser" {% if u.is_superuser %}checked{% endif %}> Superuser</label>
+                <label style="font-size:12px"><input type="checkbox" name="is_active" {% if u.is_active %}checked{% endif %}> Active</label>
+                <button type="submit" class="btn btn-primary btn-sm">Save</button>
+                <button type="button" class="btn btn-secondary btn-sm"
+                        onclick="toggleUserEdit(this.closest('tr').previousElementSibling.previousElementSibling.querySelector('.btn-icon[title=\"Edit user\"]'))">Cancel</button>
+              </form>
+            </td>
+          </tr>
           {% empty %}
-          <tr><td colspan="6" style="color:var(--muted);text-align:center;padding:16px">No users found.</td></tr>
+          <tr><td colspan="8" style="color:var(--muted);text-align:center;padding:16px">No users found.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -92,6 +127,10 @@
           <input class="form-control" name="username" required autocomplete="off" style="width:200px">
         </div>
         <div>
+          <label class="form-label">Email</label>
+          <input class="form-control" name="email" type="email" autocomplete="off" style="width:240px" placeholder="user@example.com">
+        </div>
+        <div>
           <label class="form-label">Password</label>
           <input class="form-control" type="password" name="password" required autocomplete="new-password" style="width:200px">
         </div>
@@ -108,6 +147,15 @@ function togglePwForm(btn) {
   var hidden = pwRow.style.display === 'none';
   pwRow.style.display = hidden ? '' : 'none';
   if (hidden) pwRow.querySelector('input[type=password]').focus();
+}
+function startUserEdit(btn) {
+  var row = btn.closest('tr');
+  var editRow = document.getElementById('user-edit-' + row.dataset.uid);
+  // Close any other open edit row first.
+  document.querySelectorAll('.user-edit-row').forEach(function(r) {
+    if (r !== editRow) r.style.display = 'none';
+  });
+  editRow.style.display = editRow.style.display === 'none' ? '' : 'none';
 }
 </script>
 {% endblock %}
