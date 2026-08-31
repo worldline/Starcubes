@@ -5,8 +5,10 @@
 <div class="page-header">
   <h1 class="page-title">Datasources</h1>
   <span class="ms-auto" style="display:flex;gap:8px;align-items:center">
+    {% if user.is_superuser %}
     <button type="button" class="btn btn-secondary" id="btnProfiles">Profiles…</button>
     <a class="btn btn-primary" href="{% url 'sources:new' %}">+ New Datasource</a>
+    {% endif %}
   </span>
 </div>
 
@@ -49,7 +51,9 @@
 {% else %}
 <div class="empty-state">
   <p>No datasources configured yet.</p>
+  {% if user.is_superuser %}
   <a class="btn btn-primary" href="{% url 'sources:new' %}">+ New Datasource</a>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}
@@ -181,55 +185,61 @@
     if (ts) el.textContent = fmtLocal(ts);
   });
 
-  // Auto-check connection status for each datasource
-  document.querySelectorAll('[id^="conn-"]').forEach(function(el) {
-    var pk = el.id.replace('conn-', '');
-    fetch('/sources/' + pk + '/connection-status/', {signal: AbortSignal.timeout(15000)}).then(function(r){ return r.json(); }).then(function(d) {
-      el.className = 'badge ' + (d.ok ? 'badge-conn-ok' : 'badge-conn-fail');
-      el.textContent = el.textContent.replace(' …', '').trim();
-      if (!d.ok) el.title = d.error || 'Connection failed';
-    }).catch(function() {
-      el.className = 'badge badge-conn-fail';
-      el.textContent = el.textContent.replace(' …', '').trim();
+  // Auto-check connection status for each datasource — admin only.
+  // Polling every row's connection probe on a public list page leaks which
+  // sources are reachable and is overkill for non-admins.
+  var adminOnly = document.querySelector('.page-header') &&
+                  document.querySelector('#btnProfiles');  // only present for superusers
+  if (adminOnly) {
+    document.querySelectorAll('[id^="conn-"]').forEach(function(el) {
+      var pk = el.id.replace('conn-', '');
+      fetch('/sources/' + pk + '/connection-status/', {signal: AbortSignal.timeout(15000)}).then(function(r){ return r.json(); }).then(function(d) {
+        el.className = 'badge ' + (d.ok ? 'badge-conn-ok' : 'badge-conn-fail');
+        el.textContent = el.textContent.replace(' …', '').trim();
+        if (!d.ok) el.title = d.error || 'Connection failed';
+      }).catch(function() {
+        el.className = 'badge badge-conn-fail';
+        el.textContent = el.textContent.replace(' …', '').trim();
+      });
     });
-  });
 
-  // Poll status for any 'running' rows
-  var runningRows = [];
-  document.querySelectorAll('#sourceTable tr[data-status="running"]').forEach(function(tr) {
-    runningRows.push(parseInt(tr.dataset.pk, 10));
-  });
-  if (!runningRows.length) return;
+    // Poll status for any 'running' rows
+    var runningRows = [];
+    document.querySelectorAll('#sourceTable tr[data-status="running"]').forEach(function(tr) {
+      runningRows.push(parseInt(tr.dataset.pk, 10));
+    });
+    if (!runningRows.length) return;
 
-  function updateBadge(pk, run) {
-    var badge = document.getElementById('badge-' + pk);
-    if (!badge) return;
-    var tr = badge.closest('tr');
-    badge.className = 'badge badge-' + (run ? run.status : 'none');
-    if (!run || !run.status) { badge.textContent = '—'; return; }
-    if (run.status === 'running') {
-      badge.innerHTML = '<span class="dot">●</span> Running';
-    } else if (run.status === 'ok') {
-      badge.textContent = '✓ ' + fmtLocal(run.finished_at);
-      if (tr) tr.dataset.status = 'ok';
-      runningRows = runningRows.filter(function(p){ return p !== pk; });
-    } else if (run.status === 'failed') {
-      badge.textContent = '✗ Failed';
-      if (tr) tr.dataset.status = 'failed';
-      runningRows = runningRows.filter(function(p){ return p !== pk; });
+    function updateBadge(pk, run) {
+      var badge = document.getElementById('badge-' + pk);
+      if (!badge) return;
+      var tr = badge.closest('tr');
+      badge.className = 'badge badge-' + (run ? run.status : 'none');
+      if (!run || !run.status) { badge.textContent = '—'; return; }
+      if (run.status === 'running') {
+        badge.innerHTML = '<span class="dot">●</span> Running';
+      } else if (run.status === 'ok') {
+        badge.textContent = '✓ ' + fmtLocal(run.finished_at);
+        if (tr) tr.dataset.status = 'ok';
+        runningRows = runningRows.filter(function(p){ return p !== pk; });
+      } else if (run.status === 'failed') {
+        badge.textContent = '✗ Failed';
+        if (tr) tr.dataset.status = 'failed';
+        runningRows = runningRows.filter(function(p){ return p !== pk; });
+      }
     }
-  }
 
-  var timer = setInterval(function() {
-    if (!runningRows.length) { clearInterval(timer); return; }
-    runningRows.slice().forEach(function(pk) {
-      fetch('/sources/' + pk + '/etl/status/')
-        .then(function(r){ return r.json(); })
-        .then(function(data) {
-          if (data.runs && data.runs.length) updateBadge(pk, data.runs[0]);
-        });
-    });
-  }, 3000);
+    var timer = setInterval(function() {
+      if (!runningRows.length) { clearInterval(timer); return; }
+      runningRows.slice().forEach(function(pk) {
+        fetch('/sources/' + pk + '/etl/status/')
+          .then(function(r){ return r.json(); })
+          .then(function(data) {
+            if (data.runs && data.runs.length) updateBadge(pk, data.runs[0]);
+          });
+      });
+    }, 3000);
+  }  // close adminOnly gate
 })();
 </script>
 {% endblock %}

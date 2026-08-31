@@ -77,7 +77,7 @@ urlpatterns = [
     path("<int:pk>/indices/drop-all/",                  views.drop_all_indices,    name="drop_all_indices"),
     # Source profiles (JSON) — catalogue is datasource-independent, so it
     # sits above <int:pk>/. "profiles" cannot collide with the int converter.
-    path("profiles/",                                   views.profiles_list,       name="profiles_list"),
+    path("profiles/list/",                              views.profiles_list,       name="profiles_list"),
     path("profiles/upload/",                            views.profile_upload,      name="profile_upload"),
     path("profiles/<str:slug>/",                        views.profile_detail,      name="profile_detail"),
     path("profiles/<str:slug>/download/",               views.profile_file_download, name="profile_file_download"),

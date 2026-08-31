@@ -3385,7 +3385,7 @@ function sortTable(th) {
   // ---- Apply -------------------------------------------------------------
 
   function applyDialog() {
-    fetch('/sources/profiles/')
+    fetch('/sources/profiles/list/')
       .then(function(r) { return r.json(); })
       .then(function(d) {
         var opts = (d.profiles || []).filter(function(p) { return !p.error; })

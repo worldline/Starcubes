@@ -8,6 +8,7 @@ from __future__ import annotations
 import json as _json
 import os
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 import re
 import signal
@@ -65,6 +66,53 @@ INDEX_METHODS = ["brin", "btree", "hash"]
 GRAPH_STYLES = ["multibar", "multiline", "multipoint",
                 "quantile-bands", "quantile-steps", "quantile-steps-open",
                 "error-bars", "candlestick"]
+
+
+# ---------------------------------------------------------------------------
+# Auth gates
+#
+# The split into user vs admin pages (Commit_2) is the page side. The
+# endpoint side uses these decorators — every JSON CRUD endpoint that
+# mutates starcubes_meta is gated on superuser, so a non-admin who knows
+# the URL cannot reach it directly. Reading endpoints are gated on login
+# only, because the chart page needs them.
+#
+# JSON endpoints answer 403 JSON, not a 302 redirect: a fetch() that
+# follows the redirect would receive HTML and r.json() would throw an
+# opaque SyntaxError instead of "your session expired". Mirror the
+# pattern in viz/views.py:_login_required_json.
+# ---------------------------------------------------------------------------
+
+def _login_required_json(view):
+    """Gate a JSON endpoint on an authenticated session, answering 403 not 302."""
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return JsonResponse({"ok": False, "error": "login required"}, status=403)
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
+def _admin_required_json(view):
+    """Gate a JSON endpoint on superuser. 403 JSON, never a 302."""
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return JsonResponse({"ok": False, "error": "login required"}, status=403)
+        if not request.user.is_superuser:
+            return JsonResponse({"ok": False, "error": "admin access required"}, status=403)
+        return view(request, *args, **kwargs)
+    return wrapped
+
+
+def _admin_required_page(view):
+    """Gate a full-page view on superuser. 403 HTML is fine here."""
+    @wraps(view)
+    def wrapped(request, *args, **kwargs):
+        if not request.user.is_authenticated or not request.user.is_superuser:
+            return HttpResponseForbidden("Admin access required.")
+        return view(request, *args, **kwargs)
+    return wrapped
 
 
 def _meta_engine():
@@ -147,6 +195,7 @@ def _lag_pair(p):
     return lag_wm, lag_now
 
 
+@_admin_required_page
 def source_new(request):
     if request.method == "POST":
         p = request.POST
@@ -406,6 +455,7 @@ def source_detail(request, pk: int):
     })
 
 
+@_admin_required_page
 def source_manage(request, pk: int):
     """Admin-only configuration page — superset of source_detail.
 
@@ -417,6 +467,7 @@ def source_manage(request, pk: int):
     return render(request, "sources/manage.html", ctx)
 
 
+@_admin_required_page
 def source_edit(request, pk: int):
     if request.method == "POST":
         p = request.POST
@@ -521,6 +572,7 @@ def source_edit(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def source_delete(request, pk: int):
     should_drop = request.POST.get("drop_schema") == "1"
     if should_drop:
@@ -610,6 +662,7 @@ def connection_status(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def estimate_cardinality(request, pk: int, fc_id: int):
     try:
         source = Source.load(_meta_engine(),
@@ -654,6 +707,7 @@ def estimate_cardinality(request, pk: int, fc_id: int):
 
 
 @require_POST
+@_admin_required_json
 def preview_import(request, pk: int):
     try:
         source = Source.load(_meta_engine(),
@@ -714,6 +768,7 @@ def _etl_busy_response(pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_run(request, pk: int):
     try:
         # Parse optional window overrides from POST data.
@@ -896,6 +951,7 @@ def etl_log_tail(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_kill(request, pk: int):
     """Kill the currently-running single-shot ETL run for this datasource.
 
@@ -967,6 +1023,7 @@ def etl_kill(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_forever_start(request, pk: int):
     try:
         interval = int(request.POST.get("interval", 60))
@@ -1042,6 +1099,7 @@ def etl_forever_start(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_forever_stop(request, pk: int):
     try:
         with _meta_engine().begin() as conn:
@@ -1173,6 +1231,7 @@ def _load_source(pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_delete_from(request, pk: int):
     try:
         from_time = _parse_dt(request.POST["from_time"])
@@ -1185,6 +1244,7 @@ def etl_delete_from(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_truncate_last(request, pk: int):
     try:
         source, meta = _load_source(pk)
@@ -1196,6 +1256,7 @@ def etl_truncate_last(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_truncate_partition(request, pk: int):
     try:
         partition = request.POST.get("partition", "").strip()
@@ -1210,6 +1271,7 @@ def etl_truncate_partition(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_drop_partition(request, pk: int):
     try:
         partition = request.POST.get("partition", "").strip()
@@ -1224,6 +1286,7 @@ def etl_drop_partition(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_vacuum_analyze(request, pk: int):
     try:
         source, _ = _load_source(pk)
@@ -1234,6 +1297,7 @@ def etl_vacuum_analyze(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_set_highwatermark(request, pk: int):
     try:
         source, meta = _load_source(pk)
@@ -1245,6 +1309,7 @@ def etl_set_highwatermark(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_clear_history(request, pk: int):
     try:
         source, meta = _load_source(pk)
@@ -1256,6 +1321,7 @@ def etl_clear_history(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_create_partitions(request, pk: int):
     try:
         n = int(request.POST.get("n", 1))
@@ -1267,6 +1333,7 @@ def etl_create_partitions(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_audit(request, pk: int):
     """Compare source vs fact row counts per time bucket over a window.
 
@@ -1293,6 +1360,7 @@ def etl_audit(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_audit_ids(request, pk: int):
     """Name the exact rows that differ between source and fact in a window.
 
@@ -1314,6 +1382,7 @@ def etl_audit_ids(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_audit_id_details(request, pk: int):
     """Source watermark + responsible ETL run for ids the audit already named.
 
@@ -1338,6 +1407,7 @@ def etl_audit_id_details(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_backfill(request, pk: int):
     """Re-load one closed window, inserting only rows missing from fact.
 
@@ -1372,6 +1442,7 @@ def etl_backfill(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def etl_refresh_counts(request, pk: int):
     try:
         source, _ = _load_source(pk)
@@ -1382,6 +1453,7 @@ def etl_refresh_counts(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def cache_clear(request, pk: int):
     """Delete query_cache rows for this datasource.
 
@@ -1403,6 +1475,7 @@ def cache_clear(request, pk: int):
 # ---------------------------------------------------------------------------
 
 @require_POST
+@_admin_required_json
 def fc_add(request, pk: int):
     try:
         p = request.POST
@@ -1426,6 +1499,7 @@ def fc_add(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def fc_edit(request, pk: int, fc_id: int):
     try:
         p = request.POST
@@ -1456,6 +1530,7 @@ def fc_edit(request, pk: int, fc_id: int):
 
 
 @require_POST
+@_admin_required_json
 def fc_delete(request, pk: int, fc_id: int):
     try:
         with _meta_engine().begin() as conn:
@@ -1473,6 +1548,7 @@ def fc_delete(request, pk: int, fc_id: int):
 # ---------------------------------------------------------------------------
 
 @require_POST
+@_admin_required_json
 def dim_add(request, pk: int):
     try:
         p = request.POST
@@ -1514,6 +1590,7 @@ def dim_add(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def dim_edit(request, pk: int, dim_id: int):
     try:
         p = request.POST
@@ -1560,6 +1637,7 @@ def dim_edit(request, pk: int, dim_id: int):
 
 
 @require_POST
+@_admin_required_json
 def dim_delete(request, pk: int, dim_id: int):
     try:
         with _meta_engine().begin() as conn:
@@ -1577,6 +1655,7 @@ def dim_delete(request, pk: int, dim_id: int):
 # ---------------------------------------------------------------------------
 
 @require_POST
+@_admin_required_json
 def idx_add(request, pk: int):
     try:
         p = request.POST
@@ -1596,6 +1675,7 @@ def idx_add(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def idx_edit(request, pk: int, idx_id: int):
     try:
         p = request.POST
@@ -1620,6 +1700,7 @@ def idx_edit(request, pk: int, idx_id: int):
 
 
 @require_POST
+@_admin_required_json
 def idx_delete(request, pk: int, idx_id: int):
     try:
         with _meta_engine().begin() as conn:
@@ -1732,6 +1813,7 @@ def _clear_other_defaults(conn, pk: int, keep_id: int | None) -> None:
 
 
 @require_POST
+@_admin_required_json
 def measure_add(request, pk: int):
     try:
         p = request.POST
@@ -1757,6 +1839,7 @@ def measure_add(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def measure_edit(request, pk: int, measure_id: int):
     try:
         p = request.POST
@@ -1784,6 +1867,7 @@ def measure_edit(request, pk: int, measure_id: int):
 
 
 @require_POST
+@_admin_required_json
 def measure_delete(request, pk: int, measure_id: int):
     try:
         with _meta_engine().begin() as conn:
@@ -1942,6 +2026,7 @@ def alarms_list(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def alarm_add(request, pk: int):
     """Create one alarm for the given datasource."""
     values, errors = _parse_alarm_fields(request)
@@ -1983,6 +2068,7 @@ def alarm_add(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def alarm_edit(request, pk: int, alarm_id: int):
     """Update one alarm. Same field set as add — no partial updates."""
     values, errors = _parse_alarm_fields(request)
@@ -2021,6 +2107,7 @@ def alarm_edit(request, pk: int, alarm_id: int):
 
 
 @require_POST
+@_admin_required_json
 def alarm_delete(request, pk: int, alarm_id: int):
     """Delete one alarm. Idempotent — 200 even if the row was already gone."""
     try:
@@ -2038,6 +2125,7 @@ def alarm_delete(request, pk: int, alarm_id: int):
 # Dimension groups (JSON)
 # ---------------------------------------------------------------------------
 
+@_login_required_json
 def dim_values(request, pk: int, dim_id: int):
     """Return all rows of a dimension table for the group-assignment UI."""
     try:
@@ -2083,6 +2171,7 @@ def _group_set_slug(conn, dimension_id: int, name: str,
     return slug
 
 
+@_login_required_json
 def group_dims_list(request, pk: int):
     """List every group dimension of a datasource, with its native dimension."""
     try:
@@ -2151,6 +2240,7 @@ def _find_group_set(source, gs_id: int):
     return None, None
 
 
+@_login_required_json
 def group_dim_detail(request, pk: int, gs_id: int):
     """Return one group dimension with its groups, members and counts."""
     try:
@@ -2166,6 +2256,7 @@ def group_dim_detail(request, pk: int, gs_id: int):
 
 
 @require_POST
+@_admin_required_json
 def group_dim_add(request, pk: int):
     """Create an empty group dimension on one native dimension."""
     try:
@@ -2204,6 +2295,7 @@ def group_dim_add(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def group_dim_save(request, pk: int, gs_id: int):
     """Rename a group dimension and replace *its* groups atomically.
 
@@ -2293,6 +2385,7 @@ def group_dim_save(request, pk: int, gs_id: int):
 
 
 @require_POST
+@_admin_required_json
 def group_dim_delete(request, pk: int, gs_id: int):
     """Delete one group dimension; its groups and members go with it."""
     try:
@@ -2316,6 +2409,7 @@ def group_dim_delete(request, pk: int, gs_id: int):
 # ---------------------------------------------------------------------------
 
 @require_POST
+@_admin_required_json
 def create_fact_table(request, pk: int):
     """Create the fact table, dimension tables, and initial monthly partitions."""
     try:
@@ -2347,6 +2441,7 @@ def create_fact_table(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def sync_schema_view(request, pk: int):
     """Reconcile physical warehouse schema with starcubes_meta configuration.
 
@@ -2390,6 +2485,7 @@ def sync_schema_view(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def import_dims(request, pk: int):
     """Import/update dimension tables. Works without source DB for inline dims."""
     try:
@@ -2446,6 +2542,7 @@ def import_dims(request, pk: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
+@_login_required_json
 def dim_data(request, pk: int):
     """Return list of primary dimension names (for building tabs) plus per-dim data."""
     try:
@@ -2467,6 +2564,7 @@ def dim_data(request, pk: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
+@_login_required_json
 def dim_data_single(request, pk: int, dim_table: str):
     """Return all rows of a single dimension table."""
     try:
@@ -2499,6 +2597,7 @@ def dim_data_single(request, pk: int, dim_table: str):
 
 
 @require_POST
+@_admin_required_json
 def create_all_indices(request, pk: int):
     """Create all FK constraints and indexes for a datasource."""
     try:
@@ -2511,6 +2610,7 @@ def create_all_indices(request, pk: int):
 
 
 @require_POST
+@_admin_required_json
 def drop_all_indices(request, pk: int):
     """Drop all FK constraints and indexes for a datasource. Requires confirmation."""
     try:
@@ -2690,10 +2790,13 @@ def _datasource_profile_yaml(pk: int, name: str = "", description: str = "") -> 
 
 
 def profiles_list(request):
-    """Catalogue of every profile, shipped and saved."""
+    """Catalogue of every profile, shipped and saved. Login-only."""
+    if not request.user.is_authenticated:
+        return JsonResponse({"ok": False, "error": "login required"}, status=403)
     return JsonResponse({"ok": True, "profiles": iter_profiles()})
 
 
+@_admin_required_json
 def profile_file_download(request, slug: str):
     """Stream one catalogue profile's YAML file as an attachment.
 
@@ -2737,6 +2840,7 @@ def profile_detail(request, slug: str):
 
 
 @require_POST
+@_admin_required_json
 def profile_upload(request):
     """Validate an uploaded YAML and store it under ``profiles/user/``."""
     upload = request.FILES.get("file")
@@ -2762,6 +2866,7 @@ def profile_upload(request):
 
 
 @require_POST
+@_admin_required_json
 def profile_delete(request, slug: str):
     """Delete a saved profile. Shipped examples are not deletable."""
     try:
@@ -2772,6 +2877,7 @@ def profile_delete(request, slug: str):
 
 
 @require_POST
+@_admin_required_json
 def profile_save(request, pk: int):
     """Save this datasource's configuration as ``profiles/user/<name>.yaml``."""
     name = (request.POST.get("name") or "").strip()
@@ -2800,6 +2906,7 @@ def profile_save(request, pk: int):
                          "profiles": iter_profiles()})
 
 
+@_admin_required_json
 def profile_download(request, pk: int):
     """Stream this datasource's configuration as a .yaml attachment."""
     ds = _load_datasource(pk)
@@ -2970,6 +3077,7 @@ def _fact_row_estimate(schema: str) -> int:
 
 
 @require_POST
+@_admin_required_json
 def profile_apply(request, pk: int):
     """Apply a profile to an existing datasource.
 
