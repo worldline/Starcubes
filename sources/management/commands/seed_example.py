@@ -1,9 +1,14 @@
-"""Seed an example datasource into starcubes_meta.
+"""Seed a datasource into starcubes_meta from a profile.
 
-The example is loaded from ``examples/<profile>.yaml`` via
-``core.profile.load_profile``. Default profile is ``oracle_payments``;
-override with ``--profile <name>``. To add a new example, drop a YAML file
-in ``examples/`` — no Python changes required.
+The profile is loaded via ``core.profile.load_profile``, which looks in
+``profiles/user/`` first and then ``profiles/examples/``. Default profile is
+``oracle_payments``; override with ``--profile <name>``. To add one, drop a
+YAML file in either directory — no Python changes required.
+
+The INSERTs live in ``sources/profile_store.py``, shared with the GUI, so
+the CLI and the browser cannot write a profile differently.
+
+See docs/source-profiles.md.
 """
 from __future__ import annotations
 
@@ -15,15 +20,20 @@ from sqlalchemy import text
 from core.profile import ProfileError, iter_profiles, load_profile
 from core.schema import create_fact, import_dimensions
 from core.source import Source, _get_cached_engine
+from sources.profile_store import insert_datasource, insert_profile_children
+
+
+def _available_profiles() -> str:
+    """Comma-separated profile names for the --profile help text."""
+    return ", ".join(p["name"] for p in iter_profiles()) or "<none>"
 
 
 def _upsert_datasource(meta_engine, name, schema, source_dsn, force, profile):
-    """Insert a datasource plus its child rows from a loaded profile.
+    """Insert a datasource plus every child row from a loaded profile.
 
-    Mirror of the historical in-line loop: writes one row into
-    ``starcubes_meta.datasource`` and N rows each into ``fact_column``,
-    ``dimension`` and ``fact_index``; ``measure`` is populated by the
-    caller so the function stays symmetric with the legacy version.
+    One transaction, so a failure part-way leaves no half-seeded datasource
+    behind. The statements themselves live in ``sources/profile_store.py``,
+    shared with the GUI.
     """
     with meta_engine.begin() as conn:
         existing = conn.execute(text(
@@ -38,78 +48,8 @@ def _upsert_datasource(meta_engine, name, schema, source_dsn, force, profile):
                 "DELETE FROM starcubes_meta.datasource WHERE id = :id"
             ), {"id": existing})
 
-        # Become the default source only when no other source claims it
-        # (the partial unique index ux_datasource_default allows just one).
-        has_default = conn.execute(text(
-            "SELECT 1 FROM starcubes_meta.datasource WHERE is_default LIMIT 1"
-        )).scalar()
-
-        src = profile.source
-        partition = profile.partition
-        runtime = profile.runtime_defaults
-        ladder = runtime.get("interval_ladder") or [1, 60, 3600, 86400]
-        ds_id = conn.execute(text(
-            "INSERT INTO starcubes_meta.datasource ("
-            "  name, schema_name, source_dialect, source_dsn, "
-            "  base_table, watermark_column, watermark_max_query, "
-            "  partition_column, partition_period, "
-            "  chunksize, transform_procs, small_window_hint, "
-            "  interval_ladder, bar_pixel_target, is_default, "
-            "  watermark_fact_expr"
-            ") VALUES ("
-            "  :name, :schema, :dialect, :dsn, "
-            "  :base, :watermark_column, NULLIF(:wmq, ''), "
-            "  :partition_column, :partition_period, "
-            "  :chunksize, :transform_procs, NULLIF(:hint, ''), "
-            "  CAST(:ladder AS int[]), :bar_pixel_target, :is_def, "
-            "  NULLIF(:wm_fact_expr, '')"
-            ") RETURNING id"
-        ), {"name": name, "schema": schema,
-            "dialect": src.get("dialect", "oracle"),
-            "dsn": source_dsn or "",
-            "base": src["base_table"],
-            "watermark_column": src["watermark_column"],
-            "wmq": src.get("watermark_max_query") or "",
-            "partition_column": partition["column"],
-            "partition_period": partition.get("period", "month"),
-            "chunksize": runtime.get("chunksize", 10000),
-            "transform_procs": runtime.get("transform_procs", 1),
-            "hint": src.get("small_window_hint") or "",
-            "ladder": "{" + ",".join(str(x) for x in ladder) + "}",
-            "bar_pixel_target": runtime.get("bar_pixel_target", 5),
-            "is_def": not has_default,
-            "wm_fact_expr": src.get("watermark_fact_expr") or ""}).scalar()
-
-        conn.execute(text(
-            "INSERT INTO starcubes_meta.fact_column "
-            "  (datasource_id, name, pg_type, role, ordinal, source_expr) "
-            "VALUES (:ds, :n, :t, :r, :o, :e)"
-        ), [{"ds": ds_id, "n": n, "t": t, "r": r, "o": o, "e": e}
-            for (n, t, r, o, e) in profile.fact_columns_as_tuples()])
-
-        conn.execute(text(
-            "INSERT INTO starcubes_meta.dimension "
-            "  (datasource_id, fact_column, dim_table, source_table, "
-            "   source_key, source_name, source_description, is_primary, inline_values) "
-            "VALUES (:ds, :fc, :dt, :st, :sk, :sn, :sd, :p, :iv)"
-        ), [{"ds": ds_id, "fc": fc, "dt": dt, "st": st,
-             "sk": sk, "sn": sn, "sd": sd, "p": p, "iv": iv}
-            for (fc, dt, st, sk, sn, sd, p, iv) in profile.dimensions_as_tuples()])
-
-        conn.execute(text(
-            "INSERT INTO starcubes_meta.fact_index "
-            "  (datasource_id, column_name, method) "
-            "VALUES (:ds, :c, :m)"
-        ), [{"ds": ds_id, "c": c, "m": m}
-            for (c, m) in profile.fact_indices_as_tuples()])
-
-        conn.execute(text(
-            "INSERT INTO starcubes_meta.measure "
-            "  (datasource_id, name, agg, graph_style, is_default, ordinal, percentiles) "
-            "VALUES (:ds, :n, :a, :gs, :d, :o, :p)"
-        ), [{"ds": ds_id, "n": n, "a": a, "gs": gs, "d": d, "o": o, "p": p}
-            for (n, a, gs, d, o, p) in profile.measures_as_tuples()])
-
+        ds_id = insert_datasource(conn, profile, name, schema, source_dsn)
+        insert_profile_children(conn, ds_id, profile)
     return ds_id
 
 
@@ -129,9 +69,9 @@ class Command(BaseCommand):
                             help="Postgres schema for this datasource's warehouse "
                                  "tables (default: starcubes_source)")
         parser.add_argument("--profile", default="oracle_payments",
-                            help="name of the profile under examples/ "
+                            help="name of the profile under profiles/ "
                                  "(default: oracle_payments). Available: "
-                                 f"{', '.join(iter_profiles()) or '<none>'}")
+                                 f"{_available_profiles()}")
         parser.add_argument("--force", action="store_true",
                             help="delete an existing datasource with the same name "
                                  "before inserting")

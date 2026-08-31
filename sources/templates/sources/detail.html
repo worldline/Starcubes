@@ -30,6 +30,8 @@
       <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
         <a class="btn btn-secondary btn-sm" href="{% url 'sources:edit' ds.id %}">Edit</a>
         <button class="btn btn-secondary btn-sm" id="btnPreview">Preview Import</button>
+        <button class="btn btn-secondary btn-sm" id="btnSaveProfile">Save as Profile…</button>
+        <button class="btn btn-secondary btn-sm" id="btnApplyProfile">Apply Profile…</button>
         <form method="post" action="{% url 'sources:delete' ds.id %}" id="delete-form" style="display:inline">
           {% csrf_token %}
           <input type="hidden" name="drop_schema" id="drop-schema-input" value="">
@@ -38,6 +40,7 @@
       </span>
     </div>
     <div id="previewResult" class="preview-table" style="margin:0 16px 12px;display:none"></div>
+    <div id="profileResult" class="action-result" style="margin:0 16px 12px;display:none"></div>
     <div class="card-body">
       <dl class="dl-grid">
         <dt>Name</dt><dd>{{ ds.name }}</dd>
@@ -3289,5 +3292,215 @@ function sortTable(th) {
   });
   rows.forEach(function(r) { tbody.appendChild(r); });
 }
+
+// ==========================================================================
+// Source profiles — save this datasource's configuration, or apply another.
+// A profile carries no DSN; see docs/source-profiles.md.
+// ==========================================================================
+(function() {
+  var DS = {{ ds.id }};
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function wideModal(html) {
+    document.getElementById('modal-box').style.maxWidth = '720px';
+    showModal(html);
+  }
+
+  function result(text, ok) {
+    var el = document.getElementById('profileResult');
+    el.style.display = 'block';
+    el.className = 'action-result ' + (ok ? 'ok' : 'err');
+    el.innerHTML = text;
+  }
+
+  function modalMsg(text, ok) {
+    var el = document.getElementById('profileModalMsg');
+    if (!el) return;
+    el.style.display = 'block';
+    el.className = 'action-result ' + (ok ? 'ok' : 'err');
+    el.textContent = text;
+  }
+
+  // ---- Save --------------------------------------------------------------
+
+  function saveDialog() {
+    var suggested = "{{ ds.name|escapejs }}";
+    wideModal(
+      '<h3 style="margin:0 0 4px">Save as profile</h3>' +
+      '<p class="text-muted" style="margin:0 0 16px;font-size:13px">' +
+      'Writes this datasource\'s full configuration to a YAML profile. ' +
+      'The source DSN is never included.</p>' +
+      '<div class="form-group"><label class="form-label">Profile name</label>' +
+      '<input class="form-control" id="saveProfileName" value="' + esc(suggested) + '" ' +
+      'placeholder="letters, digits, _ and - only"></div>' +
+      '<div class="form-group"><label class="form-label">Description</label>' +
+      '<textarea class="form-control" id="saveProfileDesc" rows="2" ' +
+      'placeholder="What is this configuration for?"></textarea></div>' +
+      '<div id="profileModalMsg" class="action-result" style="display:none"></div>' +
+      '<div class="form-actions" style="margin-top:16px">' +
+      '<button type="button" class="btn btn-primary" id="saveProfileGo">Save</button>' +
+      '<button type="button" class="btn btn-secondary" id="saveProfileDownload">Download only</button>' +
+      '<button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+      '</div>');
+    document.getElementById('saveProfileGo')
+      .addEventListener('click', function() { doSave(false); });
+    document.getElementById('saveProfileDownload')
+      .addEventListener('click', function() {
+        var name = document.getElementById('saveProfileName').value.trim();
+        var desc = document.getElementById('saveProfileDesc').value.trim();
+        // A plain navigation, so the browser handles the attachment.
+        window.location = '/sources/' + DS + '/profile/download/?name=' +
+          encodeURIComponent(name) + '&description=' + encodeURIComponent(desc);
+      });
+  }
+
+  function doSave(overwrite) {
+    var name = document.getElementById('saveProfileName').value.trim();
+    var desc = document.getElementById('saveProfileDesc').value.trim();
+    postJSON('/sources/' + DS + '/profile/save/',
+             {name: name, description: desc, overwrite: overwrite ? 'true' : 'false'})
+      .then(function(d) {
+        if (d.ok) {
+          closeModal();
+          result('Saved profile <strong>' + esc(d.name) + '</strong> (' +
+                 esc(d.bytes) + ' bytes) — <a href="/sources/' + DS +
+                 '/profile/download/?name=' + encodeURIComponent(d.name) +
+                 '">download</a>', true);
+          return;
+        }
+        if (d.exists) {
+          if (confirm('Profile "' + name + '" already exists. Overwrite it?')) doSave(true);
+          return;
+        }
+        modalMsg(d.error || 'Save failed', false);
+      })
+      .catch(function(e) { modalMsg(String(e), false); });
+  }
+
+  // ---- Apply -------------------------------------------------------------
+
+  function applyDialog() {
+    fetch('/sources/profiles/')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var opts = (d.profiles || []).filter(function(p) { return !p.error; })
+          .map(function(p) {
+            return '<option value="' + esc(p.name) + '">' + esc(p.name) +
+              (p.origin === 'example' ? ' (example)' : '') +
+              (p.dialect ? ' — ' + esc(p.dialect) : '') + '</option>';
+          }).join('');
+        if (!opts) {
+          wideModal('<h3 style="margin:0 0 12px">Apply profile</h3>' +
+            '<p class="text-muted">No usable profiles found. Save one first, ' +
+            'or upload a YAML from the Sources list.</p>' +
+            '<div class="form-actions"><button type="button" class="btn btn-secondary" ' +
+            'onclick="closeModal()">Close</button></div>');
+          return;
+        }
+        wideModal(
+          '<h3 style="margin:0 0 4px">Apply profile</h3>' +
+          '<p class="text-muted" style="margin:0 0 16px;font-size:13px">' +
+          'Replaces this datasource\'s fact columns, dimensions, indices, ' +
+          'measures and group dimensions with the profile\'s. Name, schema ' +
+          'and DSN are left alone. Nothing is written until you confirm.</p>' +
+          '<div class="form-group"><label class="form-label">Profile</label>' +
+          '<select class="form-control" id="applyProfileName">' + opts + '</select></div>' +
+          '<div id="applyDiff" style="max-height:45vh;overflow:auto"></div>' +
+          '<div id="profileModalMsg" class="action-result" style="display:none"></div>' +
+          '<div class="form-actions" style="margin-top:16px">' +
+          '<button type="button" class="btn btn-primary" id="applyPreviewGo">Preview changes</button>' +
+          '<span id="applyConfirmSlot"></span>' +
+          '<button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+          '</div>');
+        document.getElementById('applyPreviewGo')
+          .addEventListener('click', function() { doApply(false); });
+        document.getElementById('applyProfileName')
+          .addEventListener('change', function() {
+            document.getElementById('applyDiff').innerHTML = '';
+            document.getElementById('applyConfirmSlot').innerHTML = '';
+          });
+      });
+  }
+
+  function section(title, d) {
+    if (!d.n_added && !d.n_removed && !d.n_changed) return '';
+    var parts = [];
+    if (d.n_added) parts.push('<span style="color:var(--ok,green)">+' + d.n_added + '</span>');
+    if (d.n_removed) parts.push('<span style="color:var(--danger)">−' + d.n_removed + '</span>');
+    if (d.n_changed) parts.push('~' + d.n_changed);
+    var detail = [];
+    if (d.added.length) detail.push('added: ' + d.added.map(esc).join(', '));
+    if (d.removed.length) detail.push('removed: ' + d.removed.map(esc).join(', '));
+    if (d.changed.length) {
+      detail.push('changed: ' + d.changed.map(function(c) {
+        return esc(c.key) + ' (' + Object.keys(c.fields).map(esc).join(', ') + ')';
+      }).join('; '));
+    }
+    return '<tr><td><strong>' + esc(title) + '</strong></td>' +
+      '<td style="white-space:nowrap">' + parts.join(' ') + '</td>' +
+      '<td class="text-muted" style="font-size:12px">' + detail.join('<br>') + '</td></tr>';
+  }
+
+  function renderDiff(d) {
+    var rows = section('Fact columns', d.diff.fact_columns) +
+               section('Dimensions', d.diff.dimensions) +
+               section('Indices', d.diff.fact_indices) +
+               section('Measures', d.diff.measures) +
+               section('Group dimensions', d.diff.group_dims);
+    var scalars = Object.keys(d.diff.scalars || {});
+    if (scalars.length) {
+      rows += '<tr><td><strong>Settings</strong></td><td style="white-space:nowrap">~' +
+        scalars.length + '</td><td class="text-muted" style="font-size:12px">' +
+        scalars.map(function(k) {
+          var pair = d.diff.scalars[k];
+          return esc(k) + ': ' + esc(pair[0]) + ' → ' + esc(pair[1]);
+        }).join('<br>') + '</td></tr>';
+    }
+    var html = rows
+      ? '<table class="data-table">' + rows + '</table>'
+      : '<p class="text-muted">This profile matches the current configuration — ' +
+        'applying it would change nothing.</p>';
+    (d.warnings || []).forEach(function(w) {
+      html += '<div class="action-result err" style="display:block;margin-top:8px">⚠ ' +
+        esc(w) + '</div>';
+    });
+    document.getElementById('applyDiff').innerHTML = html;
+    if (rows) {
+      document.getElementById('applyConfirmSlot').innerHTML =
+        '<button type="button" class="btn btn-danger" id="applyConfirmGo">' +
+        'Apply to this datasource</button>';
+      document.getElementById('applyConfirmGo')
+        .addEventListener('click', function() { doApply(true); });
+    }
+  }
+
+  function doApply(confirmed) {
+    var name = document.getElementById('applyProfileName').value;
+    postJSON('/sources/' + DS + '/profile/apply/',
+             {profile: name, confirm: confirmed ? 'true' : 'false'})
+      .then(function(d) {
+        if (!d.ok) { modalMsg(d.error || 'Apply failed', false); return; }
+        if (d.applied) {
+          closeModal();
+          result('Applied profile <strong>' + esc(d.profile) +
+                 '</strong>. Reloading…', true);
+          setTimeout(function() { window.location.reload(); }, 700);
+          return;
+        }
+        renderDiff(d);
+      })
+      .catch(function(e) { modalMsg(String(e), false); });
+  }
+
+  var save = document.getElementById('btnSaveProfile');
+  if (save) save.addEventListener('click', saveDialog);
+  var apply = document.getElementById('btnApplyProfile');
+  if (apply) apply.addEventListener('click', applyDialog);
+})();
 </script>
 {% endblock %}

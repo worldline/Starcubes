@@ -37,9 +37,11 @@
     <div class="card-header"><span class="card-title">Source Connection</span></div>
     <div class="card-body">
       <div class="form-group">
-        <label class="form-label">Source DSN <span style="color:var(--danger)">*</span></label>
-        <input class="form-control" name="source_dsn" type="password" required placeholder="oracle+oracledb://user:pass@host:1521/SID">
-        <div class="form-hint">SQLAlchemy connection URL for the source database</div>
+        <label class="form-label">Source DSN</label>
+        <input class="form-control" name="source_dsn" type="password" placeholder="oracle+oracledb://user:pass@host:1521/SID">
+        <div class="form-hint">SQLAlchemy connection URL for the source database.
+          Leave blank to configure the datasource now and add credentials later —
+          everything except connecting to the source works without it.</div>
       </div>
       <div class="form-group">
         <label class="form-label">Import Query</label>
@@ -153,21 +155,24 @@
   </div>
 
   <div class="card">
-    <div class="card-header"><span class="card-title">Seed Data</span></div>
+    <div class="card-header"><span class="card-title">Profile</span></div>
     <div class="card-body">
       <div class="form-group">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" name="preload_seed_example">
-          <span>Preload example {{ example_profile.dialect|cut:"" }} configuration ({{ example_profile.name }})</span>
-        </label>
+        <label class="form-label">Preload configuration from profile</label>
+        <select class="form-control" name="preload_profile" id="profileSelect">
+          <option value="">— none —</option>
+          {% for p in profiles %}
+            <option value="{{ p.name }}"{% if p.name == selected_profile %} selected{% endif %}>
+              {{ p.name }}{% if p.origin == "example" %} (example){% endif %}
+            </option>
+          {% endfor %}
+        </select>
         <div class="form-hint">
-          Inserts the example profile {{ example_profile.name }}: {{ example_profile.description|truncatechars:160 }}
-          Only select this if your source dialect matches the profile ({{ example_profile.dialect }}).
+          Fills in the fields above and seeds the fact columns, dimensions,
+          indices and measures. Nothing is written until you click Create.
         </div>
-        <div id="seedDialectWarning" class="action-result err" style="display:none">
-          The example seed data uses {{ example_profile.dialect }}-specific SQL expressions.
-          Consider changing the dialect to {{ example_profile.dialect }}, or leave unchecked.
-        </div>
+        <div id="profileInfo" class="action-result" style="display:none"></div>
+        <div id="profileDialectWarning" class="action-result err" style="display:none"></div>
       </div>
     </div>
   </div>
@@ -182,18 +187,94 @@
 {% block extra_js %}
 <script>
 (function() {
-  var cb = document.querySelector('[name="preload_seed_example"]');
-  var dialect = document.querySelector('[name="source_dialect"]');
-  var warning = document.getElementById('seedDialectWarning');
-  // Driven by the loaded example profile's source dialect — see
-  // ``sources/views.py:source_new`` (``example_profile``) and
-  // ``docs/example-profile.md``.
-  var expected = "{{ example_profile.dialect|escapejs }}";
-  function checkDialect() {
-    warning.style.display = (cb.checked && dialect.value !== expected) ? 'block' : 'none';
+  var select   = document.getElementById('profileSelect');
+  var info     = document.getElementById('profileInfo');
+  var warning  = document.getElementById('profileDialectWarning');
+  var dialect  = document.querySelector('[name="source_dialect"]');
+  if (!select) return;
+
+  // Profile scalars map onto form field names one-to-one; the server sends
+  // them under the datasource column names (see
+  // core/profile.py:datasource_scalars).
+  function setField(name, value) {
+    var el = document.querySelector('[name="' + name + '"]');
+    if (!el || value === null || value === undefined) return;
+    el.value = Array.isArray(value) ? value.join(',') : value;
   }
-  cb.addEventListener('change', checkDialect);
-  dialect.addEventListener('change', checkDialect);
+
+  function clearInfo() {
+    info.style.display = 'none';
+    warning.style.display = 'none';
+  }
+
+  function apply(profile) {
+    var s = profile.scalars || {};
+    // source_dialect first: the dialect warning below compares against it.
+    setField('source_dialect', s.source_dialect);
+    ['base_table', 'small_window_hint', 'watermark_column',
+     'watermark_max_query', 'watermark_fact_expr', 'import_query',
+     'pk_format', 'partition_column', 'partition_period', 'chunksize',
+     'transform_procs', 'interval_ladder', 'bar_pixel_target',
+     'late_arrival_overlap_s', 'watermark_lag_s',
+     'wallclock_lag_s'].forEach(function(f) { setField(f, s[f]); });
+    // Identity is a suggestion only — name and schema_name are UNIQUE, so
+    // never clobber something the user already typed.
+    var d = profile.defaults || {};
+    ['name', 'schema_name'].forEach(function(f) {
+      var el = document.querySelector('[name="' + f + '"]');
+      if (el && !el.value && d[f]) el.value = d[f];
+    });
+
+    info.className = 'action-result ok';
+    info.style.display = 'block';
+    info.textContent = (profile.description || 'No description.') +
+      '  (' + profile.n_fact_columns + ' fact columns, ' +
+      profile.n_dimensions + ' dimensions, ' + profile.n_measures +
+      ' measures' + (profile.n_group_dims ? ', ' + profile.n_group_dims +
+      ' group dimensions' : '') + ')';
+    checkDialect(profile.dialect);
+  }
+
+  function checkDialect(expected) {
+    if (!expected || !dialect) { warning.style.display = 'none'; return; }
+    var mismatch = dialect.value !== expected;
+    warning.style.display = mismatch ? 'block' : 'none';
+    warning.textContent = 'This profile uses ' + expected +
+      '-specific SQL expressions. Consider changing the dialect to ' +
+      expected + ', or pick another profile.';
+  }
+
+  var currentDialect = '';
+  function load() {
+    var name = select.value;
+    clearInfo();
+    currentDialect = '';
+    if (!name) return;
+    fetch('{% url "sources:profiles_list" %}' + encodeURIComponent(name) + '/')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (!d.ok) {
+          info.className = 'action-result err';
+          info.style.display = 'block';
+          info.textContent = d.error || 'Could not read that profile.';
+          return;
+        }
+        currentDialect = d.profile.dialect;
+        apply(d.profile);
+      })
+      .catch(function(e) {
+        info.className = 'action-result err';
+        info.style.display = 'block';
+        info.textContent = String(e);
+      });
+  }
+
+  select.addEventListener('change', load);
+  if (dialect) {
+    dialect.addEventListener('change', function() { checkDialect(currentDialect); });
+  }
+  // ?profile=<name> arrives preselected from the Profiles dialog.
+  if (select.value) load();
 })();
 </script>
 {% endblock %}

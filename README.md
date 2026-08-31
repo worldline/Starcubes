@@ -211,8 +211,8 @@ If `--name` is omitted and only one datasource exists, it is auto-detected.
   --source-dsn DSN       Oracle URL (or env STARCUBES_SOURCE_DSN)
   --name NAME            datasource name (default: source)
   --schema SCHEMA        target Postgres schema (default: starcubes_source)
-  --profile NAME         example profile under examples/ (default: oracle_payments;
-                         see docs/example-profile.md and examples/*.yaml)
+  --profile NAME         profile under profiles/ (default: oracle_payments;
+                         see docs/source-profiles.md and profiles/*/*.yaml)
   --force                replace any existing datasource with the same name
   --skip-initial-ddl     register config only; skip create_fact + import_dimensions
                          (useful for offline setup / re-hydration from a dump)

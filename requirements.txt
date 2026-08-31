@@ -6,5 +6,5 @@ django==5.2.17
 psycopg2-binary==2.9.12
 django-htmx==1.29.0
 mozilla-django-oidc==5.0.2
-# core/profile.py reads examples/*.yaml — PyYAML is the loader.
+# core/profile.py reads and writes profiles/*/*.yaml — PyYAML does both.
 pyyaml==6.0.3

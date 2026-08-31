@@ -162,21 +162,44 @@ Click **+ New Datasource** on the list page. The form has four cards:
 
 Click **Create Datasource** to save. You are redirected to the detail page.
 
-#### Seed Data
+#### Profile
 
-The create form has a **Seed Data** card with a checkbox:
+The create form has a **Profile** card with a dropdown listing every
+profile under `profiles/` — the shipped examples and anything saved from
+this installation.
 
-- **Preload example … configuration** — inserts the bundled example
-  profile into `starcubes_meta`. The default profile is `oracle_payments`
-  (19 fact columns, 14 dimensions, 9 measures covering every ladder
-  style); it lives in `examples/oracle_payments.yaml`. Only select this
-  if your source dialect matches the profile's `source.dialect`
-  (`oracle` for the bundled one). A warning appears when they disagree.
-  The same profile is also loaded by
-  `manage.py seed_example --profile <name>` (default `oracle_payments`).
-  See [`docs/example-profile.md`](docs/example-profile.md) for the YAML
-  schema and how to add a new profile — drop a new YAML under
-  `examples/`, no Python changes required.
+Picking one **prefills the fields above** (base table, watermark column,
+partitioning, performance and display settings) and, on Create, seeds the
+fact columns, dimensions, indices, measures and group dimensions. The
+prefilled fields stay editable, so what you see before clicking Create is
+what gets stored. Nothing is written until then.
+
+The bundled `oracle_payments` profile carries 19 fact columns, 14
+dimensions and 9 measures covering every ladder style. A warning appears
+when the form's dialect disagrees with the profile's, since the profile's
+`source_expr` values are dialect-specific SQL.
+
+Source DSN is optional here: a datasource can be configured from a profile
+long before anyone has credentials for its source. Everything except
+connecting to the source works without one.
+
+The same profiles are loaded by `manage.py seed_example --profile <name>`.
+See [`docs/source-profiles.md`](docs/source-profiles.md) for the YAML
+schema, saving and applying — drop a new YAML under `profiles/`, no Python
+changes required.
+
+#### Saving and applying profiles
+
+- **Sources list → Profiles…** — the catalogue: what is available, what
+  each profile contains, and buttons to use, upload or delete one.
+- **Detail page → Basics → Save as Profile…** — writes this datasource's
+  whole configuration to `profiles/user/<name>.yaml`, or downloads it as a
+  file. The source DSN is never included.
+- **Detail page → Basics → Apply Profile…** — shows what would change
+  first (added, removed and changed rows per section, plus scalar
+  settings); a second, red button applies it. This **replaces** the
+  configuration — what the profile does not define, the datasource loses —
+  but never touches name, schema or DSN.
 
 ### Tab: Basics
 

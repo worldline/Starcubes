@@ -73,12 +73,12 @@ branch — **`master` is the only long-lived branch.**
   partition retirement, JSON auth, engine circuit breaker, read-only
   role, console concurrency. Read when planning new work or assessing
   scope.
-- **[`docs/example-profile.md`](docs/example-profile.md)** — the YAML
-  schema for `examples/<name>.yaml` files that drive both
-  `manage.py seed_example --profile` and the "Preload example …"
-  checkbox in `/sources/new/`. Read when adding a new example or
-  touching `core/profile.py`, `examples/`, `seed_example.py`, or
-  `sources/templates/sources/new.html`.
+- **[`docs/source-profiles.md`](docs/source-profiles.md)** — the YAML
+  schema for `profiles/{examples,user}/<name>.yaml`, the catalogue, and
+  the save / download / upload / apply flow. Read when touching
+  `core/profile.py`, `sources/profile_store.py`, `profiles/`,
+  `seed_example.py`, or the profile UI in `new.html` / `list.html` /
+  `detail.html`.
 
 ## Repo state
 
@@ -141,6 +141,8 @@ must not import from `viz/`, same constraint as `core/`).
 | `sources/etl_spawn.py` | `spawn_etl_subprocess(cmd, env=, datasource_name=)` — returns `(Popen, log_path \| None)`. Opens a per-run log file under `STARCUBES_LOG_DIR` and points the child's stdout+stderr at it (instead of the historical `DEVNULL`); `prune_etl_logs`/`slugify_ds`/`log_dir` are its helpers. See [`docs/etl-engine.md`](docs/etl-engine.md). |
 | `sources/etl_logging.py` | `configure_etl_logging()` — the one place allowed to wire Django settings into `core/etl.py`'s `logging.getLogger`. Stderr handler always; optional PID-1-stdout mirror when `STARCUBES_ETL_LOG_STDOUT` is set (for `podman logs`); registers `faulthandler` on `SIGUSR1`. See [`docs/etl-engine.md`](docs/etl-engine.md). |
 | `sources/templates/sources/detail.html` | 10-tab detail page (Basics, Fact Columns, Dimensions, Dim Data, Group Dims, Measures, Indices, Storage, ETL Commands, ETL History, ETL Log — nav and panel order are two independent lists in the template, kept in sync manually, not driven by one JS array) with inline CRUD + ETL controls, including an ETL Log tab that tails the per-run log file. `fmtRate`/`fmtCount` format throughput in the statusbar and ETL History table; for a `running` row the statusbar now reads live per-stage rates + queue depths + `processed_through` from `stats` (the stored `rows_per_s` columns are NULL until the run finishes) and shows a stall badge when `progress_at` goes stale; `etlKillBtn` escalates SIGTERM → SIGKILL across two clicks. |
+| `core/profile.py` | Source profiles: `load_profile`/`parse_profile_text` (YAML → `ExampleProfile`), `dump_profile` (meta rows → YAML, **never emits `source_dsn`**), `iter_profiles` (catalogue over `profiles/user/` then `profiles/examples/`, user wins), `save_profile`/`delete_profile`, `validate_profile_name` (the filesystem boundary). No Django imports. See [`docs/source-profiles.md`](docs/source-profiles.md). |
+| `sources/profile_store.py` | The INSERTs that write a profile into `starcubes_meta`, shared by `seed_example` and the GUI so the two paths cannot drift: `insert_datasource`, `insert_profile_children`, `delete_profile_children`, `update_datasource_scalars`. |
 | `examples.sql` | Reference SQL. Lines 43–62 are the template for `core/query.timeseries_multibar`. |
 | `docker/build.sh` | The only supported way to build the container image — defaults `CONTAINER_ENGINE=podman` and delegates to the build engine. The Dockerfile's `jsbuilder` stage pulls `@hgruber/timeseries.js` from npm via `npm ci`. See [`docs/deployment-config.md`](docs/deployment-config.md). |
 

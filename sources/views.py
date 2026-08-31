@@ -8,13 +8,15 @@ from __future__ import annotations
 import json as _json
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import re
 import signal
 
 import sqlalchemy
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.http import HttpResponseBadRequest, HttpResponseForbidden, JsonResponse
+from django.http import (HttpResponse, HttpResponseBadRequest,
+                         HttpResponseForbidden, JsonResponse)
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_POST
 from sqlalchemy import text
@@ -31,20 +33,18 @@ from core.etl import (truncate_last_partition, truncate_partition,
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user
 from core.audit import audit_id_details, audit_ids, audit_window
-from core.profile import load_profile as _load_example_profile
+from core.profile import (ProfileError, delete_profile, dump_profile,
+                          iter_profiles, load_profile, profile_origin,
+                          profile_path, save_profile, validate_profile_name,
+                          MAX_PROFILE_BYTES)
 from core.query import grouped_label, grouped_token, slugify_group_set
 from core.source import Source, _get_cached_engine
+from sources.profile_store import (delete_profile_children,
+                                   insert_profile_children,
+                                   update_datasource_scalars)
 from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
                                spawn_etl_subprocess as _spawn_etl_subprocess,
                                log_dir as _log_dir, slugify_ds as _slugify_ds)
-
-
-# Cached example profile, loaded once at module import. The
-# "Preload example Oracle configuration" checkbox in /sources/new/ seeds
-# this same profile when creating a datasource via the GUI. Tests that
-# need a different profile can ``reload(sources.views)`` after monkey-patching
-# ``_EXAMPLE_PROFILE``.
-_EXAMPLE_PROFILE = _load_example_profile()
 
 
 def _add_inline_display(dim: dict) -> dict:
@@ -100,65 +100,6 @@ def _mask_dsn(dsn: str) -> str:
     return re.sub(r'(://[^:@/\s]+:)[^@\s]+(@)', r'\1***\2', dsn)
 
 
-def _insert_seed_children(conn, ds_id: int):
-    """Insert example seed config from ``_EXAMPLE_PROFILE`` into ``starcubes_meta``.
-
-    Mirrors the CLI path in ``sources/management/commands/seed_example.py``
-    but stops short of ``create_fact`` and ``import_dimensions`` — those run
-    on demand via the Storage tab's "Create fact" / "Import dimensions" actions.
-    The SQL literal list mirrors ``_upsert_datasource`` so the two paths
-    cannot drift.
-    """
-    p_src = _EXAMPLE_PROFILE.source
-    p_partition = _EXAMPLE_PROFILE.partition
-    conn.execute(text("""
-        UPDATE starcubes_meta.datasource SET
-            base_table          = :base,
-            watermark_column    = :watermark_column,
-            watermark_max_query = NULLIF(:wmq, ''),
-            partition_column    = :partition_column,
-            small_window_hint   = NULLIF(:hint, ''),
-            watermark_fact_expr = NULLIF(:wm_fact_expr, '')
-        WHERE id = :id
-    """), {"id": ds_id,
-            "base": p_src["base_table"],
-            "watermark_column": p_src["watermark_column"],
-            "wmq": p_src.get("watermark_max_query") or "",
-            "partition_column": p_partition["column"],
-            "hint": p_src.get("small_window_hint") or "",
-            "wm_fact_expr": p_src.get("watermark_fact_expr") or ""})
-    conn.execute(text(
-        "INSERT INTO starcubes_meta.fact_column "
-        "  (datasource_id, name, pg_type, role, ordinal, source_expr) "
-        "VALUES (:ds, :n, :t, :r, :o, :e)"
-    ), [{"ds": ds_id, "n": n, "t": t, "r": r, "o": o, "e": e}
-        for (n, t, r, o, e) in _EXAMPLE_PROFILE.fact_columns_as_tuples()])
-    conn.execute(text(
-        "INSERT INTO starcubes_meta.dimension "
-        "  (datasource_id, fact_column, dim_table, source_table, "
-        "   source_key, source_name, source_description, is_primary, inline_values) "
-        "VALUES (:ds, :fc, :dt, :st, :sk, :sn, :sd, :p, :iv)"
-    ), [{"ds": ds_id, "fc": fc, "dt": dt, "st": st,
-         "sk": sk, "sn": sn, "sd": sd, "p": p, "iv": iv}
-        for (fc, dt, st, sk, sn, sd, p, iv) in _EXAMPLE_PROFILE.dimensions_as_tuples()])
-    conn.execute(text(
-        "INSERT INTO starcubes_meta.fact_index "
-        "  (datasource_id, column_name, method) "
-        "VALUES (:ds, :c, :m)"
-    ), [{"ds": ds_id, "c": c, "m": m}
-        for (c, m) in _EXAMPLE_PROFILE.fact_indices_as_tuples()])
-    conn.execute(text(
-        "INSERT INTO starcubes_meta.measure "
-        "  (datasource_id, name, agg, graph_style, is_default, ordinal, percentiles) "
-        "VALUES (:ds, :n, :a, :gs, :d, :o, :p)"
-    ), [{"ds": ds_id, "n": n, "a": a, "gs": gs, "d": d, "o": o, "p": p}
-        for (n, a, gs, d, o, p) in _EXAMPLE_PROFILE.measures_as_tuples()])
-
-
-# ---------------------------------------------------------------------------
-# Page views
-# ---------------------------------------------------------------------------
-
 def source_list(request):
     with _meta_engine().begin() as conn:
         rows = conn.execute(text("""
@@ -209,11 +150,20 @@ def source_new(request):
     if request.method == "POST":
         p = request.POST
         ladder = _str_to_ladder_sql(p.get("interval_ladder", "1,60,3600,86400"))
-        preload_seed = p.get("preload_seed_example") == "on"
+        # Empty string, not None: the column is NOT NULL, but a datasource
+        # may legitimately exist before anyone has a DSN for it — the
+        # profile flow is the whole point of allowing that.
+        preload = (p.get("preload_profile") or "").strip()
         try:
             lag_wm, lag_now = _lag_pair(p)
         except ValueError as exc:
             return HttpResponseBadRequest(str(exc))
+        profile = None
+        if preload:
+            try:
+                profile = load_profile(preload)
+            except ProfileError as exc:
+                return HttpResponseBadRequest(str(exc))
         with _meta_engine().begin() as conn:
             row = conn.execute(text("""
                 INSERT INTO starcubes_meta.datasource
@@ -240,7 +190,7 @@ def source_new(request):
                 "name":               p["name"],
                 "schema_name":        p["schema_name"],
                 "dialect":            p["source_dialect"],
-                "dsn":                p["source_dsn"],
+                "dsn":                p.get("source_dsn", ""),
                 "import_query":       p.get("import_query", ""),
                 "base_table":         p.get("base_table", ""),
                 "watermark_column":   p["watermark_column"],
@@ -258,8 +208,11 @@ def source_new(request):
                 "watermark_lag_s":    lag_wm,
                 "wallclock_lag_s":    lag_now,
             }).mappings().one()
-            if preload_seed:
-                _insert_seed_children(conn, row["id"])
+            if profile is not None:
+                # Only the child rows: the form fields above were already
+                # prefilled from this profile in the browser, so the scalar
+                # values the user is looking at are the ones just stored.
+                insert_profile_children(conn, row["id"], profile)
         return redirect("sources:detail", pk=row["id"])
     return render(request, "sources/new.html", {
         "dialects": DIALECTS,
@@ -271,15 +224,11 @@ def source_new(request):
             "bar_pixel_target": 5,
             "partition_period": "month",
         },
-        # Surfaces the loaded profile's source dialect so the warning in
-        # the Seed Data card isn't hard-coded to "oracle" — see
-        # ``docs/example-profile.md``. The CLI command (``manage.py seed_example``)
-        # picks the same profile name (``oracle_payments``).
-        "example_profile": {
-            "name": _EXAMPLE_PROFILE.name,
-            "description": _EXAMPLE_PROFILE.description,
-            "dialect": _EXAMPLE_PROFILE.source_dialect,
-        },
+        # The profile picker lists every profile under profiles/ — shipped
+        # examples and saved ones alike. Selecting one prefills the form
+        # from ``profile_detail``; see ``docs/source-profiles.md``.
+        "profiles": iter_profiles(),
+        "selected_profile": request.GET.get("profile", ""),
         "current_source_id": "new",
         "current_source_name": None,
     })
@@ -584,7 +533,10 @@ def _resolve_source_dsn(pk: int) -> tuple[str | None, str]:
         return None, str(exc)
     dsn = ds.get("source_dsn")
     if not dsn:
-        return None, f"datasource id={pk} has no source_dsn"
+        # A datasource may be configured from a profile long before anyone
+        # has credentials for its source, so this is an expected state, not
+        # a failure — say what to do about it.
+        return None, "No source DSN configured — add one on the Edit page."
     return dsn, ""
 
 
@@ -2348,3 +2300,406 @@ def settings_page(request):
         "msg": msg,
         "err": err,
     })
+
+
+# ==========================================================================
+# Source profiles — catalogue, save/download, upload, apply
+#
+# A profile is a datasource's whole starcubes_meta configuration as one YAML
+# file, with the source DSN deliberately left out. See core/profile.py and
+# docs/source-profiles.md.
+# ==========================================================================
+
+def _profile_error(exc: Exception, status: int = 400):
+    return JsonResponse({"ok": False, "error": str(exc)}, status=status)
+
+
+def _read_profile_rows(pk: int) -> dict:
+    """Read everything ``dump_profile`` needs for one datasource.
+
+    Deliberately reads the meta tables directly instead of going through
+    ``Source.load``, which raises when neither ``import_query`` nor
+    ``base_table`` is set — a half-configured datasource must still be
+    exportable, that being how a config gets moved somewhere it can be
+    finished.
+    """
+    with _meta_engine().begin() as conn:
+        ds = conn.execute(text(
+            "SELECT * FROM starcubes_meta.datasource WHERE id = :id"
+        ), {"id": pk}).mappings().one_or_none()
+        if ds is None:
+            raise ValueError(f"datasource id={pk} not found")
+        fact_cols = conn.execute(text(
+            "SELECT name, pg_type, role, ordinal, source_expr "
+            "  FROM starcubes_meta.fact_column "
+            " WHERE datasource_id = :id ORDER BY ordinal, name"
+        ), {"id": pk}).mappings().all()
+        dimensions = conn.execute(text(
+            "SELECT fact_column, dim_table, source_table, source_key, "
+            "       source_name, source_description, is_primary, inline_values "
+            "  FROM starcubes_meta.dimension "
+            " WHERE datasource_id = :id ORDER BY fact_column"
+        ), {"id": pk}).mappings().all()
+        indices = conn.execute(text(
+            "SELECT column_name, method FROM starcubes_meta.fact_index "
+            " WHERE datasource_id = :id ORDER BY column_name, method"
+        ), {"id": pk}).mappings().all()
+        measures = conn.execute(text(
+            "SELECT name, agg, graph_style, is_default, ordinal, percentiles "
+            "  FROM starcubes_meta.measure "
+            " WHERE datasource_id = :id ORDER BY ordinal, name"
+        ), {"id": pk}).mappings().all()
+        group_rows = conn.execute(text(
+            "SELECT d.fact_column AS dimension, gs.id AS set_id, "
+            "       gs.name AS set_name, gs.slug, gs.position, "
+            "       dg.id AS group_id, dg.group_name, dg.color, dgm.dim_index "
+            "  FROM starcubes_meta.dim_group_set gs "
+            "  JOIN starcubes_meta.dimension d ON d.id = gs.dimension_id "
+            "  LEFT JOIN starcubes_meta.dim_group dg ON dg.group_set_id = gs.id "
+            "  LEFT JOIN starcubes_meta.dim_group_member dgm ON dgm.group_id = dg.id "
+            " WHERE d.datasource_id = :id "
+            " ORDER BY d.fact_column, gs.position, gs.id, dg.id, dgm.dim_index"
+        ), {"id": pk}).mappings().all()
+    return {
+        "ds": dict(ds),
+        "fact_columns": [dict(r) for r in fact_cols],
+        "dimensions": [dict(r) for r in dimensions],
+        "fact_indices": [dict(r) for r in indices],
+        "measures": [dict(r) for r in measures],
+        "group_sets": _assemble_group_sets(group_rows),
+    }
+
+
+def _assemble_group_sets(rows) -> list[dict]:
+    """Fold the flat set/group/member join into nested dicts."""
+    sets: dict[int, dict] = {}
+    groups: dict[int, dict] = {}
+    for r in rows:
+        gs = sets.get(r["set_id"])
+        if gs is None:
+            gs = sets[r["set_id"]] = {
+                "dimension": r["dimension"], "name": r["set_name"],
+                "slug": r["slug"] or "", "position": r["position"] or 0,
+                "groups": [],
+            }
+        if r["group_id"] is None:
+            continue
+        g = groups.get(r["group_id"])
+        if g is None:
+            g = groups[r["group_id"]] = {
+                "group_name": r["group_name"], "color": r["color"] or "",
+                "members": [],
+            }
+            gs["groups"].append(g)
+        if r["dim_index"] is not None:
+            g["members"].append(r["dim_index"])
+    return list(sets.values())
+
+
+def _datasource_profile_yaml(pk: int, name: str = "", description: str = "") -> str:
+    rows = _read_profile_rows(pk)
+    return dump_profile(rows["ds"], rows["fact_columns"], rows["dimensions"],
+                        rows["fact_indices"], rows["measures"],
+                        rows["group_sets"], name=name, description=description)
+
+
+def profiles_list(request):
+    """Catalogue of every profile, shipped and saved."""
+    return JsonResponse({"ok": True, "profiles": iter_profiles()})
+
+
+def profile_detail(request, slug: str):
+    """One profile's metadata plus the scalars the create form prefills from."""
+    try:
+        profile = load_profile(validate_profile_name(slug))
+    except ProfileError as exc:
+        return _profile_error(exc, status=404)
+    path = profile_path(slug)
+    return JsonResponse({"ok": True, "profile": {
+        "name": profile.name,
+        "origin": profile_origin(path) if path else "example",
+        "description": profile.description,
+        "dialect": profile.source_dialect,
+        "scalars": profile.datasource_scalars(),
+        "defaults": profile.defaults,
+        "n_fact_columns": len(profile.fact_columns),
+        "n_dimensions": len(profile.dimensions),
+        "n_measures": len(profile.measures),
+        "n_group_dims": len(profile.group_dims),
+    }}, json_dumps_params={"default": str})
+
+
+@require_POST
+def profile_upload(request):
+    """Validate an uploaded YAML and store it under ``profiles/user/``."""
+    upload = request.FILES.get("file")
+    if upload is None:
+        return _profile_error(ValueError("no file uploaded"))
+    if upload.size > MAX_PROFILE_BYTES:
+        return _profile_error(ValueError(
+            f"file is {upload.size} bytes, over the "
+            f"{MAX_PROFILE_BYTES}-byte limit"))
+    name = (request.POST.get("name") or "").strip() or Path(upload.name).stem
+    try:
+        raw = upload.read().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        return _profile_error(ValueError(f"file is not UTF-8 text: {exc}"))
+    try:
+        # Validates before anything is written; an invalid profile never
+        # reaches the filesystem.
+        path = save_profile(name, raw)
+    except ProfileError as exc:
+        return _profile_error(exc)
+    return JsonResponse({"ok": True, "name": name, "path": str(path),
+                         "profiles": iter_profiles()})
+
+
+@require_POST
+def profile_delete(request, slug: str):
+    """Delete a saved profile. Shipped examples are not deletable."""
+    try:
+        delete_profile(slug)
+    except ProfileError as exc:
+        return _profile_error(exc)
+    return JsonResponse({"ok": True, "profiles": iter_profiles()})
+
+
+@require_POST
+def profile_save(request, pk: int):
+    """Save this datasource's configuration as ``profiles/user/<name>.yaml``."""
+    name = (request.POST.get("name") or "").strip()
+    description = (request.POST.get("description") or "").strip()
+    overwrite = request.POST.get("overwrite") == "true"
+    try:
+        validate_profile_name(name)
+    except ProfileError as exc:
+        return _profile_error(exc)
+    existing = profile_path(name)
+    if existing is not None and not overwrite:
+        return JsonResponse({
+            "ok": False, "exists": True, "origin": profile_origin(existing),
+            "error": f"profile {name!r} already exists",
+        }, status=409)
+    if existing is not None and profile_origin(existing) == "example":
+        return _profile_error(ValueError(
+            f"{name!r} is a shipped example; choose another name"))
+    try:
+        yaml_text = _datasource_profile_yaml(pk, name=name, description=description)
+        path = save_profile(name, yaml_text)
+    except (ProfileError, ValueError) as exc:
+        return _profile_error(exc)
+    return JsonResponse({"ok": True, "name": name, "path": str(path),
+                         "bytes": len(yaml_text.encode("utf-8")),
+                         "profiles": iter_profiles()})
+
+
+def profile_download(request, pk: int):
+    """Stream this datasource's configuration as a .yaml attachment."""
+    ds = _load_datasource(pk)
+    # The datasource name is not a validated profile name, so derive a safe
+    # filename from it rather than trusting it into a header.
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", ds["name"]).strip("-") or f"datasource-{pk}"
+    name = (request.GET.get("name") or "").strip()
+    if name:
+        try:
+            stem = validate_profile_name(name)
+        except ProfileError as exc:
+            return _profile_error(exc)
+    yaml_text = _datasource_profile_yaml(
+        pk, name=stem, description=(request.GET.get("description") or "").strip())
+    response = HttpResponse(yaml_text, content_type="application/x-yaml")
+    response["Content-Disposition"] = f'attachment; filename="{stem}.yaml"'
+    return response
+
+
+def _diff_rows(existing, incoming, key, fields) -> dict:
+    """Compare two row lists by a natural key.
+
+    Returns ``{added, removed, changed}``; ``changed`` names the differing
+    fields with their old and new values, so the GUI can show what an apply
+    would actually do rather than just a count.
+    """
+    def norm(value):
+        # A NULL column and an omitted YAML key mean the same thing here.
+        return "" if value is None else value
+
+    cur = {key(r): r for r in existing}
+    new = {key(r): r for r in incoming}
+    added = [k for k in new if k not in cur]
+    removed = [k for k in cur if k not in new]
+    changed = []
+    for k in new:
+        if k not in cur:
+            continue
+        deltas = {f: [norm(cur[k].get(f)), norm(new[k].get(f))]
+                  for f in fields
+                  if norm(cur[k].get(f)) != norm(new[k].get(f))}
+        if deltas:
+            changed.append({"key": k, "fields": deltas})
+    return {
+        "added": sorted(str(k) for k in added),
+        "removed": sorted(str(k) for k in removed),
+        "changed": sorted(changed, key=lambda c: str(c["key"])),
+        "n_added": len(added), "n_removed": len(removed),
+        "n_changed": len(changed),
+    }
+
+
+def _group_set_signature(gs: dict) -> str:
+    """Canonical text for one group set, for change detection."""
+    groups = sorted(
+        (g.get("group_name") or g.get("name") or "",
+         g.get("color") or "",
+         tuple(sorted(int(m) for m in (g.get("members") or []))))
+        for g in (gs.get("groups") or []))
+    return _json.dumps(groups, sort_keys=True, default=str)
+
+
+def _profile_diff(rows: dict, profile) -> dict:
+    """What applying ``profile`` would change about datasource ``rows``."""
+    scalars = profile.datasource_scalars()
+    ds = rows["ds"]
+    scalar_changes = {}
+    for field_name, new_value in scalars.items():
+        old_value = ds.get(field_name)
+        if field_name == "interval_ladder":
+            old_cmp = list(old_value) if old_value else []
+            new_cmp = list(new_value)
+        elif isinstance(new_value, float) or isinstance(old_value, float):
+            old_cmp = float(old_value) if old_value is not None else None
+            new_cmp = float(new_value)
+        else:
+            old_cmp = old_value
+            new_cmp = new_value
+        if old_cmp != new_cmp:
+            scalar_changes[field_name] = [old_value, new_value]
+
+    incoming_group_sets = [{
+        "dimension": gs.dimension, "name": gs.name,
+        "slug": gs.slug or slugify_group_set(gs.name),
+        "position": gs.position,
+        "groups": [{"group_name": g.name, "color": g.color,
+                    "members": list(g.members)} for g in gs.groups],
+    } for gs in profile.group_dims]
+
+    def with_signature(sets):
+        return [dict(gs, signature=_group_set_signature(gs)) for gs in sets]
+
+    return {
+        "scalars": scalar_changes,
+        "fact_columns": _diff_rows(
+            rows["fact_columns"],
+            [{"name": fc.name, "pg_type": fc.pg_type, "role": fc.role,
+              "ordinal": fc.ordinal, "source_expr": fc.source_expr}
+             for fc in profile.fact_columns],
+            key=lambda r: r["name"],
+            fields=("pg_type", "role", "ordinal", "source_expr")),
+        "dimensions": _diff_rows(
+            rows["dimensions"],
+            [{"fact_column": d.fact_column, "dim_table": d.dim_table,
+              "source_table": d.source_table, "source_key": d.source_key,
+              "source_name": d.source_name,
+              "source_description": d.source_description,
+              "is_primary": d.is_primary} for d in profile.dimensions],
+            key=lambda r: r["fact_column"],
+            fields=("dim_table", "source_table", "source_key", "source_name",
+                    "source_description", "is_primary")),
+        "fact_indices": _diff_rows(
+            rows["fact_indices"],
+            [{"column_name": fi.column_name, "method": fi.method}
+             for fi in profile.fact_indices],
+            key=lambda r: (r["column_name"], r["method"]),
+            fields=()),
+        "measures": _diff_rows(
+            rows["measures"],
+            [{"name": m.name, "agg": m.agg, "graph_style": m.graph_style,
+              "is_default": m.is_default, "ordinal": m.ordinal,
+              "percentiles": m.percentiles} for m in profile.measures],
+            key=lambda r: r["name"],
+            fields=("agg", "graph_style", "is_default", "ordinal", "percentiles")),
+        "group_dims": _diff_rows(
+            with_signature(rows["group_sets"]),
+            with_signature(incoming_group_sets),
+            key=lambda r: (r["dimension"], r["name"]),
+            fields=("slug", "position", "signature")),
+    }
+
+
+def _profile_warnings(rows: dict, profile, diff: dict) -> list[str]:
+    """Non-blocking cautions the apply dialog shows before the second click."""
+    warnings = []
+    fc_diff = diff["fact_columns"]
+    if fc_diff["n_removed"] or fc_diff["n_changed"]:
+        approx = _fact_row_estimate(rows["ds"]["schema_name"])
+        if approx:
+            warnings.append(
+                f"The fact table holds roughly {approx:,} rows. This profile "
+                f"removes or retypes fact columns — run Sync Schema afterwards "
+                f"to reconcile the physical table.")
+    # dim_index is assigned at import time, so group membership only travels
+    # between installations for dimensions whose values ship with the profile.
+    source_backed = {d.fact_column for d in profile.dimensions
+                     if d.source_table is not None}
+    risky = sorted({gs.dimension for gs in profile.group_dims
+                    if gs.dimension in source_backed})
+    if risky:
+        warnings.append(
+            f"Group dimensions on {', '.join(risky)} store membership as "
+            f"dim_index, which is assigned when dimension values are "
+            f"imported. Verify the groups after importing dimensions.")
+    return warnings
+
+
+def _fact_row_estimate(schema: str) -> int:
+    """Approximate live row count of ``<schema>.fact``, 0 if it has none."""
+    try:
+        with _meta_engine().begin() as conn:
+            return conn.execute(text(
+                "SELECT COALESCE(n_live_tup, 0) FROM pg_stat_user_tables "
+                " WHERE schemaname = :s AND relname = 'fact'"
+            ), {"s": schema}).scalar() or 0
+    except Exception:
+        return 0
+
+
+@require_POST
+def profile_apply(request, pk: int):
+    """Apply a profile to an existing datasource.
+
+    Without ``confirm``: a dry-run diff, same two-phase shape as
+    ``sync_schema_view``. With ``confirm=true``: replaces the datasource's
+    child rows and scalar fields in one transaction. The source DSN, name
+    and schema are never touched — a profile carries no credentials, and
+    renaming a live datasource is not what "apply a configuration" means.
+    """
+    slug = (request.POST.get("profile") or "").strip()
+    try:
+        profile = load_profile(validate_profile_name(slug))
+    except ProfileError as exc:
+        return _profile_error(exc)
+    try:
+        rows = _read_profile_rows(pk)
+    except ValueError as exc:
+        return _profile_error(exc, status=404)
+
+    diff = _profile_diff(rows, profile)
+    warnings = _profile_warnings(rows, profile, diff)
+    if request.POST.get("confirm") != "true":
+        return JsonResponse({"ok": True, "applied": False, "diff": diff,
+                             "warnings": warnings, "profile": profile.name},
+                            json_dumps_params={"default": str})
+
+    busy = _etl_busy_response(pk)
+    if busy is not None:
+        return busy
+
+    meta = _meta_engine()
+    with meta.begin() as conn:
+        update_datasource_scalars(conn, pk, profile)
+        delete_profile_children(conn, pk)
+        insert_profile_children(conn, pk, profile)
+    # Measures, dimensions and group sets all feed cached plot JSON.
+    bump_cache_epoch(meta, pk)
+    return JsonResponse({"ok": True, "applied": True, "diff": diff,
+                         "warnings": warnings, "profile": profile.name},
+                        json_dumps_params={"default": str})

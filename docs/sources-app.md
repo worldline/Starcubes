@@ -8,7 +8,7 @@ Read this when editing anything under `sources/`.
 
 ## URL structure
 
-50 URL patterns total in `sources/urls.py`. Grouped by purpose:
+57 URL patterns total in `sources/urls.py`. Grouped by purpose:
 
 ### Pages
 - `GET /sources/` — list with last-run status badge per datasource
@@ -127,6 +127,33 @@ crashed/orphaned sessions are revived.
 - `POST .../indices/create-all/` — create all defined indices + FKs
 - `POST .../indices/drop-all/` — drop all indices + FKs
 
+### JSON: source profiles
+A **profile** is a datasource's whole configuration as one YAML file, minus
+the DSN. See [`docs/source-profiles.md`](source-profiles.md).
+- `GET  /sources/profiles/` — catalogue: every profile in `profiles/user/`
+  and `profiles/examples/` with `origin`, description, dialect and counts.
+  A profile that fails to parse is listed with an `error` instead of taking
+  the catalogue down.
+- `GET  /sources/profiles/<slug>/` — one profile plus the `scalars` the
+  create form prefills from (`core.profile.datasource_scalars`).
+- `POST /sources/profiles/upload/` — `request.FILES["file"]`; validated by
+  `parse_profile_text` **before** anything is written, capped at 2 MB.
+- `POST /sources/profiles/<slug>/delete/` — saved profiles only; a shipped
+  example returns 400.
+- `POST .../profile/save/` — `name`, `description`, `overwrite`. Returns 409
+  with `exists: true` when the name is taken and `overwrite` is not set.
+- `GET  .../profile/download/` — the same YAML as an attachment.
+- `POST .../profile/apply/` — `profile`, `confirm`. Without `confirm`, a
+  dry-run diff (`{added, removed, changed}` per section plus scalar
+  changes) and warnings; with `confirm=true`, one transaction that rewrites
+  the scalars and replaces every child row, then bumps `cache_epoch`.
+  Guarded by the same `_etl_busy_response` 409 as `etl/run/`.
+
+`<slug>` is validated against `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`
+(`core.profile.validate_profile_name`) — no dots, no separators. Profile
+names become filenames, so this is what stands between these endpoints and
+a write outside `profiles/`.
+
 ### JSON: dim browsing
 - `GET .../dim-data/` — all dimension tables + row counts
 - `GET .../dim-data/<dim_table>/` — paginated dim rows for a single table
@@ -172,6 +199,16 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   view (e.g. `pg_types_json`, `roles_json`, `idx_methods_json`) and use
   `{{ var|safe }}` in template JS. `{{ python_list|safe }}` renders Python
   repr (single quotes) which is not valid JSON.
+- **No import-time profile cache**: `sources/views.py` used to hold
+  `_EXAMPLE_PROFILE = load_profile()` at module scope, so a malformed
+  profile broke server startup. Profiles are user-writable now, which made
+  that unacceptable — the catalogue and every profile endpoint load on
+  demand and report a bad profile as data (`error` in the listing, 400 from
+  the endpoint).
+- **Profile apply is a replace, not a merge**: `profile_apply` deletes every
+  child row before inserting the profile's. It never touches `name`,
+  `schema_name` or `source_dsn` — a profile carries no credentials, and
+  applying a configuration must not rename a live datasource.
 - **Login middleware**: `RequireLoginMiddleware` (in `starcubes/middleware.py`)
   intercepts any request starting with `/sources/` or `/admin/` and redirects
   unauthenticated users to `/login/`. Public paths (`/login/`, `/logout/`)

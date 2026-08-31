@@ -984,6 +984,10 @@ function showModal(html) {
 }
 function closeModal() {
   document.getElementById('modal-overlay').style.display = 'none';
+  // Widened by dialogs that need more room than a confirm box (the
+  // profiles catalogue, the apply-profile diff). Reset so the next
+  // narrow dialog is not stuck at their width.
+  document.getElementById('modal-box').style.maxWidth = '';
 }
 document.getElementById('modal-overlay').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
