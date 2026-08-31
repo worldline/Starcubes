@@ -291,9 +291,12 @@ panel handler, which *does* use pointer capture.
 
 Geometry lives in `localStorage['starcubes-query-panel']` as
 `{open, historyOpen, left, top, width, height}` — per browser, unlike the
-history. This is the only panel whose position survives a reload, which is the
+history. This is the only panel whose **position** survives a reload, which is the
 whole content of its `onMove` hook; placement and the resize re-clamp are the
-shared ones.
+shared ones. Size persistence (`width`/`height`) is now shared by all three
+floating panels through the `persistPanelSize` / `applyPersistedSize` helpers
+in `chart.html`, which read and write the same per-panel
+`localStorage['starcubes-{panel-id}']` slot using the same 200 ms debounce.
 
 Escape closes the console like any other panel — but **only from outside the
 textarea**. The shared handler ignores the key when the event target is an
@@ -669,3 +672,14 @@ The legend is the one behaviour change from before the unification: it used to
 be draggable by its whole body (with a hand-maintained list of child elements
 that were exempt), and now drags by its header like the other two. It gained
 the header rule the other two already had.
+
+All three panels (`#legend`, `#drill-modal`, `#query-panel`) are user-resizable
+via CSS `resize: both` plus the browser-native grip in the bottom-right corner.
+The legend and drill-down panels were made resizable to match the query
+console; their sizes are persisted across reloads by `localStorage` (keys
+`starcubes-legend` and `starcubes-drill-modal`), written through a 200 ms
+debounced `ResizeObserver`. Min-width and min-height prevent the panels from
+being squashed below usable sizes; the existing `max-height: 80vh` /
+`max-width: 90vw` ceilings stay in CSS (rather than computed in JS as the
+legend used to do) so a programmatic `applyPersistedSize` and a browser drag
+honour the same limit.

@@ -476,7 +476,17 @@
   .fpanel-close:hover { color: var(--legend-close-hover); }
 
   /* ── Legend ─────────────────────────────────────────────────────────── */
-  #legend { width: max-content; max-width: 90vw; }
+  /* Native CSS resize (both axes) — the browser paints a grip in the bottom-right
+     corner. overflow: hidden is required, otherwise the browser ignores resize.
+     min-* prevents the legend from being squashed below its header. max-height
+     is enforced in CSS rather than JS so a browser drag and a programmatic size
+     (applyPersistedSize) both honour the same ceiling. */
+  #legend {
+    width: max-content; max-width: 90vw;
+    min-width: 220px; min-height: 80px;
+    max-height: 80vh;
+    resize: both; overflow: hidden;
+  }
   #legend-copy { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
                  font-size: 10px; cursor: pointer; padding: 1px 6px;
                  color: var(--legend-copy-color); line-height: 1.4; }
@@ -519,7 +529,13 @@
   @keyframes follow-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
   /* ── Drill-down modal ───────────────────────────────────────────────── */
-  #drill-modal { max-height: 80vh; width: 340px; }
+  /* Native CSS resize (both axes); same contract as #legend and #query-panel.
+     min-width keeps the filter-chip row from wrapping awkwardly. */
+  #drill-modal {
+    max-height: 80vh; width: 340px;
+    min-width: 220px; min-height: 160px;
+    resize: both; overflow: hidden;
+  }
   /* Two lines of context in the header, so it aligns to the top rather than
      centring like the other panels' single-line headers. */
   #drill-header { align-items: flex-start; padding-top: 10px; }
@@ -2356,6 +2372,37 @@ function fpBringToFront(el) {
 
 function fpIsOpen(el) { return el.classList.contains('fp-open'); }
 
+// Persist a panel's {width, height} to localStorage on resize. Mirrors the
+// ResizeObserver wiring already used by #query-panel. The 200 ms debounce is
+// the same value as that handler so behaviour stays consistent across panels.
+function persistPanelSize(panel, storageKey) {
+  if (!window.ResizeObserver) return;
+  let pending = null;
+  new ResizeObserver(() => {
+    clearTimeout(pending);
+    pending = setTimeout(() => {
+      if (!fpIsOpen(panel)) return;
+      let cur;
+      try { cur = JSON.parse(localStorage.getItem(storageKey) || '{}'); }
+      catch (_) { cur = {}; }
+      cur.width  = panel.style.width  || cur.width;
+      cur.height = panel.style.height || cur.height;
+      try { localStorage.setItem(storageKey, JSON.stringify(cur)); }
+      catch (_) { /* localStorage may be unavailable; silently skip */ }
+    }, 200);
+  }).observe(panel);
+}
+
+// Apply a saved size if one exists. Called once at registration time so the
+// first user-driven open of the panel already picks up the persisted geometry.
+function applyPersistedSize(panel, storageKey) {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); }
+  catch (_) { return; }
+  if (saved.width)  panel.style.width  = saved.width;
+  if (saved.height) panel.style.height = saved.height;
+}
+
 // Move a panel to viewport coordinates, clamped only as far as
 // recoverability requires. `right`/`bottom` are cleared because the legend is
 // first placed by `right` (it tracks the plot area's right edge) and the
@@ -2463,6 +2510,11 @@ const followToggle = document.getElementById('follow-toggle');
 let lastLegendRows = []; // [{ name, total }] in current display order, for CSV copy
 
 // ── Follow mode toggle ───────────────────────────────────────────────────
+// Follow mode (the seismograph) is owned by timeseries.js; the host does NOT
+// stop it on keydown or on drill-down open — only direct canvas interaction
+// (mousedown / wheel / touch / arrow keys) cancels it, which is the library's
+// own contract. Adding a panel-close or drill-open handler here would silently
+// break seismograph mode. Keyboard shortcuts (f / F) live in timeseries.js.
 followToggle.addEventListener('click', () => {
   if (!ts) return;
   const isActive = followToggle.classList.toggle('active');
@@ -2797,15 +2849,14 @@ function updateLegend() {
     if (match && match[1]) entry.name = match[1];
     if (match && match[2]) entry.desc = match[2];
   }
-  // Set max-height to 80% of canvas height
-  const canvas = document.getElementById('chart');
-  if (canvas) {
-    const h = canvas.getBoundingClientRect().height;
-    legendEl.style.maxHeight = Math.round(h * 0.8) + 'px';
-  }
+  // Height is capped by the `max-height: 80vh` rule in #legend's CSS — that
+  // overrides anything we might have set here, so we no longer need to write
+  // it inline. (We used to compute 80% of the canvas height; CSS clamping
+  // removes the JS-side dependence on canvas metrics.)
   // Position: top-right of the chart's drawing area with 5px margin.
   // `fpMoved` (set by the shared drag handler) means the user placed it —
   // then this must not move it back on the next legend refresh.
+  const canvas = document.getElementById('chart');
   if (!legendEl.dataset.positioned && !legendEl.dataset.fpMoved) {
     const area = ts ? ts.getPlotArea() : null;
     const canvasRect = canvas.getBoundingClientRect();
@@ -2866,6 +2917,10 @@ function updateLegend() {
 }
 
 makeFloatingPanel(legendEl, { onClose: closeLegend });
+// Resizable via the browser-native grip (CSS `resize: both` on #legend); the
+// size is persisted across reloads by localStorage.
+applyPersistedSize(legendEl, 'starcubes-legend');
+persistPanelSize(legendEl, 'starcubes-legend');
 
 // ── Bar hover tooltip ────────────────────────────────────────────────────
 // The card itself — DOM, positioning, theming — comes from the library
@@ -2959,6 +3014,10 @@ let _drillCtx = null;
 function closeDrillModal() { drillModal.classList.remove('fp-open'); }
 document.getElementById('drill-close').addEventListener('click', closeDrillModal);
 makeFloatingPanel(drillModal, { onClose: closeDrillModal });
+// Resizable via the browser-native grip (CSS `resize: both` on #drill-modal);
+// the size is persisted across reloads by localStorage.
+applyPersistedSize(drillModal, 'starcubes-drill-modal');
+persistPanelSize(drillModal, 'starcubes-drill-modal');
 document.getElementById('drill-header-info').addEventListener('click', e => {
   if (!e.target.closest('.drill-dimname-btn') || !_drillCtx) return;
   drillAddFilter(_drillCtx.groupBy, _drillCtx.rawKey);
@@ -3050,6 +3109,9 @@ async function openDrillModal(plot, n, key, value) {
   // Drill-down is only meaningful for (multi)bar slots — other plot types
   // have no per-bar count/value to break down.
   if (!plot || (plot.type !== 'multibar' && plot.type !== 'bar')) return;
+  // Deliberately does NOT call ts.stop(): follow mode (seismograph) must keep
+  // running while the user inspects a bar. The drill body fetches its own
+  // slice via /drill/ and does not interact with the chart's autoFetch chain.
 
   const rawKey  = key[0] === '_' ? key.slice(1) : key;
   const slotSec = plot.interval_start + n * plot.interval;
