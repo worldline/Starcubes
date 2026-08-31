@@ -4,6 +4,33 @@ Context for future Claude sessions. Read `README.md` first for the
 user-facing picture and `HOWTO.md` for operator guidance; this file is
 the index into the agent-/developer-facing deep references.
 
+## Git workflow
+
+Linear, single-developer project. There is no remote and no `main`
+branch — **`master` is the only long-lived branch.**
+
+- **Every commit lands on `master`.** No merge commits, no PRs, no
+  long-lived feature branches. `git log --graph` must stay a straight
+  line.
+- **Don't create a worktree unless the user asks for one.** Background
+  jobs may edit the working copy directly — `.claude/settings.json` sets
+  `worktree.bgIsolation: "none"`, which lifts the harness's default
+  requirement to call `EnterWorktree` before the first edit.
+- **A worktree is disposable scratch space.** Once the work in it is
+  built and tested, fast-forward `master` onto it and delete both the
+  worktree and its branch:
+
+  ```
+  git merge --ff-only <branch>              # never a merge commit
+  git worktree remove .claude/worktrees/<name>
+  git branch -d <branch>                    # -d, not -D: it refuses if anything is unmerged
+  ```
+
+  If the fast-forward is refused because `master` moved on, rebase the
+  branch onto `master` first — never merge.
+- **Never leave a branch behind.** A stale branch invites the next agent
+  to keep working there instead of on `master`.
+
 ## Sub-docs (read when relevant)
 
 - **[`docs/sources-app.md`](docs/sources-app.md)** — full URL map, gotchas,
