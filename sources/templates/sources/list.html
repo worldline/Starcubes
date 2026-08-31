@@ -88,6 +88,10 @@
     var actions =
       '<a class="btn btn-primary btn-sm" href="/sources/new/?profile=' +
         encodeURIComponent(p.name) + '">Use</a>';
+    if (!p.error) {
+      actions += ' <a class="btn btn-secondary btn-sm" href="/sources/profiles/' +
+        encodeURIComponent(p.name) + '/download/">Download</a>';
+    }
     if (p.origin === 'user') {
       actions += ' <button type="button" class="btn btn-danger btn-sm" ' +
         'data-del="' + esc(p.name) + '">Delete</button>';

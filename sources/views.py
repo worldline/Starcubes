@@ -2419,6 +2419,27 @@ def profiles_list(request):
     return JsonResponse({"ok": True, "profiles": iter_profiles()})
 
 
+def profile_file_download(request, slug: str):
+    """Stream one catalogue profile's YAML file as an attachment.
+
+    Serves the file as it sits on disk — the same bytes an upload stored —
+    so a download/upload trip round-trips losslessly. Profiles exported via
+    ``dump_profile`` carry their inline dimensions as ``values:``, so they
+    are self-contained by construction; a hand-written profile using
+    ``csv:`` references keeps those references, exactly as it reads here.
+    """
+    try:
+        path = profile_path(validate_profile_name(slug))
+    except ProfileError as exc:
+        return _profile_error(exc, status=404)
+    if path is None:
+        return _profile_error(ValueError(f"profile {slug!r} not found"),
+                              status=404)
+    response = HttpResponse(path.read_bytes(), content_type="application/x-yaml")
+    response["Content-Disposition"] = f'attachment; filename="{slug}.yaml"'
+    return response
+
+
 def profile_detail(request, slug: str):
     """One profile's metadata plus the scalars the create form prefills from."""
     try:

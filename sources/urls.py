@@ -74,6 +74,7 @@ urlpatterns = [
     path("profiles/",                                   views.profiles_list,       name="profiles_list"),
     path("profiles/upload/",                            views.profile_upload,      name="profile_upload"),
     path("profiles/<str:slug>/",                        views.profile_detail,      name="profile_detail"),
+    path("profiles/<str:slug>/download/",               views.profile_file_download, name="profile_file_download"),
     path("profiles/<str:slug>/delete/",                 views.profile_delete,      name="profile_delete"),
     path("<int:pk>/profile/save/",                      views.profile_save,        name="profile_save"),
     path("<int:pk>/profile/download/",                  views.profile_download,    name="profile_download"),

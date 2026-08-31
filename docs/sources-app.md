@@ -136,6 +136,9 @@ the DSN. See [`docs/source-profiles.md`](source-profiles.md).
   the catalogue down.
 - `GET  /sources/profiles/<slug>/` — one profile plus the `scalars` the
   create form prefills from (`core.profile.datasource_scalars`).
+- `GET  /sources/profiles/<slug>/download/` — the raw YAML file as an
+  attachment. Serves the bytes as they sit on disk, so a
+  download/upload trip round-trips losslessly.
 - `POST /sources/profiles/upload/` — `request.FILES["file"]`; validated by
   `parse_profile_text` **before** anything is written, capped at 2 MB.
 - `POST /sources/profiles/<slug>/delete/` — saved profiles only; a shipped

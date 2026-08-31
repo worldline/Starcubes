@@ -33,7 +33,9 @@ them. See [`docs/deployment-config.md`](deployment-config.md).
   editable, so what you see before clicking Create is what gets stored.
 - **Save as Profile / Apply Profile** on the datasource detail page (Basics
   tab) — export the current configuration, or replace it with another.
-- **Profiles… dialog** on `/sources/` — the catalogue: use, upload, delete.
+- **Profiles… dialog** on `/sources/` — the catalogue: use, download,
+  upload, delete. Download serves the file as it sits on disk, so an
+  upload/download trip round-trips losslessly.
 
 The writes all go through `sources/profile_store.py`, so the CLI and the
 browser cannot write a profile differently.
@@ -238,7 +240,7 @@ profile was loaded at module import.
 | `sources/profile_store.py` | the INSERTs, shared by CLI and GUI |
 | `profiles/examples/oracle_payments.yaml` | the shipped profile (Oracle payment-transaction demo) |
 | `sources/management/commands/seed_example.py` | CLI consumer (`--profile`) |
-| `sources/views.py` | the seven profile endpoints (see `docs/sources-app.md`) |
+| `sources/views.py` | the eight profile endpoints (see `docs/sources-app.md`) |
 | `sources/templates/sources/new.html` | profile picker + form prefill |
 | `sources/templates/sources/list.html` | Profiles… catalogue dialog |
 | `sources/templates/sources/detail.html` | Save as Profile / Apply Profile |
