@@ -34,7 +34,7 @@ The two sides are counted differently on purpose:
     epoch. One scan covers every bucket.
   * Source side — N plain `count(*)` range queries over `watermark_column`.
     Deliberately no `date_trunc`/`TRUNC`: that spelling is dialect-specific
-    (the open multi-dialect WHERE item in CLAUDE.md's backlog), while a bare
+    (the open multi-dialect WHERE item in `docs/backlog.md`), while a bare
     range predicate works everywhere and rides the existing index on the
     watermark column.
 
@@ -64,7 +64,7 @@ MAX_BUCKETS = 200
 # The fact-side count cannot use the BRIN index when watermark_fact_expr is a
 # derived expression, so it scans the range. This is an on-demand tool, but
 # uWSGI only has 8 request slots — an unbounded scan would hold one of them
-# (CLAUDE.md, "Console concurrency").
+# (`docs/backlog.md`, "Console concurrency").
 DEFAULT_TIMEOUT_MS = 120_000
 
 # Per-side ceiling on the ID comparison. Set from measurement, not from the

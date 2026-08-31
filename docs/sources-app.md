@@ -195,7 +195,8 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   `run.stats.queues.{transform,load}` for a live `E … T … L … [tq n lq n]`
   line, and shows a `⚠ no progress for Ns` badge (switches the strip to the
   `failed` styling) once `run.progress_at` is more than 60s old — see
-  `core/etl.py`'s design-decision note in `CLAUDE.md` for why `progress_at`
+  `core/etl.py`'s design-decision note in `docs/etl-engine.md` ("ETL
+  throughput is measured as net busy time per stage, not wall time") for why `progress_at`
   only advances when rows actually move. The ETL History table's `E / T / L`
   column carries a `title=` tooltip built from the per-stage `busy_s`/
   `wait_s` in the `stats` jsonb column — see the same note for the shape and

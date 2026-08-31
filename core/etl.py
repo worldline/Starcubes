@@ -199,7 +199,8 @@ BIGINT_MAX = 9223372036854775807  # signed int64 upper bound
 # Integer measures are clamped to [0, type max]: a `measure` column is a
 # count/sum/duration and is never legitimately negative, so out-of-range
 # values (either direction) are silently clamped rather than failing the
-# COPY. See the `measure` role contract in CLAUDE.md.
+# COPY. See the `measure` role contract in `docs/star-schema.md`,
+# "Integer measure columns must be non-negative and in range".
 
 
 class EtlAborted(RuntimeError):

@@ -2,7 +2,7 @@
 
 Used by ``sources/management/commands/etl_run.py`` and
 ``etl_resume_forever.py``. ``core/`` itself must not import Django (see
-CLAUDE.md), so it only ever does ``logging.getLogger(__name__)`` — this
+`docs/etl-engine.md`, "ETL logging"), so it only ever does ``logging.getLogger(__name__)`` — this
 module is where the handlers those loggers write through get attached, at
 the one process entry point that is allowed to know about Django settings.
 """

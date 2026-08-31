@@ -1,7 +1,6 @@
 # starcubes How-to
 
-Guide to using the starcubes GUI and configuring datasources. For architecture
-and internals, see `README.md` and `CLAUDE.md`.
+Guide to using the starcubes GUI and configuring datasources.
 
 ## Table of contents
 
@@ -566,6 +565,10 @@ a fact column. The example Oracle source watermarks on `end_time` but stores
 watermark column *is* the partition column, which is the common case. Used
 by the overlap re-fetch and by the Audit tab.
 
+*Internals: see [`docs/etl-audit.md`](docs/etl-audit.md) for how the
+three audit modes relate, and [`docs/etl-engine.md`](docs/etl-engine.md)
+for the late-arrival overlap mechanism.*
+
 ### Finding and repairing missed transactions
 
 The **Audit** tab on a datasource compares row counts between the source and
@@ -620,6 +623,11 @@ reorders.
 in chunks of this size, transforms each chunk in a child process, and copies
 it to the warehouse. Default: 10 000. Larger chunks reduce overhead but use
 more memory.
+
+*Internals: see [`docs/etl-engine.md`](docs/etl-engine.md) for the
+three-stage pipeline and throughput model, and
+[`docs/star-schema.md`](docs/star-schema.md) for watermark and
+late-arrival terminology.*
 
 **Transform Processes** — Number of parallel transform workers. Each worker
 receives a chunk, applies dimension lookups and type conversions, and
@@ -875,6 +883,9 @@ is still recorded — usually that is exactly the one you want back.
 corner to resize it. Position, size, open state and whether History is expanded
 are remembered in this browser. `Escape` deliberately does *not* close the
 panel — it would discard whatever you had typed; use the `×`.
+
+*Internals: see [`docs/chart-app.md`](docs/chart-app.md), "Query console",
+for how the four read-only layers and cross-process cancellation are wired.*
 
 ### Preferences
 
