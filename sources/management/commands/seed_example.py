@@ -1,6 +1,9 @@
-"""Seed an example Oracle payment-transaction datasource into starcubes_meta.
+"""Seed an example datasource into starcubes_meta.
 
-Equivalent to scripts/seed_example.py, but usable via ``manage.py seed_example``.
+The example is loaded from ``examples/<profile>.yaml`` via
+``core.profile.load_profile``. Default profile is ``oracle_payments``;
+override with ``--profile <name>``. To add a new example, drop a YAML file
+in ``examples/`` — no Python changes required.
 """
 from __future__ import annotations
 
@@ -9,125 +12,19 @@ from django.core.management.base import BaseCommand, CommandError
 
 from sqlalchemy import text
 
+from core.profile import ProfileError, iter_profiles, load_profile
 from core.schema import create_fact, import_dimensions
 from core.source import Source, _get_cached_engine
 
-BASE_TABLE          = "txn"
-SMALL_WINDOW_HINT   = "/*+ ORDERED INDEX(txn, TXN3) */"
-WATERMARK_MAX_QUERY = "SELECT max(end_time) FROM txn"
 
-# Fact-side SQL that reproduces watermark_column (end_time). The fact table
-# stores create_time plus a `total` duration in milliseconds, not end_time
-# itself, so the watermark has to be recomputed to find the already-loaded
-# rows of an overlap window (core/etl.py:_resume_state) and to count rows
-# per bucket in the Audit tab (core/audit.py). core/etl.py used to hard-code
-# exactly this expression, which broke every source without a `total` column.
-WATERMARK_FACT_EXPR = "create_time + total * interval '1 millisecond'"
+def _upsert_datasource(meta_engine, name, schema, source_dsn, force, profile):
+    """Insert a datasource plus its child rows from a loaded profile.
 
-TOTAL_EXPR = (
-    "extract( minute from "
-    "TO_TIMESTAMP(substr(to_char(end_time),1,19)||'.'||"
-    "lpad(end_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3') - "
-    "TO_TIMESTAMP(substr(to_char(create_time),1,19)||'.'||"
-    "lpad(create_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3')"
-    ")*60000 + "
-    "extract( second from "
-    "TO_TIMESTAMP(substr(to_char(end_time),1,19)||'.'||"
-    "lpad(end_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3') - "
-    "TO_TIMESTAMP(substr(to_char(create_time),1,19)||'.'||"
-    "lpad(create_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3')"
-    ")*1000"
-)
-
-# (name, pg_type, role, ordinal, source_expr)
-FACT_COLUMNS = [
-    ("create_time", "timestamptz", "time",       1,
-     "substr(to_char(create_time),1,19)||'.'||lpad(create_time_ms,3,'0')"),
-    ("txn_id",      "bigint",      "pk",         2,
-     "to_number(txn_id)"),
-    ("stay",        "smallint",    "measure",    3,
-     "stay"),
-    ("total",       "smallint",    "measure",    4,
-     TOTAL_EXPR),
-    ("amount",      "bigint",      "measure",    5,
-     "to_number(nvl(amount,0))"),
-    ("cncy_code",   "smallint",    "dimension",  6,
-     "to_number(nvl(cncy_code,-1))"),
-    ("app_loc",     "smallint",    "dimension",  7,
-     "to_char(create_app_loc_id)"),
-    ("db_loc",      "smallint",    "dimension",  8,
-     "SUBSTR(txn_id,2,1)"),
-    ("response",    "smallint",    "dimension",  9,
-     "res_code"),
-    ("txn_type",    "smallint",    "dimension", 10,
-     "to_char(txn_type_id)"),
-    ("sec_type",    "smallint",    "dimension", 11,
-     "to_char(sec_type_id)"),
-    ("txn_origin",  "smallint",    "dimension", 12,
-     "to_char(txn_origin_id)"),
-    ("so_peer_1",   "smallint",    "dimension", 13,
-     "to_char(nvl(so_peer_id, -1))"),
-    ("so_peer_2",   "smallint",    "dimension", 14,
-     "to_char(nvl(so_peer_id2, -1))"),
-    ("so_peer_3",   "smallint",    "dimension", 15,
-     "to_char(nvl(so_peer_id3, -1))"),
-    ("src_peer",    "smallint",    "dimension", 16,
-     "to_char(nvl(src_peer_id, -1))"),
-    ("merch_cat",   "smallint",    "dimension", 17,
-     "to_char(nvl(merch_cat_code, -1))"),
-    ("card_type",   "smallint",    "dimension", 18,
-     "to_char(nvl(card_type_id, -1))"),
-    ("issuer",      "smallint",    "dimension", 19,
-     "to_char(issuer_id)"),
-]
-
-# ISO 4217 currency codes — read from project-root iso4217.csv at import time
-# so the single file is the source of truth for both seeding and manual edits.
-from pathlib import Path as _Path
-_ISO4217_CSV = (_Path(__file__).resolve().parents[3] / "iso4217.csv").read_text()
-
-# (fact_col, dim_table, src_table, src_key, src_name, src_desc, is_primary, inline_values)
-DIMENSIONS = [
-    ("app_loc",    "app_loc",    "app_loc",    "app_loc_id",     "app_loc_name",     "remark",          True,  None),
-    ("db_loc",     "db_loc",     "db_loc",     "db_loc_id",      "db_loc_name",      "remark",          True,  None),
-    ("response",   "response",   "result",     "res_code",       "res_code",         "description",     True,  None),
-    ("txn_type",   "txn_type",   "txn_type",   "txn_type_id",    "txn_type_name",    "description",     True,  None),
-    ("sec_type",   "sec_type",   "sec_type",   "sec_type_id",    "sec_type_name",    "description",     True,  None),
-    ("txn_origin", "txn_origin", "txn_origin", "txn_origin_id",  "txn_origin_name",  "txn_origin_name", True,  None),
-    ("so_peer_1",  "peer",       "peer",       "peer_id",        "srv_name",         "remark",          True,  None),
-    ("so_peer_2",  "peer",       "peer",       "peer_id",        "srv_name",         "remark",          False, None),
-    ("so_peer_3",  "peer",       "peer",       "peer_id",        "srv_name",         "remark",          False, None),
-    ("src_peer",   "peer",       "peer",       "peer_id",        "srv_name",         "remark",          False, None),
-    ("merch_cat",  "merch_cat",  "merch_cat",  "merch_cat_code", "merch_cat_name",   "remark",          True,  None),
-    ("card_type",  "card_type",  "card_type",  "card_type_id",   "card_type_name",   "remark",          True,  None),
-    ("issuer",     "issuer",     "issuer",     "issuer_id",      "remark",           "remark",          True,  None),
-    ("cncy_code",  "cncy_code",  None,         None,             None,               None,              True,  _ISO4217_CSV),
-]
-
-# (column_name, method)
-FACT_INDICES = [
-    ("create_time", "brin"),
-]
-
-# (name, agg, graph_style, is_default, ordinal, percentiles or None)
-MEASURES = [
-    ("Transaction count",  "count(*)",     "multibar",            True,  1, None),
-    ("Total amount",       "sum(amount)",  "multibar",            False, 2, None),
-    ("Avg stay",           "avg(stay)",    "multibar",            False, 3, None),
-    ("Avg duration (ms)",  "avg(total)",   "multibar",            False, 4, None),
-    # One demo measure per ladder style so a fresh install shows the new
-    # renderers in the chart's measure dropdown. Same numeric column,
-    # different graph_style / connect flag (the last one is the open
-    # variant of quantile-steps).
-    ("Stay (quantile-bands)",   "quantile(stay)",  "quantile-bands",      False, 5, "5,25,50,75,95"),
-    ("Stay (quantile-steps)",   "quantile(stay)",  "quantile-steps",      False, 6, "5,25,50,75,95"),
-    ("Stay (quantile-steps-open)", "quantile(stay)", "quantile-steps-open", False, 7, "5,25,50,75,95"),
-    ("Stay (error-bars)",       "quantile(stay)",  "error-bars",          False, 8, "5,25,50,75,95"),
-    ("Stay (candlestick)",      "quantile(stay)",  "candlestick",         False, 9, "5,25,50,75,95"),
-]
-
-
-def _upsert_datasource(meta_engine, name, schema, source_dsn, force):
+    Mirror of the historical in-line loop: writes one row into
+    ``starcubes_meta.datasource`` and N rows each into ``fact_column``,
+    ``dimension`` and ``fact_index``; ``measure`` is populated by the
+    caller so the function stays symmetric with the legacy version.
+    """
     with meta_engine.begin() as conn:
         existing = conn.execute(text(
             "SELECT id FROM starcubes_meta.datasource WHERE name = :n"
@@ -147,6 +44,10 @@ def _upsert_datasource(meta_engine, name, schema, source_dsn, force):
             "SELECT 1 FROM starcubes_meta.datasource WHERE is_default LIMIT 1"
         )).scalar()
 
+        src = profile.source
+        partition = profile.partition
+        runtime = profile.runtime_defaults
+        ladder = runtime.get("interval_ladder") or [1, 60, 3600, 86400]
         ds_id = conn.execute(text(
             "INSERT INTO starcubes_meta.datasource ("
             "  name, schema_name, source_dialect, source_dsn, "
@@ -156,26 +57,35 @@ def _upsert_datasource(meta_engine, name, schema, source_dsn, force):
             "  interval_ladder, bar_pixel_target, is_default, "
             "  watermark_fact_expr"
             ") VALUES ("
-            "  :name, :schema, 'oracle', :dsn, "
-            "  :base, 'end_time', :wmq, "
-            "  'create_time', 'month', "
-            "  10000, 1, :hint, "
-            "  '{1,60,3600,86400}', 5, :is_def, "
-            "  :wm_fact_expr"
+            "  :name, :schema, :dialect, :dsn, "
+            "  :base, :watermark_column, NULLIF(:wmq, ''), "
+            "  :partition_column, :partition_period, "
+            "  :chunksize, :transform_procs, NULLIF(:hint, ''), "
+            "  CAST(:ladder AS int[]), :bar_pixel_target, :is_def, "
+            "  NULLIF(:wm_fact_expr, '')"
             ") RETURNING id"
         ), {"name": name, "schema": schema,
+            "dialect": src.get("dialect", "oracle"),
             "dsn": source_dsn or "",
-            "base": BASE_TABLE, "wmq": WATERMARK_MAX_QUERY,
-            "hint": SMALL_WINDOW_HINT,
-            "wm_fact_expr": WATERMARK_FACT_EXPR,
-            "is_def": not has_default}).scalar()
+            "base": src["base_table"],
+            "watermark_column": src["watermark_column"],
+            "wmq": src.get("watermark_max_query") or "",
+            "partition_column": partition["column"],
+            "partition_period": partition.get("period", "month"),
+            "chunksize": runtime.get("chunksize", 10000),
+            "transform_procs": runtime.get("transform_procs", 1),
+            "hint": src.get("small_window_hint") or "",
+            "ladder": "{" + ",".join(str(x) for x in ladder) + "}",
+            "bar_pixel_target": runtime.get("bar_pixel_target", 5),
+            "is_def": not has_default,
+            "wm_fact_expr": src.get("watermark_fact_expr") or ""}).scalar()
 
         conn.execute(text(
             "INSERT INTO starcubes_meta.fact_column "
             "  (datasource_id, name, pg_type, role, ordinal, source_expr) "
             "VALUES (:ds, :n, :t, :r, :o, :e)"
         ), [{"ds": ds_id, "n": n, "t": t, "r": r, "o": o, "e": e}
-            for (n, t, r, o, e) in FACT_COLUMNS])
+            for (n, t, r, o, e) in profile.fact_columns_as_tuples()])
 
         conn.execute(text(
             "INSERT INTO starcubes_meta.dimension "
@@ -184,39 +94,44 @@ def _upsert_datasource(meta_engine, name, schema, source_dsn, force):
             "VALUES (:ds, :fc, :dt, :st, :sk, :sn, :sd, :p, :iv)"
         ), [{"ds": ds_id, "fc": fc, "dt": dt, "st": st,
              "sk": sk, "sn": sn, "sd": sd, "p": p, "iv": iv}
-            for (fc, dt, st, sk, sn, sd, p, iv) in DIMENSIONS])
+            for (fc, dt, st, sk, sn, sd, p, iv) in profile.dimensions_as_tuples()])
 
         conn.execute(text(
             "INSERT INTO starcubes_meta.fact_index "
             "  (datasource_id, column_name, method) "
             "VALUES (:ds, :c, :m)"
-        ), [{"ds": ds_id, "c": c, "m": m} for (c, m) in FACT_INDICES])
+        ), [{"ds": ds_id, "c": c, "m": m}
+            for (c, m) in profile.fact_indices_as_tuples()])
 
         conn.execute(text(
             "INSERT INTO starcubes_meta.measure "
             "  (datasource_id, name, agg, graph_style, is_default, ordinal, percentiles) "
             "VALUES (:ds, :n, :a, :gs, :d, :o, :p)"
         ), [{"ds": ds_id, "n": n, "a": a, "gs": gs, "d": d, "o": o, "p": p}
-            for (n, a, gs, d, o, p) in MEASURES])
+            for (n, a, gs, d, o, p) in profile.measures_as_tuples()])
 
     return ds_id
 
 
 class Command(BaseCommand):
-    help = "Seed an example Oracle payment-transaction datasource into starcubes_meta."
+    help = "Seed an example datasource into starcubes_meta."
 
     def add_arguments(self, parser):
         parser.add_argument("--postgres-dsn", default=None,
                             help="SQLAlchemy URL for the Postgres DB "
                                  "(default: settings.STARCUBES_POSTGRES_DSN)")
         parser.add_argument("--source-dsn", default=None,
-                            help="SQLAlchemy URL for the Oracle source DB "
+                            help="SQLAlchemy URL for the source DB "
                                  "(env: STARCUBES_SOURCE_DSN)")
         parser.add_argument("--name", default="source",
                             help="datasource name (default: source)")
         parser.add_argument("--schema", default="starcubes_source",
                             help="Postgres schema for this datasource's warehouse "
                                  "tables (default: starcubes_source)")
+        parser.add_argument("--profile", default="oracle_payments",
+                            help="name of the profile under examples/ "
+                                 "(default: oracle_payments). Available: "
+                                 f"{', '.join(iter_profiles()) or '<none>'}")
         parser.add_argument("--force", action="store_true",
                             help="delete an existing datasource with the same name "
                                  "before inserting")
@@ -239,10 +154,20 @@ class Command(BaseCommand):
             self.stderr.flush()
             raise SystemExit(1)
 
+        try:
+            profile = load_profile(options["profile"])
+        except ProfileError as exc:
+            raise CommandError(str(exc))
+
+        self.stdout.write(f"loaded profile {profile.name!r}: "
+                          f"{len(profile.fact_columns)} fact columns, "
+                          f"{len(profile.dimensions)} dimensions, "
+                          f"{len(profile.measures)} measures")
+
         meta_engine = _get_cached_engine(dsn)
         ds_id = _upsert_datasource(meta_engine, options["name"],
                                     options["schema"], source_dsn,
-                                    options["force"])
+                                    options["force"], profile)
         self.stdout.write(f"registered datasource {options['name']!r} "
                           f"(id={ds_id}) → schema {options['schema']}")
 

@@ -1,0 +1,140 @@
+# Example profile: Oracle payment-transaction datasource.
+#
+# Loaded by `manage.py seed_example` (default profile) and by the
+# "Preload example Oracle configuration" checkbox in /sources/new/.
+# See docs/example-profile.md for the full schema.
+#
+# This profile is a 1:1 projection of the production "wlpfo" Oracle schema
+# (see backups/wlpfo_meta.sql). It carries meta config only — no example
+# fact rows. Dimension content is loaded at run time from the source by
+# core.schema.import_dimensions, except for cncy_code which is sourced from
+# the inline CSV listed under inline_dimensions below.
+
+profile: oracle_payments
+description: |
+  Oracle payment-transaction demo. Mirrors the production wlpfo schema;
+  one measure per ladder style so a fresh install shows every renderer.
+
+source:
+  dialect: oracle                 # used by the GUI's "warn if non-Oracle" hint
+  base_table: txn
+  small_window_hint: "/*+ ORDERED INDEX(txn, TXN3) */"
+  watermark_column: end_time
+  watermark_max_query: "SELECT max(end_time) FROM txn"
+  # Reconstruct end_time on the fact side (the fact table stores create_time
+  # + total_ms; core/audit.py and core/etl.py:_resume_state use this to find
+  # already-loaded rows in the late-arrival overlap window).
+  watermark_fact_expr: "create_time + total * interval '1 millisecond'"
+  # Source-side expression for the total_ms measure column.
+  total_expr: |
+    extract( minute from
+      TO_TIMESTAMP(substr(to_char(end_time),1,19)||'.'||lpad(end_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3') -
+      TO_TIMESTAMP(substr(to_char(create_time),1,19)||'.'||lpad(create_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3')
+    )*60000 + extract( second from
+      TO_TIMESTAMP(substr(to_char(end_time),1,19)||'.'||lpad(end_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3') -
+      TO_TIMESTAMP(substr(to_char(create_time),1,19)||'.'||lpad(create_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3')
+    )*1000
+
+partition:
+  column: create_time
+  period: month
+
+runtime_defaults:
+  chunksize: 10000
+  transform_procs: 1
+  interval_ladder: [1, 60, 3600, 86400]
+  bar_pixel_target: 5
+
+# Inline dimensions: source_table=null in dimensions[], values come from
+# these CSVs instead of from the Oracle source. Path is project-root
+# relative; see core.profile._resolve_inline_csv for resolution rules.
+inline_dimensions:
+  cncy_code:
+    csv: iso4217.csv
+
+# ---- fact_columns --------------------------------------------------------
+# (name, pg_type, role, ordinal, source_expr)
+# Roles: time | pk | measure | dimension | auto-dimension
+
+fact_columns:
+  - {name: create_time, pg_type: timestamptz, role: time,       ordinal:  1,
+     source_expr: "substr(to_char(create_time),1,19)||'.'||lpad(create_time_ms,3,'0')"}
+  - {name: txn_id,      pg_type: bigint,      role: pk,         ordinal:  2,
+     source_expr: "to_number(txn_id)"}
+  - {name: stay,        pg_type: smallint,    role: measure,    ordinal:  3,
+     source_expr: "stay"}
+  - {name: total,       pg_type: smallint,    role: measure,    ordinal:  4,
+     source_expr: "extract( minute from TO_TIMESTAMP(substr(to_char(end_time),1,19)||'.'||lpad(end_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3') - TO_TIMESTAMP(substr(to_char(create_time),1,19)||'.'||lpad(create_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3'))*60000 + extract( second from TO_TIMESTAMP(substr(to_char(end_time),1,19)||'.'||lpad(end_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3') - TO_TIMESTAMP(substr(to_char(create_time),1,19)||'.'||lpad(create_time_ms,3,'0'),'YYYY-MM-DD HH24:MI:SS.FF3'))*1000"}
+  - {name: amount,      pg_type: bigint,      role: measure,    ordinal:  5,
+     source_expr: "to_number(nvl(amount,0))"}
+  - {name: cncy_code,   pg_type: smallint,    role: dimension,  ordinal:  6,
+     source_expr: "to_number(nvl(cncy_code,-1))"}
+  - {name: app_loc,     pg_type: smallint,    role: dimension,  ordinal:  7,
+     source_expr: "to_char(create_app_loc_id)"}
+  - {name: db_loc,      pg_type: smallint,    role: dimension,  ordinal:  8,
+     source_expr: "SUBSTR(txn_id,2,1)"}
+  - {name: response,    pg_type: smallint,    role: dimension,  ordinal:  9,
+     source_expr: "res_code"}
+  - {name: txn_type,    pg_type: smallint,    role: dimension,  ordinal: 10,
+     source_expr: "to_char(txn_type_id)"}
+  - {name: sec_type,    pg_type: smallint,    role: dimension,  ordinal: 11,
+     source_expr: "to_char(sec_type_id)"}
+  - {name: txn_origin,  pg_type: smallint,    role: dimension,  ordinal: 12,
+     source_expr: "to_char(txn_origin_id)"}
+  - {name: so_peer_1,   pg_type: smallint,    role: dimension,  ordinal: 13,
+     source_expr: "to_char(nvl(so_peer_id, -1))"}
+  - {name: so_peer_2,   pg_type: smallint,    role: dimension,  ordinal: 14,
+     source_expr: "to_char(nvl(so_peer_id2, -1))"}
+  - {name: so_peer_3,   pg_type: smallint,    role: dimension,  ordinal: 15,
+     source_expr: "to_char(nvl(so_peer_id3, -1))"}
+  - {name: src_peer,    pg_type: smallint,    role: dimension,  ordinal: 16,
+     source_expr: "to_char(nvl(src_peer_id, -1))"}
+  - {name: merch_cat,   pg_type: smallint,    role: dimension,  ordinal: 17,
+     source_expr: "to_char(nvl(merch_cat_code, -1))"}
+  - {name: card_type,   pg_type: smallint,    role: dimension,  ordinal: 18,
+     source_expr: "to_char(nvl(card_type_id, -1))"}
+  - {name: issuer,      pg_type: smallint,    role: dimension,  ordinal: 19,
+     source_expr: "to_char(issuer_id)"}
+
+# ---- dimensions ----------------------------------------------------------
+# (fact_column, dim_table, source_table, source_key, source_name,
+#  source_description, is_primary, inline_values-or-null)
+# source_table=null marks an inline dimension; inline_values is then
+# populated from inline_dimensions above.
+
+dimensions:
+  - {fact_column: app_loc,    dim_table: app_loc,    source_table: app_loc,    source_key: app_loc_id,     source_name: app_loc_name,     source_description: remark,       is_primary: true,  inline_values: null}
+  - {fact_column: db_loc,     dim_table: db_loc,     source_table: db_loc,     source_key: db_loc_id,      source_name: db_loc_name,      source_description: remark,       is_primary: true,  inline_values: null}
+  - {fact_column: response,   dim_table: response,   source_table: result,     source_key: res_code,       source_name: res_code,         source_description: description,  is_primary: true,  inline_values: null}
+  - {fact_column: txn_type,   dim_table: txn_type,   source_table: txn_type,   source_key: txn_type_id,    source_name: txn_type_name,    source_description: description,  is_primary: true,  inline_values: null}
+  - {fact_column: sec_type,   dim_table: sec_type,   source_table: sec_type,   source_key: sec_type_id,    source_name: sec_type_name,    source_description: description,  is_primary: true,  inline_values: null}
+  - {fact_column: txn_origin, dim_table: txn_origin, source_table: txn_origin, source_key: txn_origin_id,  source_name: txn_origin_name,  source_description: txn_origin_name, is_primary: true, inline_values: null}
+  - {fact_column: so_peer_1,  dim_table: peer,       source_table: peer,       source_key: peer_id,        source_name: srv_name,         source_description: remark,       is_primary: true,  inline_values: null}
+  - {fact_column: so_peer_2,  dim_table: peer,       source_table: peer,       source_key: peer_id,        source_name: srv_name,         source_description: remark,       is_primary: false, inline_values: null}
+  - {fact_column: so_peer_3,  dim_table: peer,       source_table: peer,       source_key: peer_id,        source_name: srv_name,         source_description: remark,       is_primary: false, inline_values: null}
+  - {fact_column: src_peer,   dim_table: peer,       source_table: peer,       source_key: peer_id,        source_name: srv_name,         source_description: remark,       is_primary: false, inline_values: null}
+  - {fact_column: merch_cat,  dim_table: merch_cat,  source_table: merch_cat,  source_key: merch_cat_code, source_name: merch_cat_name,   source_description: remark,       is_primary: true,  inline_values: null}
+  - {fact_column: card_type,  dim_table: card_type,  source_table: card_type,  source_key: card_type_id,   source_name: card_type_name,   source_description: remark,       is_primary: true,  inline_values: null}
+  - {fact_column: issuer,     dim_table: issuer,     source_table: issuer,     source_key: issuer_id,      source_name: remark,           source_description: remark,       is_primary: true,  inline_values: null}
+  - {fact_column: cncy_code,  dim_table: cncy_code,  source_table: null,       source_key: null,           source_name: null,             source_description: null,         is_primary: true,  inline_values: cncy_code}
+
+# ---- fact_indices --------------------------------------------------------
+# (column_name, method: brin | btree | hash)
+
+fact_indices:
+  - {column_name: create_time, method: brin}
+
+# ---- measures ------------------------------------------------------------
+# (name, agg, graph_style, is_default, ordinal, percentiles-or-null)
+# One demo per ladder style so a fresh install shows every renderer.
+
+measures:
+  - {name: "Transaction count",            agg: "count(*)",       graph_style: multibar,            is_default: true,  ordinal: 1, percentiles: null}
+  - {name: "Total amount",                 agg: "sum(amount)",    graph_style: multibar,            is_default: false, ordinal: 2, percentiles: null}
+  - {name: "Avg stay",                     agg: "avg(stay)",      graph_style: multibar,            is_default: false, ordinal: 3, percentiles: null}
+  - {name: "Avg duration (ms)",            agg: "avg(total)",     graph_style: multibar,            is_default: false, ordinal: 4, percentiles: null}
+  - {name: "Stay (quantile-bands)",        agg: "quantile(stay)", graph_style: quantile-bands,      is_default: false, ordinal: 5, percentiles: "5,25,50,75,95"}
+  - {name: "Stay (quantile-steps)",        agg: "quantile(stay)", graph_style: quantile-steps,      is_default: false, ordinal: 6, percentiles: "5,25,50,75,95"}
+  - {name: "Stay (quantile-steps-open)",   agg: "quantile(stay)", graph_style: quantile-steps-open, is_default: false, ordinal: 7, percentiles: "5,25,50,75,95"}
+  - {name: "Stay (error-bars)",            agg: "quantile(stay)", graph_style: error-bars,          is_default: false, ordinal: 8, percentiles: "5,25,50,75,95"}
+  - {name: "Stay (candlestick)",           agg: "quantile(stay)", graph_style: candlestick,         is_default: false, ordinal: 9, percentiles: "5,25,50,75,95"}

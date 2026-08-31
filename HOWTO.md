@@ -166,11 +166,17 @@ Click **Create Datasource** to save. You are redirected to the detail page.
 
 The create form has a **Seed Data** card with a checkbox:
 
-- **Preload example Oracle configuration** — inserts 19 fact columns, 14
-  dimensions, and 1 index for the bundled Oracle payment-transaction example.
-  Only select this if your source dialect is Oracle (the seed data uses
-  Oracle-specific SQL like `to_number`, `nvl`, `extract`). A warning appears
-  if the dialect is not Oracle while the checkbox is checked.
+- **Preload example … configuration** — inserts the bundled example
+  profile into `starcubes_meta`. The default profile is `oracle_payments`
+  (19 fact columns, 14 dimensions, 9 measures covering every ladder
+  style); it lives in `examples/oracle_payments.yaml`. Only select this
+  if your source dialect matches the profile's `source.dialect`
+  (`oracle` for the bundled one). A warning appears when they disagree.
+  The same profile is also loaded by
+  `manage.py seed_example --profile <name>` (default `oracle_payments`).
+  See [`docs/example-profile.md`](docs/example-profile.md) for the YAML
+  schema and how to add a new profile — drop a new YAML under
+  `examples/`, no Python changes required.
 
 ### Tab: Basics
 

@@ -158,16 +158,15 @@
       <div class="form-group">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
           <input type="checkbox" name="preload_seed_example">
-          <span>Preload example Oracle configuration</span>
+          <span>Preload example {{ example_profile.dialect|cut:"" }} configuration ({{ example_profile.name }})</span>
         </label>
         <div class="form-hint">
-          Inserts 19 fact columns, 14 dimensions, and 1 index for the example Oracle payment-transaction dataset.
-          Source expressions use Oracle-specific syntax (to_number, nvl, extract).
-          Only select this if your source dialect is Oracle.
+          Inserts the example profile {{ example_profile.name }}: {{ example_profile.description|truncatechars:160 }}
+          Only select this if your source dialect matches the profile ({{ example_profile.dialect }}).
         </div>
         <div id="seedDialectWarning" class="action-result err" style="display:none">
-          The example seed data uses Oracle-specific SQL expressions.
-          Consider changing the dialect to Oracle, or leave unchecked.
+          The example seed data uses {{ example_profile.dialect }}-specific SQL expressions.
+          Consider changing the dialect to {{ example_profile.dialect }}, or leave unchecked.
         </div>
       </div>
     </div>
@@ -186,8 +185,12 @@
   var cb = document.querySelector('[name="preload_seed_example"]');
   var dialect = document.querySelector('[name="source_dialect"]');
   var warning = document.getElementById('seedDialectWarning');
+  // Driven by the loaded example profile's source dialect — see
+  // ``sources/views.py:source_new`` (``example_profile``) and
+  // ``docs/example-profile.md``.
+  var expected = "{{ example_profile.dialect|escapejs }}";
   function checkDialect() {
-    warning.style.display = (cb.checked && dialect.value !== 'oracle') ? 'block' : 'none';
+    warning.style.display = (cb.checked && dialect.value !== expected) ? 'block' : 'none';
   }
   cb.addEventListener('change', checkDialect);
   dialect.addEventListener('change', checkDialect);

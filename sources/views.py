@@ -31,11 +31,20 @@ from core.etl import (truncate_last_partition, truncate_partition,
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user
 from core.audit import audit_id_details, audit_ids, audit_window
+from core.profile import load_profile as _load_example_profile
 from core.query import grouped_label, grouped_token, slugify_group_set
 from core.source import Source, _get_cached_engine
 from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
                                spawn_etl_subprocess as _spawn_etl_subprocess,
                                log_dir as _log_dir, slugify_ds as _slugify_ds)
+
+
+# Cached example profile, loaded once at module import. The
+# "Preload example Oracle configuration" checkbox in /sources/new/ seeds
+# this same profile when creating a datasource via the GUI. Tests that
+# need a different profile can ``reload(sources.views)`` after monkey-patching
+# ``_EXAMPLE_PROFILE``.
+_EXAMPLE_PROFILE = _load_example_profile()
 
 
 def _add_inline_display(dim: dict) -> dict:
@@ -92,30 +101,38 @@ def _mask_dsn(dsn: str) -> str:
 
 
 def _insert_seed_children(conn, ds_id: int):
-    """Insert example Oracle seed config: datasource scalar fields + children."""
-    from sources.management.commands.seed_example import (
-        FACT_COLUMNS, DIMENSIONS, FACT_INDICES,
-        BASE_TABLE, SMALL_WINDOW_HINT, WATERMARK_MAX_QUERY,
-        WATERMARK_FACT_EXPR,
-    )
+    """Insert example seed config from ``_EXAMPLE_PROFILE`` into ``starcubes_meta``.
+
+    Mirrors the CLI path in ``sources/management/commands/seed_example.py``
+    but stops short of ``create_fact`` and ``import_dimensions`` — those run
+    on demand via the Storage tab's "Create fact" / "Import dimensions" actions.
+    The SQL literal list mirrors ``_upsert_datasource`` so the two paths
+    cannot drift.
+    """
+    p_src = _EXAMPLE_PROFILE.source
+    p_partition = _EXAMPLE_PROFILE.partition
     conn.execute(text("""
         UPDATE starcubes_meta.datasource SET
-            base_table         = :base,
-            watermark_column    = 'end_time',
-            watermark_max_query = :wmq,
-            partition_column    = 'create_time',
-            small_window_hint   = :hint,
-            watermark_fact_expr = :wm_fact_expr
+            base_table          = :base,
+            watermark_column    = :watermark_column,
+            watermark_max_query = NULLIF(:wmq, ''),
+            partition_column    = :partition_column,
+            small_window_hint   = NULLIF(:hint, ''),
+            watermark_fact_expr = NULLIF(:wm_fact_expr, '')
         WHERE id = :id
-    """), {"id": ds_id, "base": BASE_TABLE, "wmq": WATERMARK_MAX_QUERY,
-            "hint": SMALL_WINDOW_HINT,
-            "wm_fact_expr": WATERMARK_FACT_EXPR})
+    """), {"id": ds_id,
+            "base": p_src["base_table"],
+            "watermark_column": p_src["watermark_column"],
+            "wmq": p_src.get("watermark_max_query") or "",
+            "partition_column": p_partition["column"],
+            "hint": p_src.get("small_window_hint") or "",
+            "wm_fact_expr": p_src.get("watermark_fact_expr") or ""})
     conn.execute(text(
         "INSERT INTO starcubes_meta.fact_column "
         "  (datasource_id, name, pg_type, role, ordinal, source_expr) "
         "VALUES (:ds, :n, :t, :r, :o, :e)"
     ), [{"ds": ds_id, "n": n, "t": t, "r": r, "o": o, "e": e}
-        for (n, t, r, o, e) in FACT_COLUMNS])
+        for (n, t, r, o, e) in _EXAMPLE_PROFILE.fact_columns_as_tuples()])
     conn.execute(text(
         "INSERT INTO starcubes_meta.dimension "
         "  (datasource_id, fact_column, dim_table, source_table, "
@@ -123,12 +140,19 @@ def _insert_seed_children(conn, ds_id: int):
         "VALUES (:ds, :fc, :dt, :st, :sk, :sn, :sd, :p, :iv)"
     ), [{"ds": ds_id, "fc": fc, "dt": dt, "st": st,
          "sk": sk, "sn": sn, "sd": sd, "p": p, "iv": iv}
-        for (fc, dt, st, sk, sn, sd, p, iv) in DIMENSIONS])
+        for (fc, dt, st, sk, sn, sd, p, iv) in _EXAMPLE_PROFILE.dimensions_as_tuples()])
     conn.execute(text(
         "INSERT INTO starcubes_meta.fact_index "
         "  (datasource_id, column_name, method) "
         "VALUES (:ds, :c, :m)"
-    ), [{"ds": ds_id, "c": c, "m": m} for (c, m) in FACT_INDICES])
+    ), [{"ds": ds_id, "c": c, "m": m}
+        for (c, m) in _EXAMPLE_PROFILE.fact_indices_as_tuples()])
+    conn.execute(text(
+        "INSERT INTO starcubes_meta.measure "
+        "  (datasource_id, name, agg, graph_style, is_default, ordinal, percentiles) "
+        "VALUES (:ds, :n, :a, :gs, :d, :o, :p)"
+    ), [{"ds": ds_id, "n": n, "a": a, "gs": gs, "d": d, "o": o, "p": p}
+        for (n, a, gs, d, o, p) in _EXAMPLE_PROFILE.measures_as_tuples()])
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +270,15 @@ def source_new(request):
             "interval_ladder": "1,60,3600,86400",
             "bar_pixel_target": 5,
             "partition_period": "month",
+        },
+        # Surfaces the loaded profile's source dialect so the warning in
+        # the Seed Data card isn't hard-coded to "oracle" — see
+        # ``docs/example-profile.md``. The CLI command (``manage.py seed_example``)
+        # picks the same profile name (``oracle_payments``).
+        "example_profile": {
+            "name": _EXAMPLE_PROFILE.name,
+            "description": _EXAMPLE_PROFILE.description,
+            "dialect": _EXAMPLE_PROFILE.source_dialect,
         },
         "current_source_id": "new",
         "current_source_name": None,

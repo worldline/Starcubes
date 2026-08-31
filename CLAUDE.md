@@ -46,6 +46,12 @@ the index into the agent-/developer-facing deep references.
   partition retirement, JSON auth, engine circuit breaker, read-only
   role, console concurrency. Read when planning new work or assessing
   scope.
+- **[`docs/example-profile.md`](docs/example-profile.md)** — the YAML
+  schema for `examples/<name>.yaml` files that drive both
+  `manage.py seed_example --profile` and the "Preload example …"
+  checkbox in `/sources/new/`. Read when adding a new example or
+  touching `core/profile.py`, `examples/`, `seed_example.py`, or
+  `sources/templates/sources/new.html`.
 
 ## Repo state
 
