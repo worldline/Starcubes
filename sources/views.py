@@ -217,7 +217,7 @@ def source_new(request):
                 # prefilled from this profile in the browser, so the scalar
                 # values the user is looking at are the ones just stored.
                 insert_profile_children(conn, row["id"], profile)
-        return redirect("sources:detail", pk=row["id"])
+        return redirect("sources:manage", pk=row["id"])
     return render(request, "sources/new.html", {
         "dialects": DIALECTS,
         "partition_periods": ["month", "week", "day"],
@@ -238,7 +238,12 @@ def source_new(request):
     })
 
 
-def source_detail(request, pk: int):
+def _build_source_context(pk: int) -> dict:
+    """The full context the Manage page renders, also used by source_detail
+    so the two stay in lock-step. Kept separate so source_manage can hand
+    the same dict to manage.html and source_detail can carve out a slim
+    variant for detail.html.
+    """
     ds = _load_datasource(pk)
     schema = ds["schema_name"]
     with _meta_engine().begin() as conn:
@@ -352,7 +357,7 @@ def source_detail(request, pk: int):
         for r in group_set_rows
     ]
 
-    return render(request, "sources/detail.html", {
+    return {
         "ds":               ds,
         "group_set_tokens": group_set_tokens,
         "fact_cols":        [dict(r) for r in fact_cols],
@@ -377,7 +382,39 @@ def source_detail(request, pk: int):
         "measure_aggs_json": _json.dumps(measure_aggs),
         "current_source_id": pk,
         "current_source_name": ds["name"],
+    }
+
+
+def source_detail(request, pk: int):
+    """User-facing detail page: Basics header + Group Dims + Measures + Alarms.
+
+    Admin-only configuration lives at ``source_manage`` and renders the
+    full ``manage.html`` with all 12 sub-tabs. Keeping the two apart
+    means a non-admin can edit group dim memberships and inspect
+    measures without seeing storage/audit/ETL history tabs that have
+    nothing for them to act on.
+    """
+    ctx = _build_source_context(pk)
+    # Carve the slim context detail.html needs. The keys not in this set
+    # are present in ``manage.html`` only.
+    return render(request, "sources/detail.html", {
+        "ds":         ctx["ds"],
+        "dimensions": ctx["dimensions"],
+        "measures":   ctx["measures"],
+        "current_source_id":   ctx["current_source_id"],
+        "current_source_name": ctx["current_source_name"],
     })
+
+
+def source_manage(request, pk: int):
+    """Admin-only configuration page — superset of source_detail.
+
+    Renders the full 12-tab ``manage.html`` with the same context
+    builder. ``source_manage`` itself does not gate: routing or the
+    decorator wrap does (see Commit_3).
+    """
+    ctx = _build_source_context(pk)
+    return render(request, "sources/manage.html", ctx)
 
 
 def source_edit(request, pk: int):
@@ -461,7 +498,7 @@ def source_edit(request, pk: int):
                 "watermark_lag_s":    lag_wm,
                 "wallclock_lag_s":    lag_now,
             })
-        return redirect("sources:detail", pk=pk)
+        return redirect("sources:manage", pk=pk)
     ds = _load_datasource(pk)
     ds["interval_ladder_str"] = _ladder_to_str(ds.get("interval_ladder"))
     # Lock the partition_period dropdown if any partitions already exist.

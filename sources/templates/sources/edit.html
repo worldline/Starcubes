@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="page-header">
-  <a href="{% url 'sources:detail' ds.id %}" class="text-muted" style="font-size:13px">← {{ ds.name }}</a>
+  <a href="{% url 'sources:manage' ds.id %}" class="text-muted" style="font-size:13px">← {{ ds.name }}</a>
   <h1 class="page-title">Edit Datasource</h1>
 </div>
 
@@ -155,7 +155,7 @@
 
   <div class="form-actions">
     <button type="submit" class="btn btn-primary">Save Changes</button>
-    <a class="btn btn-secondary" href="{% url 'sources:detail' ds.id %}">Cancel</a>
+    <a class="btn btn-secondary" href="{% url 'sources:manage' ds.id %}">Cancel</a>
   </div>
 </form>
 {% endblock %}

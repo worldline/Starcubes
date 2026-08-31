@@ -9,6 +9,7 @@ urlpatterns = [
     path("settings/",                                  views.settings_page,  name="settings"),
     path("new/",                                       views.source_new,     name="new"),
     path("<int:pk>/",                                  views.source_detail,  name="detail"),
+    path("<int:pk>/manage/",                           views.source_manage,  name="manage"),
     path("<int:pk>/edit/",                             views.source_edit,    name="edit"),
     path("<int:pk>/delete/",                           views.source_delete,  name="delete"),
     # Async JSON API

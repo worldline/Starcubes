@@ -1,0 +1,3506 @@
+{% extends "sources/base.html" %}
+{% block title %}{{ ds.name }} — starcubes Sources{% endblock %}
+
+{% block content %}
+<!-- Sub-tabs: lower tier of the double-tab header, full-bleed beneath the top nav -->
+<div class="subtabs-bar">
+  <div class="tabs" id="tabNav">
+    <button class="tab-btn active" data-tab="basics">Basics</button>
+    <button class="tab-btn" data-tab="fact-cols">Fact Columns ({{ fact_cols|length }})</button>
+    <button class="tab-btn" data-tab="dimensions">Dimensions ({{ dimensions|length }})</button>
+    <button class="tab-btn" data-tab="dim-data">Dim Data</button>
+    {% if user.is_authenticated %}
+    <button class="tab-btn" data-tab="group-dims">Group Dims</button>
+    {% endif %}
+    <button class="tab-btn" data-tab="measures">Measures ({{ measures|length }})</button>
+    <button class="tab-btn" data-tab="indices">Indices ({{ indices|length }})</button>
+    <button class="tab-btn" data-tab="storage">Storage</button>
+    <button class="tab-btn" data-tab="etl-cmds">ETL Commands</button>
+    <button class="tab-btn" data-tab="audit">Audit</button>
+    <button class="tab-btn" data-tab="history">ETL History ({{ runs|length }})</button>
+    <button class="tab-btn" data-tab="etl-log">ETL Log</button>
+  </div>
+</div>
+
+<!-- Basics tab -->
+<div class="tab-panel active" id="tab-basics">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Connection &amp; ETL Settings</span>
+      <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+        <a class="btn btn-secondary btn-sm" href="{% url 'sources:edit' ds.id %}">Edit</a>
+        <button class="btn btn-secondary btn-sm" id="btnPreview">Preview Import</button>
+        <button class="btn btn-secondary btn-sm" id="btnSaveProfile">Save as Profile…</button>
+        <button class="btn btn-secondary btn-sm" id="btnApplyProfile">Apply Profile…</button>
+        <form method="post" action="{% url 'sources:delete' ds.id %}" id="delete-form" style="display:inline">
+          {% csrf_token %}
+          <input type="hidden" name="drop_schema" id="drop-schema-input" value="">
+          <button type="button" class="btn btn-danger btn-sm" onclick="confirmDelete()">Delete</button>
+        </form>
+      </span>
+    </div>
+    <div id="previewResult" class="preview-table" style="margin:0 16px 12px;display:none"></div>
+    <div id="profileResult" class="action-result" style="margin:0 16px 12px;display:none"></div>
+    <div class="card-body">
+      <dl class="dl-grid">
+        <dt>Name</dt><dd>{{ ds.name }}</dd>
+        <dt>Schema</dt><dd class="mono">{{ ds.schema_name }}</dd>
+        <dt>Dialect</dt><dd><span class="badge badge-dialect" id="conn-badge-dl">{{ ds.source_dialect }}</span></dd>
+        <dt>Source DSN</dt><dd class="mono" style="word-break:break-all">{{ ds.source_dsn_masked }}</dd>
+        <dt>Import Query</dt><dd class="mono">{{ ds.import_query|default:'(composed from base_table)' }}</dd>
+        <dt>Base Table</dt><dd class="mono">{{ ds.base_table|default:'—' }}</dd>
+        <dt>Watermark Column</dt><dd class="mono">{{ ds.watermark_column }}</dd>
+        <dt>Watermark Max Query</dt><dd class="mono">{{ ds.watermark_max_query|default:'—' }}</dd>
+        <dt>Partition Column</dt><dd class="mono">{{ ds.partition_column }}</dd>
+        <dt>Partition Period</dt><dd class="mono">{{ ds.partition_period }}</dd>
+        <dt>Chunk Size</dt><dd>{{ ds.chunksize }}</dd>
+        <dt>Transform Procs</dt><dd>{{ ds.transform_procs }}</dd>
+        <dt>Small Window Hint</dt><dd class="mono">{{ ds.small_window_hint|default:'—' }}</dd>
+        <dt>Interval Ladder</dt><dd class="mono">{{ ds.interval_ladder_str }}</dd>
+        <dt>Bar Pixel Target</dt><dd>{{ ds.bar_pixel_target }}</dd>
+        <dt>PK Format</dt><dd class="mono">{{ ds.pk_format|default:'—' }}</dd>
+        <dt>Late Arrival Overlap</dt><dd>{% if ds.late_arrival_overlap_s %}{{ ds.late_arrival_overlap_s }} s{% else %}off{% endif %}</dd>
+        <dt>Window Lag</dt><dd>{% if ds.watermark_lag_s or ds.wallclock_lag_s %}{{ ds.watermark_lag_s|default:0 }} s below tip{% if ds.wallclock_lag_s %} / {{ ds.wallclock_lag_s }} s absolute{% endif %}{% else %}off{% endif %}</dd>
+        <dt>Watermark Fact Expr</dt><dd class="mono">{{ ds.watermark_fact_expr|default:'— (partition column)' }}</dd>
+      </dl>
+    </div>
+  </div>
+</div>
+
+<!-- Fact Columns tab -->
+<div class="tab-panel" id="tab-fact-cols">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Fact Columns</span>
+    </div>
+    <table class="data-table" id="fcTable">
+      <thead>
+        <tr>
+          <th>Ordinal</th>
+          <th>Name</th>
+          <th>PG Type</th>
+          <th>Role</th>
+          <th>Source Expr</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="fcBody">
+        {% for fc in fact_cols %}
+        <tr id="fc-{{ fc.id }}" data-id="{{ fc.id }}">
+          <td>
+            <span class="row-display">{{ fc.ordinal }}</span>
+            <input class="row-edit cell-input" name="ordinal" type="number" value="{{ fc.ordinal }}" style="width:60px">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ fc.name }}</span>
+            <input class="row-edit cell-input" name="name" value="{{ fc.name }}">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ fc.pg_type }}</span>
+            <select class="row-edit cell-input" name="pg_type">
+              {% for t in pg_types %}<option value="{{ t }}"{% if fc.pg_type == t %} selected{% endif %}>{{ t }}</option>{% endfor %}
+            </select>
+          </td>
+          <td>
+            <span class="row-display"><span class="badge badge-{{ fc.role }}">{{ fc.role }}</span></span>
+            <select class="row-edit cell-input" name="role">
+              {% for r in roles %}<option value="{{ r }}"{% if fc.role == r %} selected{% endif %}>{{ r }}</option>{% endfor %}
+            </select>
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ fc.source_expr|default:'—' }}</span>
+            <input class="row-edit cell-input" name="source_expr" value="{{ fc.source_expr|default:'' }}">
+          </td>
+          <td class="actions">
+            <span class="row-display">
+              <button class="btn-icon btn-est-card" data-role="{{ fc.role }}" data-name="{{ fc.name }}" data-fc-id="{{ fc.id }}" onclick="estimateCardinality(this)" title="Estimate Cardinality" style="display:none"> cardinality</button>
+              <button class="btn-icon" onclick="startEdit(this, 'fc')" title="Edit">✏</button>
+              <button class="btn-icon" onclick="deleteRow(this, '{% url "sources:fc_delete" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'))" title="Delete" style="color:var(--danger)">✕</button>
+            </span>
+            <span class="row-edit" style="gap:4px">
+              <button class="btn btn-primary btn-sm" onclick="saveRow(this, '{% url "sources:fc_edit" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'), 'fc')">Save</button>
+              <button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>
+            </span>
+          </td>
+        </tr>
+        {% empty %}
+        <tr id="fc-empty"><td colspan="6" class="empty-state">No fact columns yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <!-- Add row form -->
+    <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
+      <form id="fcAddForm" style="display:grid;grid-template-columns:60px 1fr 140px 100px 1fr auto;gap:8px;align-items:end">
+        {% csrf_token %}
+        <div>
+          <label class="form-label">Ordinal</label>
+          <input class="form-control" name="ordinal" type="number" value="{{ fact_cols|length }}" required>
+        </div>
+        <div>
+          <label class="form-label">Name</label>
+          <input class="form-control" name="name" required>
+        </div>
+        <div>
+          <label class="form-label">PG Type</label>
+          <select class="form-control" name="pg_type">
+            {% for t in pg_types %}<option>{{ t }}</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="form-label">Role</label>
+          <select class="form-control" name="role">
+            {% for r in roles %}<option>{{ r }}</option>{% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="form-label">Source Expr</label>
+          <input class="form-control" name="source_expr">
+        </div>
+        <div style="padding-top:18px">
+          <button type="submit" class="btn btn-primary">Add</button>
+        </div>
+      </form>
+      <div id="fcAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Dimensions tab -->
+<div class="tab-panel" id="tab-dimensions">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Dimensions</span>
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm" id="btnImportDims">Import Dims</button>
+      </span>
+    </div>
+    <div id="dimResult" class="action-result" style="margin:0 16px 12px"></div>
+    <table class="data-table" id="dimTable">
+      <thead>
+        <tr>
+          <th>Fact Column</th>
+          <th>Dim Table</th>
+          <th>Source Table</th>
+          <th>Source Key</th>
+          <th>Source Name</th>
+          <th>Source Desc</th>
+          <th>Primary</th>
+          <th>Inline Values</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="dimBody">
+        {% for d in dimensions %}
+        <tr id="dim-{{ d.id }}" data-id="{{ d.id }}">
+          <td>
+            <span class="row-display text-mono">{{ d.fact_column }}</span>
+            <input class="row-edit cell-input" name="fact_column" value="{{ d.fact_column }}">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ d.dim_table }}</span>
+            <input class="row-edit cell-input" name="dim_table" value="{{ d.dim_table }}">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ d.source_table|default:'—' }}</span>
+            <input class="row-edit cell-input dim-src-input" name="source_table" value="{{ d.source_table|default:'' }}">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ d.source_key|default:'—' }}</span>
+            <input class="row-edit cell-input dim-src-input" name="source_key" value="{{ d.source_key|default:'' }}">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ d.source_name|default:'—' }}</span>
+            <input class="row-edit cell-input dim-src-input" name="source_name" value="{{ d.source_name|default:'' }}">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ d.source_description|default:'—' }}</span>
+            <input class="row-edit cell-input dim-src-input" name="source_description" value="{{ d.source_description|default:'' }}">
+          </td>
+          <td>
+            <span class="row-display">{% if d.is_primary %}✓{% else %}—{% endif %}</span>
+            <input class="row-edit" type="checkbox" name="is_primary" {% if d.is_primary %}checked{% endif %} style="margin:4px">
+          </td>
+          <td>
+            <span class="row-display text-mono dim-inline-display">{{ d.inline_values_display }}</span>
+            <textarea class="row-edit cell-input dim-inline-edit" name="inline_values" rows="2" style="width:120px">{{ d.inline_values|default:'' }}</textarea>
+          </td>
+          <td class="actions">
+            <span class="row-display">
+              <button class="btn-icon" onclick="startEdit(this, 'dim')" title="Edit">✏</button>
+              <button class="btn-icon" onclick="deleteDimRow(this, '{% url "sources:dim_delete" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'))" title="Delete" style="color:var(--danger)">✕</button>
+            </span>
+            <span class="row-edit" style="gap:4px">
+              <button class="btn btn-primary btn-sm" onclick="saveRow(this, '{% url "sources:dim_edit" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'), 'dim')">Save</button>
+              <button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>
+            </span>
+          </td>
+        </tr>
+        {% empty %}
+        <tr id="dim-empty"><td colspan="9" class="empty-state">No dimensions yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <!-- Add row form -->
+    <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
+      <form id="dimAddForm" style="display:grid;grid-template-columns:repeat(7,1fr) auto auto;gap:8px;align-items:end">
+        {% csrf_token %}
+        <div><label class="form-label">Fact Column</label><input class="form-control" name="fact_column" required></div>
+        <div><label class="form-label">Dim Table</label><input class="form-control" name="dim_table" required></div>
+        <div><label class="form-label">Source Table</label><input class="form-control dim-src-input" name="source_table"></div>
+        <div><label class="form-label">Source Key</label><input class="form-control dim-src-input" name="source_key"></div>
+        <div><label class="form-label">Source Name</label><input class="form-control dim-src-input" name="source_name"></div>
+        <div><label class="form-label">Source Desc</label><input class="form-control dim-src-input" name="source_description"></div>
+        <div><label class="form-label">Primary</label><input type="checkbox" name="is_primary" style="margin-top:8px"></div>
+        <div><label class="form-label">Inline Values</label><textarea class="form-control" name="inline_values" rows="2" placeholder="id,name,desc" oninput="toggleDimSourceFields(this)"></textarea></div>
+        <div style="padding-top:18px"><button type="submit" class="btn btn-primary">Add</button></div>
+      </form>
+      <div id="dimAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Dim Data tab -->
+<div class="tab-panel" id="tab-dim-data">
+  <div id="dimDataTabs" style="display:none">
+    <div class="tabs" id="dimSubTabs"></div>
+    <div id="dimDataPane"></div>
+  </div>
+  <p id="dimDataLoading" class="text-muted" style="padding:16px;display:none">Loading…</p>
+  <p id="dimDataEmpty" class="text-muted" style="padding:16px;display:none">No dimension tables found.</p>
+  <p id="dimDataPrompt" class="text-muted" style="padding:16px">Switch to this tab to load dimension table data.</p>
+</div>
+
+<!-- Group Dims tab -->
+{% if user.is_authenticated %}
+<div class="tab-panel" id="tab-group-dims">
+  <div class="card">
+    <div class="card-header"><span class="card-title">Group Dimensions</span></div>
+    <div class="card-body">
+      <div class="group-dim-layout">
+        <div class="group-dim-list">
+          <button id="grpNewBtn" class="btn btn-secondary btn-sm group-dim-new">+ New group dimension</button>
+          <ul id="grpList" class="group-dim-items"></ul>
+          <p id="grpListEmpty" class="text-muted group-dim-empty">No group dimensions yet.</p>
+        </div>
+
+        <div class="group-dim-editor">
+          <p id="grpEditorPrompt" class="text-muted">Pick a group dimension on the left, or create a new one.</p>
+
+          <div id="grpDimContent" style="display:none">
+            <div class="group-dim-head">
+              <div>
+                <label class="form-label" for="grpNameInput">Name</label>
+                <input id="grpNameInput" class="form-control" style="max-width:340px"
+                       placeholder="e.g. Status buckets">
+              </div>
+              <div>
+                <label class="form-label" for="grpDimSelect">Dimension</label>
+                <select id="grpDimSelect" class="form-control group-dim-select" style="max-width:340px">
+                  {% for d in dimensions %}
+                  {% if d.dim_table %}
+                  <option value="{{ d.id }}" data-dim-table="{{ d.dim_table }}" data-fact-column="{{ d.fact_column }}">{{ d.fact_column }} → {{ d.dim_table }}</option>
+                  {% endif %}
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="group-dim-head-actions">
+                <button id="grpDeleteBtn" class="btn btn-danger btn-sm">Delete</button>
+              </div>
+            </div>
+
+            <div class="group-quick-assign" id="grpQuickAssign">
+              <div class="group-quick-assign-header">Bulk add to group</div>
+              <div class="group-quick-assign-body">
+                <div class="group-assign-target">
+                  <label class="form-label">Target group</label>
+                  <select id="grpSearchTarget" class="form-control" style="max-width:300px"></select>
+                </div>
+                <div class="group-assign">
+                  <div class="group-assign-panel">
+                    <label class="group-panel-label">Add by filter</label>
+                    <div class="group-filter-row">
+                      <select id="grpFilterOp" class="form-control">
+                        <option value="starts_with">starts with</option>
+                        <option value="contains">contains</option>
+                      </select>
+                      <input id="grpFilterText" class="form-control" placeholder="filter text…">
+                      <button id="grpFilterBtn" class="btn btn-secondary btn-sm">Apply</button>
+                    </div>
+                  </div>
+                  <div class="group-assign-panel">
+                    <label class="group-panel-label">Search &amp; add</label>
+                    <div class="group-filter-row">
+                      <div class="group-search-wrap" style="flex:1">
+                        <input id="grpSearchInput" class="form-control" placeholder="search values…">
+                        <div id="grpSearchResults" class="group-search-results"></div>
+                      </div>
+                      <button id="grpSearchAddBtn" class="btn btn-secondary btn-sm">Add selected</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="group-overview-header">
+              <span class="group-overview-title">Groups</span>
+              <button id="grpAddGroupBtn" class="btn btn-secondary btn-sm">+ Add Group</button>
+            </div>
+            <div id="grpZones"></div>
+
+            <div class="leftover-zone leftover-collapsed" id="grpLeftover">
+              <button type="button" class="leftover-toggle" id="grpLeftoverToggle" aria-expanded="false">
+                <span class="leftover-label" id="grpLeftoverLabel">Unassigned</span>
+                <span class="leftover-toggle-chevron" aria-hidden="true">show</span>
+              </button>
+              <div class="group-chips leftover-chips" id="grpLeftoverChips"></div>
+            </div>
+
+            <div style="margin-top:16px">
+              <button id="grpSaveBtn" class="btn btn-primary">Save</button>
+              <span id="grpSaveResult" class="action-result" style="margin-left:8px"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<!-- Measures tab -->
+<div class="tab-panel" id="tab-measures">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Measures</span>
+      <span style="margin-left:auto;font-size:12px;color:var(--muted)">Chart measure dropdown. <code>agg</code> is <code>count(*)</code> or func(measure column). <code>multiline</code> draws one line per group series, <code>multipoint</code> one dot per slot per series; <code>multibar</code> stacks them. The five <em>ladder styles</em> (<code>quantile-bands</code>, <code>quantile-steps</code>, <code>quantile-steps-open</code>, <code>error-bars</code>, <code>candlestick</code>) need a <code>quantile(col)</code> agg and a <code>Percentiles</code> ladder (e.g. <code>5,25,50,75,95</code>); they all read the same per-bin percentile array, only the renderer differs — <code>quantile-steps</code> connects the rungs with risers (default), <code>quantile-steps-open</code> drops them; <code>error-bars</code> marks each pair symmetric around the median; <code>candlestick</code> draws a boxplot (outer pair = whiskers, inner pair = body, median tick).</span>
+    </div>
+    <table class="data-table" id="measureTable">
+      <thead>
+        <tr>
+          <th style="width:60px">Ord</th>
+          <th>Name</th>
+          <th>Agg</th>
+          <th>Graph Style</th>
+          <th style="text-align:center;width:70px">Default</th>
+          <th style="width:110px">Percentiles</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="measureBody">
+        {% for m in measures %}
+        <tr id="measure-{{ m.id }}" data-id="{{ m.id }}">
+          <td>
+            <span class="row-display">{{ m.ordinal }}</span>
+            <input class="row-edit cell-input" name="ordinal" type="number" value="{{ m.ordinal }}" style="width:60px">
+          </td>
+          <td>
+            <span class="row-display">{{ m.name }}</span>
+            <input class="row-edit cell-input" name="name" value="{{ m.name }}">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ m.agg }}</span>
+            <select class="row-edit cell-input" name="agg">
+              {% for a in measure_aggs %}<option value="{{ a }}"{% if m.agg == a %} selected{% endif %}>{{ a }}</option>{% endfor %}
+            </select>
+          </td>
+          <td>
+            <span class="row-display"><span class="badge badge-dialect">{{ m.graph_style }}</span></span>
+            <select class="row-edit cell-input" name="graph_style">
+              {% for g in graph_styles %}<option value="{{ g }}"{% if m.graph_style == g %} selected{% endif %}>{{ g }}</option>{% endfor %}
+            </select>
+          </td>
+          <td style="text-align:center">
+            <span class="row-display">{% if m.is_default %}✓{% else %}—{% endif %}</span>
+            <input class="row-edit" type="checkbox" name="is_default" {% if m.is_default %}checked{% endif %} style="margin:4px">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ m.percentiles|default:"—" }}</span>
+            <input class="row-edit cell-input" name="percentiles" value="{{ m.percentiles|default:'' }}" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick)">
+          </td>
+          <td class="actions">
+            <span class="row-display">
+              <button class="btn-icon" onclick="startEdit(this, 'measure')" title="Edit">✏</button>
+              <button class="btn-icon" onclick="deleteRow(this, '{% url "sources:measure_delete" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'))" title="Delete" style="color:var(--danger)">✕</button>
+            </span>
+            <span class="row-edit" style="gap:4px">
+              <button class="btn btn-primary btn-sm" onclick="saveRow(this, '{% url "sources:measure_edit" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'), 'measure')">Save</button>
+              <button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>
+            </span>
+          </td>
+        </tr>
+        {% empty %}
+        <tr id="measure-empty"><td colspan="7" class="empty-state">No measures yet — the chart falls back to a single count(*).</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
+      <form id="measureAddForm" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+        {% csrf_token %}
+        <div style="width:70px"><label class="form-label">Ordinal</label><input class="form-control" name="ordinal" type="number" value="0"></div>
+        <div style="flex:1;min-width:140px"><label class="form-label">Name</label><input class="form-control" name="name" required placeholder="Transaction count"></div>
+        <div style="width:170px">
+          <label class="form-label">Agg</label>
+          <select class="form-control" name="agg">
+            {% for a in measure_aggs %}<option>{{ a }}</option>{% endfor %}
+          </select>
+        </div>
+        <div style="width:130px">
+          <label class="form-label">Graph Style</label>
+          <select class="form-control" name="graph_style">
+            {% for g in graph_styles %}<option>{{ g }}</option>{% endfor %}
+          </select>
+        </div>
+        <div style="width:130px">
+          <label class="form-label">Percentiles</label>
+          <input class="form-control" name="percentiles" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick)">
+        </div>
+        <div style="padding-top:18px"><label style="font-size:12px;color:var(--muted)"><input type="checkbox" name="is_default"> default</label></div>
+        <div style="padding-top:18px"><button type="submit" class="btn btn-primary">Add</button></div>
+      </form>
+      <div id="measureAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Indices tab -->
+<div class="tab-panel" id="tab-indices">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Fact Indices</span>
+      <span style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm" id="btnCreateIndices">Create All Indices</button>
+        <button class="btn btn-danger btn-sm" id="btnDropIndices">Drop All Indices</button>
+      </span>
+    </div>
+    <div id="idxResult" class="action-result" style="margin:0 16px 12px"></div>
+    <table class="data-table" id="idxTable">
+      <thead>
+        <tr>
+          <th>Column</th>
+          <th>Method</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="idxBody">
+        {% for idx in indices %}
+        <tr id="idx-{{ idx.id }}" data-id="{{ idx.id }}">
+          <td>
+            <span class="row-display text-mono">{{ idx.column_name }}</span>
+            <input class="row-edit cell-input" name="column_name" value="{{ idx.column_name }}">
+          </td>
+          <td>
+            <span class="row-display"><span class="badge badge-dialect">{{ idx.method }}</span></span>
+            <select class="row-edit cell-input" name="method">
+              {% for m in index_methods %}<option value="{{ m }}"{% if idx.method == m %} selected{% endif %}>{{ m }}</option>{% endfor %}
+            </select>
+          </td>
+          <td class="actions">
+            <span class="row-display">
+              <button class="btn-icon" onclick="startEdit(this, 'idx')" title="Edit">✏</button>
+              <button class="btn-icon" onclick="deleteRow(this, '{% url "sources:idx_delete" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'))" title="Delete" style="color:var(--danger)">✕</button>
+            </span>
+            <span class="row-edit" style="gap:4px">
+              <button class="btn btn-primary btn-sm" onclick="saveRow(this, '{% url "sources:idx_edit" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'), 'idx')">Save</button>
+              <button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>
+            </span>
+          </td>
+        </tr>
+        {% empty %}
+        <tr id="idx-empty"><td colspan="3" class="empty-state">No indices yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
+      <form id="idxAddForm" style="display:flex;gap:8px;align-items:flex-end">
+        {% csrf_token %}
+        <div style="flex:1"><label class="form-label">Column Name</label><input class="form-control" name="column_name" required></div>
+        <div style="width:140px">
+          <label class="form-label">Method</label>
+          <select class="form-control" name="method">
+            {% for m in index_methods %}<option>{{ m }}</option>{% endfor %}
+          </select>
+        </div>
+        <div style="padding-top:18px"><button type="submit" class="btn btn-primary">Add</button></div>
+      </form>
+      <div id="idxAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Storage tab -->
+<div class="tab-panel" id="tab-storage">
+  <div style="display:flex;gap:12px;margin-bottom:12px;align-items:center">
+    <span style="font-size:13px;color:var(--muted)">Schema: <strong class="text-mono">{{ ds.schema_name }}</strong></span>
+    <span style="font-size:13px;color:var(--muted)">Total size: <strong>{{ total_schema_size }}</strong></span>
+    <span style="font-size:11px;color:var(--muted)">(row counts approximate — updated by ANALYZE)</span>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header"><span class="card-title">Tables</span></div>
+    {% if storage_tables %}
+    <table class="data-table" id="storage-tables">
+      <thead>
+        <tr>
+          <th class="sortable" data-sort="0" data-type="string" onclick="sortTable(this)">Table <span class="sort-indicator"></span></th>
+          <th class="sortable" data-sort="1" data-type="num" onclick="sortTable(this)">Total Size <span class="sort-indicator"></span></th>
+          <th>Data</th>
+          <th>Indexes</th>
+          <th>Approx Rows</th>
+          <th>Dead Rows</th>
+          <th>Last Vacuum</th>
+          <th>Last Analyze</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in storage_tables %}
+        <tr id="storage-row-{{ t.tablename }}" data-bytes="{{ t.total_bytes }}">
+          <td class="text-mono">{{ t.tablename }}</td>
+          <td><strong>{{ t.total_size }}</strong></td>
+          <td>{{ t.table_size }}</td>
+          <td>{{ t.index_size }}</td>
+          <td>{{ t.approx_rows }}</td>
+          <td {% if t.dead_rows > 1000 %}style="color:var(--warn)"{% endif %}>{{ t.dead_rows }}</td>
+          <td class="text-muted" style="font-size:11px">{{ t.last_vacuum|default:t.last_autovacuum|default:'—' }}</td>
+          <td class="text-muted" style="font-size:11px">{{ t.last_analyze|default:t.last_autoanalyze|default:'—' }}</td>
+          <td class="actions" style="text-align:right">
+            {% if t.tablename in partition_names %}
+            <button class="btn btn-danger btn-sm" onclick="truncatePartition('{{ t.tablename }}')">Truncate</button>
+            <button class="btn btn-danger btn-sm" onclick="dropPartition('{{ t.tablename }}')">Drop</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">No tables found in schema <strong class="text-mono">{{ ds.schema_name }}</strong>. Run the initial DDL first.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-header"><span class="card-title">Indexes</span></div>
+    {% if storage_indexes %}
+    <table class="data-table" id="storage-indexes">
+      <thead>
+        <tr>
+          <th class="sortable" data-sort="0" data-type="string" onclick="sortTable(this)">Index <span class="sort-indicator"></span></th>
+          <th>Table</th>
+          <th>Method</th>
+          <th class="sortable" data-sort="3" data-type="num" onclick="sortTable(this)">Size <span class="sort-indicator"></span></th>
+          <th>Unique</th>
+          <th>Scans</th>
+          <th>Rows Read</th>
+          <th>Rows Fetched</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for i in storage_indexes %}
+        <tr data-bytes="{{ i.size_bytes }}">
+          <td class="text-mono">{{ i.indexname }}</td>
+          <td class="text-mono text-muted">{{ i.tablename }}</td>
+          <td><span class="badge badge-dialect">{{ i.method }}</span></td>
+          <td>{{ i.size }}</td>
+          <td>{% if i.is_unique %}✓{% else %}—{% endif %}</td>
+          <td>{{ i.idx_scan|default:'—' }}</td>
+          <td>{{ i.idx_tup_read|default:'—' }}</td>
+          <td>{{ i.idx_tup_fetch|default:'—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty-state">No indexes found in schema <strong class="text-mono">{{ ds.schema_name }}</strong>.</div>
+    {% endif %}
+  </div>
+</div>
+
+<!-- ETL Commands tab -->
+<div class="tab-panel" id="tab-etl-cmds">
+  <div class="etl-cmd-grid">
+
+    <!-- Card 1: Run ETL -->
+    <div class="card card-accent">
+      <div class="card-header"><span class="card-title">&#9889; Run ETL</span></div>
+      <div class="card-body">
+        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">Start an incremental ETL load. Override the window with Start/End timestamps or cap rows with Limit.</p>
+        <div class="form-row">
+          <div>
+            <label class="form-label dtp-label">Start
+              <input type="text" id="etlCmdStart" placeholder="YYYY-MM-DD HH:MM">
+            </label>
+            <div class="form-hint">Optional HWM override</div>
+          </div>
+          <div>
+            <label class="form-label dtp-label">End
+              <input type="text" id="etlCmdEnd" placeholder="YYYY-MM-DD HH:MM">
+            </label>
+            <div class="form-hint">Optional end override</div>
+          </div>
+          <div>
+            <label class="form-label">Limit</label>
+            <input class="form-control" type="number" id="etlCmdLimit" min="1" placeholder="e.g. 100000">
+            <div class="form-hint">Optional max rows</div>
+          </div>
+        </div>
+        <div style="margin-top:12px">
+          <button class="btn btn-primary" id="etlCmdRun">Run ETL</button>
+          <button class="btn btn-danger" id="etlKillBtn" style="display:none">Kill</button>
+          <button class="btn btn-danger btn-sm" id="etlCmdClearHistBtn2">Clear ETL History</button>
+          <span class="cmd-result" id="result-etl-run"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card: ETL Forever -->
+    <div class="card card-accent" id="foreverCard">
+      <div class="card-header"><span class="card-title">&#128260; ETL Forever</span></div>
+      <div class="card-body">
+        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">Run ETL continuously at a fixed interval. Each iteration creates a normal ETL run row.</p>
+        <div class="form-row">
+          <div>
+            <label class="form-label">Interval (seconds)</label>
+            <input class="form-control" type="number" id="foreverInterval" value="60" min="1" style="max-width:120px">
+            <div class="form-hint">Seconds between iterations</div>
+          </div>
+        </div>
+        <div id="foreverStatus" style="margin-top:8px;font-size:13px;display:none"></div>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+          <button class="btn btn-primary" id="foreverStartBtn">Start Forever</button>
+          <button class="btn btn-danger" id="foreverStopBtn" style="display:none">Stop Forever</button>
+          <span class="cmd-result" id="result-forever"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 2: Data Cleanup -->
+    <div class="card card-danger-hint">
+      <div class="card-header"><span class="card-title">&#128465; Data Cleanup</span></div>
+      <div class="card-body">
+        <div style="margin-bottom:16px">
+          <label class="form-label">Delete From</label>
+          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Delete all fact rows at or after a given timestamp.</p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span class="dtp-label">
+              <input type="text" id="etlCmdDeleteFrom" placeholder="YYYY-MM-DD HH:MM" style="max-width:260px">
+            </span>
+            <button class="btn btn-danger btn-sm" id="etlCmdDeleteBtn">Delete</button>
+            <span class="cmd-result" id="result-delete-from"></span>
+          </div>
+        </div>
+        <div>
+          <label class="form-label">Vacuum Analyze</label>
+          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Run VACUUM ANALYZE on the fact table to update statistics.</p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-secondary btn-sm" id="etlCmdVacuumBtn">Run</button>
+            <span class="cmd-result" id="result-vacuum"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 3: Metadata -->
+    <div class="card card-warn-hint">
+      <div class="card-header"><span class="card-title">&#128295; Metadata</span></div>
+      <div class="card-body">
+        <div style="margin-bottom:16px">
+          <label class="form-label">Set High Watermark</label>
+          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Insert an etl_run row with status=ok and last_end_time set to the max timestamp in the fact table.</p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary btn-sm" id="etlCmdHwmBtn">Set</button>
+            <span class="cmd-result" id="result-set-hwm"></span>
+          </div>
+        </div>
+        <div>
+          <label class="form-label">Clear ETL History</label>
+          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Delete all ETL run history for this datasource.</p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-danger btn-sm" id="etlCmdClearHistBtn">Clear</button>
+            <span class="cmd-result" id="result-clear-history"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card: Query Cache -->
+    <div class="card card-danger-hint">
+      <div class="card-header"><span class="card-title">&#128465; Query Cache</span></div>
+      <div class="card-body">
+        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">Delete cached plot rows from <code>starcubes_meta.query_cache</code> for this datasource. Leave both filters blank to drop every cached plot; pick a group_by and/or measure to delete only that breakdown.</p>
+        <div class="form-row">
+          <div>
+            <label class="form-label">group_by</label>
+            <select class="form-control" id="cacheClearGroupBy">
+              <option value="">(all)</option>
+              {% for fc in fact_cols %}
+                {% if fc.role == 'dimension' or fc.role == 'auto-dimension' %}
+                  <option value="{{ fc.name }}">{{ fc.name }}</option>
+                {% endif %}
+              {% endfor %}
+              {% for gs in group_set_tokens %}
+                <option value="{{ gs.token }}">{{ gs.label }}</option>
+              {% endfor %}
+            </select>
+            <div class="form-hint">Matches the <code>group_by</code> URL param the chart sent</div>
+          </div>
+          <div>
+            <label class="form-label">measure</label>
+            <input class="form-control" type="text" id="cacheClearMeasure" placeholder="count(*)">
+            <div class="form-hint">Default <code>count(*)</code>; only count(*) is cacheable today</div>
+          </div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+          <button class="btn btn-danger btn-sm" id="cacheClearBtn">Delete cache rows</button>
+          <span class="cmd-result" id="result-cache-clear"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Card 4: Schema -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">&#128202; Schema</span></div>
+      <div class="card-body">
+        <div style="margin-bottom:16px">
+          <label class="form-label">Create Schema</label>
+          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Create the fact table, dimension tables, and initial range partitions sized by the configured partition period. Must be run before ETL. Inline dimensions are populated automatically.</p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-secondary btn-sm" id="etlCmdCreateFactBtn">Create Schema</button>
+            <span class="cmd-result" id="result-create-fact"></span>
+          </div>
+        </div>
+        <div style="margin-bottom:16px">
+          <label class="form-label">Sync Schema</label>
+          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Reconcile fact table columns, types, and dim tables with the metadata config. Adds missing columns/dim tables, alters safe type changes, drops orphans on confirmation.</p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-secondary btn-sm" id="etlCmdSyncSchemaBtn">Check</button>
+            <span class="cmd-result" id="result-sync-schema"></span>
+          </div>
+          <div id="syncSchemaDiff" style="display:none;margin-top:10px;font-size:13px"></div>
+        </div>
+        <div style="margin-bottom:16px">
+          <label class="form-label">Create Partitions</label>
+          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Add new range partitions to the fact table (sized by the configured partition period).</p>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <input class="form-control" type="number" id="etlCmdPartN" value="1" min="1" style="width:80px">
+            <button class="btn btn-secondary btn-sm" id="etlCmdCreatePartsBtn">Create</button>
+            <span class="cmd-result" id="result-create-parts"></span>
+          </div>
+        </div>
+        <div style="margin-bottom:16px">
+          <label class="form-label">Import Dimensions</label>
+          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Populate dimension tables from source DB or inline values.</p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-secondary btn-sm" id="etlCmdImportDimsBtn">Import</button>
+            <span class="cmd-result" id="result-import-dims"></span>
+          </div>
+        </div>
+        <div>
+          <label class="form-label">Refresh Counts</label>
+          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Recount dimension rows per value after ETL.</p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <!-- TODO: endpoint /sources/{pk}/etl/refresh-counts/ not yet implemented -->
+            <button class="btn btn-secondary btn-sm" id="etlCmdRefreshCountsBtn">Refresh</button>
+            <span class="cmd-result" id="result-refresh-counts"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Audit tab -->
+<!-- Source-vs-fact reconciliation. The ETL's overlap re-fetch
+     (datasource.late_arrival_overlap_s) absorbs a bounded amount of
+     out-of-order arrival; this finds what exceeded it, and is how the
+     overlap value gets measured in the first place. -->
+<div class="tab-panel" id="tab-audit">
+  <div class="card">
+    <div class="card-header"><span class="card-title">&#128269; Gap Audit</span></div>
+    <div class="card-body">
+      <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+        <strong>Run Audit</strong> counts rows on both sides per time bucket —
+        cheap, and unbounded in window size, so it is the sweep that shows
+        <em>where</em> to look. The source is counted on
+        <span class="mono">{{ ds.watermark_column }}</span>, the fact table on
+        <span class="mono">{{ ds.watermark_fact_expr|default:ds.partition_column }}</span>.
+      </p>
+      <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+        <strong>Compare IDs</strong> pulls both primary-key sets and diffs
+        them, naming the exact rows. Use it on a bucket the count flagged —
+        or on one it did not, because counting has a blind spot: a window
+        that lost 100 rows and had 100 deleted upstream nets to zero and
+        reads as clean. It also finds duplicate PKs in fact, which counting
+        cannot see at all. Bounded by memory, so keep the window tight.
+      </p>
+      <div class="form-row">
+        <div>
+          <label class="form-label dtp-label">From
+            <input type="text" id="auditFrom" placeholder="YYYY-MM-DD HH:MM">
+          </label>
+        </div>
+        <div>
+          <label class="form-label dtp-label">To
+            <input type="text" id="auditTo" placeholder="YYYY-MM-DD HH:MM">
+          </label>
+        </div>
+        <div>
+          <label class="form-label">Buckets</label>
+          <input class="form-control" type="number" id="auditBuckets" min="1" max="200" value="24">
+          <div class="form-hint">Max 200</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-primary" id="auditRunBtn">Run Audit</button>
+        <button class="btn btn-secondary" id="auditIdsBtn">Compare IDs</button>
+        <button class="btn btn-secondary" id="auditBackfillAllBtn" style="display:none">Backfill all gaps</button>
+        <span class="cmd-result" id="result-audit"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="auditResultCard" style="display:none">
+    <div class="card-header">
+      <span class="card-title">Buckets</span>
+      <span class="text-muted" style="font-size:11px;margin-left:auto">times shown in local timezone</span>
+    </div>
+    <table class="data-table" id="auditTable">
+      <thead>
+        <tr>
+          <th>Bucket start</th>
+          <th style="text-align:right">Source rows</th>
+          <th style="text-align:right">Fact rows</th>
+          <th style="text-align:right">Missing</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="auditTbody"></tbody>
+    </table>
+  </div>
+
+  <div class="card" id="auditIdCard" style="display:none">
+    <div class="card-header">
+      <span class="card-title">ID comparison</span>
+      <span class="text-muted" style="font-size:11px;margin-left:auto" id="auditIdWindow"></span>
+    </div>
+    <div class="card-body">
+      <dl class="dl-grid" id="auditIdSummary"></dl>
+      <div id="auditIdLists"></div>
+      <div id="auditDetailBox"></div>
+      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-secondary btn-sm" id="auditIdBackfillBtn" style="display:none">Backfill this window</button>
+        <span class="cmd-result" id="result-audit-ids"></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ETL History tab -->
+<div class="tab-panel" id="tab-history">
+  <div class="card">
+    <div class="card-header"><span class="card-title">ETL Run History</span><span class="text-muted" style="font-size:11px">times shown in local timezone</span></div>
+    <table class="data-table" id="histTable">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Status</th>
+          <th>Started</th>
+          <th>Finished</th>
+          <th>Window Start</th>
+          <th>Window End</th>
+          <th>Rows</th>
+          <th>Runtime (ms)</th>
+          <th>txn/s</th>
+          <th>E / T / L</th>
+          <th>Error</th>
+          <th>Log</th>
+        </tr>
+      </thead>
+      <tbody id="histBody">
+        {% for r in runs %}
+        <tr>
+          <td>{{ r.id }}</td>
+          <td><span class="badge badge-{{ r.status }}">{{ r.status }}</span></td>
+          <td class="text-mono text-muted" data-ts="{{ r.started_at|default:'' }}">{{ r.started_at|default:'—' }}</td>
+          <td class="text-mono text-muted" data-ts="{{ r.finished_at|default:'' }}">{{ r.finished_at|default:'—' }}</td>
+          <td class="text-mono text-muted" data-ts="{{ r.first_end_time|default:'' }}">{{ r.first_end_time|default:'—' }}</td>
+          <td class="text-mono text-muted" data-ts="{{ r.last_end_time|default:'' }}">{{ r.last_end_time|default:'—' }}</td>
+          <td>{{ r.rows|default:'—' }}</td>
+          <td>{{ r.runtime_ms|default:'—' }}</td>
+          <td class="text-mono" data-rate="{{ r.rows_per_s|default:'' }}">—</td>
+          <td class="text-mono" data-etl="{{ r.extract_rows_per_s|default:'' }}" data-trl="{{ r.transform_rows_per_s|default:'' }}" data-lrl="{{ r.load_rows_per_s|default:'' }}"
+              title="E: busy {{ r.stats.extract.busy_s|default:'?' }}s wait {{ r.stats.extract.wait_s|default:'?' }}s | T: busy {{ r.stats.transform.busy_s|default:'?' }}s wait {{ r.stats.transform.wait_s|default:'?' }}s | L: busy {{ r.stats.load.busy_s|default:'?' }}s wait {{ r.stats.load.wait_s|default:'?' }}s">—</td>
+          <td class="text-muted" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ r.error|default:'' }}</td>
+          <td>
+            {% if r.log_path %}<button type="button" class="btn btn-secondary btn-sm" onclick="openEtlLogFile('{{ r.log_path|escapejs }}')">Log</button>{% else %}—{% endif %}
+            {% if r.log_tail %}<details style="margin-top:4px"><summary style="cursor:pointer;font-size:11px;color:var(--muted)">tail</summary><pre class="text-mono" style="max-width:320px;max-height:160px;overflow:auto;font-size:10px;white-space:pre-wrap;word-break:break-all">{{ r.log_tail }}</pre></details>{% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="12" class="empty-state">No ETL runs yet</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ETL Log tab: tails the per-run log file the spawner points a
+     detached ETL process's stdout/stderr at (sources/etl_spawn.py). -->
+<div class="tab-panel" id="tab-etl-log">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">ETL Log</span>
+      <span style="display:flex;gap:8px;align-items:center;margin-left:auto">
+        <select id="etlLogFile" style="max-width:420px"></select>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer">
+          <input type="checkbox" id="etlLogFollow" checked> Follow
+        </label>
+        <button type="button" class="btn btn-secondary btn-sm" id="etlLogRefresh">Refresh</button>
+      </span>
+    </div>
+    <pre id="etlLogPane" class="text-mono" style="margin:0;padding:12px;max-height:70vh;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all">(select a log file)</pre>
+  </div>
+</div>
+
+<!-- Persistent bottom status bar: ETL status segment on the left,
+     dialect badge + schema name pinned bottom-right. Mirrors the canvas page #info bar. -->
+<div class="statusbar">
+  <div id="etlStrip" class="etl-strip">
+    <span id="etlStripText">ETL running…</span>
+  </div>
+  <span class="statusbar-meta">
+    <span class="badge badge-dialect" id="conn-badge">{{ ds.source_dialect }}</span>
+    <span class="text-muted text-mono statusbar-schema">{{ ds.schema_name }}</span>
+  </span>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+var DS_PK = {{ ds.id }};
+var DS_NAME = '{{ ds.name|escapejs }}';
+var DS_SCHEMA = '{{ ds.schema_name|escapejs }}';
+
+// --- Delete confirmation ---
+function confirmDelete() {
+  var html = '<div style="text-align:center">'
+    + '<p>Delete datasource <strong>' + DS_NAME + '</strong> and all its configuration?</p>'
+    + '<label style="display:flex;align-items:center;gap:6px;justify-content:center;margin:12px 0;cursor:pointer">'
+    + '<input type="checkbox" id="drop-schema-check"> Also drop schema <strong class="text-mono">' + DS_SCHEMA + '</strong> (all data)</label>'
+    + '<div style="display:flex;gap:8px;justify-content:center;margin-top:16px">'
+    + '<button class="btn btn-danger" onclick="doDelete()">Delete</button>'
+    + '<button class="btn btn-secondary" onclick="closeModal()">Cancel</button>'
+    + '</div></div>';
+  showModal(html);
+}
+function doDelete() {
+  document.getElementById('drop-schema-input').value =
+    document.getElementById('drop-schema-check').checked ? '1' : '';
+  document.getElementById('delete-form').submit();
+}
+var dtpStart = new DateTimePicker(document.getElementById('etlCmdStart'), { nextFocus: document.getElementById('etlCmdEnd'), onChange: function(){} });
+var dtpEnd = new DateTimePicker(document.getElementById('etlCmdEnd'), { nextFocus: document.getElementById('etlCmdStart'), onChange: function(){} });
+var dtpDeleteFrom = new DateTimePicker(document.getElementById('etlCmdDeleteFrom'), { onChange: function(){} });
+var dtpAuditFrom = new DateTimePicker(document.getElementById('auditFrom'), { nextFocus: document.getElementById('auditTo'), onChange: function(){} });
+var dtpAuditTo = new DateTimePicker(document.getElementById('auditTo'), { nextFocus: document.getElementById('auditFrom'), onChange: function(){} });
+
+// --- Connection status auto-check ---
+(function() {
+  var badge = document.getElementById('conn-badge');
+  var badgeDl = document.getElementById('conn-badge-dl');
+  var origText = badge ? badge.textContent.trim() : '';
+  if (badge) badge.textContent = origText + ' …';
+  var btnPreview = document.getElementById('btnPreview');
+  if (btnPreview) { btnPreview.disabled = true; btnPreview.title = 'Checking connection…'; }
+  fetch('/sources/' + DS_PK + '/connection-status/', {signal: AbortSignal.timeout(15000)}).then(function(r){ return r.json(); }).then(function(d) {
+    var cls = d.ok ? 'badge badge-conn-ok' : 'badge badge-conn-fail';
+    if (badge) { badge.className = cls; badge.textContent = origText; if (!d.ok) badge.title = d.error || 'Connection failed'; }
+    if (badgeDl) { badgeDl.className = cls; badgeDl.textContent = origText; if (!d.ok) badgeDl.title = d.error || 'Connection failed'; }
+    if (btnPreview) { btnPreview.disabled = !d.ok; if (!d.ok) btnPreview.title = 'Source connection failed'; else btnPreview.title = ''; }
+  }).catch(function() {
+    if (badge) { badge.className = 'badge badge-conn-fail'; badge.textContent = origText; }
+    if (badgeDl) { badgeDl.className = 'badge badge-conn-fail'; badgeDl.textContent = origText; }
+    if (btnPreview) { btnPreview.disabled = true; btnPreview.title = 'Source connection failed'; }
+  });
+})();
+
+// --- Basics tab: Preview Import ---
+document.getElementById('btnPreview').addEventListener('click', function() {
+  var btn = this;
+  var prev = document.getElementById('previewResult');
+  btn.disabled = true; btn.textContent = 'Loading…';
+  postJSON('/sources/' + DS_PK + '/preview-import/', {}).then(function(d) {
+    if (!d.ok) {
+      prev.className = 'preview-table err';
+      prev.textContent = '✗ ' + d.error;
+      prev.style.display = 'block'; return;
+    }
+    var html = '<table><thead><tr>' + d.columns.map(function(c){ return '<th>' + esc(c) + '</th>'; }).join('') + '</tr></thead><tbody>';
+    d.rows.forEach(function(row) {
+      html += '<tr>' + row.map(function(v){ return '<td>' + esc(v == null ? '' : String(v)) + '</td>'; }).join('') + '</tr>';
+    });
+    html += '</tbody></table>';
+    prev.innerHTML = html;
+    prev.style.display = 'block';
+  }).catch(function(e){
+    prev.className = 'preview-table err';
+    prev.textContent = '✗ ' + e;
+    prev.style.display = 'block';
+  }).finally(function(){
+    btn.disabled = false; btn.textContent = 'Preview Import';
+  });
+});
+
+// --- Dimensions tab: Import Dims ---
+document.getElementById('btnImportDims').addEventListener('click', function() {
+  var btn = this;
+  var el = document.getElementById('dimResult');
+  btn.disabled = true; btn.textContent = 'Importing…';
+  postJSON('/sources/' + DS_PK + '/import-dims/', {}).then(function(d) {
+    if (d.ok) {
+      var lines = d.dims.map(function(dim) {
+        return dim.dim_table + ': ' + dim.rows + ' rows' + (dim.inline ? ' (inline)' : '');
+      });
+      el.className = 'action-result ok';
+      el.textContent = '✓ ' + lines.join(', ');
+      if (d.warning) el.textContent += ' ⚠ ' + d.warning;
+    } else {
+      el.className = 'action-result err';
+      el.textContent = '✗ ' + d.error;
+    }
+    el.style.display = 'block';
+  }).catch(function(e){
+    el.className = 'action-result err'; el.textContent = '✗ ' + e; el.style.display = 'block';
+  }).finally(function(){
+    btn.disabled = false; btn.textContent = 'Import Dims';
+  });
+});
+
+// --- Tabs ---
+document.querySelectorAll('.tab-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    document.querySelectorAll('.tab-btn').forEach(function(b){ b.classList.remove('active'); });
+    document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+    if (btn.dataset.tab === 'etl-log') {
+      etlLogActivate();
+    } else {
+      etlLogStopPoll();
+    }
+  });
+});
+
+// --- Local time formatting ---
+function fmtLocal(iso) {
+  if (!iso) return '—';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+function formatDuration(s) {
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+  var h = Math.floor(s / 3600);
+  var m = Math.floor((s % 3600) / 60);
+  return h + 'h ' + m + 'm';
+}
+
+function fmtRate(n) {
+  n = parseFloat(n);
+  if (!n && n !== 0) return '?';
+  if (n >= 1e6) return (n/1e6).toFixed(1) + 'M/s';
+  if (n >= 1e3) return (n/1e3).toFixed(0) + 'k/s';
+  return Math.round(n) + '/s';
+}
+function fmtCount(n) {
+  n = parseFloat(n);
+  if (!n && n !== 0) return '—';
+  if (n >= 1e6) return (n/1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1) + 'k';
+  return String(n);
+}
+
+// Convert server-rendered timestamps to local time
+document.querySelectorAll('[data-ts]').forEach(function(el) {
+  var ts = el.getAttribute('data-ts');
+  if (ts) el.textContent = fmtLocal(ts);
+});
+
+// Convert server-rendered throughput data attributes to formatted text
+document.querySelectorAll('[data-rate]').forEach(function(el) {
+  var v = el.getAttribute('data-rate');
+  el.textContent = v ? fmtRate(v) : '—';
+});
+document.querySelectorAll('[data-etl]').forEach(function(el) {
+  var e = el.getAttribute('data-etl'), t = el.getAttribute('data-trl'), l = el.getAttribute('data-lrl');
+  el.textContent = (e || t || l)
+    ? (fmtRate(e) + ' / ' + fmtRate(t) + ' / ' + fmtRate(l))
+    : '—';
+});
+
+// --- ETL run + polling ---
+var etlStrip = document.getElementById('etlStrip');
+var etlStripText = document.getElementById('etlStripText');
+var etlPollTimer = null;
+var foreverActive = false;
+
+function startEtlPoll() {
+  if (etlPollTimer) return;
+  etlPollTimer = setInterval(pollEtlStatus, 3000);
+}
+function stopEtlPoll() { clearInterval(etlPollTimer); etlPollTimer = null; }
+
+function pollEtlStatus() {
+  fetch('/sources/' + DS_PK + '/etl/status/').then(function(r){ return r.json(); }).then(function(data) {
+    if (!data.runs || !data.runs.length) return;
+    var run = data.runs[0];
+    var killBtn = document.getElementById('etlKillBtn');
+    if (run.status === 'running' && !foreverActive) {
+      killBtn.style.display = '';
+    } else {
+      killBtn.style.display = 'none';
+      etlKillForce = false;
+      killBtn.textContent = 'Kill';
+    }
+    if (foreverActive) {
+      // When forever is active, let pollForeverStatus control the strip.
+      // Just refresh the history table.
+      refreshHistTable(data.runs);
+      return;
+    }
+    etlStrip.className = 'etl-strip show ' + run.status;
+    if (run.status === 'running') {
+      // rows_per_s/extract_rows_per_s/etc. are only written by the
+      // terminal UPDATE — always NULL for a running row. Read the live
+      // per-stage rates + queue depths from `stats` instead (populated
+      // every 5s by core/etl.py's progress writer); this is what used to
+      // be visible only in the (discarded) tqdm bar.
+      var rows = run.progress_rows != null ? run.progress_rows : run.rows;
+      var s = run.stats || {};
+      var q = s.queues || {};
+      var liveRate = ' (E ' + fmtRate(s.extract && s.extract.rows_s)
+        + ' · T ' + fmtRate(s.transform && s.transform.rows_s)
+        + ' · L ' + fmtRate(s.load && s.load.rows_s) + ')'
+        + (q.transform != null ? ' [tq ' + q.transform + ' lq ' + q.load + ']' : '');
+      var stallInfo = '';
+      if (run.progress_at) {
+        var ageS = (Date.now() - new Date(run.progress_at).getTime()) / 1000;
+        if (ageS > 60) {
+          // progress_at only advances when rows actually move (see
+          // core/etl.py's heartbeat) — stale here means the pipeline is
+          // wedged, not just that the source DB is slow.
+          stallInfo = ' ⚠ no progress for ' + Math.floor(ageS) + 's';
+          etlStrip.className = 'etl-strip show failed';
+        }
+      }
+      var throughInfo = s.processed_through ? ' · through ' + fmtLocal(s.processed_through) : '';
+      etlStripText.textContent = '● ETL running… ' + fmtCount(rows) + ' rows'
+        + liveRate
+        + ' (started ' + fmtLocal(run.started_at) + ')' + throughInfo + stallInfo;
+    } else if (run.status === 'ok') {
+      var rateInfo = ' · ' + fmtRate(run.rows_per_s)
+        + ' (E ' + fmtRate(run.extract_rows_per_s)
+        + ' · T ' + fmtRate(run.transform_rows_per_s)
+        + ' · L ' + fmtRate(run.load_rows_per_s) + ')';
+      etlStripText.textContent = '✓ ETL completed — ' + fmtCount(run.rows) + ' rows in '
+        + (run.runtime_ms || '?') + ' ms' + rateInfo;
+      stopEtlPoll();
+      etlLogStopPoll();
+      refreshHistTable(data.runs);
+    } else if (run.status === 'failed') {
+      etlStripText.textContent = '✗ ETL failed: ' + (run.error || '');
+      stopEtlPoll();
+      etlLogStopPoll();
+      refreshHistTable(data.runs);
+    }
+  });
+}
+
+function statsTitle(stats) {
+  if (!stats) return '';
+  function stage(s) {
+    return s ? ('busy ' + (s.busy_s != null ? s.busy_s : '?') + 's wait ' + (s.wait_s != null ? s.wait_s : '?') + 's') : 'busy ?s wait ?s';
+  }
+  return 'E: ' + stage(stats.extract) + ' | T: ' + stage(stats.transform) + ' | L: ' + stage(stats.load);
+}
+
+function refreshHistTable(runs) {
+  var tbody = document.getElementById('histBody');
+  if (!tbody || !runs) return;
+  var html = '';
+  runs.forEach(function(r) {
+    html += '<tr><td>' + r.id + '</td>' +
+      '<td><span class="badge badge-' + r.status + '">' + r.status + '</span></td>' +
+      '<td class="text-mono text-muted">' + fmtLocal(r.started_at) + '</td>' +
+      '<td class="text-mono text-muted">' + fmtLocal(r.finished_at) + '</td>' +
+      '<td class="text-mono text-muted">' + fmtLocal(r.first_end_time) + '</td>' +
+      '<td class="text-mono text-muted">' + fmtLocal(r.last_end_time) + '</td>' +
+      '<td>' + (r.rows||'—') + '</td>' +
+      '<td>' + (r.runtime_ms||'—') + '</td>' +
+      '<td class="text-mono">' + (r.rows_per_s ? fmtRate(r.rows_per_s) : '—') + '</td>' +
+      '<td class="text-mono" title="' + esc(statsTitle(r.stats)) + '">'
+        + ((r.extract_rows_per_s || r.transform_rows_per_s || r.load_rows_per_s)
+            ? (fmtRate(r.extract_rows_per_s) + ' / ' + fmtRate(r.transform_rows_per_s) + ' / ' + fmtRate(r.load_rows_per_s))
+            : '—')
+        + '</td>' +
+      '<td class="text-muted" style="font-size:11px">' + esc(r.error||'') + '</td>' +
+      '<td>' + (r.log_path
+        ? '<button type="button" class="btn btn-secondary btn-sm" onclick="openEtlLogFile(\'' + esc(r.log_path).replace(/'/g, "\\'") + '\')">Log</button>'
+        : '—') + '</td></tr>';
+  });
+  tbody.innerHTML = html || '<tr><td colspan="12" class="empty-state">No ETL runs yet</td></tr>';
+}
+
+// --- ETL Log tab ---
+var etlLogPollTimer = null;
+var etlLogOffsets = {};
+var etlLogPendingSelect = null;
+
+function etlLogPopulateFiles(preselect) {
+  fetch('/sources/' + DS_PK + '/etl/logs/').then(function(r){ return r.json(); }).then(function(data) {
+    if (!data.ok) return;
+    var sel = document.getElementById('etlLogFile');
+    var cur = preselect || sel.value;
+    sel.innerHTML = '';
+    data.files.forEach(function(f) {
+      var opt = document.createElement('option');
+      opt.value = f.name;
+      opt.textContent = f.name + (f.run_id ? (' (run ' + f.run_id + (f.run_status ? ', ' + f.run_status : '') + ')') : '');
+      sel.appendChild(opt);
+    });
+    if (!data.files.length) {
+      document.getElementById('etlLogPane').textContent = '(no log files yet — run the ETL at least once)';
+      return;
+    }
+    if (cur && data.files.some(function(f){ return f.name === cur; })) sel.value = cur;
+    etlLogFetch(true);
+  });
+}
+
+function etlLogFetch(reset) {
+  var sel = document.getElementById('etlLogFile');
+  var name = sel.value;
+  if (!name) return;
+  if (reset) etlLogOffsets[name] = 0;
+  var offset = etlLogOffsets[name] || 0;
+  fetch('/sources/' + DS_PK + '/etl/log/?file=' + encodeURIComponent(name) + '&offset=' + offset)
+    .then(function(r){ return r.json(); }).then(function(data) {
+      if (!data.ok) { if (data.error) document.getElementById('etlLogPane').textContent = data.error; return; }
+      var pane = document.getElementById('etlLogPane');
+      if (data.truncated || offset === 0) pane.textContent = '';
+      pane.textContent += data.text;
+      etlLogOffsets[name] = data.offset;
+      if (document.getElementById('etlLogFollow').checked) pane.scrollTop = pane.scrollHeight;
+    });
+}
+
+function etlLogStartPoll() {
+  if (etlLogPollTimer) return;
+  etlLogPollTimer = setInterval(function(){ etlLogFetch(false); }, 2000);
+}
+function etlLogStopPoll() { clearInterval(etlLogPollTimer); etlLogPollTimer = null; }
+
+function etlLogActivate() {
+  etlLogPopulateFiles(etlLogPendingSelect);
+  etlLogPendingSelect = null;
+  if (etlStrip.classList.contains('running')) etlLogStartPoll(); else etlLogStopPoll();
+}
+
+function openEtlLogFile(path) {
+  if (!path) return;
+  etlLogPendingSelect = path.split('/').pop();
+  var btn = document.querySelector('.tab-btn[data-tab="etl-log"]');
+  if (btn) btn.click();
+}
+
+document.getElementById('etlLogFile').addEventListener('change', function(){ etlLogFetch(true); });
+document.getElementById('etlLogRefresh').addEventListener('click', function(){ etlLogFetch(false); });
+
+// Check on page load if ETL is already running
+pollEtlStatus();
+// Start polling if already running
+fetch('/sources/' + DS_PK + '/etl/status/').then(function(r){ return r.json(); }).then(function(data){
+  if (data.runs && data.runs[0] && data.runs[0].status === 'running') {
+    etlStrip.className = 'etl-strip show running';
+    startEtlPoll();
+  }
+});
+
+// --- ETL Forever ---
+var foreverPollTimer = null;
+
+function pollForeverStatus() {
+  fetch('/sources/' + DS_PK + '/etl/forever/status/').then(function(r){ return r.json(); }).then(function(data) {
+    if (data.error && !data.id) { return; }  // endpoint error, not a forever session
+    var statusEl = document.getElementById('foreverStatus');
+    var startBtn = document.getElementById('foreverStartBtn');
+    var stopBtn = document.getElementById('foreverStopBtn');
+
+    if (data.active) {
+      foreverActive = true;
+      // Forever is running
+      statusEl.style.display = 'block';
+      var info = '<span class="badge badge-running"><span class="dot">●</span> Running</span>'
+        + ' PID ' + (data.pid || '?') + ', interval ' + data.interval_s + 's';
+      if (data.stop_requested) info += ' <em>(stopping)</em>';
+      if (data.latest_run) {
+        var lr = data.latest_run;
+        if (lr.status === 'ok') {
+          info += ' — last: ' + fmtCount(lr.rows) + ' rows in ' + (lr.runtime_ms||'?') + 'ms';
+          if (lr.rows_per_s) {
+            info += ' · ' + fmtRate(lr.rows_per_s)
+              + ' (E ' + fmtRate(lr.extract_rows_per_s)
+              + ' · T ' + fmtRate(lr.transform_rows_per_s)
+              + ' · L ' + fmtRate(lr.load_rows_per_s) + ')';
+          }
+        }
+        else if (lr.status === 'failed') info += ' — last: <span class="badge badge-failed">failed</span>';
+        else if (lr.status === 'running') info += ' — running…';
+      }
+      if (data.stale) {
+        info += ' <span class="badge badge-failed">⚠ stale</span>'
+          + ' (no run completed in ' + formatDuration(data.stale_seconds) + ')';
+      }
+      statusEl.innerHTML = info;
+      startBtn.style.display = 'none';
+      stopBtn.style.display = '';
+      // Update main ETL strip based on forever state
+      if (data.stale) {
+        etlStrip.className = 'etl-strip show failed';
+        etlStripText.textContent = '⚠ Forever ETL stale — no run in ' + formatDuration(data.stale_seconds);
+      } else if (data.latest_run && data.latest_run.status === 'failed') {
+        etlStrip.className = 'etl-strip show failed';
+        etlStripText.textContent = '✗ Forever ETL: last run failed';
+      } else {
+        etlStrip.className = 'etl-strip show running';
+        etlStripText.textContent = '● Forever ETL running (PID ' + (data.pid || '?') + ')';
+      }
+      startEtlPoll();
+      // Keep polling
+      if (!foreverPollTimer) {
+        foreverPollTimer = setInterval(pollForeverStatus, 3000);
+      }
+    } else {
+      foreverActive = false;
+      // Not running — show last status if any
+      if (data.id) {
+        statusEl.style.display = 'block';
+        var statusText = data.status === 'stopped' ? 'Stopped'
+                       : data.status === 'failed' ? 'Failed' + (data.error ? ': ' + data.error : '')
+                       : data.status;
+        var statusClass = data.status === 'stopped' ? 'badge-ok'
+                        : data.status === 'failed' ? 'badge-failed' : 'badge-none';
+        statusEl.innerHTML = '<span class="badge ' + statusClass + '">' + statusText + '</span>';
+      } else {
+        statusEl.style.display = 'none';
+      }
+      startBtn.style.display = '';
+      stopBtn.style.display = 'none';
+      if (foreverPollTimer) {
+        clearInterval(foreverPollTimer);
+        foreverPollTimer = null;
+      }
+    }
+  });
+}
+
+document.getElementById('foreverStartBtn').addEventListener('click', function() {
+  var btn = this;
+  var interval = document.getElementById('foreverInterval').value;
+  btn.disabled = true;
+  var resultEl = document.getElementById('result-forever');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/forever/start/', {interval: interval}).then(function(d) {
+    if (d.ok) {
+      // Start polling for forever status
+      setTimeout(pollForeverStatus, 500);
+    } else {
+      showCmdResult(resultEl, false, '✗ ' + d.error);
+      btn.disabled = false;
+    }
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+    btn.disabled = false;
+  });
+});
+
+document.getElementById('foreverStopBtn').addEventListener('click', function() {
+  var btn = this;
+  btn.disabled = true;
+  var resultEl = document.getElementById('result-forever');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/forever/stop/', {}).then(function(d) {
+    if (d.ok) {
+      showCmdResult(resultEl, true, 'Stopping… (PID ' + (d.pid || '?') + ')');
+      // Continue polling until status changes
+      setTimeout(pollForeverStatus, 1000);
+    } else {
+      showCmdResult(resultEl, false, '✗ ' + d.error);
+      btn.disabled = false;
+    }
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+    btn.disabled = false;
+  });
+});
+
+// Guard: block one-shot ETL if forever is active
+document.getElementById('etlCmdRun').addEventListener('click', function() {
+  var btn = this;
+  var resultEl = document.getElementById('result-etl-run');
+  // Check forever status first
+  fetch('/sources/' + DS_PK + '/etl/forever/status/').then(function(r){ return r.json(); }).then(function(fd) {
+    if (fd.active) {
+      showCmdResult(resultEl, false, '✗ Stop Forever ETL first');
+      return;
+    }
+    // Proceed with normal ETL run
+    var data = {};
+    // ISO UTC from the picker, not the field text: the text is local time
+    // and _parse_dt would read it as UTC. See DateTimePicker.getUTCISO.
+    var start = dtpStart.getUTCISO();
+    var end = dtpEnd.getUTCISO();
+    var limit = document.getElementById('etlCmdLimit').value;
+    if (start) data.start = start;
+    if (end) data.end = end;
+    if (limit) data.limit = limit;
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+    resultEl.textContent = '';
+    postJSON('/sources/' + DS_PK + '/etl/run/', data).then(function(d) {
+      if (!d.ok) {
+        showCmdResult(resultEl, false, '✗ ' + d.error);
+      } else {
+        etlStrip.className = 'etl-strip show running';
+        etlStripText.textContent = '● ETL starting…';
+        startEtlPoll();
+      }
+    }).catch(function(e) {
+      showCmdResult(resultEl, false, '✗ ' + e);
+    }).finally(function() {
+      btn.disabled = false;
+      btn.textContent = 'Run ETL';
+    });
+  });
+});
+
+// Check forever status on page load
+pollForeverStatus();
+
+// --- ETL Kill ---
+var etlKillBtn = document.getElementById('etlKillBtn');
+var etlKillForce = false;
+etlKillBtn.addEventListener('click', function() {
+  var btn = this;
+  var body = {};
+  if (etlKillForce) {
+    if (!confirm('ETL did not stop after the first kill. Force kill (SIGKILL)?')) return;
+    body.force = 1;
+  }
+  btn.disabled = true;
+  var resultEl = document.getElementById('result-etl-run');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/kill/', body).then(function(d) {
+    if (d.ok) {
+      showCmdResult(resultEl, true, '✓ Kill signal sent (' + (d.signal || '—') + ')');
+      etlKillForce = true;
+      btn.textContent = 'Force kill';
+      setTimeout(pollEtlStatus, 500);
+    } else {
+      showCmdResult(resultEl, false, '✗ ' + d.error);
+    }
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; });
+});
+
+// --- Inline edit helpers ---
+function startEdit(btn, prefix) {
+  btn.closest('tr').classList.add('editing');
+}
+function cancelEdit(btn) {
+  btn.closest('tr').classList.remove('editing');
+}
+function saveRow(btn, url, prefix) {
+  var tr = btn.closest('tr');
+  var fd = new FormData();
+  tr.querySelectorAll('input[name], select[name], textarea[name]').forEach(function(el) {
+    if (el.type === 'checkbox') fd.append(el.name, el.checked ? 'on' : '');
+    else fd.append(el.name, el.value);
+  });
+  btn.disabled = true;
+  postJSON(url, fd).then(function(d) {
+    if (!d.ok) { alert('Error: ' + d.error); return; }
+    // Update display cells
+    tr.querySelectorAll('span.row-display').forEach(function(span) { span.style.color = ''; });
+    var row = d.row;
+    if (prefix === 'fc') {
+      tr.querySelectorAll('span.row-display')[0].textContent = row.ordinal;
+      tr.querySelectorAll('span.row-display')[1].textContent = row.name;
+      tr.querySelectorAll('span.row-display')[2].textContent = row.pg_type;
+      tr.querySelectorAll('span.row-display')[3].innerHTML = '<span class="badge badge-' + row.role + '">' + row.role + '</span>';
+      tr.querySelectorAll('span.row-display')[4].textContent = row.source_expr || '—';
+    } else if (prefix === 'dim') {
+      var spans = tr.querySelectorAll('span.row-display');
+      spans[0].textContent = row.fact_column;
+      spans[1].textContent = row.dim_table;
+      spans[2].textContent = row.source_table || '—';
+      spans[3].textContent = row.source_key || '—';
+      spans[4].textContent = row.source_name || '—';
+      spans[5].textContent = row.source_description || '—';
+      spans[6].textContent = row.is_primary ? '✓' : '—';
+      // inline_values display — show first line + "…" if multiline
+      var iv = row.inline_values || '';
+      spans[7].textContent = iv ? iv.split('\n')[0] + (iv.includes('\n') ? ' …' : '') : '—';
+    } else if (prefix === 'idx') {
+      tr.querySelectorAll('span.row-display')[0].textContent = row.column_name;
+      tr.querySelectorAll('span.row-display')[1].innerHTML = '<span class="badge badge-dialect">' + row.method + '</span>';
+    } else if (prefix === 'measure') {
+      var ms = tr.querySelectorAll('span.row-display');
+      ms[0].textContent = row.ordinal;
+      ms[1].textContent = row.name;
+      ms[2].textContent = row.agg;
+      ms[3].innerHTML = '<span class="badge badge-dialect">' + esc(row.graph_style) + '</span>';
+      ms[4].textContent = row.is_default ? '✓' : '—';
+      if (ms[5]) ms[5].textContent = row.percentiles || '—';
+      // Setting one default clears the others server-side; reflect that here.
+      if (row.is_default) {
+        document.querySelectorAll('#measureBody tr').forEach(function(other) {
+          if (other === tr) return;
+          var cb = other.querySelector('input[name="is_default"]');
+          var disp = other.querySelectorAll('span.row-display')[4];
+          if (cb) cb.checked = false;
+          if (disp) disp.textContent = '—';
+        });
+      }
+    }
+    tr.classList.remove('editing');
+  }).catch(function(e){ alert('Error: ' + e); }).finally(function(){ btn.disabled = false; });
+}
+function deleteRow(btn, url) {
+  if (!confirm('Delete this row?')) return;
+  postJSON(url, {}).then(function(d) {
+    if (!d.ok) { alert('Error: ' + d.error); return; }
+    btn.closest('tr').remove();
+  }).catch(function(e){ alert('Error: ' + e); });
+}
+
+function deleteDimRow(btn, url) {
+  if (!confirm('Delete this row?')) return;
+  var fcName = btn.closest('tr').querySelector('span.row-display').textContent;
+  postJSON(url, {}).then(function(d) {
+    if (!d.ok) { alert('Error: ' + d.error); return; }
+    DIM_FC_NAMES.delete(fcName);
+    btn.closest('tr').remove();
+    refreshCardButtons();
+  }).catch(function(e){ alert('Error: ' + e); });
+}
+function buildFcRow(pk, r) {
+  var id = r.id;
+  var baseEdit = '/sources/' + pk + '/fact-columns/' + id + '/edit/';
+  var baseDel  = '/sources/' + pk + '/fact-columns/' + id + '/delete/';
+  return '<tr id="fc-' + id + '" data-id="' + id + '">' +
+    '<td><span class="row-display">' + r.ordinal + '</span><input class="row-edit cell-input" name="ordinal" type="number" value="' + r.ordinal + '" style="width:60px"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.name) + '</span><input class="row-edit cell-input" name="name" value="' + esc(r.name) + '"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.pg_type) + '</span><select class="row-edit cell-input" name="pg_type">' + pgTypeOpts(r.pg_type) + '</select></td>' +
+    '<td><span class="row-display"><span class="badge badge-' + r.role + '">' + r.role + '</span></span><select class="row-edit cell-input" name="role">' + roleOpts(r.role) + '</select></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.source_expr||'—') + '</span><input class="row-edit cell-input" name="source_expr" value="' + esc(r.source_expr||'') + '"></td>' +
+    '<td class="actions"><span class="row-display">' +
+      '<button class="btn-icon btn-est-card" data-role="' + r.role + '" data-name="' + esc(r.name) + '" data-fc-id="' + r.id + '" onclick="estimateCardinality(this)" title="Estimate Cardinality" style="display:none"> cardinality</button>' +
+      '<button class="btn-icon" onclick="startEdit(this,\'fc\')" title="Edit">✏</button>' +
+      '<button class="btn-icon" onclick="deleteRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
+    '</span><span class="row-edit" style="gap:4px">' +
+      '<button class="btn btn-primary btn-sm" onclick="saveRow(this,\'' + baseEdit + '\',\'fc\')">Save</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>' +
+    '</span></td></tr>';
+}
+
+function buildDimRow(pk, r) {
+  var id = r.id;
+  var baseEdit = '/sources/' + pk + '/dimensions/' + id + '/edit/';
+  var baseDel  = '/sources/' + pk + '/dimensions/' + id + '/delete/';
+  var iv = r.inline_values || '';
+  var ivDisplay = iv ? iv.split('\n')[0] + (iv.includes('\n') ? ' …' : '') : '—';
+  return '<tr id="dim-' + id + '" data-id="' + id + '">' +
+    '<td><span class="row-display text-mono">' + esc(r.fact_column) + '</span><input class="row-edit cell-input" name="fact_column" value="' + esc(r.fact_column) + '"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.dim_table) + '</span><input class="row-edit cell-input" name="dim_table" value="' + esc(r.dim_table) + '"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.source_table||'—') + '</span><input class="row-edit cell-input dim-src-input" name="source_table" value="' + esc(r.source_table||'') + '"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.source_key||'—') + '</span><input class="row-edit cell-input dim-src-input" name="source_key" value="' + esc(r.source_key||'') + '"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.source_name||'—') + '</span><input class="row-edit cell-input dim-src-input" name="source_name" value="' + esc(r.source_name||'') + '"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.source_description||'—') + '</span><input class="row-edit cell-input dim-src-input" name="source_description" value="' + esc(r.source_description||'') + '"></td>' +
+    '<td><span class="row-display">' + (r.is_primary ? '✓' : '—') + '</span><input class="row-edit" type="checkbox" name="is_primary" ' + (r.is_primary ? 'checked' : '') + ' style="margin:4px"></td>' +
+    '<td><span class="row-display text-mono dim-inline-display">' + esc(ivDisplay) + '</span><textarea class="row-edit cell-input dim-inline-edit" name="inline_values" rows="2" style="width:120px" oninput="toggleDimSourceFields(this)">' + esc(iv) + '</textarea></td>' +
+    '<td class="actions"><span class="row-display">' +
+      '<button class="btn-icon" onclick="startEdit(this,\'dim\')" title="Edit">✏</button>' +
+      '<button class="btn-icon" onclick="deleteDimRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
+    '</span><span class="row-edit" style="gap:4px">' +
+      '<button class="btn btn-primary btn-sm" onclick="saveRow(this,\'' + baseEdit + '\',\'dim\')">Save</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>' +
+    '</span></td></tr>';
+}
+
+function buildIdxRow(pk, r) {
+  var id = r.id;
+  var baseEdit = '/sources/' + pk + '/indices/' + id + '/edit/';
+  var baseDel  = '/sources/' + pk + '/indices/' + id + '/delete/';
+  return '<tr id="idx-' + id + '" data-id="' + id + '">' +
+    '<td><span class="row-display text-mono">' + esc(r.column_name) + '</span><input class="row-edit cell-input" name="column_name" value="' + esc(r.column_name) + '"></td>' +
+    '<td><span class="row-display"><span class="badge badge-dialect">' + esc(r.method) + '</span></span><select class="row-edit cell-input" name="method">' + idxMethodOpts(r.method) + '</select></td>' +
+    '<td class="actions"><span class="row-display">' +
+      '<button class="btn-icon" onclick="startEdit(this,\'idx\')" title="Edit">✏</button>' +
+      '<button class="btn-icon" onclick="deleteRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
+    '</span><span class="row-edit" style="gap:4px">' +
+      '<button class="btn btn-primary btn-sm" onclick="saveRow(this,\'' + baseEdit + '\',\'idx\')">Save</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>' +
+    '</span></td></tr>';
+}
+
+function buildMeasureRow(pk, r) {
+  var id = r.id;
+  var baseEdit = '/sources/' + pk + '/measures/' + id + '/edit/';
+  var baseDel  = '/sources/' + pk + '/measures/' + id + '/delete/';
+  return '<tr id="measure-' + id + '" data-id="' + id + '">' +
+    '<td><span class="row-display">' + r.ordinal + '</span><input class="row-edit cell-input" name="ordinal" type="number" value="' + r.ordinal + '" style="width:60px"></td>' +
+    '<td><span class="row-display">' + esc(r.name) + '</span><input class="row-edit cell-input" name="name" value="' + esc(r.name) + '"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.agg) + '</span><select class="row-edit cell-input" name="agg">' + aggOpts(r.agg) + '</select></td>' +
+    '<td><span class="row-display"><span class="badge badge-dialect">' + esc(r.graph_style) + '</span></span><select class="row-edit cell-input" name="graph_style">' + graphStyleOpts(r.graph_style) + '</select></td>' +
+    '<td style="text-align:center"><span class="row-display">' + (r.is_default ? '✓' : '—') + '</span><input class="row-edit" type="checkbox" name="is_default" ' + (r.is_default ? 'checked' : '') + ' style="margin:4px"></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.percentiles || '—') + '</span><input class="row-edit cell-input" name="percentiles" value="' + esc(r.percentiles || '') + '" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles"></td>' +
+    '<td class="actions"><span class="row-display">' +
+      '<button class="btn-icon" onclick="startEdit(this,\'measure\')" title="Edit">✏</button>' +
+      '<button class="btn-icon" onclick="deleteRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
+    '</span><span class="row-edit" style="gap:4px">' +
+      '<button class="btn btn-primary btn-sm" onclick="saveRow(this,\'' + baseEdit + '\',\'measure\')">Save</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>' +
+    '</span></td></tr>';
+}
+
+var PG_TYPES = {{ pg_types_json|safe }};
+var ROLES = {{ roles_json|safe }};
+var IDX_METHODS = {{ idx_methods_json|safe }};
+var GRAPH_STYLES = {{ graph_styles_json|safe }};
+var MEASURE_AGGS = {{ measure_aggs_json|safe }};
+var DIM_FC_NAMES = new Set({{ dim_fc_names_json|safe }});
+
+function graphStyleOpts(sel) {
+  return GRAPH_STYLES.map(function(g){ return '<option value="' + g + '"' + (g === sel ? ' selected' : '') + '>' + g + '</option>'; }).join('');
+}
+function aggOpts(sel) {
+  var opts = MEASURE_AGGS.slice();
+  if (sel && opts.indexOf(sel) === -1) opts.unshift(sel);  // keep an unknown existing agg visible
+  return opts.map(function(a){ return '<option value="' + esc(a) + '"' + (a === sel ? ' selected' : '') + '>' + esc(a) + '</option>'; }).join('');
+}
+
+function pgTypeOpts(sel) {
+  return PG_TYPES.map(function(t){ return '<option value="' + t + '"' + (t === sel ? ' selected' : '') + '>' + t + '</option>'; }).join('');
+}
+function roleOpts(sel) {
+  return ROLES.map(function(r){ return '<option value="' + r + '"' + (r === sel ? ' selected' : '') + '>' + r + '</option>'; }).join('');
+}
+function idxMethodOpts(sel) {
+  return IDX_METHODS.map(function(m){ return '<option value="' + m + '"' + (m === sel ? ' selected' : '') + '>' + m + '</option>'; }).join('');
+}
+
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function refreshCardButtons() {
+  document.querySelectorAll('.btn-est-card').forEach(function(btn) {
+    var role = btn.dataset.role;
+    var name = btn.dataset.name;
+    var isDim = (role === 'dimension' || role === 'auto-dimension');
+    btn.style.display = (isDim && !DIM_FC_NAMES.has(name)) ? '' : 'none';
+  });
+}
+refreshCardButtons();
+
+function estimateCardinality(btn) {
+  var fcId = btn.dataset.fcId;
+  btn.disabled = true;
+  btn.textContent = '…';
+  postJSON('/sources/' + DS_PK + '/fact-columns/' + fcId + '/estimate-cardinality/', {}).then(function(d) {
+    if (d.ok) {
+      btn.textContent = ' ' + d.count;
+      btn.title = d.count + ' distinct values in past 24h';
+    } else {
+      btn.textContent = ' err';
+      btn.title = d.error;
+    }
+  }).catch(function(e) {
+    btn.textContent = ' err';
+    btn.title = String(e);
+  }).finally(function() { btn.disabled = false; });
+}
+
+// Toggle: if inline_values textarea has content, disable source fields; and vice versa.
+function toggleDimSourceFields(textarea) {
+  var tr = textarea.closest('tr');
+  var hasInline = textarea.value.trim().length > 0;
+  tr.querySelectorAll('.dim-src-input').forEach(function(el) {
+    el.disabled = hasInline;
+    el.style.opacity = hasInline ? '0.4' : '';
+  });
+  if (hasInline) {
+    tr.querySelectorAll('.dim-src-input').forEach(function(el) { el.value = ''; });
+  }
+}
+
+// On page load, sync toggle for existing dim rows with inline_values.
+document.querySelectorAll('#dimBody textarea[name="inline_values"]').forEach(function(ta) {
+  if (ta.value.trim()) toggleDimSourceFields(ta);
+});
+
+// On edit start, also sync the toggle state.
+var _origStartEdit = startEdit;
+startEdit = function(btn, prefix) {
+  _origStartEdit(btn, prefix);
+  if (prefix === 'dim') {
+    var tr = btn.closest('tr');
+    var ta = tr.querySelector('textarea[name="inline_values"]');
+    if (ta) toggleDimSourceFields(ta);
+  }
+};
+
+function removeEmpty(tbody, emptyId) {
+  var e = document.getElementById(emptyId);
+  if (e) e.remove();
+}
+
+document.getElementById('fcAddForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  postJSON('/sources/' + DS_PK + '/fact-columns/add/', new FormData(this)).then(function(d) {
+    if (!d.ok) {
+      var errEl = document.getElementById('fcAddErr');
+      errEl.textContent = d.error; errEl.style.display = 'block'; return;
+    }
+    removeEmpty(document.getElementById('fcBody'), 'fc-empty');
+    document.getElementById('fcBody').insertAdjacentHTML('beforeend', buildFcRow(DS_PK, d.row));
+    refreshCardButtons();
+    document.getElementById('fcAddErr').style.display = 'none';
+    e.target.reset();
+  });
+});
+
+document.getElementById('dimAddForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  postJSON('/sources/' + DS_PK + '/dimensions/add/', new FormData(this)).then(function(d) {
+    if (!d.ok) {
+      var errEl = document.getElementById('dimAddErr');
+      errEl.textContent = d.error; errEl.style.display = 'block'; return;
+    }
+    removeEmpty(document.getElementById('dimBody'), 'dim-empty');
+    document.getElementById('dimBody').insertAdjacentHTML('beforeend', buildDimRow(DS_PK, d.row));
+    if (d.row && d.row.fact_column) DIM_FC_NAMES.add(d.row.fact_column);
+    refreshCardButtons();
+    document.getElementById('dimAddErr').style.display = 'none';
+    e.target.reset();
+  });
+});
+
+document.getElementById('idxAddForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  postJSON('/sources/' + DS_PK + '/indices/add/', new FormData(this)).then(function(d) {
+    if (!d.ok) {
+      var errEl = document.getElementById('idxAddErr');
+      errEl.textContent = d.error; errEl.style.display = 'block'; return;
+    }
+    removeEmpty(document.getElementById('idxBody'), 'idx-empty');
+    document.getElementById('idxBody').insertAdjacentHTML('beforeend', buildIdxRow(DS_PK, d.row));
+    document.getElementById('idxAddErr').style.display = 'none';
+    e.target.reset();
+  });
+});
+
+document.getElementById('measureAddForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  postJSON('/sources/' + DS_PK + '/measures/add/', new FormData(this)).then(function(d) {
+    if (!d.ok) {
+      var errEl = document.getElementById('measureAddErr');
+      errEl.textContent = d.error; errEl.style.display = 'block'; return;
+    }
+    removeEmpty(document.getElementById('measureBody'), 'measure-empty');
+    // A new default clears the others — reflect that before appending.
+    if (d.row && d.row.is_default) {
+      document.querySelectorAll('#measureBody tr').forEach(function(other) {
+        var cb = other.querySelector('input[name="is_default"]');
+        var disp = other.querySelectorAll('span.row-display')[4];
+        if (cb) cb.checked = false;
+        if (disp) disp.textContent = '—';
+      });
+    }
+    document.getElementById('measureBody').insertAdjacentHTML('beforeend', buildMeasureRow(DS_PK, d.row));
+    document.getElementById('measureAddErr').style.display = 'none';
+    e.target.reset();
+  });
+});
+
+// --- Create / Drop All Indices ---
+
+document.getElementById('btnCreateIndices').addEventListener('click', function() {
+  var btn = this;
+  var el = document.getElementById('idxResult');
+  btn.disabled = true; btn.textContent = 'Creating…';
+  postJSON('/sources/' + DS_PK + '/indices/create-all/', {}).then(function(d) {
+    el.className = 'action-result ' + (d.ok ? 'ok' : 'err');
+    el.textContent = d.ok ? '✓ All indices created' : '✗ ' + d.error;
+    el.style.display = 'block';
+  }).catch(function(e){
+    el.className = 'action-result err'; el.textContent = '✗ ' + e; el.style.display = 'block';
+  }).finally(function(){
+    btn.disabled = false; btn.textContent = 'Create All Indices';
+  });
+});
+
+document.getElementById('btnDropIndices').addEventListener('click', function() {
+  var btn = this;
+  var el = document.getElementById('idxResult');
+  if (!confirm('Drop all FK constraints and indexes on the fact table for "' + DS_NAME + '"?\n\nType the datasource name to confirm.')) return;
+  var answer = prompt('Enter datasource name to confirm:');
+  if (answer !== DS_NAME) {
+    el.className = 'action-result err'; el.textContent = 'Confirmation cancelled'; el.style.display = 'block';
+    return;
+  }
+  btn.disabled = true; btn.textContent = 'Dropping…';
+  postJSON('/sources/' + DS_PK + '/indices/drop-all/', {confirm: DS_NAME}).then(function(d) {
+    el.className = 'action-result ' + (d.ok ? 'ok' : 'err');
+    el.textContent = d.ok ? '✓ All indices dropped' : '✗ ' + d.error;
+    el.style.display = 'block';
+  }).catch(function(e){
+    el.className = 'action-result err'; el.textContent = '✗ ' + e; el.style.display = 'block';
+  }).finally(function(){
+    btn.disabled = false; btn.textContent = 'Drop All Indices';
+  });
+});
+
+// --- Dim Data tab (lazy loaded, sub-tabbed per dimension) ---
+
+var dimListLoaded = false;
+var dimDataLoaded = {};  // dim_table -> true when data fetched
+var activeDimTab = null;
+
+var grpListLoaded = false;
+
+document.querySelectorAll('.tab-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() {
+    if (btn.dataset.tab === 'dim-data' && !dimListLoaded) {
+      loadDimList();
+    }
+    if (btn.dataset.tab === 'group-dims' && !grpListLoaded) {
+      grpListLoaded = true;
+      grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.message); });
+    }
+  });
+});
+
+function loadDimList() {
+  document.getElementById('dimDataPrompt').style.display = 'none';
+  document.getElementById('dimDataLoading').style.display = 'block';
+  fetch('/sources/' + DS_PK + '/dim-data/').then(function(r){ return r.json(); }).then(function(data) {
+    document.getElementById('dimDataLoading').style.display = 'none';
+    if (!data.ok) {
+      document.getElementById('dimDataEmpty').textContent = '✗ ' + data.error;
+      document.getElementById('dimDataEmpty').style.display = 'block';
+      return;
+    }
+    if (!data.dims.length) {
+      document.getElementById('dimDataEmpty').style.display = 'block';
+      return;
+    }
+    var tabs = document.getElementById('dimSubTabs');
+    var html = '';
+    data.dims.forEach(function(dim, i) {
+      var label = esc(dim.dim_table);
+      if (dim.inline) label += ' <span class="badge" style="background:var(--accent);color:var(--accent-fg);margin-left:4px;font-size:10px">inline</span>';
+      html += '<button class="tab-btn' + (i === 0 ? ' active' : '') + '" data-dim="' + esc(dim.dim_table) + '" title="' + esc(dim.fact_column) + ' → ' + esc(dim.dim_table) + '">' + label + '</button>';
+    });
+    tabs.innerHTML = html;
+    tabs.querySelectorAll('.tab-btn').forEach(function(tb) {
+      tb.addEventListener('click', function() {
+        switchDimTab(tb.dataset.dim, tb);
+      });
+    });
+    document.getElementById('dimDataTabs').style.display = 'block';
+    dimListLoaded = true;
+    // Load first tab
+    var first = data.dims[0].dim_table;
+    activeDimTab = first;
+    loadDimDataSingle(first);
+  }).catch(function(e) {
+    document.getElementById('dimDataLoading').style.display = 'none';
+    document.getElementById('dimDataEmpty').textContent = '✗ ' + String(e);
+    document.getElementById('dimDataEmpty').style.display = 'block';
+  });
+}
+
+function showDimCard(dimTable) {
+  document.querySelectorAll('#dimDataPane .card').forEach(function(c){ c.style.display = 'none'; });
+  var el = document.getElementById('dim-card-' + dimTable);
+  if (el) el.style.display = '';
+}
+
+function switchDimTab(dimTable, btn) {
+  document.querySelectorAll('#dimSubTabs .tab-btn').forEach(function(b){ b.classList.remove('active'); });
+  btn.classList.add('active');
+  activeDimTab = dimTable;
+  if (!dimDataLoaded[dimTable]) {
+    loadDimDataSingle(dimTable);
+  } else {
+    showDimCard(dimTable);
+  }
+}
+
+function loadDimDataSingle(dimTable) {
+  var pane = document.getElementById('dimDataPane');
+  // Remove stale loading message if present
+  var loading = pane.querySelector('.dim-loading');
+  if (loading) loading.remove();
+  // Hide any existing cards
+  document.querySelectorAll('#dimDataPane .card').forEach(function(c){ c.style.display = 'none'; });
+  // Insert loading placeholder
+  var loadEl = document.createElement('p');
+  loadEl.className = 'text-muted dim-loading';
+  loadEl.style.padding = '16px';
+  loadEl.textContent = 'Loading…';
+  pane.appendChild(loadEl);
+  fetch('/sources/' + DS_PK + '/dim-data/' + encodeURIComponent(dimTable) + '/').then(function(r){ return r.json(); }).then(function(data) {
+    var ld = pane.querySelector('.dim-loading');
+    if (ld) ld.remove();
+    if (!data.ok) {
+      var errEl = document.createElement('p');
+      errEl.className = 'text-muted';
+      errEl.style.padding = '16px';
+      errEl.textContent = '✗ ' + data.error;
+      pane.appendChild(errEl);
+      return;
+    }
+    var html = '<div class="card" id="dim-card-' + esc(data.dim_table) + '">';
+    if (data.rows && data.rows.length) {
+      html += '<table class="data-table"><thead><tr><th>Index</th><th>Source ID</th><th>Name</th><th>Description</th><th>Count</th></tr></thead><tbody>';
+      data.rows.forEach(function(r) {
+        html += '<tr><td class="text-mono">' + r.index + '</td><td class="text-mono">' + esc(r.source_id) + '</td><td>' + esc(r.name) + '</td><td class="text-muted">' + esc(r.description||'') + '</td><td>' + (r.count||0) + '</td></tr>';
+      });
+      html += '</tbody></table>';
+    } else {
+      html += '<p class="text-muted" style="padding:12px">Table not yet created.</p>';
+    }
+    html += '</div>';
+    pane.insertAdjacentHTML('beforeend', html);
+    dimDataLoaded[data.dim_table] = true;
+  }).catch(function(e) {
+    var ld = pane.querySelector('.dim-loading');
+    if (ld) ld.remove();
+    var errEl = document.createElement('p');
+    errEl.className = 'text-muted';
+    errEl.style.padding = '16px';
+    errEl.textContent = '✗ ' + String(e);
+    pane.appendChild(errEl);
+  });
+}
+
+// --- Group Dims tab ---
+// A datasource has arbitrarily many group dimensions; the left-hand list
+// picks one and the editor below works on that one alone. grpGroups therefore
+// holds the groups of the *selected set* only — two sets on the same native
+// dimension may both claim the same dim value.
+var grpAllValues = [];   // [{index, source_id, name, description}]
+var grpGroups = [];      // [{group_name, color, dim_indices: [int]}]
+var grpSets = [];        // [{id, name, fact_column, dimension_id, group_count}]
+var grpSelectedSetId = null;   // null = nothing open, 'new' = unsaved draft
+var grpSelectedDimId = null;
+var grpNameTouched = false;    // stop auto-filling the name once edited by hand
+var GROUP_PALETTE = [
+  '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4',
+  '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990', '#dcbeff'
+];
+
+function grpReset() {
+  grpAllValues = [];
+  grpGroups = [];
+  grpSelectedSetId = null;
+  grpSelectedDimId = null;
+  grpNameTouched = false;
+  document.getElementById('grpDimContent').style.display = 'none';
+  document.getElementById('grpEditorPrompt').style.display = '';
+  document.getElementById('grpZones').innerHTML = '';
+  document.getElementById('grpLeftoverChips').innerHTML = '';
+  document.getElementById('grpSaveResult').style.display = 'none';
+  grpRenderList();
+  grpCloseAddPopover();
+}
+
+function grpDimOption(dimId) {
+  return document.querySelector('#grpDimSelect option[value="' + dimId + '"]');
+}
+
+function grpPresetName(dimId) {
+  var opt = grpDimOption(dimId);
+  return opt ? opt.dataset.factColumn + ' (grouped)' : '';
+}
+
+function grpRenderList() {
+  var ul = document.getElementById('grpList');
+  var empty = document.getElementById('grpListEmpty');
+  ul.innerHTML = '';
+  empty.style.display = grpSets.length ? 'none' : '';
+  grpSets.forEach(function(s) {
+    var li = document.createElement('li');
+    li.className = 'group-dim-item' + (s.id === grpSelectedSetId ? ' active' : '');
+    var name = document.createElement('span');
+    name.className = 'group-dim-item-name';
+    name.textContent = s.name;
+    li.appendChild(name);
+    var sub = document.createElement('span');
+    sub.className = 'group-dim-item-sub';
+    sub.textContent = s.fact_column + ' · ' + s.group_count +
+                      (s.group_count === 1 ? ' group' : ' groups');
+    li.appendChild(sub);
+    li.addEventListener('click', function() { grpOpenSet(s.id); });
+    ul.appendChild(li);
+  });
+  if (grpSelectedSetId === 'new') {
+    var li = document.createElement('li');
+    li.className = 'group-dim-item active';
+    var name = document.createElement('span');
+    name.className = 'group-dim-item-name';
+    name.textContent = document.getElementById('grpNameInput').value || 'New group dimension';
+    li.appendChild(name);
+    var sub = document.createElement('span');
+    sub.className = 'group-dim-item-sub';
+    sub.textContent = 'unsaved';
+    li.appendChild(sub);
+    ul.appendChild(li);
+    empty.style.display = 'none';
+  }
+}
+
+function grpLoadList() {
+  return fetch('/sources/' + DS_PK + '/group-dims/')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.ok) throw new Error(data.error);
+      grpSets = data.group_sets || [];
+      grpRenderList();
+      return grpSets;
+    });
+}
+
+// Load the dim table's values for the dimension currently in the dropdown.
+function grpLoadValues(dimId) {
+  return fetch('/sources/' + DS_PK + '/dimensions/' + dimId + '/values/')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.ok) throw new Error(data.error);
+      grpAllValues = data.values || [];
+    });
+}
+
+function grpShowEditor() {
+  document.getElementById('grpEditorPrompt').style.display = 'none';
+  document.getElementById('grpDimContent').style.display = 'block';
+  document.getElementById('grpSaveResult').style.display = 'none';
+}
+
+function grpOpenSet(setId) {
+  fetch('/sources/' + DS_PK + '/group-dims/' + setId + '/')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (!data.ok) throw new Error(data.error);
+      var gs = data.group_set;
+      grpSelectedSetId = gs.id;
+      grpSelectedDimId = gs.dimension_id;
+      grpNameTouched = true;   // an existing name is never auto-overwritten
+      document.getElementById('grpNameInput').value = gs.name;
+      document.getElementById('grpDimSelect').value = String(gs.dimension_id);
+      grpGroups = (gs.groups || []).map(function(g) {
+        return { group_name: g.group_name, color: g.color || '',
+                 dim_indices: (g.members || []).slice() };
+      });
+      return grpLoadValues(gs.dimension_id);
+    })
+    .then(function() {
+      grpShowEditor();
+      grpRenderList();
+      grpRender();
+    })
+    .catch(function(e) { alert('Error: ' + e.message); });
+}
+
+function grpCloseAddPopover() {
+  var existing = document.getElementById('grpAddPopover');
+  if (existing) existing.remove();
+}
+
+function grpGroupCount(g) {
+  var total = 0;
+  g.dim_indices.forEach(function(idx) {
+    var v = grpAllValues.find(function(x) { return x.index === idx; });
+    if (v && v.count) total += v.count;
+  });
+  return total;
+}
+
+function grpRender() {
+  // Build set of assigned indices
+  var assigned = {};
+  grpGroups.forEach(function(g, gi) {
+    g.dim_indices.forEach(function(idx) { assigned[idx] = gi; });
+  });
+  // Unassigned
+  var leftover = grpAllValues.filter(function(v) { return !(v.index in assigned); });
+  // Render groups
+  var zonesEl = document.getElementById('grpZones');
+  zonesEl.innerHTML = '';
+  grpGroups.forEach(function(g, gi) {
+    var zone = document.createElement('div');
+    zone.className = 'group-zone';
+    zone.dataset.groupIndex = gi;
+    zone.addEventListener('dragover', function(e) { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', function() { zone.classList.remove('drag-over'); });
+    zone.addEventListener('drop', function(e) {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      var idx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+      if (isNaN(idx)) return;
+      // Remove from whatever group it's in
+      grpRemoveFromGroups(idx);
+      g.dim_indices.push(idx);
+      grpRender();
+    });
+    var header = document.createElement('div');
+    header.className = 'group-zone-header';
+    var colorBtn = document.createElement('button');
+    colorBtn.type = 'button';
+    colorBtn.className = 'group-color-swatch';
+    colorBtn.style.background = g.color || GROUP_PALETTE[gi % GROUP_PALETTE.length];
+    colorBtn.title = 'Pick color';
+    colorBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      grpTogglePalette(gi, colorBtn);
+    });
+    header.appendChild(colorBtn);
+    var nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'form-control';
+    nameInput.value = g.group_name;
+    nameInput.placeholder = 'Group name';
+    nameInput.addEventListener('input', function() { g.group_name = this.value; });
+    header.appendChild(nameInput);
+    var countSpan = document.createElement('span');
+    countSpan.className = 'group-zone-count text-muted';
+    countSpan.textContent = '(' + grpGroupCount(g).toLocaleString() + ')';
+    header.appendChild(countSpan);
+    var delBtn = document.createElement('button');
+    delBtn.className = 'group-zone-delete';
+    delBtn.textContent = '✕';
+    delBtn.title = 'Delete group';
+    delBtn.addEventListener('click', function() {
+      grpGroups.splice(gi, 1);
+      grpRender();
+    });
+    header.appendChild(delBtn);
+    zone.appendChild(header);
+    var chips = document.createElement('div');
+    chips.className = 'group-chips';
+    g.dim_indices.forEach(function(idx) {
+      var v = grpAllValues.find(function(x) { return x.index === idx; });
+      if (!v) return;
+      chips.appendChild(grpMakeChip(v, gi));
+    });
+    var addWrap = document.createElement('span');
+    addWrap.className = 'group-zone-add-wrap';
+    var addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'group-zone-add-btn';
+    addBtn.textContent = '+ Add value';
+    addBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      grpOpenAddPopover(gi, addWrap);
+    });
+    addWrap.appendChild(addBtn);
+    chips.appendChild(addWrap);
+    zone.appendChild(chips);
+    zonesEl.appendChild(zone);
+  });
+  // Update target dropdown
+  var targetSel = document.getElementById('grpSearchTarget');
+  targetSel.innerHTML = '';
+  if (grpGroups.length === 0) {
+    targetSel.innerHTML = '<option value="">— No groups yet —</option>';
+  } else {
+    grpGroups.forEach(function(g, gi) {
+      var opt = document.createElement('option');
+      opt.value = gi;
+      opt.textContent = g.group_name || ('Group ' + (gi + 1));
+      targetSel.appendChild(opt);
+    });
+  }
+  // Render leftover (collapsed summary + chip list)
+  var leftoverChipsEl = document.getElementById('grpLeftoverChips');
+  var leftoverLabel = document.getElementById('grpLeftoverLabel');
+  leftoverChipsEl.innerHTML = '';
+  var leftoverCount = leftover.reduce(function(s, v) { return s + (v.count || 0); }, 0);
+  leftoverLabel.textContent = 'Unassigned (' + leftover.length + ' values, ' + leftoverCount.toLocaleString() + ' rows)';
+  leftover.forEach(function(v) {
+    leftoverChipsEl.appendChild(grpMakeChip(v, null));
+  });
+  // Refresh any open Add-value popover so newly-unassigned values appear
+  var openPop = document.getElementById('grpAddPopover');
+  if (openPop) {
+    var gi = parseInt(openPop.dataset.groupIndex, 10);
+    if (isNaN(gi) || !grpGroups[gi]) {
+      grpCloseAddPopover();
+    } else {
+      grpRenderAddPopoverList(gi);
+    }
+  }
+}
+
+function grpMakeChip(v, groupIndex) {
+  var chip = document.createElement('span');
+  chip.className = 'group-chip';
+  chip.textContent = (v.name || v.source_id) + ' ';
+  chip.draggable = true;
+  chip.dataset.dimIndex = v.index;
+  var label = v.name || v.source_id;
+  if (v.source_id !== v.name && v.source_id) label = v.source_id + ': ' + v.name;
+  chip.title = label;
+  chip.addEventListener('dragstart', function(e) {
+    e.dataTransfer.setData('text/plain', String(v.index));
+    chip.classList.add('dragging');
+  });
+  chip.addEventListener('dragend', function() { chip.classList.remove('dragging'); });
+  if (groupIndex !== null) {
+    var x = document.createElement('span');
+    x.className = 'chip-remove';
+    x.textContent = '×';
+    x.addEventListener('click', function() {
+      grpRemoveFromGroups(v.index);
+      grpRender();
+    });
+    chip.appendChild(x);
+  }
+  return chip;
+}
+
+function grpRemoveFromGroups(idx) {
+  grpGroups.forEach(function(g) {
+    var i = g.dim_indices.indexOf(idx);
+    if (i >= 0) g.dim_indices.splice(i, 1);
+  });
+}
+
+function grpTogglePalette(gi, anchorBtn) {
+  // Close any existing palette
+  var existing = document.getElementById('grpPalette');
+  if (existing) { existing.remove(); return; }
+  var palette = document.createElement('div');
+  palette.id = 'grpPalette';
+  palette.className = 'group-palette';
+  GROUP_PALETTE.forEach(function(c) {
+    var swatch = document.createElement('button');
+    swatch.type = 'button';
+    swatch.className = 'group-palette-color';
+    swatch.style.background = c;
+    swatch.addEventListener('click', function() {
+      grpGroups[gi].color = c;
+      anchorBtn.style.background = c;
+      palette.remove();
+    });
+    palette.appendChild(swatch);
+  });
+  anchorBtn.parentElement.appendChild(palette);
+}
+
+// Close palette on outside click
+document.addEventListener('click', function(e) {
+  var palette = document.getElementById('grpPalette');
+  if (palette && !palette.contains(e.target) && !e.target.classList.contains('group-color-swatch')) {
+    palette.remove();
+  }
+});
+
+function grpOpenAddPopover(gi, anchorEl) {
+  var existing = document.getElementById('grpAddPopover');
+  if (existing) {
+    var prevGi = parseInt(existing.dataset.groupIndex, 10);
+    existing.remove();
+    if (prevGi === gi) return;
+  }
+  var pop = document.createElement('div');
+  pop.id = 'grpAddPopover';
+  pop.className = 'group-add-popover visible';
+  pop.dataset.groupIndex = String(gi);
+  pop.addEventListener('click', function(e) { e.stopPropagation(); });
+
+  var searchWrap = document.createElement('div');
+  searchWrap.className = 'group-add-popover-search';
+  var searchInput = document.createElement('input');
+  searchInput.type = 'text';
+  searchInput.className = 'form-control';
+  searchInput.placeholder = 'search unassigned…';
+  searchInput.id = 'grpAddPopoverSearch';
+  searchInput.addEventListener('input', function() { grpRenderAddPopoverList(gi); });
+  searchWrap.appendChild(searchInput);
+  pop.appendChild(searchWrap);
+
+  var list = document.createElement('div');
+  list.className = 'group-add-popover-list';
+  list.id = 'grpAddPopoverList';
+  pop.appendChild(list);
+
+  var actions = document.createElement('div');
+  actions.className = 'group-add-popover-actions';
+  var cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'btn btn-secondary btn-sm';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', grpCloseAddPopover);
+  var addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.className = 'btn btn-primary btn-sm';
+  addBtn.textContent = 'Add';
+  addBtn.addEventListener('click', function() {
+    var picked = [];
+    pop.querySelectorAll('input[type="checkbox"]:checked').forEach(function(cb) {
+      picked.push(parseInt(cb.value, 10));
+    });
+    if (picked.length === 0) { grpCloseAddPopover(); return; }
+    picked.forEach(function(idx) {
+      if (grpGroups[gi].dim_indices.indexOf(idx) < 0) {
+        grpGroups[gi].dim_indices.push(idx);
+      }
+    });
+    grpCloseAddPopover();
+    grpRender();
+  });
+  actions.appendChild(cancelBtn);
+  actions.appendChild(addBtn);
+  pop.appendChild(actions);
+
+  anchorEl.appendChild(pop);
+  grpRenderAddPopoverList(gi);
+  searchInput.focus();
+}
+
+function grpRenderAddPopoverList(gi) {
+  var list = document.getElementById('grpAddPopoverList');
+  if (!list) return;
+  var search = document.getElementById('grpAddPopoverSearch');
+  var query = ((search && search.value) || '').toLowerCase();
+  var assigned = {};
+  grpGroups.forEach(function(g) { g.dim_indices.forEach(function(idx) { assigned[idx] = true; }); });
+  var matches = grpAllValues.filter(function(v) {
+    if (assigned[v.index]) return false;
+    if (!query) return true;
+    var field = ((v.source_id || '') + ' ' + (v.name || '')).toLowerCase();
+    return field.indexOf(query) >= 0;
+  }).slice(0, 100);
+  list.innerHTML = '';
+  if (matches.length === 0) {
+    var empty = document.createElement('div');
+    empty.className = 'group-add-popover-empty';
+    empty.textContent = query ? 'No matches.' : 'No unassigned values.';
+    list.appendChild(empty);
+    return;
+  }
+  matches.forEach(function(v) {
+    var item = document.createElement('label');
+    item.className = 'group-add-popover-item';
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = v.index;
+    var label = (v.name || v.source_id);
+    if (v.source_id !== v.name && v.source_id) label = v.source_id + ': ' + v.name;
+    item.appendChild(cb);
+    item.appendChild(document.createTextNode(' ' + label));
+    list.appendChild(item);
+  });
+}
+
+// Close add-value popover on outside click
+document.addEventListener('click', function(e) {
+  var pop = document.getElementById('grpAddPopover');
+  if (!pop) return;
+  if (pop.contains(e.target)) return;
+  if (e.target.classList && e.target.classList.contains('group-zone-add-btn')) return;
+  grpCloseAddPopover();
+});
+
+// New group dimension: an unsaved draft. The name is preset from the chosen
+// dimension and keeps following it until the user types their own.
+document.getElementById('grpNewBtn').addEventListener('click', function() {
+  var sel = document.getElementById('grpDimSelect');
+  if (!sel.options.length) { alert('This datasource has no dimension with a dim table.'); return; }
+  grpSelectedSetId = 'new';
+  grpNameTouched = false;
+  grpGroups = [];
+  sel.selectedIndex = 0;
+  grpSelectedDimId = parseInt(sel.value, 10);
+  document.getElementById('grpNameInput').value = grpPresetName(grpSelectedDimId);
+  grpShowEditor();
+  grpRenderList();
+  grpLoadValues(grpSelectedDimId)
+    .then(grpRender)
+    .catch(function(e) { alert('Error loading values: ' + e.message); });
+});
+
+document.getElementById('grpNameInput').addEventListener('input', function() {
+  grpNameTouched = true;
+  if (grpSelectedSetId === 'new') grpRenderList();
+});
+
+// Switching the native dimension invalidates every assignment: dim indices
+// are dimension-specific, so a carried-over group would mislabel rows.
+document.getElementById('grpDimSelect').addEventListener('change', function() {
+  var dimId = parseInt(this.value, 10);
+  if (!dimId || dimId === grpSelectedDimId) return;
+  var assigned = grpGroups.reduce(function(n, g) { return n + g.dim_indices.length; }, 0);
+  if (assigned && !confirm('Switching the dimension clears all ' + assigned +
+                           ' assigned values of this group dimension. Continue?')) {
+    this.value = String(grpSelectedDimId);
+    return;
+  }
+  grpSelectedDimId = dimId;
+  grpGroups = [];
+  if (!grpNameTouched) {
+    document.getElementById('grpNameInput').value = grpPresetName(dimId);
+    grpRenderList();
+  }
+  grpLoadValues(dimId)
+    .then(grpRender)
+    .catch(function(e) { alert('Error loading values: ' + e.message); });
+});
+
+document.getElementById('grpDeleteBtn').addEventListener('click', function() {
+  if (grpSelectedSetId === 'new' || grpSelectedSetId === null) { grpReset(); return; }
+  var name = document.getElementById('grpNameInput').value;
+  if (!confirm('Delete group dimension "' + name + '" and all its groups?')) return;
+  fetch('/sources/' + DS_PK + '/group-dims/' + grpSelectedSetId + '/delete/', {
+    method: 'POST', headers: {'X-CSRFToken': csrfToken()}
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (!data.ok) { alert('Error: ' + data.error); return; }
+    return grpLoadList().then(grpReset);
+  }).catch(function(e) { alert('Error: ' + e); });
+});
+
+document.getElementById('grpAddGroupBtn').addEventListener('click', function() {
+  var name = 'Group ' + (grpGroups.length + 1);
+  var color = GROUP_PALETTE[grpGroups.length % GROUP_PALETTE.length];
+  grpGroups.push({ group_name: name, color: color, dim_indices: [] });
+  grpRender();
+});
+
+// Filter apply
+document.getElementById('grpFilterBtn').addEventListener('click', function() {
+  if (grpGroups.length === 0) { alert('Create a group first.'); return; }
+  var targetGi = parseInt(document.getElementById('grpSearchTarget').value, 10);
+  if (isNaN(targetGi) || !grpGroups[targetGi]) { alert('Select a target group.'); return; }
+  var op = document.getElementById('grpFilterOp').value;
+  var text = document.getElementById('grpFilterText').value.trim();
+  if (!text) return;
+  var assigned = {};
+  grpGroups.forEach(function(g) { g.dim_indices.forEach(function(idx) { assigned[idx] = true; }); });
+  var matches = grpAllValues.filter(function(v) {
+    if (assigned[v.index]) return false;
+    var field = (v.name || v.source_id || '').toLowerCase();
+    if (op === 'starts_with') return field.startsWith(text.toLowerCase());
+    return field.indexOf(text.toLowerCase()) >= 0;
+  });
+  matches.forEach(function(v) { grpGroups[targetGi].dim_indices.push(v.index); });
+  document.getElementById('grpFilterText').value = '';
+  grpRender();
+});
+
+// Search & add
+var grpSearchVisible = false;
+document.getElementById('grpSearchInput').addEventListener('focus', function() { grpRenderSearch(); });
+document.getElementById('grpSearchInput').addEventListener('input', function() { grpRenderSearch(); });
+document.addEventListener('click', function(e) {
+  var results = document.getElementById('grpSearchResults');
+  var input = document.getElementById('grpSearchInput');
+  if (!input.contains(e.target) && !results.contains(e.target)) {
+    results.classList.remove('visible');
+    grpSearchVisible = false;
+  }
+});
+
+function grpRenderSearch() {
+  var results = document.getElementById('grpSearchResults');
+  var query = (document.getElementById('grpSearchInput').value || '').toLowerCase();
+  var assigned = {};
+  grpGroups.forEach(function(g) { g.dim_indices.forEach(function(idx) { assigned[idx] = true; }); });
+  var visible = grpAllValues.filter(function(v) {
+    if (assigned[v.index]) return false;
+    var field = ((v.source_id || '') + ' ' + (v.name || '')).toLowerCase();
+    return !query || field.indexOf(query) >= 0;
+  }).slice(0, 50);
+  results.innerHTML = '';
+  visible.forEach(function(v) {
+    var item = document.createElement('div');
+    item.className = 'group-search-item';
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = v.index;
+    var label = (v.name || v.source_id);
+    if (v.source_id !== v.name && v.source_id) label = v.source_id + ': ' + v.name;
+    item.appendChild(cb);
+    item.appendChild(document.createTextNode(' ' + label));
+    item.addEventListener('click', function(e) {
+      if (e.target !== cb) cb.checked = !cb.checked;
+    });
+    results.appendChild(item);
+  });
+  results.classList.add('visible');
+  grpSearchVisible = true;
+}
+
+document.getElementById('grpSearchAddBtn').addEventListener('click', function() {
+  if (grpGroups.length === 0) { alert('Create a group first.'); return; }
+  var targetGi = parseInt(document.getElementById('grpSearchTarget').value, 10);
+  if (isNaN(targetGi) || !grpGroups[targetGi]) { alert('Select a target group.'); return; }
+  var indices = [];
+  document.querySelectorAll('#grpSearchResults input[type="checkbox"]:checked').forEach(function(cb) {
+    indices.push(parseInt(cb.value, 10));
+  });
+  if (indices.length === 0) { alert('Select values to add.'); return; }
+  indices.forEach(function(idx) {
+    if (grpGroups[targetGi].dim_indices.indexOf(idx) < 0) {
+      grpGroups[targetGi].dim_indices.push(idx);
+    }
+  });
+  grpRender();
+  grpRenderSearch();
+});
+
+// Save. A draft is created first (POST add/, which only takes name +
+// dimension), then saved like any other set so both paths share one code
+// path for the groups themselves.
+document.getElementById('grpSaveBtn').addEventListener('click', function() {
+  var btn = this;
+  if (!grpSelectedDimId || grpSelectedSetId === null) return;
+  var name = document.getElementById('grpNameInput').value.trim();
+  if (!name) { alert('The group dimension needs a name.'); return; }
+  for (var i = 0; i < grpGroups.length; i++) {
+    if (!grpGroups[i].group_name.trim()) {
+      alert('Group ' + (i + 1) + ' needs a name.');
+      return;
+    }
+  }
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+
+  var payload = {
+    name: name,
+    dimension_id: grpSelectedDimId,
+    groups: grpGroups.map(function(g) {
+      return { group_name: g.group_name.trim(), color: g.color || '', dim_indices: g.dim_indices.slice() };
+    })
+  };
+
+  var created = grpSelectedSetId === 'new'
+    ? fetch('/sources/' + DS_PK + '/group-dims/add/', {
+        method: 'POST',
+        headers: {'X-CSRFToken': csrfToken(), 'Content-Type': 'application/json'},
+        body: JSON.stringify({ name: name, dimension_id: grpSelectedDimId })
+      }).then(function(r) { return r.json(); }).then(function(data) {
+        if (!data.ok) throw new Error(data.error);
+        grpSelectedSetId = data.group_set.id;
+      })
+    : Promise.resolve();
+
+  created.then(function() {
+    return fetch('/sources/' + DS_PK + '/group-dims/' + grpSelectedSetId + '/save/', {
+      method: 'POST',
+      headers: {'X-CSRFToken': csrfToken(), 'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    }).then(function(r) { return r.json(); });
+  }).then(function(data) {
+    if (!data.ok) throw new Error(data.error);
+    var gs = data.group_set;
+    grpSelectedSetId = gs.id;
+    grpGroups = (gs.groups || []).map(function(g) {
+      return { group_name: g.group_name, color: g.color || '', dim_indices: (g.members || []).slice() };
+    });
+    document.getElementById('grpNameInput').value = gs.name;
+    grpRender();
+    var el = document.getElementById('grpSaveResult');
+    el.className = 'action-result ok';
+    el.textContent = '✓ Saved as ' + gs.token;
+    el.style.display = 'block';
+    return grpLoadList();
+  }).catch(function(e) {
+    var el = document.getElementById('grpSaveResult');
+    el.className = 'action-result err'; el.textContent = '✗ ' + e.message; el.style.display = 'block';
+  }).finally(function() {
+    btn.disabled = false;
+    btn.textContent = 'Save';
+  });
+});
+
+// Allow drop on leftover zone (drag back from a group)
+document.getElementById('grpLeftover').addEventListener('dragover', function(e) { e.preventDefault(); this.classList.add('drag-over'); });
+document.getElementById('grpLeftover').addEventListener('dragleave', function() { this.classList.remove('drag-over'); });
+document.getElementById('grpLeftover').addEventListener('drop', function(e) {
+  e.preventDefault();
+  this.classList.remove('drag-over');
+  var idx = parseInt(e.dataTransfer.getData('text/plain'), 10);
+  if (isNaN(idx)) return;
+  grpRemoveFromGroups(idx);
+  grpRender();
+});
+
+// Expand/collapse the unassigned summary
+document.getElementById('grpLeftoverToggle').addEventListener('click', function() {
+  var zone = document.getElementById('grpLeftover');
+  var collapsed = zone.classList.toggle('leftover-collapsed');
+  this.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  this.querySelector('.leftover-toggle-chevron').textContent = collapsed ? 'show' : 'hide';
+});
+
+// --- ETL Commands tab ---
+function showCmdResult(el, ok, msg) {
+  el.className = 'cmd-result ' + (ok ? 'ok' : 'err');
+  el.textContent = msg;
+}
+
+
+// Delete From
+document.getElementById('etlCmdDeleteBtn').addEventListener('click', function() {
+  var val = dtpDeleteFrom.getUTCISO();
+  if (!val) { alert('Select a timestamp.'); return; }
+  if (!confirm('Delete all fact rows at or after this timestamp?')) return;
+  var btn = this;
+  btn.disabled = true;
+  var resultEl = document.getElementById('result-delete-from');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/delete-from/', {from_time: val}).then(function(d) {
+    showCmdResult(resultEl, d.ok, d.ok ? ('✓ ' + (d.deleted || 0) + ' rows deleted') : ('✗ ' + d.error));
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; });
+});
+
+// Vacuum Analyze
+document.getElementById('etlCmdVacuumBtn').addEventListener('click', function() {
+  var btn = this;
+  btn.disabled = true;
+  var resultEl = document.getElementById('result-vacuum');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/vacuum-analyze/', {}).then(function(d) {
+    showCmdResult(resultEl, d.ok, d.ok ? '✓ Done' : ('✗ ' + d.error));
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; });
+});
+
+// Set High Watermark
+document.getElementById('etlCmdHwmBtn').addEventListener('click', function() {
+  var btn = this;
+  btn.disabled = true;
+  var resultEl = document.getElementById('result-set-hwm');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/set-highwatermark/', {}).then(function(d) {
+    showCmdResult(resultEl, d.ok, d.ok ? ('✓ HWM set to ' + (d.highwatermark || '')) : ('✗ ' + d.error));
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; });
+});
+
+// --- Gap Audit ---------------------------------------------------------
+// Source-vs-fact row counts per bucket. Bucket edges come back as ISO
+// strings and are handed straight back to the backfill endpoint, so a
+// bucket's window round-trips exactly instead of being re-derived here.
+var auditGapSpan = null;   // [from, to] covering every bucket with a gap
+
+function auditRenderRows(rows) {
+  var tbody = document.getElementById('auditTbody');
+  tbody.innerHTML = '';
+  rows.forEach(function(r) {
+    var tr = document.createElement('tr');
+    var missing = r.missing || 0;
+    var surplus = r.surplus || 0;
+    if (missing) tr.classList.add('audit-gap');
+
+    var tdStart = document.createElement('td');
+    tdStart.textContent = fmtLocal(r.start);
+    tr.appendChild(tdStart);
+
+    var tdSrc = document.createElement('td');
+    tdSrc.style.textAlign = 'right';
+    tdSrc.textContent = (r.source_rows === null) ? '?' : r.source_rows.toLocaleString();
+    tr.appendChild(tdSrc);
+
+    var tdFact = document.createElement('td');
+    tdFact.style.textAlign = 'right';
+    tdFact.textContent = r.fact_rows.toLocaleString();
+    tr.appendChild(tdFact);
+
+    var tdDiff = document.createElement('td');
+    tdDiff.style.textAlign = 'right';
+    if (r.source_rows === null)  { tdDiff.textContent = '?'; }
+    else if (missing)            { tdDiff.textContent = missing.toLocaleString() + ' missing'; }
+    else if (surplus)            { tdDiff.textContent = surplus.toLocaleString() + ' surplus'; }
+    else                         { tdDiff.textContent = '✓'; }
+    tr.appendChild(tdDiff);
+
+    var tdAct = document.createElement('td');
+    tdAct.style.whiteSpace = 'nowrap';
+    // The IDs button sits on every row, not just flagged ones: equal counts
+    // do not prove a bucket is intact (N lost + N deleted upstream cancel).
+    var idBtn = document.createElement('button');
+    idBtn.className = 'btn btn-secondary btn-sm';
+    idBtn.textContent = 'IDs';
+    idBtn.style.marginRight = '6px';
+    idBtn.addEventListener('click', function() {
+      auditCompareIds(r.start, r.end, idBtn);
+    });
+    tdAct.appendChild(idBtn);
+    if (missing) {
+      var b = document.createElement('button');
+      b.className = 'btn btn-secondary btn-sm';
+      b.textContent = 'Backfill';
+      b.addEventListener('click', function() { auditBackfill(r.start, r.end, b); });
+      tdAct.appendChild(b);
+    }
+    tr.appendChild(tdAct);
+    tbody.appendChild(tr);
+  });
+  document.getElementById('auditResultCard').style.display = rows.length ? '' : 'none';
+}
+
+function auditBackfill(from, to, btn) {
+  var resultEl = document.getElementById('result-audit');
+  if (!confirm('Re-load ' + fmtLocal(from) + ' → ' + fmtLocal(to) + '?\n\n'
+             + 'Rows already in fact are skipped by primary key. '
+             + 'The high watermark is not moved.')) return;
+  if (btn) btn.disabled = true;
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/backfill/', {from_time: from, to_time: to})
+    .then(function(d) {
+      showCmdResult(resultEl, d.ok, d.ok
+        ? '✓ Backfill started — watch the ETL Log tab, then re-run the audit'
+        : ('✗ ' + d.error));
+    })
+    .catch(function(e) { showCmdResult(resultEl, false, '✗ ' + e); })
+    .finally(function() { if (btn) btn.disabled = false; });
+}
+
+// Diff the two PK sets for one window and render what differs. `display`
+// may carry pk_format HTML (a link into the source system), so it is
+// injected as markup only when it actually differs from the raw id — the
+// same test the chart's drill-down list uses.
+var auditIdWindowRange = null;
+var auditMissingIds = [];
+
+function auditIdList(title, hint, raw, display, total, sample) {
+  if (!total) return '';
+  var shown = raw.length;
+  var body;
+  var hasHtml = display.some(function(d, i) { return d !== raw[i]; });
+  if (hasHtml) {
+    body = '<div class="audit-id-list">' + display.join('<br>') + '</div>';
+  } else {
+    var esc = document.createElement('div');
+    esc.textContent = raw.join('\n');
+    body = '<pre class="audit-id-list">' + esc.innerHTML + '</pre>';
+  }
+  var more = (total > shown)
+    ? ' <span class="text-muted">(showing first ' + shown + ' of '
+      + total.toLocaleString() + ')</span>'
+    : '';
+  var extra = (title.indexOf('Missing') === 0 && shown)
+    ? '<div style="margin-top:6px">'
+      + '<button class="btn btn-secondary btn-sm" id="auditDetailBtn">'
+      + 'Details — source timestamps &amp; responsible run</button></div>'
+    : '';
+  return '<div style="margin-top:12px"><label class="form-label">' + title
+       + ' — ' + total.toLocaleString() + more + '</label>'
+       + '<p style="margin:0 0 6px;color:var(--muted);font-size:12px">' + hint + '</p>'
+       + body + extra + '</div>';
+}
+
+function fmtLagSecs(v) {
+  if (v === null || v === undefined) return '—';
+  if (v < 90) return v.toFixed(0) + ' s';
+  if (v < 5400) return (v / 60).toFixed(1) + ' min';
+  return (v / 3600).toFixed(1) + ' h';
+}
+
+// Second, targeted pass over ids audit_ids already named: fetch each row's
+// source watermark and the etl_run whose window covered it. started_at minus
+// watermark is how long after the row's watermark the ETL read that window
+// and still did not see it — a *lower* bound on the lag that would have been
+// needed, which is what wallclock_lag_s gets set from.
+function auditIdDetails(btn) {
+  var box = document.getElementById('auditDetailBox');
+  if (!auditIdWindowRange || !auditMissingIds.length) return;
+  if (btn) btn.disabled = true;
+  box.innerHTML = '<p class="text-muted" style="font-size:12px">Looking up '
+                + auditMissingIds.length + ' row(s) in the source…</p>';
+  var fd = new FormData();
+  fd.append('from_time', auditIdWindowRange[0]);
+  fd.append('to_time', auditIdWindowRange[1]);
+  auditMissingIds.forEach(function(i) { fd.append('ids', i); });
+  postJSON('/sources/' + DS_PK + '/etl/audit-id-details/', fd).then(function(d) {
+    if (btn) btn.disabled = false;
+    if (!d.ok) {
+      box.innerHTML = '<p class="cmd-result err">✗ ' + d.error + '</p>';
+      return;
+    }
+    var rows = d.rows.map(function(r) {
+      return '<tr>'
+        + '<td class="mono">' + r.pk_display + '</td>'
+        + '<td>' + (r.txn_wm ? fmtLocal(r.txn_wm) : '<span class="text-muted">not in source</span>') + '</td>'
+        + '<td>' + (r.run_watermark ? fmtLocal(r.run_watermark) : '<span class="text-muted">no covering run</span>') + '</td>'
+        + '<td>' + (r.run_id ? '#' + r.run_id : '—') + '</td>'
+        + '<td class="text-muted">' + (r.run_started_at ? fmtLocal(r.run_started_at) : '—') + '</td>'
+        + '<td>' + fmtLagSecs(r.needed_lag_s) + '</td>'
+        + '</tr>';
+    }).join('');
+    var summary = '';
+    if (d.needed_lag) {
+      summary += '<p style="margin:8px 0 0">The window would have had to reach '
+        + '<strong>' + fmtLagSecs(d.needed_lag.p99) + '</strong> further back '
+        + 'to catch 99% of these rows (median ' + fmtLagSecs(d.needed_lag.median)
+        + ', worst ' + fmtLagSecs(d.needed_lag.max) + ', n=' + d.needed_lag.n
+        + '). Raise <code>watermark_lag_s</code> by at least that much.</p>'
+        + '<p class="text-muted" style="font-size:12px;margin:4px 0 0">'
+        + 'By, not to: if a lag is already configured, this is the additional '
+        + 'amount. And it is a lower bound — all that is known is the row was '
+        + 'still missing at that run, not how much longer it stayed '
+        + 'invisible.</p>';
+    }
+    if (d.unresolved) {
+      summary += '<p class="cmd-result err" style="margin:6px 0 0">'
+        + d.unresolved + ' row(s) fall in no run window at all — a gap in the '
+        + 'run history or a watermark jump, not a late arrival. Excluded from '
+        + 'the figures above.</p>';
+    }
+    if (d.not_in_source) {
+      summary += '<p class="text-muted" style="font-size:12px;margin:6px 0 0">'
+        + d.not_in_source + ' row(s) are no longer in the source — deleted '
+        + 'upstream between the ID comparison and this lookup.</p>';
+    }
+    // Every header says whose value it is. A transaction does not have a
+    // watermark -- it has a value in the watermark column; the run is what
+    // has a watermark. Naming both "watermark" is what made the first
+    // version of this table unreadable.
+    var wmCol = esc(d.watermark_column || 'watermark');
+    box.innerHTML = '<div style="margin-top:12px">'
+      + '<label class="form-label">Missing rows in detail</label>'
+      + '<table class="data-table"><thead><tr>'
+      + '<th>PK</th>'
+      + '<th>Txn ' + wmCol + '</th>'
+      + '<th title="Upper bound of the WHERE this run read the source with. '
+      + 'With no lag configured this equals max(' + wmCol + ') at that moment.">'
+      + 'Run watermark</th>'
+      + '<th>Run</th>'
+      + '<th title="Clock of the starcubes host, not the source. May be offset '
+      + 'against the other timestamps — deliberately not used in the difference.">'
+      + 'Run started (local)</th>'
+      + '<th>Watermark &minus; ' + wmCol + '</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>'
+      + summary + '</div>';
+  });
+}
+
+function auditCompareIds(from, to, btn) {
+  var resultEl = document.getElementById('result-audit');
+  var card = document.getElementById('auditIdCard');
+  if (btn) btn.disabled = true;
+  showCmdResult(resultEl, true, 'Comparing IDs…');
+  postJSON('/sources/' + DS_PK + '/etl/audit-ids/',
+           {from_time: from, to_time: to, sample: 200}).then(function(d) {
+    if (!d.ok) {
+      card.style.display = 'none';
+      showCmdResult(resultEl, false, '✗ ' + d.error);
+      return;
+    }
+    auditIdWindowRange = [d.start, d.end];
+    auditMissingIds = d.missing_ids || [];
+    // A previous window's detail table must not survive a new comparison.
+    document.getElementById('auditDetailBox').innerHTML = '';
+    document.getElementById('auditIdWindow').textContent =
+      fmtLocal(d.start) + ' → ' + fmtLocal(d.end);
+    document.getElementById('auditIdSummary').innerHTML =
+        '<dt>Source rows</dt><dd>' + d.source_rows.toLocaleString() + '</dd>'
+      + '<dt>Fact rows</dt><dd>' + d.fact_rows.toLocaleString()
+      + (d.duplicate_rows
+          ? ' <span class="cmd-result err">(' + d.duplicate_rows.toLocaleString()
+            + ' duplicate PK' + (d.duplicate_rows === 1 ? '' : 's') + ')</span>'
+          : '') + '</dd>'
+      + '<dt>Missing</dt><dd>' + d.missing_count.toLocaleString() + '</dd>'
+      + '<dt>Surplus</dt><dd>' + d.surplus_count.toLocaleString() + '</dd>';
+    document.getElementById('auditIdLists').innerHTML =
+        auditIdList('Missing from fact',
+                    'In the source, never loaded. Backfill inserts exactly these.',
+                    d.missing_ids, d.missing_display, d.missing_count, d.sample)
+      + auditIdList('Surplus in fact',
+                    'Loaded, but no longer in the source for this window — '
+                    + 'deleted upstream, or the watermark expression puts them '
+                    + 'in a different window than the source does. Backfill '
+                    + 'will not remove these.',
+                    d.surplus_ids, d.surplus_display, d.surplus_count, d.sample);
+    card.style.display = '';
+    var db = document.getElementById('auditDetailBtn');
+    if (db) db.addEventListener('click', function() { auditIdDetails(db); });
+    var bf = document.getElementById('auditIdBackfillBtn');
+    bf.style.display = d.missing_count ? '' : 'none';
+    document.getElementById('result-audit-ids').textContent = '';
+    var msg;
+    if (d.missing_count) {
+      msg = '✗ ' + d.missing_count.toLocaleString() + ' row(s) missing';
+    } else if (d.surplus_count || d.duplicate_rows) {
+      msg = '✓ nothing missing';
+    } else {
+      msg = '✓ IDs match exactly';
+    }
+    if (d.surplus_count) { msg += ' — ' + d.surplus_count.toLocaleString() + ' surplus'; }
+    if (d.duplicate_rows) { msg += ' — ' + d.duplicate_rows.toLocaleString() + ' duplicate PK(s)'; }
+    showCmdResult(resultEl, !d.missing_count, msg);
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { if (btn) btn.disabled = false; });
+}
+
+document.getElementById('auditIdsBtn').addEventListener('click', function() {
+  var from = dtpAuditFrom.getUTCISO();
+  var to = dtpAuditTo.getUTCISO();
+  if (!from || !to) { alert('Pick a From and To timestamp.'); return; }
+  auditCompareIds(from, to, this);
+});
+
+document.getElementById('auditIdBackfillBtn').addEventListener('click', function() {
+  if (!auditIdWindowRange) return;
+  auditBackfill(auditIdWindowRange[0], auditIdWindowRange[1], this);
+});
+
+document.getElementById('auditRunBtn').addEventListener('click', function() {
+  var btn = this;
+  var from = dtpAuditFrom.getUTCISO();
+  var to = dtpAuditTo.getUTCISO();
+  var buckets = document.getElementById('auditBuckets').value || '24';
+  var resultEl = document.getElementById('result-audit');
+  var backfillAllBtn = document.getElementById('auditBackfillAllBtn');
+  if (!from || !to) { alert('Pick a From and To timestamp.'); return; }
+
+  btn.disabled = true;
+  backfillAllBtn.style.display = 'none';
+  document.getElementById('auditIdCard').style.display = 'none';
+  auditGapSpan = null;
+  showCmdResult(resultEl, true, 'Counting…');
+  postJSON('/sources/' + DS_PK + '/etl/audit/',
+           {from_time: from, to_time: to, buckets: buckets}).then(function(d) {
+    if (!d.ok) { showCmdResult(resultEl, false, '✗ ' + d.error); return; }
+    auditRenderRows(d.buckets);
+    var gaps = d.buckets.filter(function(r) { return r.missing; });
+    if (gaps.length) {
+      auditGapSpan = [gaps[0].start, gaps[gaps.length - 1].end];
+      backfillAllBtn.style.display = '';
+    }
+    var msg = d.total_missing
+      ? ('✗ ' + d.total_missing.toLocaleString() + ' row(s) missing in '
+         + gaps.length + ' bucket(s)')
+      : '✓ No gaps';
+    if (d.total_surplus) { msg += ' — ' + d.total_surplus.toLocaleString() + ' surplus'; }
+    if (d.unreadable_buckets) { msg += ' — ' + d.unreadable_buckets + ' bucket(s) unreadable'; }
+    showCmdResult(resultEl, !d.total_missing, msg);
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; });
+});
+
+document.getElementById('auditBackfillAllBtn').addEventListener('click', function() {
+  if (!auditGapSpan) return;
+  auditBackfill(auditGapSpan[0], auditGapSpan[1], this);
+});
+
+// Clear ETL History — shared between the Metadata card and the Run ETL card
+function clearEtlHistory(btn, resultEl) {
+  if (!confirm('Delete all ETL run history for this datasource?')) return;
+  btn.disabled = true;
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/clear-history/', {}).then(function(d) {
+    showCmdResult(resultEl, d.ok, d.ok ? ('✓ Cleared ' + (d.cleared || 0) + ' row(s)') : ('✗ ' + d.error));
+    if (d.ok) refreshHistTable([]);
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; });
+}
+document.getElementById('etlCmdClearHistBtn').addEventListener('click', function() {
+  clearEtlHistory(this, document.getElementById('result-clear-history'));
+});
+document.getElementById('etlCmdClearHistBtn2').addEventListener('click', function() {
+  clearEtlHistory(this, document.getElementById('result-etl-run'));
+});
+
+// Query Cache: delete rows by (group_by, measure) breakdown
+document.getElementById('cacheClearBtn').addEventListener('click', function() {
+  var groupBy = document.getElementById('cacheClearGroupBy').value;
+  var measure = document.getElementById('cacheClearMeasure').value.trim();
+  var scope;
+  if (!groupBy && !measure) scope = 'every cached plot for this datasource';
+  else scope = 'cache rows matching ' +
+       (groupBy ? 'group_by=' + groupBy : '') +
+       (groupBy && measure ? ', ' : '') +
+       (measure ? 'measure=' + measure : '');
+  if (!confirm('Delete ' + scope + '?')) return;
+  var btn = this;
+  btn.disabled = true;
+  var resultEl = document.getElementById('result-cache-clear');
+  resultEl.textContent = '';
+  var data = {};
+  if (groupBy) data.group_by = groupBy;
+  if (measure) data.measure = measure;
+  postJSON('/sources/' + DS_PK + '/cache/clear/', data).then(function(d) {
+    showCmdResult(resultEl, d.ok, d.ok ? ('✓ Deleted ' + (d.deleted || 0) + ' row(s)') : ('✗ ' + d.error));
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; });
+});
+
+// Create Fact Table
+document.getElementById('etlCmdCreateFactBtn').addEventListener('click', function() {
+  var btn = this;
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+  var resultEl = document.getElementById('result-create-fact');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/create-fact/', {}).then(function(d) {
+    var msg = '✓ ' + d.fact + ' created';
+    if (d.dims && d.dims.length) msg += '; dims: ' + d.dims.join(', ');
+    showCmdResult(resultEl, d.ok, d.ok ? msg : ('✗ ' + d.error));
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; btn.textContent = 'Create Schema'; });
+});
+
+// Sync Schema
+(function() {
+  var btn = document.getElementById('etlCmdSyncSchemaBtn');
+  var resultEl = document.getElementById('result-sync-schema');
+  var diffEl = document.getElementById('syncSchemaDiff');
+
+  btn.addEventListener('click', function() {
+    // If diff is showing and user confirmed drops, execute
+    if (diffEl.style.display !== 'none' && diffEl.dataset.confirmed) {
+      executeSync();
+      return;
+    }
+    // Otherwise, run dry-run first
+    btn.disabled = true;
+    btn.textContent = 'Checking…';
+    resultEl.textContent = '';
+    diffEl.style.display = 'none';
+    postJSON('/sources/' + DS_PK + '/sync-schema/', {}).then(function(d) {
+      if (!d.ok) { showCmdResult(resultEl, false, '✗ ' + d.error); return; }
+      var parts = [];
+      if (d.add_columns && d.add_columns.length)
+        parts.push('add columns: ' + d.add_columns.map(function(c){ return c.name + ' (' + c.pg_type + ')'; }).join(', '));
+      if (d.alter_columns && d.alter_columns.length)
+        parts.push('alter types: ' + d.alter_columns.map(function(c){ return c.name + ' ' + c.from_type + ' → ' + c.to_type; }).join(', '));
+      if (d.unsafe_type_changes && d.unsafe_type_changes.length)
+        parts.push('unsafe type changes (not auto-applied): ' + d.unsafe_type_changes.map(function(c){ return c.name + ' ' + c.from_type + ' → ' + c.to_type; }).join(', '));
+      if (d.drop_columns && d.drop_columns.length)
+        parts.push('orphan columns: ' + d.drop_columns.join(', '));
+      if (d.create_dims && d.create_dims.length)
+        parts.push('create dim tables: ' + d.create_dims.join(', '));
+      if (d.drop_dims && d.drop_dims.length)
+        parts.push('orphan dim tables: ' + d.drop_dims.join(', '));
+      if (!parts.length) {
+        showCmdResult(resultEl, true, '✓ Schema is in sync');
+        return;
+      }
+      // Build confirmation UI
+      var html = '<div style="border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--bg2)">';
+      html += '<div style="font-weight:600;margin-bottom:8px">Schema diff:</div>';
+      html += '<ul style="margin:0;padding-left:20px">';
+      parts.forEach(function(p) { html += '<li>' + p + '</li>'; });
+      html += '</ul>';
+      var hasDrops = (d.drop_columns && d.drop_columns.length) || (d.drop_dims && d.drop_dims.length);
+      if (hasDrops) {
+        html += '<div style="margin-top:10px;font-weight:600;color:var(--danger)">Destructive changes:</div>';
+        if (d.drop_columns && d.drop_columns.length) {
+          html += '<div style="margin-top:4px"><span style="color:var(--muted);font-size:12px">Columns to drop:</span></div>';
+          d.drop_columns.forEach(function(c) {
+            html += '<label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" class="sync-drop-col" value="' + c + '">' + c + '</label>';
+          });
+        }
+        if (d.drop_dims && d.drop_dims.length) {
+          html += '<div style="margin-top:4px"><span style="color:var(--muted);font-size:12px">Dim tables to drop:</span></div>';
+          d.drop_dims.forEach(function(t) {
+            html += '<label style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" class="sync-drop-dim" value="' + t + '">' + t + '</label>';
+          });
+        }
+      }
+      html += '<div style="margin-top:10px;display:flex;gap:8px">';
+      html += '<button class="btn btn-primary btn-sm" id="syncApplyBtn">Apply Changes</button>';
+      html += '<button class="btn btn-secondary btn-sm" id="syncCancelBtn">Cancel</button>';
+      html += '</div></div>';
+      diffEl.innerHTML = html;
+      diffEl.style.display = 'block';
+      document.getElementById('syncApplyBtn').addEventListener('click', function() {
+        diffEl.dataset.confirmed = 'true';
+        btn.click(); // re-trigger to execute
+      });
+      document.getElementById('syncCancelBtn').addEventListener('click', function() {
+        diffEl.style.display = 'none';
+        diffEl.dataset.confirmed = '';
+        resultEl.textContent = '';
+      });
+    }).catch(function(e) {
+      showCmdResult(resultEl, false, '✗ ' + e);
+    }).finally(function() { btn.disabled = false; btn.textContent = 'Check'; });
+  });
+
+  function executeSync() {
+    var dropCols = [];
+    document.querySelectorAll('.sync-drop-col:checked').forEach(function(cb) { dropCols.push(cb.value); });
+    var dropDims = [];
+    document.querySelectorAll('.sync-drop-dim:checked').forEach(function(cb) { dropDims.push(cb.value); });
+    btn.disabled = true;
+    btn.textContent = 'Syncing…';
+    resultEl.textContent = '';
+    diffEl.style.display = 'none';
+    diffEl.dataset.confirmed = '';
+    var data = {confirm: 'true'};
+    dropCols.forEach(function(c) { data['drop_columns'] = data['drop_columns'] || []; data['drop_columns'].push(c); });
+    dropDims.forEach(function(d) { data['drop_dims'] = data['drop_dims'] || []; data['drop_dims'].push(d); });
+    postJSON('/sources/' + DS_PK + '/sync-schema/', data).then(function(d) {
+      if (!d.ok) { showCmdResult(resultEl, false, '✗ ' + d.error); return; }
+      var parts = [];
+      if (d.add_columns && d.add_columns.length) parts.push('added ' + d.add_columns.length + ' column(s)');
+      if (d.alter_columns && d.alter_columns.length) parts.push('altered ' + d.alter_columns.length + ' type(s)');
+      if (d.drop_columns && d.drop_columns.length) parts.push('dropped ' + d.drop_columns.length + ' column(s)');
+      if (d.create_dims && d.create_dims.length) parts.push('created ' + d.create_dims.length + ' dim table(s)');
+      if (d.drop_dims && d.drop_dims.length) parts.push('dropped ' + d.drop_dims.length + ' dim table(s)');
+      showCmdResult(resultEl, true, '✓ ' + (parts.length ? parts.join(', ') : 'No changes needed'));
+    }).catch(function(e) {
+      showCmdResult(resultEl, false, '✗ ' + e);
+    }).finally(function() { btn.disabled = false; btn.textContent = 'Check'; });
+  }
+})();
+document.getElementById('etlCmdCreatePartsBtn').addEventListener('click', function() {
+  var n = document.getElementById('etlCmdPartN').value || '1';
+  var btn = this;
+  btn.disabled = true;
+  var resultEl = document.getElementById('result-create-parts');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/create-partitions/', {n: n}).then(function(d) {
+    showCmdResult(resultEl, d.ok, d.ok ? ('✓ Created ' + (d.partitions || []).join(', ')) : ('✗ ' + d.error));
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() { btn.disabled = false; });
+});
+
+// Import Dimensions (tab version)
+document.getElementById('etlCmdImportDimsBtn').addEventListener('click', function() {
+  var btn = this;
+  btn.disabled = true;
+  btn.textContent = 'Importing…';
+  var resultEl = document.getElementById('result-import-dims');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/import-dims/', {}).then(function(d) {
+    if (d.ok) {
+      var lines = d.dims.map(function(dim) {
+        return dim.dim_table + ': ' + dim.rows + ' rows' + (dim.inline ? ' (inline)' : '');
+      });
+      var msg = '✓ ' + lines.join(', ');
+      if (d.warning) msg += ' ⚠ ' + d.warning;
+      showCmdResult(resultEl, true, msg);
+    } else {
+      showCmdResult(resultEl, false, '✗ ' + d.error);
+    }
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() {
+    btn.disabled = false;
+    btn.textContent = 'Import';
+  });
+});
+
+// Refresh Counts
+document.getElementById('etlCmdRefreshCountsBtn').addEventListener('click', function() {
+  var btn = this;
+  btn.disabled = true;
+  btn.textContent = 'Refreshing…';
+  var resultEl = document.getElementById('result-refresh-counts');
+  resultEl.textContent = '';
+  postJSON('/sources/' + DS_PK + '/etl/refresh-counts/', {}).then(function(d) {
+    showCmdResult(resultEl, d.ok, d.ok ? '✓ Counts refreshed' : ('✗ ' + d.error));
+  }).catch(function(e) {
+    showCmdResult(resultEl, false, '✗ ' + e);
+  }).finally(function() {
+    btn.disabled = false;
+    btn.textContent = 'Refresh';
+  });
+});
+
+// --- Storage tab: partition actions ---
+
+function truncatePartition(name) {
+  if (!confirm('Truncate partition ' + name + '? This permanently deletes all data in it.')) return;
+  postJSON('/sources/' + DS_PK + '/etl/truncate-partition/', {partition: name}).then(function(d) {
+    if (d.ok) {
+      alert('✓ Truncated ' + name);
+      location.reload();
+    } else {
+      alert('✗ ' + d.error);
+    }
+  }).catch(function(e) { alert('✗ ' + e); });
+}
+
+function dropPartition(name) {
+  if (!confirm('Drop partition ' + name + '? This detaches it from the fact table and deletes it permanently.')) return;
+  postJSON('/sources/' + DS_PK + '/etl/drop-partition/', {partition: name}).then(function(d) {
+    if (d.ok) {
+      alert('✓ Dropped ' + name);
+      location.reload();
+    } else {
+      alert('✗ ' + d.error);
+    }
+  }).catch(function(e) { alert('✗ ' + e); });
+}
+
+function sortTable(th) {
+  var table = th.closest('table');
+  var tbody = table.querySelector('tbody');
+  var rows = Array.from(tbody.querySelectorAll('tr'));
+  var col = parseInt(th.dataset.sort);
+  var type = th.dataset.type;
+  var wasAsc = th.classList.contains('asc');
+  table.querySelectorAll('th.sortable').forEach(function(h) {
+    h.classList.remove('asc', 'desc');
+  });
+  var desc = wasAsc;
+  th.classList.add(desc ? 'desc' : 'asc');
+  rows.sort(function(a, b) {
+    var va, vb;
+    if (type === 'num') {
+      va = parseInt(a.dataset.bytes) || 0;
+      vb = parseInt(b.dataset.bytes) || 0;
+    } else {
+      va = a.cells[col].textContent.trim().toLowerCase();
+      vb = b.cells[col].textContent.trim().toLowerCase();
+    }
+    if (va < vb) return desc ? 1 : -1;
+    if (va > vb) return desc ? -1 : 1;
+    return 0;
+  });
+  rows.forEach(function(r) { tbody.appendChild(r); });
+}
+
+// ==========================================================================
+// Source profiles — save this datasource's configuration, or apply another.
+// A profile carries no DSN; see docs/source-profiles.md.
+// ==========================================================================
+(function() {
+  var DS = {{ ds.id }};
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function wideModal(html) {
+    document.getElementById('modal-box').style.maxWidth = '720px';
+    showModal(html);
+  }
+
+  function result(text, ok) {
+    var el = document.getElementById('profileResult');
+    el.style.display = 'block';
+    el.className = 'action-result ' + (ok ? 'ok' : 'err');
+    el.innerHTML = text;
+  }
+
+  function modalMsg(text, ok) {
+    var el = document.getElementById('profileModalMsg');
+    if (!el) return;
+    el.style.display = 'block';
+    el.className = 'action-result ' + (ok ? 'ok' : 'err');
+    el.textContent = text;
+  }
+
+  // ---- Save --------------------------------------------------------------
+
+  function saveDialog() {
+    var suggested = "{{ ds.name|escapejs }}";
+    wideModal(
+      '<h3 style="margin:0 0 4px">Save as profile</h3>' +
+      '<p class="text-muted" style="margin:0 0 16px;font-size:13px">' +
+      'Writes this datasource\'s full configuration to a YAML profile. ' +
+      'The source DSN is never included.</p>' +
+      '<div class="form-group"><label class="form-label">Profile name</label>' +
+      '<input class="form-control" id="saveProfileName" value="' + esc(suggested) + '" ' +
+      'placeholder="letters, digits, _ and - only"></div>' +
+      '<div class="form-group"><label class="form-label">Description</label>' +
+      '<textarea class="form-control" id="saveProfileDesc" rows="2" ' +
+      'placeholder="What is this configuration for?"></textarea></div>' +
+      '<div id="profileModalMsg" class="action-result" style="display:none"></div>' +
+      '<div class="form-actions" style="margin-top:16px">' +
+      '<button type="button" class="btn btn-primary" id="saveProfileGo">Save</button>' +
+      '<button type="button" class="btn btn-secondary" id="saveProfileDownload">Download only</button>' +
+      '<button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+      '</div>');
+    document.getElementById('saveProfileGo')
+      .addEventListener('click', function() { doSave(false); });
+    document.getElementById('saveProfileDownload')
+      .addEventListener('click', function() {
+        var name = document.getElementById('saveProfileName').value.trim();
+        var desc = document.getElementById('saveProfileDesc').value.trim();
+        // A plain navigation, so the browser handles the attachment.
+        window.location = '/sources/' + DS + '/profile/download/?name=' +
+          encodeURIComponent(name) + '&description=' + encodeURIComponent(desc);
+      });
+  }
+
+  function doSave(overwrite) {
+    var name = document.getElementById('saveProfileName').value.trim();
+    var desc = document.getElementById('saveProfileDesc').value.trim();
+    postJSON('/sources/' + DS + '/profile/save/',
+             {name: name, description: desc, overwrite: overwrite ? 'true' : 'false'})
+      .then(function(d) {
+        if (d.ok) {
+          closeModal();
+          result('Saved profile <strong>' + esc(d.name) + '</strong> (' +
+                 esc(d.bytes) + ' bytes) — <a href="/sources/' + DS +
+                 '/profile/download/?name=' + encodeURIComponent(d.name) +
+                 '">download</a>', true);
+          return;
+        }
+        if (d.exists) {
+          if (confirm('Profile "' + name + '" already exists. Overwrite it?')) doSave(true);
+          return;
+        }
+        modalMsg(d.error || 'Save failed', false);
+      })
+      .catch(function(e) { modalMsg(String(e), false); });
+  }
+
+  // ---- Apply -------------------------------------------------------------
+
+  function applyDialog() {
+    fetch('/sources/profiles/')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        var opts = (d.profiles || []).filter(function(p) { return !p.error; })
+          .map(function(p) {
+            return '<option value="' + esc(p.name) + '">' + esc(p.name) +
+              (p.origin === 'example' ? ' (example)' : '') +
+              (p.dialect ? ' — ' + esc(p.dialect) : '') + '</option>';
+          }).join('');
+        if (!opts) {
+          wideModal('<h3 style="margin:0 0 12px">Apply profile</h3>' +
+            '<p class="text-muted">No usable profiles found. Save one first, ' +
+            'or upload a YAML from the Sources list.</p>' +
+            '<div class="form-actions"><button type="button" class="btn btn-secondary" ' +
+            'onclick="closeModal()">Close</button></div>');
+          return;
+        }
+        wideModal(
+          '<h3 style="margin:0 0 4px">Apply profile</h3>' +
+          '<p class="text-muted" style="margin:0 0 16px;font-size:13px">' +
+          'Replaces this datasource\'s fact columns, dimensions, indices, ' +
+          'measures and group dimensions with the profile\'s. Name, schema ' +
+          'and DSN are left alone. Nothing is written until you confirm.</p>' +
+          '<div class="form-group"><label class="form-label">Profile</label>' +
+          '<select class="form-control" id="applyProfileName">' + opts + '</select></div>' +
+          '<div id="applyDiff" style="max-height:45vh;overflow:auto"></div>' +
+          '<div id="profileModalMsg" class="action-result" style="display:none"></div>' +
+          '<div class="form-actions" style="margin-top:16px">' +
+          '<button type="button" class="btn btn-primary" id="applyPreviewGo">Preview changes</button>' +
+          '<span id="applyConfirmSlot"></span>' +
+          '<button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>' +
+          '</div>');
+        document.getElementById('applyPreviewGo')
+          .addEventListener('click', function() { doApply(false); });
+        document.getElementById('applyProfileName')
+          .addEventListener('change', function() {
+            document.getElementById('applyDiff').innerHTML = '';
+            document.getElementById('applyConfirmSlot').innerHTML = '';
+          });
+      });
+  }
+
+  function section(title, d) {
+    if (!d.n_added && !d.n_removed && !d.n_changed) return '';
+    var parts = [];
+    if (d.n_added) parts.push('<span style="color:var(--ok,green)">+' + d.n_added + '</span>');
+    if (d.n_removed) parts.push('<span style="color:var(--danger)">−' + d.n_removed + '</span>');
+    if (d.n_changed) parts.push('~' + d.n_changed);
+    var detail = [];
+    if (d.added.length) detail.push('added: ' + d.added.map(esc).join(', '));
+    if (d.removed.length) detail.push('removed: ' + d.removed.map(esc).join(', '));
+    if (d.changed.length) {
+      detail.push('changed: ' + d.changed.map(function(c) {
+        return esc(c.key) + ' (' + Object.keys(c.fields).map(esc).join(', ') + ')';
+      }).join('; '));
+    }
+    return '<tr><td><strong>' + esc(title) + '</strong></td>' +
+      '<td style="white-space:nowrap">' + parts.join(' ') + '</td>' +
+      '<td class="text-muted" style="font-size:12px">' + detail.join('<br>') + '</td></tr>';
+  }
+
+  function renderDiff(d) {
+    var rows = section('Fact columns', d.diff.fact_columns) +
+               section('Dimensions', d.diff.dimensions) +
+               section('Indices', d.diff.fact_indices) +
+               section('Measures', d.diff.measures) +
+               section('Group dimensions', d.diff.group_dims);
+    var scalars = Object.keys(d.diff.scalars || {});
+    if (scalars.length) {
+      rows += '<tr><td><strong>Settings</strong></td><td style="white-space:nowrap">~' +
+        scalars.length + '</td><td class="text-muted" style="font-size:12px">' +
+        scalars.map(function(k) {
+          var pair = d.diff.scalars[k];
+          return esc(k) + ': ' + esc(pair[0]) + ' → ' + esc(pair[1]);
+        }).join('<br>') + '</td></tr>';
+    }
+    var html = rows
+      ? '<table class="data-table">' + rows + '</table>'
+      : '<p class="text-muted">This profile matches the current configuration — ' +
+        'applying it would change nothing.</p>';
+    (d.warnings || []).forEach(function(w) {
+      html += '<div class="action-result err" style="display:block;margin-top:8px">⚠ ' +
+        esc(w) + '</div>';
+    });
+    document.getElementById('applyDiff').innerHTML = html;
+    if (rows) {
+      document.getElementById('applyConfirmSlot').innerHTML =
+        '<button type="button" class="btn btn-danger" id="applyConfirmGo">' +
+        'Apply to this datasource</button>';
+      document.getElementById('applyConfirmGo')
+        .addEventListener('click', function() { doApply(true); });
+    }
+  }
+
+  function doApply(confirmed) {
+    var name = document.getElementById('applyProfileName').value;
+    postJSON('/sources/' + DS + '/profile/apply/',
+             {profile: name, confirm: confirmed ? 'true' : 'false'})
+      .then(function(d) {
+        if (!d.ok) { modalMsg(d.error || 'Apply failed', false); return; }
+        if (d.applied) {
+          closeModal();
+          result('Applied profile <strong>' + esc(d.profile) +
+                 '</strong>. Reloading…', true);
+          setTimeout(function() { window.location.reload(); }, 700);
+          return;
+        }
+        renderDiff(d);
+      })
+      .catch(function(e) { modalMsg(String(e), false); });
+  }
+
+  var save = document.getElementById('btnSaveProfile');
+  if (save) save.addEventListener('click', saveDialog);
+  var apply = document.getElementById('btnApplyProfile');
+  if (apply) apply.addEventListener('click', applyDialog);
+})();
+</script>
+{% endblock %}
