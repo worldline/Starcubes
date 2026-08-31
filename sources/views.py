@@ -1760,6 +1760,244 @@ def measure_delete(request, pk: int, measure_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Alarms (JSON, login-only)
+#
+# Per-datasource threshold rules. The CRUD endpoints accept and return
+# starcubes_meta.alarm rows verbatim; evaluation and notification are
+# backlog items — only the `log` notify_channel is wired today.
+# ---------------------------------------------------------------------------
+
+# Comparison operators accepted by starcubes_meta.alarm.cond_op's CHECK
+# constraint — the DB enforces it, but validating here gives a friendlier
+# 400 than a Postgres exception bubbling up through the generic except.
+_ALARM_OPS = {">", "<", "=", ">=", "<="}
+
+# Notification channels — `log` is wired today (writes to the ETL log when
+# the threshold trips). `email`, `slack`, `pagerduty` are reserved values
+# accepted by the form, but have no transport yet — see docs/backlog.md.
+_ALARM_CHANNELS = {"email", "slack", "pagerduty", "log"}
+
+
+def _parse_alarm_fields(request) -> tuple[dict, dict]:
+    """Validate POST fields for an alarm and return (values, errors).
+
+    Both alarms_list (which builds an HTML row) and the add/edit endpoints
+    call this so the validation lives in one place. ``errors`` keys are
+    field names; values are short user-facing messages. ``values`` carries
+    the typed-and-clamped payload to feed straight into an INSERT/UPDATE.
+    """
+    values: dict = {
+        "datasource_id": None,
+        "name": "",
+        "context_dim": "",
+        "context_value": "",
+        "measure": "count(*)",
+        "cond_op": ">",
+        "threshold": 0.0,
+        "window_s": 300,
+        "notify_channels": [],
+    }
+    errors: dict = {}
+
+    name = (request.POST.get("name") or "").strip()
+    if not name:
+        errors["name"] = "name is required"
+    elif len(name) > 200:
+        errors["name"] = "name is too long (max 200 characters)"
+    else:
+        values["name"] = name
+
+    cond_op = (request.POST.get("cond_op") or ">").strip()
+    if cond_op not in _ALARM_OPS:
+        errors["cond_op"] = f"cond_op must be one of {sorted(_ALARM_OPS)}"
+    else:
+        values["cond_op"] = cond_op
+
+    try:
+        values["threshold"] = float(request.POST.get("threshold") or 0)
+    except (TypeError, ValueError):
+        errors["threshold"] = "threshold must be a number"
+
+    try:
+        window_s = int(request.POST.get("window_s") or 300)
+        if window_s <= 0:
+            errors["window_s"] = "window_s must be > 0"
+        else:
+            values["window_s"] = window_s
+    except (TypeError, ValueError):
+        errors["window_s"] = "window_s must be an integer"
+
+    measure = (request.POST.get("measure") or "count(*)").strip() or "count(*)"
+    values["measure"] = measure
+
+    context_dim = (request.POST.get("context_dim") or "").strip() or None
+    context_value = (request.POST.get("context_value") or "").strip() or None
+    values["context_dim"] = context_dim
+    values["context_value"] = context_value
+
+    raw_channels = request.POST.get("notify_channels", "")
+    if isinstance(raw_channels, str):
+        channels = [c.strip() for c in raw_channels.split(",") if c.strip()]
+    else:
+        # List field — defensive in case a caller sends it as an array.
+        channels = [str(c).strip() for c in raw_channels if str(c).strip()]
+    bad = [c for c in channels if c not in _ALARM_CHANNELS]
+    if bad:
+        errors["notify_channels"] = (f"unknown channel(s) {bad}; allowed: "
+                                     f"{sorted(_ALARM_CHANNELS)}")
+    else:
+        values["notify_channels"] = channels
+
+    return values, errors
+
+
+def _alarm_row_to_dict(row) -> dict:
+    """One starcubes_meta.alarm row → JSON-safe dict.
+
+    Kept separate from the SELECTs so list/add/edit can all render the
+    same shape (the editor reads it back the same way the list does).
+    """
+    return {
+        "id": row.id,
+        "datasource_id": row.datasource_id,
+        "name": row.name,
+        "context_dim": row.context_dim,
+        "context_value": row.context_value,
+        "measure": row.measure,
+        "cond_op": row.cond_op,
+        "threshold": float(row.threshold),
+        "window_s": row.window_s,
+        "notify_channels": list(row.notify_channels or []),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+@require_POST
+def alarms_list(request, pk: int):
+    """All alarms for one datasource, as a JSON array.
+
+    Kept on POST for consistency with the other JSON CRUD endpoints — the
+    UI uses it as a one-shot fetch rather than a long-poll. 404 when the
+    datasource itself does not exist, so a stale tab does not silently
+    render an empty list against a deleted source.
+    """
+    try:
+        with _meta_engine().begin() as conn:
+            ds_exists = conn.execute(text(
+                "SELECT 1 FROM starcubes_meta.datasource WHERE id = :ds"
+            ), {"ds": pk}).scalar()
+            if not ds_exists:
+                return JsonResponse({"ok": False, "error":
+                    f"datasource {pk} not found"}, status=404)
+            rows = conn.execute(text(
+                "SELECT id, datasource_id, name, context_dim, context_value, "
+                "       measure, cond_op, threshold, window_s, notify_channels, "
+                "       created_at, updated_at "
+                "  FROM starcubes_meta.alarm "
+                " WHERE datasource_id = :ds "
+                " ORDER BY name"
+            ), {"ds": pk}).mappings().all()
+        return JsonResponse({"ok": True,
+                             "alarms": [_alarm_row_to_dict(r) for r in rows]})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+def alarm_add(request, pk: int):
+    """Create one alarm for the given datasource."""
+    values, errors = _parse_alarm_fields(request)
+    if errors:
+        return JsonResponse({"ok": False, "error":
+            "; ".join(f"{k}: {v}" for k, v in errors.items()),
+            "fields": errors}, status=400)
+    try:
+        with _meta_engine().begin() as conn:
+            ds_exists = conn.execute(text(
+                "SELECT 1 FROM starcubes_meta.datasource WHERE id = :ds"
+            ), {"ds": pk}).scalar()
+            if not ds_exists:
+                return JsonResponse({"ok": False, "error":
+                    f"datasource {pk} not found"}, status=404)
+            row = conn.execute(text(
+                "INSERT INTO starcubes_meta.alarm "
+                "  (datasource_id, name, context_dim, context_value, "
+                "   measure, cond_op, threshold, window_s, notify_channels) "
+                "VALUES (:ds, :name, :cd, :cv, :m, :op, :thr, :ws, :nc::text[]) "
+                "RETURNING id, datasource_id, name, context_dim, context_value, "
+                "          measure, cond_op, threshold, window_s, notify_channels, "
+                "          created_at, updated_at"
+            ), {"ds": pk, "name": values["name"],
+                "cd": values["context_dim"], "cv": values["context_value"],
+                "m": values["measure"], "op": values["cond_op"],
+                "thr": values["threshold"], "ws": values["window_s"],
+                "nc": list(values["notify_channels"])}).mappings().one()
+        return JsonResponse({"ok": True, "alarm": _alarm_row_to_dict(row)})
+    except sqlalchemy.exc.IntegrityError as exc:
+        # UNIQUE (datasource_id, name) — friendly name rather than the raw
+        # constraint text.
+        return JsonResponse({"ok": False, "error":
+            f"an alarm named {values['name']!r} already exists for "
+            f"this datasource", "fields": {"name": "name already in use"}},
+            status=409)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+def alarm_edit(request, pk: int, alarm_id: int):
+    """Update one alarm. Same field set as add — no partial updates."""
+    values, errors = _parse_alarm_fields(request)
+    if errors:
+        return JsonResponse({"ok": False, "error":
+            "; ".join(f"{k}: {v}" for k, v in errors.items()),
+            "fields": errors}, status=400)
+    try:
+        with _meta_engine().begin() as conn:
+            row = conn.execute(text(
+                "UPDATE starcubes_meta.alarm SET "
+                "       name = :name, context_dim = :cd, context_value = :cv, "
+                "       measure = :m, cond_op = :op, threshold = :thr, "
+                "       window_s = :ws, notify_channels = :nc::text[], "
+                "       updated_at = now() "
+                " WHERE id = :id AND datasource_id = :ds "
+                "RETURNING id, datasource_id, name, context_dim, context_value, "
+                "          measure, cond_op, threshold, window_s, notify_channels, "
+                "          created_at, updated_at"
+            ), {"ds": pk, "id": alarm_id, "name": values["name"],
+                "cd": values["context_dim"], "cv": values["context_value"],
+                "m": values["measure"], "op": values["cond_op"],
+                "thr": values["threshold"], "ws": values["window_s"],
+                "nc": list(values["notify_channels"])}).mappings().one()
+        return JsonResponse({"ok": True, "alarm": _alarm_row_to_dict(row)})
+    except sqlalchemy.exc.NoResultFound:
+        return JsonResponse({"ok": False, "error":
+            f"alarm {alarm_id} not found for datasource {pk}"}, status=404)
+    except sqlalchemy.exc.IntegrityError:
+        return JsonResponse({"ok": False, "error":
+            f"an alarm named {values['name']!r} already exists for "
+            f"this datasource", "fields": {"name": "name already in use"}},
+            status=409)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+def alarm_delete(request, pk: int, alarm_id: int):
+    """Delete one alarm. Idempotent — 200 even if the row was already gone."""
+    try:
+        with _meta_engine().begin() as conn:
+            result = conn.execute(text(
+                "DELETE FROM starcubes_meta.alarm "
+                " WHERE id = :id AND datasource_id = :ds"
+            ), {"ds": pk, "id": alarm_id})
+        return JsonResponse({"ok": True, "deleted": result.rowcount})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
 # Dimension groups (JSON)
 # ---------------------------------------------------------------------------
 

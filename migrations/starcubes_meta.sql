@@ -746,3 +746,29 @@ BEGIN
             CHECK (schema_name ~ '^[a-z_][a-z0-9_]{0,62}$') NOT VALID;
     END IF;
 END $$;
+
+
+-- 0025_alarm.sql — per-datasource threshold alarms. See migrations/0025_alarm.sql.
+-- Mirror block: keeping starcubes_meta.sql in sync with the per-step file is
+-- the contract verified in CLAUDE.md §Verification.
+
+CREATE TABLE IF NOT EXISTS starcubes_meta.alarm (
+    id              serial PRIMARY KEY,
+    datasource_id   int  NOT NULL REFERENCES starcubes_meta.datasource(id) ON DELETE CASCADE,
+    name            text NOT NULL,
+    context_dim     text,
+    context_value   text,
+    measure         text NOT NULL DEFAULT 'count(*)',
+    cond_op         text NOT NULL DEFAULT '>'
+                        CHECK (cond_op IN ('>', '<', '=', '>=', '<=')),
+    threshold       double precision NOT NULL,
+    window_s        int  NOT NULL DEFAULT 300
+                        CHECK (window_s > 0),
+    notify_channels text[] NOT NULL DEFAULT '{}',
+    created_at      timestamptz NOT NULL DEFAULT now(),
+    updated_at      timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (datasource_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS ix_alarm_datasource
+    ON starcubes_meta.alarm (datasource_id);
