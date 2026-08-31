@@ -115,8 +115,8 @@ STARCUBES_QUERY_ROW_LIMIT = int(os.environ.get("STARCUBES_QUERY_ROW_LIMIT", "100
 
 # ── ETL logging (sources/etl_spawn.py, sources/etl_logging.py) ──────────────
 # Every spawned ETL process (GUI-triggered or forever-mode) writes its own
-# per-run log file here instead of the historical /dev/null — see CLAUDE.md
-# "ETL logging and observability". STARCUBES_LOG_DIR must be writable by the
+# per-run log file here instead of the historical /dev/null — see
+# `docs/etl-engine.md` "ETL logging goes to a per-run file". STARCUBES_LOG_DIR must be writable by the
 # process; the Dockerfile creates /app/logs for the container image.
 STARCUBES_LOG_DIR = os.environ.get("STARCUBES_LOG_DIR", str(BASE_DIR / "logs"))
 STARCUBES_LOG_LEVEL = os.environ.get("STARCUBES_LOG_LEVEL", "INFO")
@@ -143,7 +143,11 @@ init_oracle_client()
 
 STATIC_URL       = "/static/"
 STATIC_ROOT      = os.environ.get("STARCUBES_STATIC_ROOT", str(BASE_DIR / "staticfiles"))
-STATICFILES_DIRS = [BASE_DIR / "viz" / "static"]
+# `viz/static/` is picked up via `INSTALLED_APPS` + the default
+# `STATICFILES_FINDERS` (`AppDirectoriesFinder`) — no `STATICFILES_DIRS`
+# entry, which would otherwise collide with the same path discovered
+# through the `viz` app and produce 28 `Found another file` warnings
+# during `collectstatic`.
 
 TIME_ZONE = "Europe/Berlin"
 USE_TZ = True

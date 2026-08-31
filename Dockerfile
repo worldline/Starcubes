@@ -37,8 +37,16 @@ COPY --from=builder /usr/local/bin/uwsgi /usr/local/bin/uwsgi
 WORKDIR /app
 COPY . /app/
 
+# Drop the .gitkeep placeholder that `COPY .` brought in for
+# `viz/static/timeseries/`; the bundle below replaces it. Without this,
+# `collectstatic` would see two paths for `timeseries.js` (the `.gitkeep`
+# parent and the jsbuilder drop-in) and emit `Found another file`
+# warnings.
+RUN rm -rf /app/viz/static/timeseries
+
 # Vendored timeseries.js from JS vendor stage — lands in viz/static/timeseries/
-# and is picked up by Django's collectstatic via STATICFILES_DIRS.
+# and is picked up by Django's collectstatic via the `viz` app's
+# staticfiles finder (INSTALLED_APPS + AppDirectoriesFinder).
 COPY --from=jsbuilder /js/vendor/timeseries/ /app/viz/static/timeseries/
 
 # Writable dirs for rootless podman (no chown needed — rootless maps to your UID)
