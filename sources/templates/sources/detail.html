@@ -429,6 +429,7 @@
     grpDimValues.forEach(function(v) {
       if (assigned.has(v.index)) return;
       leftoverEl.appendChild(grpRenderChip(v.index, v.name, null));
+    });
   }
 
   function grpRemoveFromGroups(idx) {
@@ -441,14 +442,14 @@
     return grpFetch('{% url "sources:group_dims_list" ds.id %}').then(function(d) {
       var ul = document.getElementById('grpList');
       ul.innerHTML = '';
-      var sets = d.sets || [];
+      var sets = d.group_sets || [];
       document.getElementById('grpListEmpty').style.display = sets.length ? 'none' : '';
       sets.forEach(function(s) {
         var li = document.createElement('li');
         li.className = 'group-dim-item';
         li.dataset.id = String(s.id);
         li.innerHTML = '<div class="group-dim-item-name">' + grpEsc(s.name) + '</div>'
-          + '<div class="group-dim-item-sub">' + grpEsc(s.dimension_fact_column) + ' → ' + grpEsc(s.dimension_dim_table) + '</div>';
+          + '<div class="group-dim-item-sub">' + grpEsc(s.fact_column) + ' → ' + grpEsc(s.dim_table) + '</div>';
         li.addEventListener('click', function() { grpLoadDetail(s.id); });
         ul.appendChild(li);
       });
@@ -460,10 +461,10 @@
     document.querySelectorAll('#grpList .group-dim-item').forEach(function(li) {
       li.classList.toggle('active', parseInt(li.dataset.id, 10) === setId);
     });
-    return grpFetch('{% url "sources:group_dim_detail" ds.id setIdPlaceholder %}'.replace('setIdPlaceholder', setId))
+    return grpFetch('{% url "sources:group_dim_detail" ds.id 0 %}'.replace('/0/', '/' + setId + '/'))
       .then(function(d) {
         if (!d.ok) { alert(d.error); return; }
-        var gs = d.set;
+        var gs = d.group_set;
         grpSelectedDimId = gs.dimension_id;
         document.getElementById('grpEditorPrompt').style.display = 'none';
         document.getElementById('grpDimContent').style.display = '';
@@ -475,12 +476,11 @@
             break;
           }
         }
-        return grpFetch('{% url "sources:dim_values" ds.id dimTablePlaceholder %}'.replace('dimTablePlaceholder',
-          encodeURIComponent(gs.dimension_dim_table)));
+        return grpFetch('{% url "sources:dim_data_single" ds.id "X" %}'.replace('/X/', '/' + encodeURIComponent(gs.dim_table) + '/'));
       })
       .then(function(d) {
         if (!d.ok) { alert(d.error); return; }
-        grpDimValues = d.rows || [];
+        grpDimValues = (d.rows || d.values || []);
         grpGroups = (gs.groups || []).map(function(g) {
           return { group_name: g.group_name, color: g.color || '',
                    dim_indices: (g.members || []).slice() };
@@ -522,7 +522,7 @@
       return;
     }
     if (!confirm('Delete this group dimension?')) return;
-    postJSON('{% url "sources:group_dim_delete" ds.id setIdPlaceholder %}'.replace('setIdPlaceholder', grpSelectedSetId), {})
+    postJSON('{% url "sources:group_dim_delete" ds.id 0 %}'.replace('/0/', '/' + grpSelectedSetId + '/'), {})
       .then(function(d){ if (d.ok) { grpSelectedSetId = null; return grpLoadList(); } else alert(d.error); });
   });
 
@@ -601,7 +601,7 @@
       : Promise.resolve();
 
     created.then(function() {
-      return postJSON('{% url "sources:group_dim_save" ds.id setIdPlaceholder %}'.replace('setIdPlaceholder', grpSelectedSetId), payload);
+      return postJSON('{% url "sources:group_dim_save" ds.id 0 %}'.replace('/0/', '/' + grpSelectedSetId + '/'), payload);
     }).then(function(d) {
       if (!d.ok) throw new Error(d.error);
       var gs = d.group_set;

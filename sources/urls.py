@@ -8,6 +8,9 @@ urlpatterns = [
     path("",                                           views.source_list,    name="list"),
     path("me/",                                        views.my_profile,     name="me"),
     path("settings/",                                  views.settings_page,  name="settings"),
+    # Profiles admin page — must precede the <str:slug> routes so the
+    # "profiles" literal does not collide with the slug converter.
+    path("profiles/",                                  views.profiles_page,     name="profiles"),
     path("new/",                                       views.source_new,     name="new"),
     path("<int:pk>/",                                  views.source_detail,  name="detail"),
     path("<int:pk>/manage/",                           views.source_manage,  name="manage"),

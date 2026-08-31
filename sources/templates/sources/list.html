@@ -6,7 +6,7 @@
   <h1 class="page-title">Datasources</h1>
   <span class="ms-auto" style="display:flex;gap:8px;align-items:center">
     {% if user.is_superuser %}
-    <button type="button" class="btn btn-secondary" id="btnProfiles">Profiles…</button>
+    <a class="btn btn-secondary" href="{% url 'sources:profiles' %}">Profiles…</a>
     <a class="btn btn-primary" href="{% url 'sources:new' %}">+ New Datasource</a>
     {% endif %}
   </span>
@@ -60,118 +60,6 @@
 
 {% block extra_js %}
 <script>
-// Profiles dialog — the catalogue of saved and shipped datasource
-// configurations. See docs/source-profiles.md.
-(function() {
-  var btn = document.getElementById('btnProfiles');
-  if (!btn) return;
-
-  function esc(s) {
-    return String(s === null || s === undefined ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-
-  // showModal's box is sized for confirm dialogs; the catalogue needs room.
-  function wideModal(html) {
-    var box = document.getElementById('modal-box');
-    box.style.maxWidth = '720px';
-    showModal(html);
-  }
-
-  function row(p) {
-    var badge = p.origin === 'user'
-      ? '<span class="badge" title="Saved on this installation">saved</span>'
-      : '<span class="badge badge-dialect" title="Shipped with starcubes">example</span>';
-    var counts = p.error ? '' :
-      esc(p.n_fact_columns) + ' cols · ' + esc(p.n_dimensions) + ' dims · ' +
-      esc(p.n_measures) + ' measures';
-    var body = p.error
-      ? '<span class="text-muted" style="color:var(--danger)">Cannot read: ' + esc(p.error) + '</span>'
-      : '<span class="text-muted">' + esc(p.description || 'No description.') + '</span>';
-    var actions =
-      '<a class="btn btn-primary btn-sm" href="/sources/new/?profile=' +
-        encodeURIComponent(p.name) + '">Use</a>';
-    if (!p.error) {
-      actions += ' <a class="btn btn-secondary btn-sm" href="/sources/profiles/' +
-        encodeURIComponent(p.name) + '/download/">Download</a>';
-    }
-    if (p.origin === 'user') {
-      actions += ' <button type="button" class="btn btn-danger btn-sm" ' +
-        'data-del="' + esc(p.name) + '">Delete</button>';
-    }
-    return '<tr>' +
-      '<td><strong>' + esc(p.name) + '</strong> ' + badge +
-        '<div style="font-size:12px;margin-top:2px">' + body + '</div></td>' +
-      '<td class="text-mono text-muted">' + esc(p.dialect) + '</td>' +
-      '<td class="text-muted" style="font-size:12px">' + counts + '</td>' +
-      '<td style="text-align:right;white-space:nowrap">' + actions + '</td>' +
-      '</tr>';
-  }
-
-  function render(profiles) {
-    var rows = profiles.length
-      ? profiles.map(row).join('')
-      : '<tr><td colspan="4" class="text-muted">No profiles yet. Save one from a ' +
-        'datasource\'s Basics tab, or upload a YAML file.</td></tr>';
-    wideModal(
-      '<h3 style="margin:0 0 4px">Datasource profiles</h3>' +
-      '<p class="text-muted" style="margin:0 0 16px;font-size:13px">' +
-      'A profile is a complete datasource configuration — fact columns, ' +
-      'dimensions, indices, measures — without any connection credentials.</p>' +
-      '<div style="max-height:50vh;overflow:auto"><table class="data-table">' +
-      '<tbody id="profileRows">' + rows + '</tbody></table></div>' +
-      '<div id="profileMsg" class="action-result" style="display:none"></div>' +
-      '<div style="display:flex;gap:8px;align-items:center;margin-top:16px">' +
-      '<input type="file" id="profileFile" accept=".yaml,.yml" style="flex:1;font-size:13px">' +
-      '<button type="button" class="btn btn-secondary btn-sm" id="profileUpload">Upload</button>' +
-      '<span style="margin-left:auto"></span>' +
-      '<button type="button" class="btn btn-secondary btn-sm" onclick="closeModal()">Close</button>' +
-      '</div>');
-    wire();
-  }
-
-  function msg(text, ok) {
-    var el = document.getElementById('profileMsg');
-    if (!el) return;
-    el.style.display = 'block';
-    el.className = 'action-result ' + (ok ? 'ok' : 'err');
-    el.textContent = text;
-  }
-
-  function wire() {
-    document.querySelectorAll('#profileRows [data-del]').forEach(function(b) {
-      b.addEventListener('click', function() {
-        var name = b.getAttribute('data-del');
-        if (!confirm('Delete profile "' + name + '"? This cannot be undone.')) return;
-        postJSON('/sources/profiles/' + encodeURIComponent(name) + '/delete/', {})
-          .then(function(d) {
-            if (d.ok) render(d.profiles);
-            else msg(d.error || 'Delete failed', false);
-          });
-      });
-    });
-    var up = document.getElementById('profileUpload');
-    if (up) up.addEventListener('click', function() {
-      var input = document.getElementById('profileFile');
-      if (!input.files || !input.files.length) { msg('Choose a .yaml file first.', false); return; }
-      var fd = new FormData();
-      fd.append('file', input.files[0]);
-      postJSON('{% url "sources:profile_upload" %}', fd).then(function(d) {
-        if (d.ok) render(d.profiles);
-        else msg(d.error || 'Upload failed', false);
-      }).catch(function(e) { msg(String(e), false); });
-    });
-  }
-
-  btn.addEventListener('click', function() {
-    fetch('{% url "sources:profiles_list" %}')
-      .then(function(r) { return r.json(); })
-      .then(function(d) { render(d.profiles || []); })
-      .catch(function(e) { wideModal('<p>Could not load profiles: ' + esc(e) + '</p>'); });
-  });
-})();
-
 (function() {
   function fmtLocal(iso) {
     if (!iso) return '';
@@ -187,9 +75,9 @@
 
   // Auto-check connection status for each datasource — admin only.
   // Polling every row's connection probe on a public list page leaks which
-  // sources are reachable and is overkill for non-admins.
-  var adminOnly = document.querySelector('.page-header') &&
-                  document.querySelector('#btnProfiles');  // only present for superusers
+  // sources are reachable and is overkill for non-admins. We use the
+  // presence of the "+ New Datasource" link as the superuser marker.
+  var adminOnly = !!document.querySelector('a[href$="/sources/new/"]');
   if (adminOnly) {
     document.querySelectorAll('[id^="conn-"]').forEach(function(el) {
       var pk = el.id.replace('conn-', '');

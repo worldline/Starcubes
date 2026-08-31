@@ -6,16 +6,65 @@ all DB access via SQLAlchemy (same `_get_cached_engine` / `text()` /
 
 Read this when editing anything under `sources/`.
 
+## Pages at a glance
+
+The `/sources/` UI splits along three axes:
+
+| Audience          | Path                          | Purpose                                       |
+|-------------------|-------------------------------|-----------------------------------------------|
+| Any user          | `/sources/`                   | List of datasources with last-run status       |
+| Any user          | `/sources/<pk>/`              | Read-only detail (Basics, Group Dims, Measures, Alarms) |
+| Superuser         | `/sources/<pk>/manage/`       | Full configuration (12 sub-tabs incl. ETL run / log) |
+| Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
+| Superuser         | `/sources/profiles/`          | Profile catalogue + upload (replaces the modal that used to live on `list.html`) |
+| Logged-in user    | `/sources/me/`                | Own profile, password change, query history    |
+| Superuser         | `/sources/settings/`          | User admin (create / edit / password / delete)  |
+
+The split between `detail` (read) and `manage` (full) keeps the per-row
+status bar and ETL monitor on the public-ish page, while pushing the
+destructive / configuration UI behind a superuser gate. The link to
+`manage` itself is rendered only for superusers.
+
+## Role gates
+
+Three decorator helpers live near the top of `sources/views.py` and own
+every gate the app relies on. Apply them as the outermost decorator:
+
+| Decorator                | Effect on anonymous       | Effect on logged-in non-admin  | Effect on superuser |
+|--------------------------|---------------------------|-------------------------------|--------------------|
+| `@_login_required_json`  | 403 JSON `{ok:false}`     | passes through                | passes through     |
+| `@_login_required_page`  | middleware redirect       | passes through                | passes through     |
+| `@_admin_required_json`  | 403 JSON `{ok:false}`     | 403 JSON `{ok:false}`         | passes through     |
+| `@_admin_required_page`  | middleware redirect       | 403 HTML                      | passes through     |
+
+Notes:
+- The middleware redirect (anonymous) is owned by
+  `starcubes/middleware.py:RequireLoginMiddleware`, not by the decorators.
+  The page decorators therefore cannot help anonymous users — they just
+  refuse non-admins.
+- Every `@require_POST` JSON endpoint that mutates state takes
+  `@_admin_required_json` (so an un-authed POST is rejected with a JSON
+  403 instead of a 302 to `/login/`). Read-only JSON endpoints take
+  `@_login_required_json` so polling works for any logged-in user but
+  never leaks to anonymous traffic.
+- Pages that build a configuration form (`source_new`, `source_manage`,
+  `source_edit`) take `@_admin_required_page`. The list and detail pages
+  stay accessible to any authenticated user.
+
 ## URL structure
 
-57 URL patterns total in `sources/urls.py`. Grouped by purpose:
+61 URL patterns total in `sources/urls.py`. Grouped by purpose:
 
 ### Pages
 - `GET /sources/` — list with last-run status badge per datasource
-- `GET/POST /sources/new/` — create datasource
-- `GET /sources/<pk>/` — detail (11 tabs: Basics | Fact Columns | Dimensions | Dim Data | Group Dims | Measures | Indices | Storage | ETL Commands | Audit | ETL History | ETL Log)
-- `GET/POST /sources/<pk>/edit/` — edit scalar fields
-- `POST /sources/<pk>/delete/` — delete (CASCADE in DB)
+- `GET /sources/me/` — own profile, change password, query-console history
+- `GET /sources/settings/` — user admin (superuser only)
+- `GET /sources/profiles/` — profile catalogue + upload form (superuser only)
+- `GET/POST /sources/new/` — create datasource (superuser only)
+- `GET /sources/<pk>/` — read-only detail (4 sub-tabs: Basics, Group Dims, Measures, Alarms)
+- `GET /sources/<pk>/manage/` — full detail (12 sub-tabs incl. ETL run / log) (superuser only)
+- `GET/POST /sources/<pk>/edit/` — edit scalar fields (superuser only)
+- `POST /sources/<pk>/delete/` — delete (CASCADE in DB) (superuser only)
 
 ### JSON: connection / preview
 - `POST .../test-connection/` — temporary engine, `SELECT 1`, dispose
@@ -130,27 +179,35 @@ crashed/orphaned sessions are revived.
 ### JSON: source profiles
 A **profile** is a datasource's whole configuration as one YAML file, minus
 the DSN. See [`docs/source-profiles.md`](source-profiles.md).
-- `GET  /sources/profiles/` — catalogue: every profile in `profiles/user/`
+- `GET  /sources/profiles/list/` — catalogue: every profile in `profiles/user/`
   and `profiles/examples/` with `origin`, description, dialect and counts.
   A profile that fails to parse is listed with an `error` instead of taking
-  the catalogue down.
+  the catalogue down. Login-only (any authenticated user — the catalogue
+  backs the new-datasource "Use profile" picker).
 - `GET  /sources/profiles/<slug>/` — one profile plus the `scalars` the
-  create form prefills from (`core.profile.datasource_scalars`).
+  create form prefills from (`core.profile.datasource_scalars`). Admin-only
+  (the page that uses this is the Manage-handoff, which itself is gated).
 - `GET  /sources/profiles/<slug>/download/` — the raw YAML file as an
   attachment. Serves the bytes as they sit on disk, so a
-  download/upload trip round-trips losslessly.
+  download/upload trip round-trips losslessly. Login-only.
 - `POST /sources/profiles/upload/` — `request.FILES["file"]`; validated by
   `parse_profile_text` **before** anything is written, capped at 2 MB.
+  Admin-only (the form sits on `/sources/profiles/`).
 - `POST /sources/profiles/<slug>/delete/` — saved profiles only; a shipped
-  example returns 400.
+  example returns 400. Admin-only.
 - `POST .../profile/save/` — `name`, `description`, `overwrite`. Returns 409
   with `exists: true` when the name is taken and `overwrite` is not set.
-- `GET  .../profile/download/` — the same YAML as an attachment.
+  Admin-only.
+- `GET  .../profile/download/` — the same YAML as an attachment. Admin-only.
 - `POST .../profile/apply/` — `profile`, `confirm`. Without `confirm`, a
   dry-run diff (`{added, removed, changed}` per section plus scalar
   changes) and warnings; with `confirm=true`, one transaction that rewrites
   the scalars and replaces every child row, then bumps `cache_epoch`.
   Guarded by the same `_etl_busy_response` 409 as `etl/run/`.
+  Admin-only. **Manage-handoff**: deep-linking to
+  `/sources/<pk>/manage/?apply=<slug>` triggers the apply dialog once
+  the page is wired (the catalogue's "Use" button on an existing
+  datasource lands here via the profile's `Use` button).
 
 `<slug>` is validated against `^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`
 (`core.profile.validate_profile_name`) — no dots, no separators. Profile
@@ -176,6 +233,25 @@ addresses one as `<fact_column>:grouped:<slug>`.
   replaces **this set's** groups only. Moving the set to another dimension
   drops its groups (dim indices are dimension-specific)
 - `POST .../group-dims/<gs_id>/delete/` — delete the set (groups CASCADE)
+
+### JSON: alarms (per-datasource threshold alarms)
+A row in `starcubes_meta.alarm` binds a (context_dim, context_value,
+measure, cond_op, threshold) tuple to a notification channel list and a
+sliding window. The Alarms tab in both `detail.html` (read-only) and
+`manage.html` (admin) renders the CRUD; the alarm evaluation loop itself
+is not yet wired — see [`docs/backlog.md`](backlog.md).
+- `GET  .../alarms/` — list this datasource's alarms. Login-only.
+- `POST .../alarms/add/` — `name, context_dim, context_value, measure,
+  cond_op, threshold, window_s, notify_channels` (JSON array of strings).
+  Admin-only.
+- `POST .../alarms/<alarm_id>/edit/` — same fields, partial update. Admin-only.
+- `POST .../alarms/<alarm_id>/delete/` — admin-only.
+
+`name` is unique per datasource (DB enforces). `window_s` must be `> 0`
+(CHECK constraint). `cond_op` is one of `>`, `>=`, `<`, `<=`, `=`, `!=`
+(CHECK constraint). `notify_channels` is a Postgres `text[]` whose
+contents are opaque strings — the evaluator decides what they mean (see
+backlog).
 
 ### JSON: inline CRUD
 Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delete/`.
@@ -217,15 +293,15 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   unauthenticated users to `/login/`. Public paths (`/login/`, `/logout/`)
   bypass. `viz/` views are **not** protected by this middleware.
 - **Django tables in `starcubes_meta`**: custom DB backend
-  (`starcubes/db_backends.DatabaseWrapper`) sets `search_path=starcubes_meta,public`,
-  so `auth_user`, `django_session`, `django_migrations`, etc. land in
-  `starcubes_meta`. SQLAlchemy connections are unaffected — they use
-  schema-qualified names.
+  (`starcubes/db_backends/DatabaseWrapper`) sets
+  `search_path=starcubes_meta,public`, so `auth_user`, `django_session`,
+  `django_migrations`, etc. land in `starcubes_meta`. SQLAlchemy connections
+  are unaffected — they use schema-qualified names.
 - **CSRF**: `CsrfViewMiddleware` is in `MIDDLEWARE`. All POST endpoints use
   the `csrfToken()` helper in `sources/base.html`.
 - **ETL subprocess**: uses `sys.executable` so the venv Python is used, and
   inherits `STARCUBES_POSTGRES_DSN` from the environment.
-- **ETL throughput metrics + kill button** (detail.html, ETL History tab and
+- **ETL throughput metrics + kill button** (manage.html, ETL History tab and
   the persistent statusbar): `pollEtlStatus()`/`pollForeverStatus()` render
   `rows_per_s`/`extract_rows_per_s`/`transform_rows_per_s`/`load_rows_per_s`
   via the `fmtRate()`/`fmtCount()` JS helpers (k/M-suffixed). Those four
@@ -250,7 +326,7 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   Run ETL card (`etlCmdClearHistBtn2`) — both wire to the shared
   `clearEtlHistory()` function, which also calls `refreshHistTable([])` so
   the table doesn't keep showing deleted rows after a clear.
-- **Audit tab** (`tab-audit`): reconciles source vs fact row counts per time
+- **Audit tab** (`tab-audit`, manage.html): reconciles source vs fact row counts per time
   bucket, so late-arriving transactions that slipped past
   `datasource.late_arrival_overlap_s` become visible. The From/To fields — and
   every other `DateTimePicker` in the ETL tabs — are read in the **browser's
@@ -287,15 +363,29 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   moment when no lag is configured.
   The summary says **raise by**, not set to: with a lag already in force the
   figure is the additional amount, and it is a lower bound either way.
-- **ETL Log tab** (`tab-etl-log`): lazy-loaded on first activation via
-  `etlLogActivate()` — populates the `<select>` from `etl/logs/`, then tails
-  the selected file from `etl/log/`. Polls every 2s only while the tab is
-  active (mirrors `startEtlPoll`/`stopEtlPoll`'s idiom) **and** the last
+- **ETL Log tab** (`tab-etl-log`, manage.html): lazy-loaded on first activation
+  via `etlLogActivate()` — populates the `<select>` from `etl/logs/`, then
+  tails the selected file from `etl/log/`. Polls every 2s only while the tab
+  is active (mirrors `startEtlPoll`/`stopEtlPoll`'s idiom) **and** the last
   known status is `running`; `pollEtlStatus()` calls `etlLogStopPoll()`
   alongside `stopEtlPoll()` once a run resolves. `etlLogOffsets` is a
   per-filename byte offset so re-fetches are incremental; a `truncated`
   response (the server-side `core/etl.py:_bound_log_size` shrank the file)
   resets to offset 0 and clears the pane instead of appending garbage.
+- **Manage-handoff query params**: `manage.html` reads
+  `?apply=<slug>` and `?save-profile=1` once its profile IIFE has wired
+  `saveDialog` / `applyDialog`. The catalogue page can therefore deep-link
+  straight into the apply flow against a chosen datasource. The handoff
+  triggers are no-ops if the user isn't a superuser (the buttons aren't
+  rendered), so non-admin sessions land on a normal Manage page.
+- **User admin (`settings.html`)**: every mutation goes through
+  `settings_page`'s `action=` dispatch (`create_user`, `update_user`,
+  `set_password`, `change_password`, `delete_user`). Self-demotion
+  protection refuses `update_user` that would set `is_superuser=false` on
+  the requesting user if they are the last superuser in
+  `auth_user` — both for safety and so the admin gate never locks itself
+  out by accident. `change_password` re-checks the current password before
+  setting the new one (same constraint Django's password form enforces).
 
 ## Inline CRUD UX pattern
 

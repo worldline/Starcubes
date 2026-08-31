@@ -46,17 +46,6 @@ discussion captures.
   spawned subprocess — a CLI argument will not hold it, so it needs a temp
   file or a `starcubes_meta` staging row — plus chunking the IN-list at 1000
   for Oracle.
-- **A source whose time columns do not hold UTC.** The pipeline treats every
-  naive source timestamp as UTC — `parse_dates={pc: {"utc": True}}` in the
-  extract, `_as_utc` in `core/audit.py`, `_parse_dt` in `core/utils.py`, and
-  a dozen `replace(tzinfo=timezone.utc)` calls. A source writing local time
-  therefore shows up shifted by its UTC offset everywhere: chart, audit
-  buckets, partition routing. Nothing detects it. Supporting it needs a
-  `source_timezone` column that converts on the way in, and it has to reach
-  all of those places at once — declaring it for the wall-clock term alone
-  would only move the inconsistency. The `end_time > max_wm` clamp in
-  `import_fact` bounds such a source to a freshness problem rather than data
-  loss, which is why this is a backlog item and not an open wound.
 - **Source schema drift guard.** No pre-flight validation that upstream
   columns still match `source_expr` / `base_table` before the extract loop.
   A dropped/renamed source column fails mid-run.
@@ -101,3 +90,30 @@ discussion captures.
   *including the cancel requests that would clear them*. The 30 s
   `statement_timeout` bounds it; raising `threads` or a per-user guard would
   bound it better.
+- **Alarm evaluation loop.** `starcubes_meta.alarm` (see
+  `migrations/0025_alarm.sql`) holds the configuration: a per-datasource
+  threshold over `(context_dim, context_value, measure, cond_op, threshold)`
+  with a sliding window and a `notify_channels text[]`. The CRUD and the
+  Alarms tab in `detail.html` / `manage.html` are wired — what is not wired
+  is the evaluator itself. A periodic job needs to (a) recompute the trailing
+  `window_s`-second aggregate over each alarm's `(context_dim, context_value,
+  measure)` slice, (b) compare against `cond_op`/`threshold`, (c) dispatch
+  one event per firing, and (d) record that the firing was seen so the next
+  cycle's idempotency check can suppress duplicates. The shape of step (c)
+  depends entirely on what `notify_channels` is allowed to mean — today it
+  is a free-form `text[]` with no schema. Decisions before any code lands:
+  the channel vocabulary (Slack webhook, e-mail, …), the dedupe window
+  (no re-fire for N minutes?), the run cadence (1 minute? per ETL run? per
+  audit?), and whether the dispatcher lives in the ETL subprocess, in the
+  Query console's `history_*` shape, or as a third loop.
+- **Source-side timezone awareness.** The pipeline treats every naive source
+  timestamp as UTC — `parse_dates={pc: {"utc": True}}` in the extract,
+  `_as_utc` in `core/audit.py`, `_parse_dt` in `core/utils.py`, and a dozen
+  `replace(tzinfo=timezone.utc)` calls. A source writing local time
+  therefore shows up shifted by its UTC offset everywhere: chart, audit
+  buckets, partition routing. Nothing detects it. Supporting it needs a
+  `source_timezone` column that converts on the way in, and it has to reach
+  all of those places at once — declaring it for the wall-clock term alone
+  would only move the inconsistency. The `end_time > max_wm` clamp in
+  `import_fact` bounds such a source to a freshness problem rather than data
+  loss, which is why this is a backlog item and not an open wound.

@@ -3501,6 +3501,19 @@ function sortTable(th) {
   if (save) save.addEventListener('click', saveDialog);
   var apply = document.getElementById('btnApplyProfile');
   if (apply) apply.addEventListener('click', applyDialog);
+
+  // Manage-Handoff: the catalogue page can deep-link into a specific dialog
+  // via query params (?apply=<slug> / ?save-profile=1). Run those once the
+  // IIFE has wired everything above.
+  var qs = new URLSearchParams(window.location.search);
+  if (qs.has('apply')) {
+    var slug = qs.get('apply');
+    fetch('/sources/profiles/' + encodeURIComponent(slug) + '/').then(function(r){return r.json();}).then(function(p){
+      applyDialog(p);
+    }).catch(function(e){ alert('Could not load profile "' + slug + '": ' + e); });
+  } else if (qs.get('save-profile') === '1') {
+    saveDialog();
+  }
 })();
 </script>
 {% endblock %}

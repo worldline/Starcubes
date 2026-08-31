@@ -2869,6 +2869,29 @@ def profiles_list(request):
     return JsonResponse({"ok": True, "profiles": iter_profiles()})
 
 
+@_admin_required_page
+def profiles_page(request):
+    """The full Profile admin page.
+
+    Sits at /sources/profiles/ and lists every saved and shipped profile
+    with Use (→ /sources/new/?profile=<slug>), Download and Delete
+    actions. Upload is on the same page.
+
+    ``?apply=<slug>&pk=<datasource_id>`` opens the apply-confirm dialog
+    directly on a datasource's manage page, so an admin can pick a
+    profile here and have it pre-selected there. ``?save-profile=1&pk=…``
+    flips the manage page into Save-as-Profile mode.
+    """
+    msg = request.GET.get("msg", "")
+    err = request.GET.get("err", "")
+    profiles = iter_profiles()
+    return render(request, "sources/profiles.html", {
+        "profiles": profiles,
+        "msg": msg,
+        "err": err,
+    })
+
+
 @_admin_required_json
 def profile_file_download(request, slug: str):
     """Stream one catalogue profile's YAML file as an attachment.

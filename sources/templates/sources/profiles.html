@@ -1,0 +1,135 @@
+{% extends "sources/base.html" %}
+{% block title %}Profiles — starcubes{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1 class="page-title">Datasource Profiles</h1>
+  <span style="margin-left:auto;font-size:12px;color:var(--muted)">
+    A profile is a complete datasource configuration (fact columns, dimensions,
+    indices, measures, group dimensions) without any connection credentials.
+  </span>
+</div>
+
+{% if msg %}
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
+{% endif %}
+{% if err %}
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">{{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-header"><span class="card-title">Catalogue ({{ profiles|length }})</span></div>
+  <div class="card-body" style="padding:0">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Dialect</th>
+          <th>Sizes</th>
+          <th>Description</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in profiles %}
+        <tr>
+          <td>
+            <strong>{{ p.name }}</strong>
+            {% if p.origin == 'user' %}
+              <span class="badge" title="Saved on this installation">saved</span>
+            {% else %}
+              <span class="badge badge-dialect" title="Shipped with starcubes">example</span>
+            {% endif %}
+          </td>
+          <td class="text-mono text-muted">{{ p.dialect|default:'—' }}</td>
+          <td class="text-muted" style="font-size:12px">
+            {% if p.error %}
+              <span style="color:var(--danger)">Cannot read: {{ p.error }}</span>
+            {% else %}
+              {{ p.n_fact_columns }} cols · {{ p.n_dimensions }} dims · {{ p.n_measures }} measures
+            {% endif %}
+          </td>
+          <td class="text-muted" style="font-size:13px">{{ p.description|default:'—' }}</td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="btn btn-primary btn-sm" href="{% url 'sources:new' %}?profile={{ p.name|urlencode }}">Use</a>
+            {% if not p.error %}
+              <a class="btn btn-secondary btn-sm" href="{% url 'sources:profile_file_download' p.name %}">Download</a>
+            {% endif %}
+            {% if p.origin == 'user' %}
+              <button type="button" class="btn btn-danger btn-sm" data-del-profile="{{ p.name }}">Delete</button>
+            {% endif %}
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="5" style="color:var(--muted);text-align:center;padding:16px">No profiles yet. Save one from a datasource's Manage page.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><span class="card-title">Upload</span></div>
+  <div class="card-body">
+    <form id="uploadForm" style="display:flex;gap:12px;align-items:center">
+      {% csrf_token %}
+      <input type="file" id="profileFile" accept=".yaml,.yml" style="flex:1;font-size:13px">
+      <button type="submit" class="btn btn-secondary">Upload</button>
+      <span id="uploadMsg" class="action-result" style="display:none"></span>
+    </form>
+    <p class="text-muted" style="font-size:12px;margin:8px 0 0">
+      The file is validated and only written to disk if every block parses.
+      See docs/source-profiles.md for the schema.
+    </p>
+  </div>
+</div>
+
+<script>
+(function() {
+  function csrfToken() {
+    var m = document.cookie.match(/csrftoken=([^;]+)/);
+    return m ? m[1] : '';
+  }
+  function postJSON(url, body) {
+    var fd = body instanceof FormData ? body : new FormData();
+    if (!(body instanceof FormData)) {
+      for (var k in body) fd.append(k, body[k]);
+    }
+    return fetch(url, {
+      method: 'POST',
+      headers: {'X-CSRFToken': csrfToken()},
+      body: fd,
+    }).then(function(r){ return r.json(); });
+  }
+  function msg(text, ok) {
+    var el = document.getElementById('uploadMsg');
+    el.style.display = 'block';
+    el.className = 'action-result ' + (ok ? 'ok' : 'err');
+    el.textContent = text;
+  }
+  document.getElementById('uploadForm').addEventListener('submit', function(ev) {
+    ev.preventDefault();
+    var input = document.getElementById('profileFile');
+    if (!input.files || !input.files.length) { msg('Choose a .yaml file first.', false); return; }
+    var fd = new FormData();
+    fd.append('file', input.files[0]);
+    postJSON('{% url "sources:profile_upload" %}', fd).then(function(d) {
+      if (d.ok) { msg('✓ Uploaded — reloading…', true); setTimeout(function(){ location.reload(); }, 600); }
+      else msg('✗ ' + (d.error || 'Upload failed'), false);
+    }).catch(function(e) { msg(String(e), false); });
+  });
+
+  document.querySelectorAll('[data-del-profile]').forEach(function(b) {
+    b.addEventListener('click', function() {
+      var name = b.getAttribute('data-del-profile');
+      if (!confirm('Delete profile "' + name + '"? This cannot be undone.')) return;
+      postJSON('{% url "sources:profile_delete" "PLACEHOLDER" %}'.replace('PLACEHOLDER', encodeURIComponent(name)), {})
+        .then(function(d) {
+          if (d.ok) location.reload();
+          else alert('✗ ' + (d.error || 'Delete failed'));
+        });
+    });
+  });
+})();
+</script>
+{% endblock %}

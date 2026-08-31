@@ -48,7 +48,8 @@ branch — **`master` is the only long-lived branch.**
 - **[`docs/etl-audit.md`](docs/etl-audit.md)** — the three audit modes
   (count, id set-diff, id details), the ~46 B/id memory bound, the
   two-sided counting strategy. Read when editing `core/audit.py` or the
-  Audit tab in `sources/templates/sources/detail.html`.
+  Audit tab in `sources/templates/sources/manage.html` (formerly
+  `detail.html`).
 - **[`docs/star-schema.md`](docs/star-schema.md)** — domain vocabulary
   (fact table, dimension, HWM, overlap, watermark_lag, measure, …) and
   the schema-related design decisions (per-source schema, partition
@@ -71,14 +72,14 @@ branch — **`master` is the only long-lived branch.**
   multi-dialect WHERE, test coverage, late-arrival audit scheduling,
   targeted backfill, source-timezone support, schema-name validation,
   partition retirement, JSON auth, engine circuit breaker, read-only
-  role, console concurrency. Read when planning new work or assessing
-  scope.
+  role, console concurrency, alarm evaluation loop. Read when planning
+  new work or assessing scope.
 - **[`docs/source-profiles.md`](docs/source-profiles.md)** — the YAML
-  schema for `profiles/{examples,user}/<name>.yaml`, the catalogue, and
-  the save / download / upload / apply flow. Read when touching
-  `core/profile.py`, `sources/profile_store.py`, `profiles/`,
-  `seed_example.py`, or the profile UI in `new.html` / `list.html` /
-  `detail.html`.
+  schema for `profiles/{examples,user}/<name>.yaml`, the catalogue
+  page (`/sources/profiles/`), and the save / download / upload / apply
+  flow. Read when touching `core/profile.py`, `sources/profile_store.py`,
+  `profiles/`, `seed_example.py`, or the profile UI in `new.html` /
+  `profiles.html` / `manage.html`.
 
 ## Repo state
 
@@ -88,10 +89,10 @@ The repo is **mid-rewrite** from a hard-coded Oracle single-file ETL
 **Built (high level — read git log / `ls` for specifics):**
 
 - `core/` — framework-agnostic ETL engine (`source.py`, `schema.py`,
-  `etl.py`, `query.py`, `cache.py`, `audit.py`, `adhoc.py`, `utils.py`).
-  Must not import Django.
-- `starcubes/` — Django project with custom DB backend, login
-  middleware, optional OIDC SSO backend.
+  `etl.py`, `query.py`, `cache.py`, `audit.py`, `adhoc.py`, `utils.py`,
+  `profile.py`). Must not import Django.
+- `starcubes/` — Django project with custom DB backend package
+  (`db_backends/`), login middleware, optional OIDC SSO backend.
 - `sources/` — full datasource CRUD + ETL monitor GUI (see sub-doc).
 - `viz/` — multi-source chart UI + JSON endpoints (see sub-doc).
 - `migrations/` — numbered `000N_*.sql`, idempotent. The consolidated
@@ -129,18 +130,19 @@ must not import from `viz/`, same constraint as `core/`).
 | `core/audit.py` | `audit_window` — per-bucket source-vs-fact row-count reconciliation; `audit_ids` — PK set difference naming the exact missing/surplus/duplicate rows; `audit_id_details` — targeted second pass giving each named id its own watermark-column value, the `etl_run` that should have caught it, and `last_end_time − that value` as the lower bound on the needed lag (both operands source-clock, so no skew); `_fetch_id_array` — the streaming id reader (see the memory note); `gap_span` folds the gap buckets into one backfill window. No Django imports. See [`docs/etl-audit.md`](docs/etl-audit.md). |
 | `core/cache.py` | Server-side `plot_json` cache helpers. `make_cache_key`, `is_cacheable`, `get_cached_plot`, `put_cached_plot`, `bump_cache_epoch`, `clear_cache`. No Django imports. |
 | `core/utils.py` | `_parse_dt`, `_pid_alive`, `tail_file`, `format_pks` (applies `datasource.pk_format` to a list of raw PKs — shared by the chart drill-down and the Audit tab's id lists). No Django imports. |
-| `core/adhoc.py` | Query console backend: `validate_sql` (single-statement SELECT/WITH lexer), `run_query` (read-only txn + server-side cursor + `application_name` tag), `cancel_query` (`pg_stat_activity` → `pg_cancel_backend`), `history_*`. No Django imports. See [`docs/deployment-config.md`](docs/deployment-config.md). |
-| `migrations/starcubes_meta.sql` | Consolidated idempotent meta-schema (0001–0019 combined). Used by `core/schema.py`. Per-step migrations live in `migrations/000N_*.sql`. |
+| `core/adhoc.py` | Query console backend: `validate_sql` (single-statement SELECT/WITH lexer), `run_query` (read-only txn + server-side cursor + `application_name` tag), `cancel_query` (`pg_stat_activity` → `pg_cancel_backend`), `history_list` / `history_list_user` / `history_delete` / `history_delete_user`. No Django imports. See [`docs/deployment-config.md`](docs/deployment-config.md). |
+| `migrations/starcubes_meta.sql` | Consolidated idempotent meta-schema (0001–0025 combined — 0025 adds the per-datasource alarm table). Used by `core/schema.py`. Per-step migrations live in `migrations/000N_*.sql`. |
 | `starcubes/settings.py` | Reads `STARCUBES_POSTGRES_DSN` from env. Custom DB backend, `CsrfViewMiddleware` in MIDDLEWARE. See [`docs/deployment-config.md`](docs/deployment-config.md). |
-| `starcubes/db_backends.py` | Custom PG backend — ensures `starcubes_meta` schema exists, sets search_path. |
+| `starcubes/db_backends/` | Custom PG backend package — ensures `starcubes_meta` schema exists, sets search_path. |
 | `starcubes/middleware.py` | `RequireLoginMiddleware` — gates `/sources/` and `/admin/`. |
 | `starcubes/oidc.py` | `KeycloakOIDCBackend` — optional SSO auth backend, active only when `STARCUBES_OIDC_*` env vars are set. Maps username from `preferred_username`, force-clears `is_superuser`/`is_staff` on auto-created users. See [`docs/deployment-config.md`](docs/deployment-config.md). |
 | `viz/views.py` | Chart page, plot/drill/txn JSON endpoints (handle `:grouped`), source list + meta APIs. `plot_json` consults `core.cache` for cacheable `count(*)`. The four `query_*` console endpoints gate themselves with `_login_required_json` (403 JSON, not a 302) and answer user SQL errors with HTTP 200. |
 | `viz/templates/viz/chart.html` | Multi-source chart UI — see [`docs/chart-app.md`](docs/chart-app.md) and [`docs/chart-rendering.md`](docs/chart-rendering.md). |
-| `sources/views.py` | Datasource CRUD + ETL JSON endpoints. Group dimensions live under `group-dims/` (list/detail/add/save/delete). Six historical-mutation endpoints call `bump_cache_epoch`. `etl_kill` sends SIGTERM/SIGKILL and cleans up a dead-PID or force-killed `etl_run` row (a live-SIGTERM'd parent writes its own row via `EtlAborted`). `etl_logs`/`etl_log_tail` serve the per-run log files under `etl/logs/`/`etl/log/`. See [`docs/sources-app.md`](docs/sources-app.md). |
+| `sources/views.py` | Datasource CRUD + ETL JSON endpoints. Three role-gating decorators near the top — `@_login_required_json`, `@_login_required_page`, `@_admin_required_json`, `@_admin_required_page` — wrap every endpoint; the list / detail / me pages are open to logged-in users, everything configuration-shaped is superuser-only. The detail page is split: `source_detail` (4 sub-tabs: Basics, Group Dims, Measures, Alarms) is open; `source_manage` (12 sub-tabs incl. ETL run / log) is admin-only and reads `?apply=<slug>` / `?save-profile=1` for deep-links from the profile catalogue. Group dimensions live under `group-dims/`. Alarms under `alarms/`. `profiles_page` renders `/sources/profiles/`; `profiles_list` is its JSON twin. Six historical-mutation endpoints call `bump_cache_epoch`. `etl_kill` sends SIGTERM/SIGKILL and cleans up a dead-PID or force-killed `etl_run` row (a live-SIGTERM'd parent writes its own row via `EtlAborted`). `etl_logs`/`etl_log_tail` serve the per-run log files under `etl/logs/`/`etl/log/`. See [`docs/sources-app.md`](docs/sources-app.md). |
+| `sources/templates/sources/detail.html` | Lean 4-tab datasource view (Basics, Group Dims, Measures, Alarms) accessible to every logged-in user. Connection / ETL status polling, inline CRUD for the Alarms tab, drag-and-drop in the Group Dims tab. The Manage link in the header is superuser-only and points to `source_manage`. |
+| `sources/templates/sources/manage.html` | Superuser-only 12-tab view: everything `detail.html` shows plus Fact Columns, Dimensions, Dim Data, Indices, Storage, ETL Commands, Audit, ETL History, ETL Log. ETL run / kill / log lives here; Save as Profile / Apply Profile buttons fire the catalogue handoff (`?apply=<slug>` / `?save-profile=1`). |
 | `sources/etl_spawn.py` | `spawn_etl_subprocess(cmd, env=, datasource_name=)` — returns `(Popen, log_path \| None)`. Opens a per-run log file under `STARCUBES_LOG_DIR` and points the child's stdout+stderr at it (instead of the historical `DEVNULL`); `prune_etl_logs`/`slugify_ds`/`log_dir` are its helpers. See [`docs/etl-engine.md`](docs/etl-engine.md). |
 | `sources/etl_logging.py` | `configure_etl_logging()` — the one place allowed to wire Django settings into `core/etl.py`'s `logging.getLogger`. Stderr handler always; optional PID-1-stdout mirror when `STARCUBES_ETL_LOG_STDOUT` is set (for `podman logs`); registers `faulthandler` on `SIGUSR1`. See [`docs/etl-engine.md`](docs/etl-engine.md). |
-| `sources/templates/sources/detail.html` | 10-tab detail page (Basics, Fact Columns, Dimensions, Dim Data, Group Dims, Measures, Indices, Storage, ETL Commands, ETL History, ETL Log — nav and panel order are two independent lists in the template, kept in sync manually, not driven by one JS array) with inline CRUD + ETL controls, including an ETL Log tab that tails the per-run log file. `fmtRate`/`fmtCount` format throughput in the statusbar and ETL History table; for a `running` row the statusbar now reads live per-stage rates + queue depths + `processed_through` from `stats` (the stored `rows_per_s` columns are NULL until the run finishes) and shows a stall badge when `progress_at` goes stale; `etlKillBtn` escalates SIGTERM → SIGKILL across two clicks. |
 | `core/profile.py` | Source profiles: `load_profile`/`parse_profile_text` (YAML → `ExampleProfile`), `dump_profile` (meta rows → YAML, **never emits `source_dsn`**), `iter_profiles` (catalogue over `profiles/user/` then `profiles/examples/`, user wins), `save_profile`/`delete_profile`, `validate_profile_name` (the filesystem boundary). No Django imports. See [`docs/source-profiles.md`](docs/source-profiles.md). |
 | `sources/profile_store.py` | The INSERTs that write a profile into `starcubes_meta`, shared by `seed_example` and the GUI so the two paths cannot drift: `insert_datasource`, `insert_profile_children`, `delete_profile_children`, `update_datasource_scalars`. |
 | `examples.sql` | Reference SQL. Lines 43–62 are the template for `core/query.timeseries_multibar`. |
