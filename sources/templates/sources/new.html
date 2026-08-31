@@ -10,6 +10,29 @@
 <form method="post" action="{% url 'sources:new' %}">
   {% csrf_token %}
   <div class="card">
+    <div class="card-header"><span class="card-title">Profile</span></div>
+    <div class="card-body">
+      <div class="form-group">
+        <label class="form-label">Preload configuration from profile</label>
+        <select class="form-control" name="preload_profile" id="profileSelect">
+          <option value="">— none —</option>
+          {% for p in profiles %}
+            <option value="{{ p.name }}"{% if p.name == selected_profile %} selected{% endif %}>
+              {{ p.name }}{% if p.origin == "example" %} (example){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+        <div class="form-hint">
+          Fills in the fields below and seeds the fact columns, dimensions,
+          indices and measures. Nothing is written until you click Create.
+        </div>
+        <div id="profileInfo" class="action-result" style="display:none"></div>
+        <div id="profileDialectWarning" class="action-result err" style="display:none"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <div class="card-header"><span class="card-title">Identity</span></div>
     <div class="card-body">
       <div class="form-row">
@@ -155,29 +178,6 @@
         <label class="form-label">Watermark Fact Expression</label>
         <input class="form-control mono" name="watermark_fact_expr" placeholder="e.g. create_time + total * interval &#39;1 millisecond&#39;">
         <div class="form-hint">Fact-side SQL reproducing the watermark column, used to find already-loaded rows in the overlap window and by the Audit tab. Leave blank to use the partition column. Example: <code>create_time + total * interval &#39;1 millisecond&#39;</code></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-header"><span class="card-title">Profile</span></div>
-    <div class="card-body">
-      <div class="form-group">
-        <label class="form-label">Preload configuration from profile</label>
-        <select class="form-control" name="preload_profile" id="profileSelect">
-          <option value="">— none —</option>
-          {% for p in profiles %}
-            <option value="{{ p.name }}"{% if p.name == selected_profile %} selected{% endif %}>
-              {{ p.name }}{% if p.origin == "example" %} (example){% endif %}
-            </option>
-          {% endfor %}
-        </select>
-        <div class="form-hint">
-          Fills in the fields above and seeds the fact columns, dimensions,
-          indices and measures. Nothing is written until you click Create.
-        </div>
-        <div id="profileInfo" class="action-result" style="display:none"></div>
-        <div id="profileDialectWarning" class="action-result err" style="display:none"></div>
       </div>
     </div>
   </div>
