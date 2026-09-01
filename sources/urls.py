@@ -66,11 +66,14 @@ urlpatterns = [
     path("<int:pk>/measures/add/",                      views.measure_add,    name="measure_add"),
     path("<int:pk>/measures/<int:measure_id>/edit/",    views.measure_edit,   name="measure_edit"),
     path("<int:pk>/measures/<int:measure_id>/delete/",  views.measure_delete, name="measure_delete"),
-    # Alarms CRUD (JSON, login-only — wired in detail/manage UI in Commit 2).
+    # Alarms CRUD (JSON, login-only — wired into the detail.html Alarms tab
+    # and the chart drill-down's Alert form). History/firings are read-only.
     path("<int:pk>/alarms/",                            views.alarms_list,     name="alarms_list"),
     path("<int:pk>/alarms/add/",                        views.alarm_add,       name="alarm_add"),
     path("<int:pk>/alarms/<int:alarm_id>/edit/",        views.alarm_edit,      name="alarm_edit"),
     path("<int:pk>/alarms/<int:alarm_id>/delete/",      views.alarm_delete,    name="alarm_delete"),
+    path("<int:pk>/alarms/<int:alarm_id>/history/",     views.alarm_history,   name="alarm_history"),
+    path("<int:pk>/alarms/<int:alarm_id>/firings/",     views.alarm_firings,   name="alarm_firings"),
     # Schema actions (JSON)
     path("<int:pk>/create-fact/",                      views.create_fact_table,    name="create_fact_table"),
     path("<int:pk>/sync-schema/",                      views.sync_schema_view,     name="sync_schema"),

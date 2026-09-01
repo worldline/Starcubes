@@ -40,7 +40,10 @@ from core.profile import (ProfileError, delete_profile, dump_profile,
                           iter_profiles, load_profile, profile_origin,
                           profile_path, save_profile, validate_profile_name,
                           MAX_PROFILE_BYTES)
-from core.query import grouped_label, grouped_token, slugify_group_set
+from core.alarm import check_no_grouped_filters, measure_value_expr
+from core.query import (build_filter_tree, grouped_label, grouped_token,
+                        MEASURE_FUNCS, slugify_group_set,
+                        validate_filter_tree)
 from core.source import Source, _get_cached_engine
 from sources.profile_store import (delete_profile_children,
                                    insert_profile_children,
@@ -1898,8 +1901,19 @@ def measure_delete(request, pk: int, measure_id: int):
 # Alarms (JSON, login-only)
 #
 # Per-datasource threshold rules. The CRUD endpoints accept and return
-# starcubes_meta.alarm rows verbatim; evaluation and notification are
-# backlog items — only the `log` notify_channel is wired today.
+# starcubes_meta.alarm rows verbatim. The context is the chart's whole
+# filter expression (flat filter rows as a JSON string in the `context`
+# field → alarm.context_filter jsonb); grouped tokens are rejected at save
+# time. Every create/update writes an alarm_history snapshot row so
+# changes are traceable to a user and a timestamp — including comment
+# changes, which is why there is no separate comment table. The evaluator
+# is `core/alarm.py`, driven by the alarm_run management command; the only
+# wired notify_channel is `log` (the alarm_firing episode + the loop's
+# log file).
+#
+# No bump_cache_epoch here on purpose: plot cache keys are built from chart
+# params only (core/cache.py:make_cache_key) — alarm rows feed none of
+# them, unlike the six historical-mutation endpoints above.
 # ---------------------------------------------------------------------------
 
 # Comparison operators accepted by starcubes_meta.alarm.cond_op's CHECK
@@ -1907,10 +1921,15 @@ def measure_delete(request, pk: int, measure_id: int):
 # 400 than a Postgres exception bubbling up through the generic except.
 _ALARM_OPS = {">", "<", "=", ">=", "<="}
 
-# Notification channels — `log` is wired today (writes to the ETL log when
-# the threshold trips). `email`, `slack`, `pagerduty` are reserved values
+# Notification channels — `log` is wired (the alarm_firing episode plus
+# the evaluator's log). `email`, `slack`, `pagerduty` are reserved values
 # accepted by the form, but have no transport yet — see docs/backlog.md.
 _ALARM_CHANNELS = {"email", "slack", "pagerduty", "log"}
+
+# Filter ops an alarm context row may carry — the same six the chart
+# serializes (core.query._VALID_OPS).
+_ALARM_CONTEXT_OPS = {"in", "not_in", "starts_with", "starts_not_with",
+                      "contains", "not_contains"}
 
 
 def _parse_alarm_fields(request) -> tuple[dict, dict]:
@@ -1920,12 +1939,19 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
     call this so the validation lives in one place. ``errors`` keys are
     field names; values are short user-facing messages. ``values`` carries
     the typed-and-clamped payload to feed straight into an INSERT/UPDATE.
+
+    ``context`` arrives as a JSON string (the chart's flat filter rows) —
+    FormData-compatible for both callers. Absent on edit means "keep the
+    stored context" (the inline editor never sends it — a filter expression
+    is not inline-editable); an explicit empty array means a global alarm.
+    Semantic validation (col/measure resolution) happens afterwards in
+    `_validate_alarm_context`, which needs the Source.
     """
     values: dict = {
         "datasource_id": None,
         "name": "",
-        "context_dim": "",
-        "context_value": "",
+        "comment": None,
+        "context_rows": None,
         "measure": "count(*)",
         "cond_op": ">",
         "threshold": 0.0,
@@ -1942,6 +1968,12 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
         errors["name"] = "name is too long (max 200 characters)"
     else:
         values["name"] = name
+
+    comment = (request.POST.get("comment") or "").strip()
+    if len(comment) > 10000:
+        errors["comment"] = "comment is too long (max 10000 characters)"
+    else:
+        values["comment"] = comment or None
 
     cond_op = (request.POST.get("cond_op") or ">").strip()
     if cond_op not in _ALARM_OPS:
@@ -1963,13 +1995,44 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
     except (TypeError, ValueError):
         errors["window_s"] = "window_s must be an integer"
 
+    # Syntactic measure check — the semantic column check needs the Source
+    # and lives in _validate_alarm_context. quantile(col) is rejected here:
+    # it is not a scalar a threshold can compare against.
     measure = (request.POST.get("measure") or "count(*)").strip() or "count(*)"
-    values["measure"] = measure
+    m = re.match(r"(\w+)\((\w+)\)$", measure)
+    if (measure != "count(*)" and not m
+            and not re.match(r"^\w+$", measure)):
+        errors["measure"] = ("measure must be count(*), a column, or "
+                             "func(col) with func in sum/avg/min/max")
+    elif m and m.group(1) not in MEASURE_FUNCS:
+        errors["measure"] = (f"measure function {m.group(1)!r} is not "
+                             f"comparable; choose from count(*), "
+                             f"{sorted(MEASURE_FUNCS)} or a bare column")
+    else:
+        values["measure"] = measure
 
-    context_dim = (request.POST.get("context_dim") or "").strip() or None
-    context_value = (request.POST.get("context_value") or "").strip() or None
-    values["context_dim"] = context_dim
-    values["context_value"] = context_value
+    if "context" in request.POST:
+        raw_ctx = (request.POST.get("context") or "").strip()
+        if not raw_ctx:
+            values["context_rows"] = []
+        else:
+            try:
+                parsed = _json.loads(raw_ctx)
+            except ValueError:
+                errors["context"] = "context must be a JSON array of filter rows"
+            else:
+                if not isinstance(parsed, list) or not all(
+                        isinstance(r, dict) and isinstance(r.get("col"), str)
+                        and r.get("op") in _ALARM_CONTEXT_OPS
+                        and isinstance(r.get("vals"), list)
+                        and all(isinstance(v, (str, int)) for v in r["vals"])
+                        for r in parsed):
+                    errors["context"] = ("context rows must be "
+                                         "{col, op, vals[, andOr, indent]} "
+                                         "with op one of "
+                                         f"{sorted(_ALARM_CONTEXT_OPS)}")
+                else:
+                    values["context_rows"] = parsed
 
     raw_channels = request.POST.get("notify_channels", "")
     if isinstance(raw_channels, str):
@@ -1999,13 +2062,16 @@ def _alarm_row_to_dict(row) -> dict:
 
     Kept separate from the SELECTs so list/add/edit can all render the
     same shape (the editor reads it back the same way the list does).
+    context_filter arrives already decoded (psycopg2 turns jsonb into a
+    Python list). eval_end is the evaluator's runtime cursor, not user
+    configuration — it is deliberately left out.
     """
     return {
         "id": row.id,
         "datasource_id": row.datasource_id,
         "name": row.name,
-        "context_dim": row.context_dim,
-        "context_value": row.context_value,
+        "context_filter": row.context_filter,
+        "comment": row.comment,
         "measure": row.measure,
         "cond_op": row.cond_op,
         "threshold": float(row.threshold),
@@ -2015,6 +2081,36 @@ def _alarm_row_to_dict(row) -> dict:
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+def _validate_alarm_context(pk: int, values: dict):
+    """Semantically validate an alarm's context + measure against the Source.
+
+    The stored expression is only as trustworthy as its write-time
+    validation: this resolves every filter col through the same rules the
+    chart uses (core.query.validate_filter_tree), forbids grouped tokens
+    (user-editable group sets would silently change the alarm's meaning),
+    and checks the measure column. Returns a 400/404 JsonResponse on
+    failure, else None. Callers pass the value of `values["context_rows"]`
+    inside — None means "not submitted" (edit keeps the stored context) and
+    skips context validation; the measure check always runs.
+    """
+    try:
+        source = Source.load(_meta_engine(),
+                             dest_dsn=settings.STARCUBES_POSTGRES_DSN, name_or_id=pk)
+    except LookupError:
+        return JsonResponse({"ok": False, "error":
+            f"datasource {pk} not found"}, status=404)
+    try:
+        measure_value_expr(source, values["measure"])
+        if values["context_rows"] is not None:
+            tree = build_filter_tree(values["context_rows"])
+            check_no_grouped_filters(tree)
+            validate_filter_tree(source, tree)
+    except ValueError as exc:
+        return JsonResponse({"ok": False, "error": str(exc),
+                             "fields": {"context": str(exc)}}, status=400)
+    return None
 
 
 @require_POST
@@ -2036,7 +2132,7 @@ def alarms_list(request, pk: int):
                 return JsonResponse({"ok": False, "error":
                     f"datasource {pk} not found"}, status=404)
             rows = conn.execute(text(
-                "SELECT id, datasource_id, name, context_dim, context_value, "
+                "SELECT id, datasource_id, name, context_filter, comment, "
                 "       measure, cond_op, threshold, window_s, notify_channels, "
                 "       enabled, created_at, updated_at "
                 "  FROM starcubes_meta.alarm "
@@ -2052,12 +2148,22 @@ def alarms_list(request, pk: int):
 @require_POST
 @_login_required_json
 def alarm_add(request, pk: int):
-    """Create one alarm for the given datasource."""
+    """Create one alarm for the given datasource.
+
+    The creation and its alarm_history snapshot land in one transaction —
+    a row without provenance should not exist. context_rows is a list of
+    flat filter rows; an empty list is stored as NULL (global alarm).
+    """
     values, errors = _parse_alarm_fields(request)
     if errors:
         return JsonResponse({"ok": False, "error":
             "; ".join(f"{k}: {v}" for k, v in errors.items()),
             "fields": errors}, status=400)
+    failed = _validate_alarm_context(pk, values)
+    if failed is not None:
+        return failed
+    ctx_json = (_json.dumps(values["context_rows"])
+                if values["context_rows"] else None)
     try:
         with _meta_engine().begin() as conn:
             ds_exists = conn.execute(text(
@@ -2068,22 +2174,28 @@ def alarm_add(request, pk: int):
                     f"datasource {pk} not found"}, status=404)
             row = conn.execute(text(
                 "INSERT INTO starcubes_meta.alarm "
-                "  (datasource_id, name, context_dim, context_value, "
+                "  (datasource_id, name, context_filter, comment, "
                 "   measure, cond_op, threshold, window_s, notify_channels, "
                 "   enabled) "
-                "VALUES (:ds, :name, :cd, :cv, :m, :op, :thr, :ws, "
-                "        CAST(:nc AS text[]), :en) "
-                "RETURNING id, datasource_id, name, context_dim, context_value, "
+                "VALUES (:ds, :name, CAST(:ctx AS jsonb), :cmt, "
+                "        :m, :op, :thr, :ws, CAST(:nc AS text[]), :en) "
+                "RETURNING id, datasource_id, name, context_filter, comment, "
                 "          measure, cond_op, threshold, window_s, notify_channels, "
                 "          enabled, created_at, updated_at"
-            ), {"ds": pk, "name": values["name"],
-                "cd": values["context_dim"], "cv": values["context_value"],
+            ), {"ds": pk, "name": values["name"], "ctx": ctx_json,
+                "cmt": values["comment"],
                 "m": values["measure"], "op": values["cond_op"],
                 "thr": values["threshold"], "ws": values["window_s"],
                 "nc": list(values["notify_channels"]),
                 "en": values["enabled"]}).mappings().one()
+            conn.execute(text(
+                "INSERT INTO starcubes_meta.alarm_history "
+                "  (alarm_id, kind, username, old_row, new_row) "
+                "VALUES (:aid, 'created', :user, NULL, CAST(:new AS jsonb))"
+            ), {"aid": row.id, "user": request.user.get_username(),
+                "new": _json.dumps(_alarm_row_to_dict(row))})
         return JsonResponse({"ok": True, "alarm": _alarm_row_to_dict(row)})
-    except sqlalchemy.exc.IntegrityError as exc:
+    except sqlalchemy.exc.IntegrityError:
         # UNIQUE (datasource_id, name) — friendly name rather than the raw
         # constraint text.
         return JsonResponse({"ok": False, "error":
@@ -2097,30 +2209,82 @@ def alarm_add(request, pk: int):
 @require_POST
 @_login_required_json
 def alarm_edit(request, pk: int, alarm_id: int):
-    """Update one alarm. Same field set as add — no partial updates."""
+    """Update one alarm. Same field set as add — except the context.
+
+    The context (a whole filter expression) is not inline-editable: when
+    the `context` field is absent the stored context_filter is kept as-is;
+    when present (chart / API callers) it replaces it wholesale. The
+    evaluator's eval_end cursor is never touched here — edits do not reset
+    evaluation progress. Old and new snapshots land in alarm_history in
+    the same transaction as the UPDATE.
+    """
     values, errors = _parse_alarm_fields(request)
     if errors:
         return JsonResponse({"ok": False, "error":
             "; ".join(f"{k}: {v}" for k, v in errors.items()),
             "fields": errors}, status=400)
+    failed = _validate_alarm_context(pk, values)
+    if failed is not None:
+        return failed
+    ctx_json = (_json.dumps(values["context_rows"])
+                if values["context_rows"] else None)
+    set_context = "context" in request.POST
     try:
         with _meta_engine().begin() as conn:
-            row = conn.execute(text(
-                "UPDATE starcubes_meta.alarm SET "
-                "       name = :name, context_dim = :cd, context_value = :cv, "
-                "       measure = :m, cond_op = :op, threshold = :thr, "
-                "       window_s = :ws, notify_channels = CAST(:nc AS text[]), "
-                "       enabled = :en, updated_at = now() "
-                " WHERE id = :id AND datasource_id = :ds "
-                "RETURNING id, datasource_id, name, context_dim, context_value, "
-                "          measure, cond_op, threshold, window_s, notify_channels, "
-                "          enabled, created_at, updated_at"
-            ), {"ds": pk, "id": alarm_id, "name": values["name"],
-                "cd": values["context_dim"], "cv": values["context_value"],
-                "m": values["measure"], "op": values["cond_op"],
-                "thr": values["threshold"], "ws": values["window_s"],
-                "nc": list(values["notify_channels"]),
-                "en": values["enabled"]}).mappings().one()
+            old = conn.execute(text(
+                "SELECT id, datasource_id, name, context_filter, comment, "
+                "       measure, cond_op, threshold, window_s, notify_channels, "
+                "       enabled, created_at, updated_at "
+                "  FROM starcubes_meta.alarm "
+                " WHERE id = :id AND datasource_id = :ds"
+            ), {"id": alarm_id, "ds": pk}).mappings().one_or_none()
+            if old is None:
+                return JsonResponse({"ok": False, "error":
+                    f"alarm {alarm_id} not found for datasource {pk}"},
+                    status=404)
+            if set_context:
+                row = conn.execute(text(
+                    "UPDATE starcubes_meta.alarm SET "
+                    "       name = :name, context_filter = CAST(:ctx AS jsonb), "
+                    "       comment = :cmt, measure = :m, cond_op = :op, "
+                    "       threshold = :thr, window_s = :ws, "
+                    "       notify_channels = CAST(:nc AS text[]), "
+                    "       enabled = :en, updated_at = now() "
+                    " WHERE id = :id AND datasource_id = :ds "
+                    "RETURNING id, datasource_id, name, context_filter, comment, "
+                    "          measure, cond_op, threshold, window_s, notify_channels, "
+                    "          enabled, created_at, updated_at"
+                ), {"ds": pk, "id": alarm_id, "name": values["name"],
+                    "ctx": ctx_json, "cmt": values["comment"],
+                    "m": values["measure"], "op": values["cond_op"],
+                    "thr": values["threshold"], "ws": values["window_s"],
+                    "nc": list(values["notify_channels"]),
+                    "en": values["enabled"]}).mappings().one()
+            else:
+                row = conn.execute(text(
+                    "UPDATE starcubes_meta.alarm SET "
+                    "       name = :name, comment = :cmt, measure = :m, "
+                    "       cond_op = :op, threshold = :thr, window_s = :ws, "
+                    "       notify_channels = CAST(:nc AS text[]), "
+                    "       enabled = :en, updated_at = now() "
+                    " WHERE id = :id AND datasource_id = :ds "
+                    "RETURNING id, datasource_id, name, context_filter, comment, "
+                    "          measure, cond_op, threshold, window_s, notify_channels, "
+                    "          enabled, created_at, updated_at"
+                ), {"ds": pk, "id": alarm_id, "name": values["name"],
+                    "cmt": values["comment"],
+                    "m": values["measure"], "op": values["cond_op"],
+                    "thr": values["threshold"], "ws": values["window_s"],
+                    "nc": list(values["notify_channels"]),
+                    "en": values["enabled"]}).mappings().one()
+            conn.execute(text(
+                "INSERT INTO starcubes_meta.alarm_history "
+                "  (alarm_id, kind, username, old_row, new_row) "
+                "VALUES (:aid, 'updated', :user, "
+                "        CAST(:old AS jsonb), CAST(:new AS jsonb))"
+            ), {"aid": alarm_id, "user": request.user.get_username(),
+                "old": _json.dumps(_alarm_row_to_dict(old)),
+                "new": _json.dumps(_alarm_row_to_dict(row))})
         return JsonResponse({"ok": True, "alarm": _alarm_row_to_dict(row)})
     except sqlalchemy.exc.NoResultFound:
         return JsonResponse({"ok": False, "error":
@@ -2137,7 +2301,13 @@ def alarm_edit(request, pk: int, alarm_id: int):
 @require_POST
 @_login_required_json
 def alarm_delete(request, pk: int, alarm_id: int):
-    """Delete one alarm. Idempotent — 200 even if the row was already gone."""
+    """Delete one alarm. Idempotent — 200 even if the row was already gone.
+
+    CASCADE removes the alarm's history, firings and evaluation cursor
+    along with it (the history of a deleted alarm is worthless — hence
+    there is no 'deleted' kind in alarm_history). Uniqueness is per
+    datasource, so re-creating the same name afterwards starts fresh.
+    """
     try:
         with _meta_engine().begin() as conn:
             result = conn.execute(text(
@@ -2145,6 +2315,86 @@ def alarm_delete(request, pk: int, alarm_id: int):
                 " WHERE id = :id AND datasource_id = :ds"
             ), {"ds": pk, "id": alarm_id})
         return JsonResponse({"ok": True, "deleted": result.rowcount})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_login_required_json
+def alarm_history(request, pk: int, alarm_id: int):
+    """Change history for one alarm — newest first, bounded.
+
+    kind is 'created' (old_row NULL) or 'updated' (old/new snapshots); a
+    per-field diff is rendered client-side in detail.html.
+    """
+    try:
+        with _meta_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT kind, username, old_row, new_row, changed_at "
+                "  FROM starcubes_meta.alarm_history "
+                " WHERE alarm_id = :aid AND alarm_id IN "
+                "       (SELECT id FROM starcubes_meta.alarm "
+                "         WHERE id = :aid AND datasource_id = :ds) "
+                " ORDER BY id DESC LIMIT 500"
+            ), {"aid": alarm_id, "ds": pk}).mappings().all()
+            if not rows:
+                # 404 when the alarm itself is gone, [] when it exists but
+                # has no history — same guard style as alarms_list.
+                exists = conn.execute(text(
+                    "SELECT 1 FROM starcubes_meta.alarm "
+                    " WHERE id = :aid AND datasource_id = :ds"
+                ), {"aid": alarm_id, "ds": pk}).scalar()
+                if not exists:
+                    return JsonResponse({"ok": False, "error":
+                        f"alarm {alarm_id} not found for datasource {pk}"},
+                        status=404)
+        return JsonResponse({"ok": True, "history": [{
+            "kind": r.kind,
+            "username": r.username,
+            "old_row": r.old_row,
+            "new_row": r.new_row,
+            "changed_at": r.changed_at.isoformat() if r.changed_at else None,
+        } for r in rows]})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_login_required_json
+def alarm_firings(request, pk: int, alarm_id: int):
+    """Firing episodes for one alarm — newest first, bounded.
+
+    An episode spans the first to the last breach of the threshold;
+    closed_at IS NULL means it is still open.
+    """
+    try:
+        with _meta_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT first_breach_at, last_breach_at, closed_at, "
+                "       first_value, last_value "
+                "  FROM starcubes_meta.alarm_firing "
+                " WHERE alarm_id = :aid AND alarm_id IN "
+                "       (SELECT id FROM starcubes_meta.alarm "
+                "         WHERE id = :aid AND datasource_id = :ds) "
+                " ORDER BY id DESC LIMIT 200"
+            ), {"aid": alarm_id, "ds": pk}).mappings().all()
+            if not rows:
+                exists = conn.execute(text(
+                    "SELECT 1 FROM starcubes_meta.alarm "
+                    " WHERE id = :aid AND datasource_id = :ds"
+                ), {"aid": alarm_id, "ds": pk}).scalar()
+                if not exists:
+                    return JsonResponse({"ok": False, "error":
+                        f"alarm {alarm_id} not found for datasource {pk}"},
+                        status=404)
+        return JsonResponse({"ok": True, "firings": [{
+            "first_breach_at": r.first_breach_at.isoformat() if r.first_breach_at else None,
+            "last_breach_at": r.last_breach_at.isoformat() if r.last_breach_at else None,
+            "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+            "open": r.closed_at is None,
+            "first_value": float(r.first_value) if r.first_value is not None else None,
+            "last_value": float(r.last_value) if r.last_value is not None else None,
+        } for r in rows]})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
 
