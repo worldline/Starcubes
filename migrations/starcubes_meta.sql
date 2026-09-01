@@ -765,6 +765,7 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.alarm (
     window_s        int  NOT NULL DEFAULT 300
                         CHECK (window_s > 0),
     notify_channels text[] NOT NULL DEFAULT '{}',
+    enabled         boolean NOT NULL DEFAULT true,
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now(),
     UNIQUE (datasource_id, name)
@@ -772,3 +773,14 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.alarm (
 
 CREATE INDEX IF NOT EXISTS ix_alarm_datasource
     ON starcubes_meta.alarm (datasource_id);
+
+
+-- 0026_alarm_enabled.sql — backstop for installs created by the 0025 block
+-- above, which shipped without `enabled`. CREATE TABLE IF NOT EXISTS leaves
+-- an existing table alone, so the column has to be added explicitly.
+
+ALTER TABLE starcubes_meta.alarm
+    ADD COLUMN IF NOT EXISTS enabled boolean NOT NULL DEFAULT true;
+
+COMMENT ON COLUMN starcubes_meta.alarm.enabled IS
+    'Rule is active. Persisted and editable, but no evaluation loop reads it yet — see docs/backlog.md.';

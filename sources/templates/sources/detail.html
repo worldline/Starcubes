@@ -261,21 +261,28 @@
             <th style="text-align:right">Threshold</th>
             <th style="text-align:right">Window (s)</th>
             <th>Channels</th>
+            <th style="text-align:center;width:70px">Enabled</th>
+            <th style="text-align:right;width:110px">Actions</th>
           </tr>
         </thead>
         <tbody id="alarmBody">
-          <tr id="alarm-loading"><td colspan="7" class="text-muted" style="text-align:center;padding:16px">Loading…</td></tr>
+          <tr id="alarm-loading"><td colspan="9" class="text-muted" style="text-align:center;padding:16px">Loading…</td></tr>
         </tbody>
       </table>
     </div>
     <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
       <details>
         <summary style="cursor:pointer;font-weight:600">+ Add alarm</summary>
-        <form id="alarmAddForm" style="display:grid;grid-template-columns:1fr 1fr 1fr 90px 110px 100px 1fr;gap:8px;align-items:end;margin-top:12px">
+        <form id="alarmAddForm" style="display:grid;grid-template-columns:1fr 1fr 1fr 130px 80px 110px 100px 1fr;gap:8px;align-items:end;margin-top:12px">
           {% csrf_token %}
           <div><label class="form-label">Name</label><input class="form-control" name="name" required></div>
           <div><label class="form-label">Context dim</label><input class="form-control" name="context_dim" placeholder="e.g. peer_id (optional)"></div>
           <div><label class="form-label">Context value</label><input class="form-control" name="context_value" placeholder="(optional)"></div>
+          <div><label class="form-label">Measure</label>
+            <select class="form-control" name="measure">
+              {% for a in measure_aggs %}<option{% if a == 'count(*)' %} selected{% endif %}>{{ a }}</option>{% endfor %}
+            </select>
+          </div>
           <div><label class="form-label">Cond</label>
             <select class="form-control" name="cond_op">
               <option>&gt;</option><option>&lt;</option><option>=</option><option>&gt;=</option><option>&lt;=</option>
@@ -284,8 +291,9 @@
           <div><label class="form-label">Threshold</label><input class="form-control" name="threshold" type="number" step="any" required></div>
           <div><label class="form-label">Window (s)</label><input class="form-control" name="window_s" type="number" value="300" min="1" required></div>
           <div><label class="form-label">Channels (csv)</label><input class="form-control" name="notify_channels" placeholder="log"></div>
-          <div style="grid-column:1/-1;display:flex;gap:8px;align-items:center">
+          <div style="grid-column:1/-1;display:flex;gap:12px;align-items:center">
             <button type="submit" class="btn btn-primary btn-sm">Add</button>
+            <label style="font-size:12px;color:var(--muted)"><input type="checkbox" name="enabled" checked> enabled</label>
             <span class="text-muted" style="font-size:11px">Leave Context dim/value empty for a global alarm on this datasource.</span>
           </div>
         </form>
@@ -1162,79 +1170,146 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
 
 // ==========================================================================
 // Alarms CRUD
+// Rows are rendered client-side (there is no server-rendered alarm table),
+// so the row-display/row-edit markup that base.html styles is built here.
+// startEdit/cancelEdit are the shared helpers; saving goes through a local
+// handler that re-reads the list, which keeps the display honest even when
+// the server clamps or rejects a field.
 // ==========================================================================
 (function() {
   var DS = {{ ds.id }};
-  function csrfToken() {
-    var m = document.cookie.match(/csrftoken=([^;]+)/);
-    return m ? m[1] : '';
+  var MEASURE_AGGS = [{% for a in measure_aggs %}"{{ a|escapejs }}"{% if not forloop.last %}, {% endif %}{% endfor %}];
+  var COND_OPS = ['>', '<', '=', '>=', '<='];
+
+  // 60 -> 1m, 300 -> 5m, 3600 -> 1h, 86400 -> 1d; anything else stays seconds.
+  function fmtWindow(s) {
+    if (s % 86400 === 0) return (s / 86400) + 'd';
+    if (s % 3600 === 0) return (s / 3600) + 'h';
+    if (s % 60 === 0) return (s / 60) + 'm';
+    return s + 's';
   }
-  function postJSON(url, body) {
-    var fd = body instanceof FormData ? body : new FormData();
-    if (!(body instanceof FormData)) {
-      for (var k in body) fd.append(k, body[k]);
-    }
-    return fetch(url, {
-      method: 'POST',
-      headers: {'X-CSRFToken': csrfToken()},
-      body: fd,
-    }).then(function(r){ return r.json(); });
+
+  function opts(values, selected) {
+    return values.map(function(v) {
+      return '<option value="' + esc(v) + '"' +
+        (v === selected ? ' selected' : '') + '>' + esc(v) + '</option>';
+    }).join('');
   }
-  function esc(s) {
-    return String(s === null || s === undefined ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  function buildRow(a) {
+    var ctx = a.context_dim
+      ? esc(a.context_dim) + ' = ' + esc(a.context_value || '?')
+      : '<span class="text-muted">(global)</span>';
+    var measures = MEASURE_AGGS.indexOf(a.measure) === -1
+      ? [a.measure].concat(MEASURE_AGGS) : MEASURE_AGGS;
+    return '<tr data-id="' + a.id + '">'
+      + '<td><span class="row-display"><strong>' + esc(a.name) + '</strong></span>'
+      +     '<input class="row-edit cell-input" name="name" value="' + esc(a.name) + '"></td>'
+      + '<td><span class="row-display text-muted">' + ctx + '</span>'
+      +     '<span class="row-edit" style="gap:4px">'
+      +       '<input class="cell-input" name="context_dim" style="width:90px" placeholder="dim" value="' + esc(a.context_dim || '') + '">'
+      +       '<input class="cell-input" name="context_value" style="width:90px" placeholder="value" value="' + esc(a.context_value || '') + '">'
+      +     '</span></td>'
+      + '<td><span class="row-display text-mono">' + esc(a.measure) + '</span>'
+      +     '<select class="row-edit cell-input" name="measure">' + opts(measures, a.measure) + '</select></td>'
+      + '<td style="text-align:center"><span class="row-display text-mono">' + esc(a.cond_op) + '</span>'
+      +     '<select class="row-edit cell-input" name="cond_op" style="width:60px">' + opts(COND_OPS, a.cond_op) + '</select></td>'
+      + '<td style="text-align:right"><span class="row-display">' + a.threshold.toLocaleString() + '</span>'
+      +     '<input class="row-edit cell-input" name="threshold" type="number" step="any" style="width:90px" value="' + a.threshold + '"></td>'
+      + '<td style="text-align:right"><span class="row-display" title="' + a.window_s + ' s">' + fmtWindow(a.window_s) + '</span>'
+      +     '<input class="row-edit cell-input" name="window_s" type="number" min="1" style="width:80px" value="' + a.window_s + '"></td>'
+      + '<td><span class="row-display text-muted" style="font-size:11px">' + esc((a.notify_channels || []).join(', ')) + '</span>'
+      +     '<input class="row-edit cell-input" name="notify_channels" placeholder="log" value="' + esc((a.notify_channels || []).join(',')) + '"></td>'
+      + '<td style="text-align:center"><span class="row-display">' + (a.enabled ? '✓' : '—') + '</span>'
+      +     '<input class="row-edit" type="checkbox" name="enabled"' + (a.enabled ? ' checked' : '') + '></td>'
+      + '<td class="actions" style="text-align:right">'
+      +   '<span class="row-display">'
+      +     '<button class="btn-icon" data-act="edit" title="Edit">✏</button>'
+      +     '<button class="btn-icon" data-act="del" title="Delete" style="color:var(--danger)">✕</button>'
+      +   '</span>'
+      +   '<span class="row-edit" style="gap:4px">'
+      +     '<button class="btn btn-primary btn-sm" data-act="save">Save</button>'
+      +     '<button class="btn btn-secondary btn-sm" data-act="cancel">Cancel</button>'
+      +   '</span>'
+      + '</td></tr>';
   }
 
   function render(alarms) {
     var tbody = document.getElementById('alarmBody');
     if (!alarms.length) {
-      tbody.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:16px">No alarms yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="9" class="text-muted" '
+        + 'style="text-align:center;padding:16px">No alarms yet.</td></tr>';
       return;
     }
-    tbody.innerHTML = alarms.map(function(a) {
-      var ctx = a.context_dim
-        ? esc(a.context_dim) + ' = ' + esc(a.context_value || '?')
-        : '<span class="text-muted">(global)</span>';
-      return '<tr data-id="' + a.id + '">'
-        + '<td><strong>' + esc(a.name) + '</strong></td>'
-        + '<td class="text-muted">' + ctx + '</td>'
-        + '<td class="text-mono">' + esc(a.measure) + '</td>'
-        + '<td style="text-align:center;text-mono">' + esc(a.cond_op) + '</td>'
-        + '<td style="text-align:right">' + a.threshold.toLocaleString() + '</td>'
-        + '<td style="text-align:right">' + a.window_s + '</td>'
-        + '<td class="text-muted" style="font-size:11px">' + esc((a.notify_channels || []).join(', ')) + '</td>'
-        + '</tr>';
-    }).join('');
+    tbody.innerHTML = alarms.map(buildRow).join('');
   }
 
   function refresh() {
-    postJSON('{% url "sources:alarms_list" ds.id %}', {}).then(function(d) {
+    return postJSON('{% url "sources:alarms_list" ds.id %}', {}).then(function(d) {
       if (d.ok) render(d.alarms || []);
+      else document.getElementById('alarmBody').innerHTML =
+        '<tr><td colspan="9" class="text-muted" style="text-align:center;padding:16px">'
+        + esc(d.error || 'Could not load alarms') + '</td></tr>';
     });
   }
+
+  function rowFields(tr) {
+    var fd = new FormData();
+    tr.querySelectorAll('input[name], select[name]').forEach(function(el) {
+      if (el.type === 'checkbox') fd.append(el.name, el.checked ? 'on' : '');
+      else fd.append(el.name, el.value);
+    });
+    return fd;
+  }
+
+  document.getElementById('alarmBody').addEventListener('click', function(ev) {
+    var btn = ev.target.closest('[data-act]');
+    if (!btn) return;
+    var act = btn.dataset.act;
+    var tr = btn.closest('tr');
+    var id = tr.dataset.id;
+    if (act === 'edit')   { startEdit(btn, 'alarm'); return; }
+    if (act === 'cancel') { cancelEdit(btn); return; }
+    if (act === 'del') {
+      if (!confirm('Delete this alarm?')) return;
+      postJSON('/sources/' + DS + '/alarms/' + id + '/delete/', {}).then(function(d) {
+        if (!d.ok) { alert('✗ ' + (d.error || 'Delete failed')); return; }
+        refresh();
+      }).catch(function(e){ alert('✗ ' + e); });
+      return;
+    }
+    if (act === 'save') {
+      btn.disabled = true;
+      postJSON('/sources/' + DS + '/alarms/' + id + '/edit/', rowFields(tr)).then(function(d) {
+        if (!d.ok) { alert('✗ ' + (d.error || 'Save failed')); return; }
+        refresh();
+      }).catch(function(e){ alert('✗ ' + e); })
+        .finally(function(){ btn.disabled = false; });
+    }
+  });
 
   document.getElementById('alarmAddForm').addEventListener('submit', function(ev) {
     ev.preventDefault();
     var errEl = document.getElementById('alarmAddErr');
     errEl.style.display = 'none';
-    var data = {};
-    new FormData(this).forEach(function(v, k){ data[k] = v; });
-    postJSON('{% url "sources:alarm_add" ds.id %}', data).then(function(d) {
+    var form = this;
+    postJSON('{% url "sources:alarm_add" ds.id %}', new FormData(form)).then(function(d) {
       if (!d.ok) {
         errEl.textContent = d.error || 'Add failed';
         errEl.style.display = 'block';
         return;
       }
-      ev.target.reset();
+      form.reset();
       refresh();
+    }).catch(function(e) {
+      errEl.textContent = String(e);
+      errEl.style.display = 'block';
     });
   });
 
   // Refresh on tab activation too, so users coming back see fresh data.
   var alarmsTabBtn = document.querySelector('#tabNav .tab-btn[data-tab="alarms"]');
-  if (alarmsTabBtn) {
-    alarmsTabBtn.addEventListener('click', refresh);
-  }
+  if (alarmsTabBtn) alarmsTabBtn.addEventListener('click', refresh);
   refresh();
 })();
 </script>

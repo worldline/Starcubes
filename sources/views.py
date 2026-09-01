@@ -1921,6 +1921,7 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
         "threshold": 0.0,
         "window_s": 300,
         "notify_channels": [],
+        "enabled": True,
     }
     errors: dict = {}
 
@@ -1973,6 +1974,13 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
     else:
         values["notify_channels"] = channels
 
+    # Checkbox semantics, but only when the field was actually submitted:
+    # an absent "enabled" means "not part of this form" (the add form used
+    # to omit it entirely), not "disabled". Present-but-empty is the
+    # unchecked box that saveRow sends.
+    if "enabled" in request.POST:
+        values["enabled"] = request.POST.get("enabled") in ("on", "true", "1")
+
     return values, errors
 
 
@@ -1993,6 +2001,7 @@ def _alarm_row_to_dict(row) -> dict:
         "threshold": float(row.threshold),
         "window_s": row.window_s,
         "notify_channels": list(row.notify_channels or []),
+        "enabled": bool(row.enabled),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
@@ -2019,7 +2028,7 @@ def alarms_list(request, pk: int):
             rows = conn.execute(text(
                 "SELECT id, datasource_id, name, context_dim, context_value, "
                 "       measure, cond_op, threshold, window_s, notify_channels, "
-                "       created_at, updated_at "
+                "       enabled, created_at, updated_at "
                 "  FROM starcubes_meta.alarm "
                 " WHERE datasource_id = :ds "
                 " ORDER BY name"
@@ -2050,16 +2059,19 @@ def alarm_add(request, pk: int):
             row = conn.execute(text(
                 "INSERT INTO starcubes_meta.alarm "
                 "  (datasource_id, name, context_dim, context_value, "
-                "   measure, cond_op, threshold, window_s, notify_channels) "
-                "VALUES (:ds, :name, :cd, :cv, :m, :op, :thr, :ws, :nc::text[]) "
+                "   measure, cond_op, threshold, window_s, notify_channels, "
+                "   enabled) "
+                "VALUES (:ds, :name, :cd, :cv, :m, :op, :thr, :ws, "
+                "        CAST(:nc AS text[]), :en) "
                 "RETURNING id, datasource_id, name, context_dim, context_value, "
                 "          measure, cond_op, threshold, window_s, notify_channels, "
-                "          created_at, updated_at"
+                "          enabled, created_at, updated_at"
             ), {"ds": pk, "name": values["name"],
                 "cd": values["context_dim"], "cv": values["context_value"],
                 "m": values["measure"], "op": values["cond_op"],
                 "thr": values["threshold"], "ws": values["window_s"],
-                "nc": list(values["notify_channels"])}).mappings().one()
+                "nc": list(values["notify_channels"]),
+                "en": values["enabled"]}).mappings().one()
         return JsonResponse({"ok": True, "alarm": _alarm_row_to_dict(row)})
     except sqlalchemy.exc.IntegrityError as exc:
         # UNIQUE (datasource_id, name) — friendly name rather than the raw
@@ -2087,17 +2099,18 @@ def alarm_edit(request, pk: int, alarm_id: int):
                 "UPDATE starcubes_meta.alarm SET "
                 "       name = :name, context_dim = :cd, context_value = :cv, "
                 "       measure = :m, cond_op = :op, threshold = :thr, "
-                "       window_s = :ws, notify_channels = :nc::text[], "
-                "       updated_at = now() "
+                "       window_s = :ws, notify_channels = CAST(:nc AS text[]), "
+                "       enabled = :en, updated_at = now() "
                 " WHERE id = :id AND datasource_id = :ds "
                 "RETURNING id, datasource_id, name, context_dim, context_value, "
                 "          measure, cond_op, threshold, window_s, notify_channels, "
-                "          created_at, updated_at"
+                "          enabled, created_at, updated_at"
             ), {"ds": pk, "id": alarm_id, "name": values["name"],
                 "cd": values["context_dim"], "cv": values["context_value"],
                 "m": values["measure"], "op": values["cond_op"],
                 "thr": values["threshold"], "ws": values["window_s"],
-                "nc": list(values["notify_channels"])}).mappings().one()
+                "nc": list(values["notify_channels"]),
+                "en": values["enabled"]}).mappings().one()
         return JsonResponse({"ok": True, "alarm": _alarm_row_to_dict(row)})
     except sqlalchemy.exc.NoResultFound:
         return JsonResponse({"ok": False, "error":
