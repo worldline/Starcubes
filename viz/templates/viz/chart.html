@@ -1005,8 +1005,11 @@
   }
   .dtp-field input {
     /* An explicit width, not a min-width: the browser's default size=20 is
-       what made the field two thirds wider than the value it holds. */
-    width: 10.4em; border: 0; background: none; outline: none; box-shadow: none;
+       what made the field two thirds wider than the value it holds. In ch,
+       not em: the value is 16 chars of which 12 are digits, so em overshoots
+       by several characters; ch tracks the digit width of whatever font
+       actually renders and hugs "YYYY-MM-DD HH:MM". */
+    width: 16.5ch; border: 0; background: none; outline: none; box-shadow: none;
     padding: 0 2px 0 8px; font: inherit; color: inherit;
   }
   .dtp-open {
