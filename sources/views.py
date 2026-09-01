@@ -645,6 +645,7 @@ def _resolve_source_dsn(pk: int) -> tuple[str | None, str]:
     return dsn, ""
 
 
+@_admin_required_json
 def test_connection(request, pk: int):
     dsn, error = _resolve_source_dsn(pk)
     if dsn is None:
@@ -655,6 +656,7 @@ def test_connection(request, pk: int):
     return JsonResponse({"ok": False, "error": error})
 
 
+@_admin_required_json
 def connection_status(request, pk: int):
     """GET endpoint: test source DB connection and return {ok, error}."""
     dsn, error = _resolve_source_dsn(pk)
@@ -828,6 +830,7 @@ def etl_status(request, pk: int):
         return JsonResponse({"error": str(exc)}, status=500)
 
 
+@_admin_required_json
 def etl_logs(request, pk: int):
     """List this datasource's per-run log files, newest first.
 
@@ -875,6 +878,7 @@ _LOG_FILE_RE = re.compile(r"^etl-[A-Za-z0-9_.-]+\.log$")
 _LOG_TAIL_MAX_BYTES = 256 * 1024
 
 
+@_admin_required_json
 def etl_log_tail(request, pk: int):
     """Incremental tail of one of this datasource's log files.
 
@@ -1141,6 +1145,7 @@ def etl_forever_stop(request, pk: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
+@_admin_required_json
 def etl_forever_status(request, pk: int):
     try:
         with _meta_engine().begin() as conn:
@@ -2894,6 +2899,7 @@ def _datasource_profile_yaml(pk: int, name: str = "", description: str = "") -> 
                         rows["group_sets"], name=name, description=description)
 
 
+@_admin_required_json
 def profiles_list(request):
     """Catalogue of every profile, shipped and saved. Login-only."""
     if not request.user.is_authenticated:
@@ -2953,6 +2959,7 @@ def profile_file_download(request, slug: str):
     return response
 
 
+@_admin_required_json
 def profile_detail(request, slug: str):
     """One profile's metadata plus the scalars the create form prefills from."""
     try:

@@ -29,13 +29,14 @@ to `manage` is rendered only for superusers.
 
 ## Role gates
 
-Three decorator helpers live near the top of `sources/views.py` and own
-every gate the app relies on. Apply them as the outermost decorator:
+Three decorator helpers live near the top of `sources/views.py`. There is
+no `_login_required_page`: pages that any signed-in user may see rely on
+`RequireLoginMiddleware` alone, since a login-only page decorator would
+have nothing left to refuse. Apply them as the outermost decorator:
 
 | Decorator                | Effect on anonymous       | Effect on logged-in non-admin  | Effect on superuser |
 |--------------------------|---------------------------|-------------------------------|--------------------|
 | `@_login_required_json`  | 403 JSON `{ok:false}`     | passes through                | passes through     |
-| `@_login_required_page`  | middleware redirect       | passes through                | passes through     |
 | `@_admin_required_json`  | 403 JSON `{ok:false}`     | 403 JSON `{ok:false}`         | passes through     |
 | `@_admin_required_page`  | middleware redirect       | 403 HTML                      | passes through     |
 
