@@ -549,8 +549,10 @@ def api_source_meta(request):
         # non-grouped dimensions keep their per-column filter rows.
         dim_by_fc = {d.fact_column: d for d in source.dimensions}
         dim_filters = []
-        for token, fact_cols in source.filter_fanout().items():
-            members = [dim_by_fc[c] for c in fact_cols]
+        # NOTE: do not shadow `fact_cols` here — it still feeds the
+        # "fact_columns" response key below.
+        for token, group_cols in source.filter_fanout().items():
+            members = [dim_by_fc[c] for c in group_cols]
             dim_table = next(
                 (m.dim_table for m in members
                  if m.is_primary and m.dim_table), None) or members[0].dim_table
@@ -560,7 +562,7 @@ def api_source_meta(request):
                 "token":     token,
                 "label":     token,
                 "dim_table": dim_table,
-                "fact_cols": fact_cols,
+                "fact_cols": group_cols,
             })
         dim_filters.sort(key=lambda f: f["token"])
 
