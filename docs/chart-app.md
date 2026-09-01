@@ -126,34 +126,26 @@ first, and `loadMeta()` sets `currentViewport` to today 00:00 → tomorrow 00:00
 whenever it is still null; `applyUrlParams()` then lets `?from=`/`?to=` override
 it. `resetAndFetch()` is the second entry point and runs just as late.
 
-The library has **no constructor option for a start window**. It always comes up
-on its own `tmin = now - 24h` / `tmax = now` defaults and paints that
-synchronously before the constructor returns, so starcubes has to correct the
-window afterwards — which is why `initTs()` stashes `_initTmin`/`_initTmax`
-before the `new TimeSeries({...})` call: constructing it fires
-`onViewportChange`, whose handler overwrites `currentViewport` with the
-library's 24 h default.
+`initTs()` stashes `_initTmin`/`_initTmax` before the `new TimeSeries({...})`
+call and hands them to the constructor as **`initialView`**, a `[tmin, tmax]`
+pair the library applies synchronously before its first paint (≥ 0.10.2). The
+capture has to happen first because constructing the instance fires
+`onViewportChange`, whose handler overwrites `currentViewport`.
 
-The correction is `ts.zoom(_initTmin, _initTmax, 0)`, and **the `0` is the whole
-point**. `zoom()` without a duration animates over `zoomDuration` (500 ms), so
-the page opened on "last 24 hours" and visibly slid to the real window. A
-zero-duration zoom instead runs to completion inside the library's `animate()`
-on the spot — span 0 → factor 1, no `requestAnimationFrame`, no `setTimeout` —
-so the corrected picture is drawn in the same task as the constructor's, and the
-browser never composites the 24 h frame. Anything that reintroduces a duration
-here, or moves the call behind an `await` / `setTimeout` / `requestAnimationFrame`,
-brings the jump straight back.
+This replaced an older post-construction correction, `ts.zoom(_initTmin,
+_initTmax, 0)` followed by `ts.stop()`. Back then the library always came up on
+its own `tmin = now - 24h` / `tmax = now` default and painted it before the
+constructor returned, so the window had to be fixed afterwards — and the `0`
+was the whole point: `zoom()` without a duration animates over `zoomDuration`
+(500 ms), so the page opened on "last 24 hours" and visibly slid to the real
+window. Worth knowing because the failure mode survives the mechanism: anything
+that makes the start window arrive *after* the first frame — passing no
+`initialView`, or reintroducing a zoom behind an `await` / `setTimeout` /
+`requestAnimationFrame` — brings the visible jump straight back.
 
-Two smaller consequences of the same shape:
-
-- `ts.stop()` follows the zoom because the constructor does not start in a
-  stopped state; it also fires the `onStop` callback that clears the follow
-  toggle's `active` class.
-- If `currentViewport` were ever null at this point (unreachable today — both
-  callers run after `loadMeta()`), the `else` branch adopts `ts.getViewport()`
-  rather than leaving it null. Otherwise `_autoFetchOnce()` bails at `if (!vp)
-  return` and the 300 ms-throttled `onViewportChange` fills it in late, which is
-  the same jump in slower motion.
+`_initialView` is `null` when either bound is missing (unreachable today — both
+callers run after `loadMeta()`), and the library then falls back to its own
+`'last24'` default rather than to an unpainted canvas.
 
 There is deliberately **no bootstrap instance**. `initTs()` used to construct a
 throwaway `TimeSeries` on an off-screen canvas before calling
