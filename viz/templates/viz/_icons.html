@@ -1,0 +1,105 @@
+{% comment %}
+  Inline SVG icon sprite — the whole icon vocabulary of the frontend.
+
+  Included once per page directly after <body>; icons are then used as
+
+    <svg class="ic" aria-hidden="true"><use href="#ic-run"></use></svg>
+
+  and sized by the `.ic` rule (1em square, so the button's font-size drives
+  the icon). Every path is `fill: none; stroke: currentColor` — set on `.ic`,
+  not here — which is why a symbol needs no dark-mode variant: it inherits
+  the colour of whatever button it sits in, in either theme.
+
+  Drawn by hand on a 24x24 grid in the Lucide idiom (1.75 stroke, round caps
+  and joins, 2px+ margin). Not a dependency, not a font, not a licence
+  question. Keep the ids `ic-*` and sorted; `sources/` is expected to include
+  the same sprite eventually.
+{% endcomment %}
+<svg id="icon-sprite" width="0" height="0" aria-hidden="true" focusable="false"
+     style="position:absolute;width:0;height:0;overflow:hidden">
+
+  <!-- ── chrome ─────────────────────────────────────────────────────── -->
+  <symbol id="ic-menu" viewBox="0 0 24 24">
+    <path d="M4 7h16M4 12h16M4 17h16"/>
+  </symbol>
+  <symbol id="ic-user" viewBox="0 0 24 24">
+    <circle cx="12" cy="8" r="3.4"/>
+    <path d="M5 20v-1a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v1"/>
+  </symbol>
+  <symbol id="ic-sliders" viewBox="0 0 24 24">
+    <path d="M4 7h4M12 7h8M4 12h10M18 12h2M4 17h2M10 17h10"/>
+    <circle cx="10" cy="7" r="2"/>
+    <circle cx="16" cy="12" r="2"/>
+    <circle cx="8" cy="17" r="2"/>
+  </symbol>
+  <symbol id="ic-gear" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="2.8"/>
+    <circle cx="12" cy="12" r="5.4"/>
+    <path d="M17.4 12h2.2M15.82 15.82l1.56 1.56M12 17.4v2.2M8.18 15.82l-1.56 1.56M6.6 12H4.4M8.18 8.18 6.62 6.62M12 6.6V4.4M15.82 8.18l1.56-1.56"/>
+  </symbol>
+  <symbol id="ic-sun" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="4"/>
+    <path d="M18.2 12h2.2M16.38 16.38l1.56 1.56M12 18.2v2.2M7.62 16.38l-1.56 1.56M5.8 12H3.6M7.62 7.62 6.06 6.06M12 5.8V3.6M16.38 7.62l1.56-1.56"/>
+  </symbol>
+  <symbol id="ic-moon" viewBox="0 0 24 24">
+    <path d="M12 3.5a6.2 6.2 0 0 0 8.5 8.5A8.6 8.6 0 1 1 12 3.5Z"/>
+  </symbol>
+  <symbol id="ic-info" viewBox="0 0 24 24">
+    <circle cx="12" cy="12" r="8.6"/>
+    <path d="M12 11.2V16.4M12 7.9h.01"/>
+  </symbol>
+  <symbol id="ic-log-out" viewBox="0 0 24 24">
+    <path d="M9.5 20.5H6a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h3.5"/>
+    <path d="M15.5 16.5 20 12l-4.5-4.5M20 12H9.5"/>
+  </symbol>
+  <symbol id="ic-log-in" viewBox="0 0 24 24">
+    <path d="M14.5 3.5H18a2 2 0 0 1 2 2v13a2 2 0 0 1-2 2h-3.5"/>
+    <path d="M10 16.5 14.5 12 10 7.5M14.5 12H4"/>
+  </symbol>
+
+  <!-- ── chart controls ─────────────────────────────────────────────── -->
+  <symbol id="ic-list" viewBox="0 0 24 24">
+    <path d="M9.5 7h10.5M9.5 12h10.5M9.5 17h10.5"/>
+    <path d="M4.6 7h.01M4.6 12h.01M4.6 17h.01"/>
+  </symbol>
+  <symbol id="ic-activity" viewBox="0 0 24 24">
+    <path d="M3 12h3.6l2.9-7.5 4.4 15 2.6-7.5H21"/>
+  </symbol>
+  <symbol id="ic-terminal" viewBox="0 0 24 24">
+    <path d="M4.5 6.5 9.5 12l-5 5.5M12.5 18h7"/>
+  </symbol>
+  <symbol id="ic-keyboard" viewBox="0 0 24 24">
+    <rect x="2.6" y="5.6" width="18.8" height="12.8" rx="2.4"/>
+    <path d="M6.6 10h.01M10.2 10h.01M13.8 10h.01M17.4 10h.01"/>
+    <path d="M8.4 14.6h7.2"/>
+  </symbol>
+  <symbol id="ic-calendar" viewBox="0 0 24 24">
+    <rect x="3.4" y="5" width="17.2" height="15.4" rx="2.2"/>
+    <path d="M3.4 9.8h17.2M8.2 2.9v4.2M15.8 2.9v4.2"/>
+  </symbol>
+  <symbol id="ic-filter" viewBox="0 0 24 24">
+    <path d="M3.8 4.6h16.4l-6.4 7.6v6.4l-3.6 1.8v-8.2Z"/>
+  </symbol>
+  <symbol id="ic-chevron-down" viewBox="0 0 24 24">
+    <path d="m6.5 9.5 5.5 5.5 5.5-5.5"/>
+  </symbol>
+
+  <!-- ── query console ──────────────────────────────────────────────── -->
+  <symbol id="ic-play" viewBox="0 0 24 24">
+    <path d="M8 5.4 19 12 8 18.6Z"/>
+  </symbol>
+  <symbol id="ic-square" viewBox="0 0 24 24">
+    <rect x="6.6" y="6.6" width="10.8" height="10.8" rx="1.6"/>
+  </symbol>
+  <symbol id="ic-bar-chart" viewBox="0 0 24 24">
+    <path d="M6 20v-4.5M12 20V4M18 20v-9"/>
+  </symbol>
+  <symbol id="ic-align-left" viewBox="0 0 24 24">
+    <path d="M4 5.6h16M8 10.5h12M8 15.4h8.5M4 20.3h13"/>
+  </symbol>
+  <symbol id="ic-download" viewBox="0 0 24 24">
+    <path d="M12 3.4v10.8M7.6 9.8 12 14.2l4.4-4.4"/>
+    <path d="M4.6 16.2v2.4a2 2 0 0 0 2 2h10.8a2 2 0 0 0 2-2v-2.4"/>
+  </symbol>
+
+</svg>

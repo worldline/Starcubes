@@ -129,6 +129,15 @@
     --query-null-color: #999;
     --query-row-sel-bg: #d7e6fb;
     --query-focus-ring: #6ea8fe;
+    /* Shared chrome tokens. --shadow and --bg3 were used by #prefs-popover
+       and its Reset button long before they were defined here; the values
+       are the ones sources/base.html has always used for them. */
+    --shadow: rgba(0,0,0,0.08);
+    --bg3: #e8e8e8;
+    /* Tooltips invert against the page so they read as chrome, not content. */
+    --tip-bg: #2d3542;
+    --tip-fg: #f5f7fa;
+    --focus-ring: var(--query-focus-ring);
   }
   [data-theme="dark"] {
     --filter-tag-in-bg: #1e3a2e;
@@ -241,6 +250,11 @@
     --query-null-color: #777;
     --query-row-sel-bg: #24405f;
     --query-focus-ring: #4d7fc4;
+    --shadow: rgba(0,0,0,0.45);
+    --bg3: #252836;
+    --tip-bg: #e8ebf0;
+    --tip-fg: #1a1d24;
+    --focus-ring: var(--query-focus-ring);
   }
   html, body { margin: 0; padding: 0; height: 100%;
                font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -259,14 +273,190 @@
                 border: 0; border-radius: 3px; cursor: pointer; font: inherit; }
   form button:hover { background: var(--btn-hover); }
 
+  /* ── Design language: icons, icon buttons, tooltips, popovers ──────────
+     Four primitives every control on this page is built from. They exist so
+     the next button is a class and an `aria-label`, not another copy of the
+     same ghost-button declaration — there used to be four of those
+     (#legend-toggle, #follow-toggle, #query-toggle, #filter-toggle) that had
+     drifted apart by a pixel each.
+
+     Everything here is inline in this template on purpose: the project runs
+     without a manifest static-files storage (starcubes/settings.py), so an
+     external ui.css would be served without a cache-busting hash. */
+
+  /* An icon is 1em square and inherits its colour from the button, so a
+     symbol needs no dark-mode variant — see viz/templates/viz/_icons.html. */
+  .ic {
+    width: 1em; height: 1em; display: block; flex: 0 0 auto;
+    fill: none; stroke: currentColor; stroke-width: 1.75;
+    stroke-linecap: round; stroke-linejoin: round;
+    overflow: visible;
+  }
+
+  /* The icon button. `--ibtn-size` is the square edge; font-size drives the
+     glyph inside it, which is why the two are set together. 28/15 is roughly
+     the 54% glyph-to-button ratio that reads as a toolbar rather than a
+     link. */
+  .ibtn {
+    --ibtn-size: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 6px; box-sizing: border-box;
+    min-width: var(--ibtn-size); height: var(--ibtn-size);
+    padding: 0 6px; margin: 0;
+    font: inherit; font-size: 15px; line-height: 1;
+    color: var(--toggle-color); background: var(--toggle-bg);
+    border: 1px solid var(--toggle-border); border-radius: 5px;
+    cursor: pointer; -webkit-appearance: none; appearance: none;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .ibtn:hover { background: var(--toggle-hover); color: var(--body-color); }
+  /* The focus ring is :focus-visible only — a mouse click on a toolbar
+     button should not leave a ring behind, a Tab to it must. */
+  .ibtn:focus-visible {
+    outline: 2px solid var(--focus-ring); outline-offset: 1px;
+  }
+  .ibtn.active {
+    background: var(--tab-active-bg); border-color: var(--accent);
+    color: var(--tab-active-fg);
+  }
+  .ibtn:disabled { opacity: 0.42; cursor: default; }
+  .ibtn:disabled:hover { background: var(--toggle-bg); color: var(--toggle-color); }
+  /* Borderless variant for the top bar, where a boxed button would compete
+     with the source tabs. */
+  .ibtn--plain { border-color: transparent; background: none; }
+  .ibtn--plain:hover { background: var(--toggle-hover); }
+  /* The one accented action in a group (Run). */
+  .ibtn--primary {
+    background: var(--btn-bg); border-color: var(--btn-bg); color: var(--btn-color);
+  }
+  .ibtn--primary:hover { background: var(--btn-hover); border-color: var(--btn-hover); color: var(--btn-color); }
+  .ibtn--primary:disabled:hover { background: var(--btn-bg); border-color: var(--btn-bg); color: var(--btn-color); }
+  /* Icon + text; the label sits at the page's normal 12px, not the icon size. */
+  .ibtn-label { font-size: 12px; white-space: nowrap; }
+  .ibtn .ic-chevron { font-size: 11px; opacity: 0.7; }
+
+  /* Text chips (range presets). Same metrics as .ibtn so a row mixing the
+     two keeps one baseline. */
+  .chip {
+    box-sizing: border-box; height: 28px; padding: 0 10px;
+    font: inherit; font-size: 12px; line-height: 1;
+    color: var(--toggle-color); background: var(--toggle-bg);
+    border: 1px solid var(--toggle-border); border-radius: 5px;
+    cursor: pointer; -webkit-appearance: none; appearance: none;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .chip:hover { background: var(--toggle-hover); color: var(--body-color); }
+  .chip:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+  .chip.active {
+    background: var(--tab-active-bg); border-color: var(--accent);
+    color: var(--tab-active-fg); font-weight: 600;
+  }
+  /* A group of chips reads as one segmented control: shared edges, rounded
+     ends only. */
+  .chip-group { display: inline-flex; }
+  .chip-group .chip { border-radius: 0; margin-left: -1px; }
+  .chip-group .chip:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
+  .chip-group .chip:last-child  { border-radius: 0 5px 5px 0; }
+  .chip-group .chip:hover, .chip-group .chip.active,
+  .chip-group .chip:focus-visible { position: relative; z-index: 1; }
+
+  /* ── Tooltip ────────────────────────────────────────────────────────────
+     `title` is unusable for a toolbar: ~700 ms before it appears, no theme,
+     no line breaks, and it never shows on keyboard focus. `data-tip` is the
+     same string as the button's aria-label — the label always exists for a
+     screen reader, this only makes it visible. Use `\A` in the attribute for
+     a second line (white-space: pre-line honours it). */
+  [data-tip] { position: relative; }
+  [data-tip]::after, [data-tip]::before {
+    position: absolute; left: 50%; opacity: 0;
+    pointer-events: none; z-index: 4000;
+    transition: opacity 0.1s 0.28s;
+  }
+  [data-tip]::after {
+    content: attr(data-tip);
+    top: calc(100% + 7px); transform: translateX(-50%);
+    padding: 4px 8px; border-radius: 4px;
+    background: var(--tip-bg); color: var(--tip-fg);
+    font-size: 11px; font-weight: 500; line-height: 1.35;
+    white-space: pre-line; text-align: center; max-width: 15rem; width: max-content;
+    box-shadow: 0 3px 10px var(--shadow);
+  }
+  [data-tip]::before {
+    content: ''; top: calc(100% + 2px); transform: translateX(-50%);
+    border: 5px solid transparent; border-width: 0 5px 5px;
+    border-bottom-color: var(--tip-bg);
+  }
+  [data-tip][data-tip-pos="above"]::after {
+    top: auto; bottom: calc(100% + 7px);
+  }
+  [data-tip][data-tip-pos="above"]::before {
+    top: auto; bottom: calc(100% + 2px);
+    border-width: 5px 5px 0; border-top-color: var(--tip-bg);
+    border-bottom-color: transparent;
+  }
+  [data-tip]:hover::after, [data-tip]:hover::before,
+  [data-tip]:focus-visible::after, [data-tip]:focus-visible::before { opacity: 1; }
+  /* A disabled button still explains itself — that is usually when the user
+     most wants to know why. */
+  [data-tip]:disabled:hover::after, [data-tip]:disabled:hover::before { opacity: 1; }
+
+  /* ── Popover (dropdown) ─────────────────────────────────────────────────
+     Deliberately NOT a .fpanel: dropdowns are anchored to their trigger,
+     never dragged or resized, and close on an outside click. See
+     makePopover() in the JS for the behaviour half. */
+  .popover {
+    position: fixed; z-index: 3000; display: none;
+    background: var(--bg2); color: var(--body-color);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 10px 30px var(--shadow);
+    font-size: 13px;
+  }
+  .popover.pop-open { display: block; }
+  .popover--menu { padding: 5px; min-width: 216px; }
+  .popover--prefs { padding: 12px 14px; min-width: 232px; }
+
+  .menu-head {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 12px 9px 9px; margin-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .menu-head .ic { font-size: 15px; }
+  .menu-user {
+    font-size: 12px; font-weight: 600; color: var(--body-color);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .menu-item {
+    display: flex; align-items: center; gap: 9px;
+    box-sizing: border-box; width: 100%;
+    padding: 7px 12px 7px 9px; margin: 0;
+    background: none; border: 0; border-radius: 5px;
+    font: inherit; font-size: 13px; line-height: 1.2;
+    color: var(--body-color); text-align: left; text-decoration: none;
+    white-space: nowrap; cursor: pointer;
+  }
+  .menu-item .ic { font-size: 15px; color: var(--muted); }
+  .menu-item:hover, .menu-item:focus-visible {
+    background: var(--tab-active-hover-bg); color: var(--body-color);
+    text-decoration: none;
+  }
+  .menu-item:hover .ic, .menu-item:focus-visible .ic { color: var(--accent); }
+  .menu-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+  .menu-label { flex: 1 1 auto; }
+  .menu-sep { height: 1px; background: var(--border); margin: 5px 0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ibtn, .chip, [data-tip]::after, [data-tip]::before { transition: none; }
+  }
+
   /* ── Filter panel ─────────────────────────────────────────────────── */
   #filter-panel { background: var(--filter-panel-bg);
                   border-bottom: 1px solid var(--filter-panel-border); }
-  #filter-toggle { background: none; border: 1px solid var(--filter-op-border);
-                   border-radius: 3px; padding: 3px 10px; cursor: pointer;
-                   font: inherit; font-size: 12px; color: var(--filter-op-color);
-                   align-self: flex-end; }
-  #filter-toggle:hover { background: var(--filter-dropdown-hover); }
+  /* Chrome from .ibtn; only the disclosure arrow's rotation is local. */
+  #filter-toggle { align-self: flex-end; }
+  #filter-toggle .ic-chevron { transform: rotate(-90deg); transition: transform 0.12s; }
+  #filter-toggle[aria-expanded="true"] .ic-chevron { transform: none; }
+  @media (prefers-reduced-motion: reduce) { #filter-toggle .ic-chevron { transition: none; } }
 
   #filter-summary { display: none; flex-wrap: wrap; gap: 4px 8px;
                     padding: 0 12px 6px; align-items: center; }
@@ -509,24 +699,23 @@
   .legend-name:hover { text-decoration: underline; }
   .legend-swatch { width: 14px; height: 10px; border-radius: 2px; flex-shrink: 0; }
   .legend-total { margin-left: auto; color: var(--legend-total-color); font-size: 11px; padding-left: 8px; }
-  #legend-toggle { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
-                   padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
-                   color: var(--toggle-color); }
-  #legend-toggle:hover { background: var(--toggle-hover); }
-  #follow-toggle { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
-                   padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
-                   color: var(--toggle-color); display: flex; align-items: center; gap: 5px; }
-  #follow-toggle:hover { background: var(--toggle-hover); }
-  #follow-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  /* The seismograph indicator. It rides *inside* the Follow icon button as a
+     status light rather than replacing the icon, so the button keeps one
+     stable shape whether follow mode is on or off. */
+  #follow-dot { position: absolute; right: 2px; bottom: 2px;
+                width: 6px; height: 6px; border-radius: 50%;
                 background: var(--follow-dot); }
+  #follow-toggle { position: relative; }
   #follow-toggle.active #follow-dot { background: var(--follow-dot-active); animation: follow-pulse 1s ease-in-out infinite; }
+  @keyframes follow-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+  @media (prefers-reduced-motion: reduce) { #follow-toggle.active #follow-dot { animation: none; } }
+  /* Top-bar leftovers; both move into the menu / source bar next. */
   #source-config-link { font: inherit; font-size: 12px; color: var(--toggle-color); }
   #source-config-link:hover { color: var(--accent, #6ea8fe); }
   #theme-toggle { background: none; border: none; border-radius: 3px;
-                   padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
-                   color: var(--toggle-color); }
+                  padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
+                  color: var(--toggle-color); }
   #theme-toggle:hover { background: var(--toggle-hover); }
-  @keyframes follow-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
   /* ── Drill-down modal ───────────────────────────────────────────────── */
   /* Native CSS resize (both axes); same contract as #legend and #query-panel.
@@ -662,12 +851,6 @@
      A resizable ad-hoc SQL panel. Chrome, header and drag/stack behaviour
      come from `.fpanel` (see there); only geometry and the console's own
      widgets live below. */
-  #query-toggle { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
-                  padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
-                  color: var(--toggle-color); }
-  #query-toggle:hover  { background: var(--toggle-hover); }
-  #query-toggle.active { background: var(--toggle-hover); border-color: var(--accent); }
-
   #query-panel {
     left: 60px; top: 120px; width: 640px; height: 460px;
     min-width: 380px; min-height: 240px;
@@ -873,6 +1056,7 @@
 </style>
 </head>
 <body>
+{% include "viz/_icons.html" %}
 
 <div id="nav-tabs">
   <a class="nav-brand" id="nav-brand" href="/">
@@ -902,7 +1086,7 @@
   <button class="nav-theme-btn" id="theme-toggle" type="button" title="Switch theme" style="border:none"></button>
 </div>
 
-<div id="prefs-popover" style="display:none;position:absolute;top:44px;right:60px;z-index:30;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:12px 14px;box-shadow:0 4px 12px var(--shadow);min-width:220px">
+<div id="prefs-popover" class="popover popover--prefs" role="dialog" aria-label="Preferences">
   <button type="button" id="prefs-close" aria-label="Close preferences" style="position:absolute;top:6px;right:8px;width:22px;height:22px;padding:0;line-height:1;background:transparent;color:var(--muted);border:none;border-radius:3px;cursor:pointer;font-size:16px">&times;</button>
   <div style="font-weight:600;margin-bottom:8px">Y axis</div>
   <select id="prefs-yaxis" style="width:100%;padding:4px 6px;border:1px solid var(--input-border);border-radius:3px;background:var(--input-bg);color:var(--fg);font-size:13px">
@@ -933,14 +1117,30 @@
 <form id="ctrl">
   <input type="hidden" name="name" id="source-name">
   <label>group by<select name="group_by"></select></label>
-  <button id="filter-toggle" type="button">Filters &#x25B8;</button>
+  <button id="filter-toggle" class="ibtn" type="button"
+          aria-expanded="false" aria-controls="filter-panel"
+          aria-label="Filters" data-tip="Show or hide the filter rows">
+    <svg class="ic" aria-hidden="true"><use href="#ic-filter"></use></svg>
+    <span class="ibtn-label">Filters</span>
+    <svg class="ic ic-chevron" aria-hidden="true"><use href="#ic-chevron-down"></use></svg>
+  </button>
   <label>measure<select name="measure"><option value="">count(*)</option></select></label>
   <label class="dtp-label">from<input type="text" name="dtp_from" id="dtp-from" placeholder="YYYY-MM-DD HH:MM"></label>
   <label class="dtp-label">to<input type="text" name="dtp_to" id="dtp-to" placeholder="YYYY-MM-DD HH:MM"></label>
-  <button id="legend-toggle" type="button" title="Toggle legend">Legend</button>
-  <button id="follow-toggle" type="button" title="Toggle seismograph follow mode"><span id="follow-dot"></span>Follow</button>
+  <button id="legend-toggle" class="ibtn" type="button"
+          aria-label="Legend" data-tip="Legend">
+    <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
+  </button>
+  <button id="follow-toggle" class="ibtn" type="button"
+          aria-label="Follow mode" data-tip="Follow mode\A(seismograph)">
+    <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
+    <span id="follow-dot"></span>
+  </button>
   {% if user.is_authenticated %}
-  <button id="query-toggle" type="button" title="Ad-hoc SQL console">Query</button>
+  <button id="query-toggle" class="ibtn" type="button"
+          aria-label="Query console" data-tip="Query console">
+    <svg class="ic" aria-hidden="true"><use href="#ic-terminal"></use></svg>
+  </button>
   {% endif %}
 </form>
 
@@ -1495,8 +1695,12 @@ function renderFilterSummary() {
 // ── Filter panel toggle & add button ───────────────────────────────────
 filterToggle.addEventListener('click', () => {
   filterPanel.classList.toggle('collapsed');
-  const isCollapsed = filterPanel.classList.contains('collapsed');
-  filterToggle.innerHTML = isCollapsed ? 'Filters &#x25B8;' : 'Filters &#x25BE;';
+  const open = !filterPanel.classList.contains('collapsed');
+  // The label is static now; the disclosure arrow rotates off aria-expanded
+  // (CSS), so the state lives in exactly one attribute instead of in an
+  // innerHTML string that assistive technology could not read.
+  filterToggle.setAttribute('aria-expanded', String(open));
+  filterToggle.classList.toggle('active', open);
 });
 document.getElementById('filter-add').addEventListener('click', addFilterRow);
 document.getElementById('filter-summary').addEventListener('click', e => {
@@ -2342,6 +2546,132 @@ function initTs() {
   if (chartSqlBtn) chartSqlBtn.disabled = !currentMeta;
 }
 
+// ── Popovers (dropdowns) ─────────────────────────────────────────────────
+// One mechanic for every anchored dropdown on the page: open/close, outside
+// click, Escape, keyboard roving, positioning under the trigger and the
+// aria-expanded bookkeeping. The preferences popover and the top-bar menu
+// both run on it.
+//
+// Deliberately NOT a `.fpanel`. A dropdown is anchored to its button, is
+// never dragged or resized and is not part of the click-order stack; giving
+// it the panel contract would hand every future menu a drag handle it must
+// not have. The two mechanics stay separate on purpose.
+const _popovers = [];
+
+// opts.anchor       element to position under (default: the trigger itself)
+// opts.align        'right' (default) or 'left' edge, aligned with the anchor
+// opts.menu         true → role=menuitem roving focus with the arrow keys
+// opts.closeOnClick a click on a link/button inside closes it (default: menu);
+//                   an element carrying [data-keep-open] is exempt
+// opts.onOpen / opts.onClose   hooks
+function makePopover(btn, panel, opts) {
+  opts = opts || {};
+  const align = opts.align || 'right';
+  const closeOnClick = opts.closeOnClick === undefined ? !!opts.menu : opts.closeOnClick;
+  btn.setAttribute('aria-expanded', 'false');
+  btn.setAttribute('aria-haspopup', opts.menu ? 'menu' : 'dialog');
+  if (panel.id) btn.setAttribute('aria-controls', panel.id);
+
+  // Recomputed on every open: entries can be hidden per login state.
+  function items() {
+    return [...panel.querySelectorAll('[role="menuitem"]')]
+      .filter(el => !el.disabled && el.offsetParent !== null);
+  }
+
+  // Anchored below, flipped above when the viewport has no room, and clamped
+  // to 8 px from either edge. Called while the panel is visible so
+  // offsetWidth/offsetHeight are real.
+  function place() {
+    const r = (opts.anchor || btn).getBoundingClientRect();
+    const w = panel.offsetWidth, h = panel.offsetHeight;
+    const GAP = 6, EDGE = 8;
+    let left = align === 'left' ? r.left : r.right - w;
+    left = Math.max(EDGE, Math.min(window.innerWidth - w - EDGE, left));
+    let top = r.bottom + GAP;
+    if (top + h > window.innerHeight - EDGE && r.top - GAP - h > EDGE) top = r.top - GAP - h;
+    panel.style.left   = left + 'px';
+    panel.style.top    = Math.max(EDGE, top) + 'px';
+    panel.style.right  = 'auto';
+    panel.style.bottom = 'auto';
+  }
+
+  const api = {
+    btn, panel,
+    isOpen() { return panel.classList.contains('pop-open'); },
+    open() {
+      if (api.isOpen()) return;
+      // Only ever one dropdown at a time — two anchored boxes overlapping is
+      // never what the user asked for.
+      for (const other of _popovers) if (other !== api) other.close();
+      panel.classList.add('pop-open');
+      btn.setAttribute('aria-expanded', 'true');
+      if (opts.onOpen) opts.onOpen();
+      place();
+      if (opts.menu) { const it = items(); if (it.length) it[0].focus(); }
+    },
+    close(refocus) {
+      if (!api.isOpen()) return;
+      panel.classList.remove('pop-open');
+      btn.setAttribute('aria-expanded', 'false');
+      if (opts.onClose) opts.onClose();
+      if (refocus) btn.focus();
+    },
+    toggle() { if (api.isOpen()) api.close(); else api.open(); },
+  };
+
+  btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); api.toggle(); });
+
+  // pointerdown, not click: a press that starts outside already dismisses,
+  // which is the rule the date picker follows too.
+  document.addEventListener('pointerdown', e => {
+    if (!api.isOpen()) return;
+    if (panel.contains(e.target) || btn.contains(e.target)) return;
+    api.close();
+  });
+
+  if (closeOnClick) panel.addEventListener('click', e => {
+    if (e.target.closest('[data-keep-open]')) return;
+    if (e.target.closest('a, button')) api.close();
+  });
+
+  panel.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      // Stops here: the document-level Escape handler would otherwise close
+      // the top-most floating panel with the same key press.
+      e.preventDefault(); e.stopPropagation(); api.close(true); return;
+    }
+    if (!opts.menu) return;
+    const it = items();
+    if (!it.length) return;
+    const i = it.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown')    { e.preventDefault(); it[i < 0 ? 0 : (i + 1) % it.length].focus(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); it[i < 0 ? it.length - 1 : (i - 1 + it.length) % it.length].focus(); }
+    else if (e.key === 'Home')    { e.preventDefault(); it[0].focus(); }
+    else if (e.key === 'End')     { e.preventDefault(); it[it.length - 1].focus(); }
+    else if (e.key === 'Tab')     { api.close(); }   // let focus leave normally
+  });
+
+  btn.addEventListener('keydown', e => {
+    if (opts.menu && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); api.open(); }
+    else if (e.key === 'Escape' && api.isOpen()) { e.preventDefault(); e.stopPropagation(); api.close(true); }
+  });
+
+  window.addEventListener('resize', () => { if (api.isOpen()) place(); });
+
+  _popovers.push(api);
+  return api;
+}
+
+// Closes the front-most open dropdown, if any. The shared Escape handler
+// calls this before it reaches for the floating panels: a dropdown is drawn
+// over them, so it is what "the top-most thing" means to the user.
+function closeTopPopover() {
+  for (let i = _popovers.length - 1; i >= 0; i--) {
+    if (_popovers[i].isOpen()) { _popovers[i].close(true); return true; }
+  }
+  return false;
+}
+
 // ── Floating panels ───────────────────────────────────────────────────────
 // Drag, stacking order and open/close for every `.fpanel` floating over the
 // canvas — legend, drill-down, query console, and whatever comes next. See the
@@ -2487,6 +2817,9 @@ document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
   const t = e.target;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT')) return;
+  // A dropdown is drawn over the panels, so it is what the user means by
+  // "the top-most thing"; only if none is open do the panels get the key.
+  if (closeTopPopover()) return;
   const open = fpPanels.filter(pnl => pnl.close && fpIsOpen(pnl.el));
   if (!open.length) return;
   const z = pnl => Number(pnl.el.style.zIndex) || FP_Z_BASE;
@@ -2567,12 +2900,19 @@ themeToggle.addEventListener('click', () => {
   const prefsSave  = document.getElementById('prefs-save');
   const prefsReset = document.getElementById('prefs-reset');
   const prefsClose = document.getElementById('prefs-close');
-  let open = false;
 
-  function closePrefs() {
-    open = false;
-    prefsPopover.style.display = 'none';
-  }
+  // Chrome (toggle, outside click, Escape, placement) comes from the shared
+  // dropdown helper; only the fields below are this popover's own. Anchored
+  // to the top-bar menu button rather than to #prefs-toggle, because the
+  // trigger lives inside that menu and disappears when it closes.
+  const prefsPop = makePopover(prefsToggle, prefsPopover, {
+    anchor: document.getElementById('nav-menu-toggle') || prefsToggle,
+    onOpen() {
+      prefsYAxis.value = yAxisMode;
+      if (prefsPartial) prefsPartial.checked = partialBins;
+      if (prefsInput) prefsInput.value = starcubesBarTarget;
+    },
+  });
 
   function readBarTargetPref() {
     let v = null;
@@ -2596,29 +2936,12 @@ themeToggle.addEventListener('click', () => {
     if (ts && ts.setFadeBand) ts.setFadeBand(starcubesBarTarget, fadeLoPx());
   };
 
-  prefsToggle.addEventListener('click', (e) => {
-    e.stopPropagation();
-    open = !open;
-    prefsPopover.style.display = open ? 'block' : 'none';
-    if (open) {
-      prefsYAxis.value = yAxisMode;
-      if (prefsPartial) prefsPartial.checked = partialBins;
-      if (prefsInput) prefsInput.value = starcubesBarTarget;
-    }
-  });
-
-  document.addEventListener('click', (e) => {
-    if (open && !prefsPopover.contains(e.target) && e.target !== prefsToggle) {
-      open = false; prefsPopover.style.display = 'none';
-    }
-  });
-
   prefsYAxis.addEventListener('change', () => setYAxisMode(prefsYAxis.value));
 
   if (prefsPartial)
     prefsPartial.addEventListener('change', () => setPartialBins(prefsPartial.checked));
 
-  if (prefsClose) prefsClose.addEventListener('click', closePrefs);
+  if (prefsClose) prefsClose.addEventListener('click', () => prefsPop.close(true));
 
   if (prefsSave) prefsSave.addEventListener('click', () => {
     const v = parseFloat(prefsInput.value);
