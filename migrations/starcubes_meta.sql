@@ -757,8 +757,9 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.alarm (
     id              serial PRIMARY KEY,
     datasource_id   int  NOT NULL REFERENCES starcubes_meta.datasource(id) ON DELETE CASCADE,
     name            text NOT NULL,
-    context_dim     text,
-    context_value   text,
+    context_filter  jsonb,
+    comment         text,
+    eval_end        timestamptz,
     measure         text NOT NULL DEFAULT 'count(*)',
     cond_op         text NOT NULL DEFAULT '>'
                         CHECK (cond_op IN ('>', '<', '=', '>=', '<=')),
@@ -796,3 +797,74 @@ ALTER TABLE starcubes_meta.dimension
 
 COMMENT ON COLUMN starcubes_meta.dimension.filter_group IS
     'Fan-out filter group: rows sharing a non-null value form one chart filter that ORs over every member fact column (e.g. filter_group=so_peer over so_peer_1/2/3). NULL = ordinary single-column filter.';
+
+
+-- 0028_alarm_context.sql — backstop for installs created by the 0025 block
+-- above, whose CREATE TABLE IF NOT EXISTS leaves an existing table alone:
+-- the context pair is dropped and the new columns added explicitly. The
+-- three new tables are byte-identical to the per-step file. See
+-- migrations/0028_alarm_context.sql for the semantics.
+
+ALTER TABLE starcubes_meta.alarm DROP COLUMN IF EXISTS context_dim;
+ALTER TABLE starcubes_meta.alarm DROP COLUMN IF EXISTS context_value;
+
+ALTER TABLE starcubes_meta.alarm
+    ADD COLUMN IF NOT EXISTS context_filter jsonb;
+ALTER TABLE starcubes_meta.alarm
+    ADD COLUMN IF NOT EXISTS comment text;
+ALTER TABLE starcubes_meta.alarm
+    ADD COLUMN IF NOT EXISTS eval_end timestamptz;
+
+COMMENT ON COLUMN starcubes_meta.alarm.context_filter IS
+    'Alarm context: the chart''s flat filter rows [{col, op, vals, andOr, indent}] as jsonb. NULL/[] = the whole datasource. Grouped tokens (<col>:grouped:<slug>) are rejected at save time.';
+COMMENT ON COLUMN starcubes_meta.alarm.comment IS
+    'Free-text comment on this alarm. Changes are tracked through alarm_history snapshots like any other field.';
+COMMENT ON COLUMN starcubes_meta.alarm.eval_end IS
+    'Evaluation cursor: end of the last evaluated window (fact clock). NULL = never evaluated; the first evaluation checks exactly one trailing window_s window.';
+
+CREATE TABLE IF NOT EXISTS starcubes_meta.alarm_history (
+    id         serial PRIMARY KEY,
+    alarm_id   int  NOT NULL REFERENCES starcubes_meta.alarm(id) ON DELETE CASCADE,
+    kind       text NOT NULL CHECK (kind IN ('created', 'updated')),
+    username   text NOT NULL,
+    old_row    jsonb,
+    new_row    jsonb,
+    changed_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_alarm_history_alarm
+    ON starcubes_meta.alarm_history (alarm_id, id DESC);
+
+CREATE TABLE IF NOT EXISTS starcubes_meta.alarm_firing (
+    id              serial PRIMARY KEY,
+    alarm_id        int  NOT NULL REFERENCES starcubes_meta.alarm(id) ON DELETE CASCADE,
+    first_breach_at timestamptz NOT NULL,
+    last_breach_at  timestamptz NOT NULL,
+    closed_at       timestamptz,
+    first_value     double precision,
+    last_value      double precision
+);
+
+CREATE INDEX IF NOT EXISTS ix_alarm_firing_alarm
+    ON starcubes_meta.alarm_firing (alarm_id, id DESC);
+
+-- At most one open episode (open = closed_at IS NULL) per alarm.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_alarm_firing_open
+    ON starcubes_meta.alarm_firing (alarm_id) WHERE closed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS starcubes_meta.alarm_forever (
+    id             serial PRIMARY KEY,
+    singleton      boolean NOT NULL DEFAULT true CHECK (singleton),
+    pid            int,
+    interval_s     int NOT NULL,
+    started_at     timestamptz NOT NULL DEFAULT now(),
+    stopped_at     timestamptz,
+    status         text NOT NULL
+                     CHECK (status IN ('running', 'stopping', 'stopped', 'failed')),
+    stop_requested boolean NOT NULL DEFAULT false,
+    error          text
+);
+
+-- At most one active (running/stopping) evaluator session world-wide.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_alarm_forever_active
+    ON starcubes_meta.alarm_forever (singleton) WHERE status IN ('running', 'stopping');
