@@ -22,8 +22,8 @@ from core.cache import (get_cached_plot, is_cacheable, make_cache_key,
                         put_cached_plot)
 from core.query import (build_chart_sql, build_chart_sql_rendered,
                            build_chart_legend_sql, build_chart_legend_sql_rendered,
-                        build_group_by_indices, drill_down, grouped_label,
-                        grouped_token, LADDER_STYLES,
+                        build_filter_tree, build_group_by_indices, drill_down,
+                        grouped_label, grouped_token, LADDER_STYLES,
                         list_transactions, resolve_group_set,
                         split_grouped_col, timeseries_multibar,
                         timeseries_quantiles)
@@ -112,8 +112,9 @@ def _parse_filter_tree(q) -> list[dict]:
     """Parse filter=, andor=, indent= query params into a filter tree.
 
     Each node: {'andOr': str, 'row': {col, op, vals}, 'children': list}
-    Indent levels determine parent-child relationships via a stack parser.
-    URLs without indent= params default to all-zero (flat, same as old behaviour).
+    Indent levels determine parent-child relationships via the stack parser
+    in `core.query.build_filter_tree`. URLs without indent= params default
+    to all-zero (flat, same as old behaviour).
     Returns the root-level node list.
     """
     filter_specs = q.getlist("filter")
@@ -135,18 +136,7 @@ def _parse_filter_tree(q) -> list[dict]:
     if not flat:
         return []
 
-    root: list[dict] = []
-    stack: list[list[dict]] = [root]
-    indent_stack: list[int] = [-1]
-    for item in flat:
-        node: dict = {"andOr": item["andOr"], "row": item["row"], "children": []}
-        while item["indent"] <= indent_stack[-1]:
-            stack.pop()
-            indent_stack.pop()
-        stack[-1].append(node)
-        stack.append(node["children"])
-        indent_stack.append(item["indent"])
-    return root
+    return build_filter_tree(flat)
 
 
 def chart(request):
@@ -575,6 +565,7 @@ def api_source_meta(request):
             ), {"ds": source.id}).mappings().one()
 
         return JsonResponse({
+            "id":                       source.id,
             "name":                     source.name,
             "schema_name":              source.schema_name,
             "partition_column":         source.partition_column,

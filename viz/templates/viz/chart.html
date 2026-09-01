@@ -868,7 +868,7 @@
     color: var(--toggle-color); display: block;
   }
   .drill-copy-btn:hover { background: var(--toggle-hover); }
-  /* Alert mockup form */
+  /* Drill-down alert form (creates a real alarm via sources:alarm_add) */
   .drill-alarm-form { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; }
   .drill-alarm-row  { display: flex; flex-direction: column; gap: 3px; }
   .drill-alarm-label {
@@ -876,6 +876,7 @@
     color: var(--legend-total-color); letter-spacing: 0.04em;
   }
   .drill-alarm-ctx { font-size: 11px; color: var(--body-color); }
+  .drill-alarm-global { font-style: italic; color: var(--legend-total-color); font-size: 11px; }
   .drill-alarm-input, .drill-alarm-select {
     background: var(--dtp-bg); border: 1px solid var(--dtp-border); border-radius: 3px;
     padding: 3px 6px; font: inherit; font-size: 12px; color: var(--body-color); width: 100%;
@@ -884,6 +885,13 @@
   .drill-alarm-cond { display: flex; gap: 6px; }
   .drill-alarm-cond .drill-alarm-select { width: 70px; }
   .drill-alarm-cond .drill-alarm-input  { flex: 1; width: auto; }
+  .drill-alarm-note {
+    font-size: 11px; color: var(--body-color);
+    background: var(--toggle-hover); border: 1px solid var(--toggle-border);
+    border-radius: 4px; padding: 6px 8px;
+  }
+  .drill-alarm-status { font-size: 11px; min-height: 14px; color: var(--legend-total-color); }
+  .drill-alarm-status.err { color: #c0392b; }
   .drill-alarm-save {
     background: var(--filter-tag-in-bg); border: 1px solid var(--filter-tag-in-border);
     color: var(--filter-tag-in-text); border-radius: 4px;
@@ -1871,7 +1879,10 @@ function _nodeHasContent(node) {
   return hasVal || node.children.some(_nodeHasContent);
 }
 
-function _renderSummaryNodes(siblings) {
+function _renderSummaryNodes(siblings, opts) {
+  // opts.removable=false renders the chips without their × buttons — the
+  // alert form reuses this renderer for a read-only context display.
+  const removable = !opts || opts.removable !== false;
   const active = siblings.filter(_nodeHasContent);
   if (!active.length) return '';
 
@@ -1897,12 +1908,16 @@ function _renderSummaryNodes(siblings) {
           for (const sid of row.values) {
             const opt = row._options.find(([s]) => s === sid);
             const display = opt ? (opt[1] || sid) : sid;
-            const x = `<button class="drill-chip-x" data-fsr-id="${row.id}" data-fsr-sid="${sid}" type="button" title="Remove">&times;</button>`;
+            const x = removable
+              ? `<button class="drill-chip-x" data-fsr-id="${row.id}" data-fsr-sid="${sid}" type="button" title="Remove">&times;</button>`
+              : '';
             html += `<span class="filter-summary-tag${opCls}" title="${row.column}: ${display}">${row.column}: ${display}${x}</span>`;
           }
         } else {
           const textOpCls = row.op === 'starts_not_with' ? ' filter-summary-tag--snw' : row.op === 'contains' ? ' filter-summary-tag--ct' : row.op === 'not_contains' ? ' filter-summary-tag--nc' : ' filter-summary-tag--sw';
-          const x = `<button class="drill-chip-x" data-fsr-id="${row.id}" type="button" title="Remove">&times;</button>`;
+          const x = removable
+            ? `<button class="drill-chip-x" data-fsr-id="${row.id}" type="button" title="Remove">&times;</button>`
+            : '';
           html += `<span class="filter-summary-tag${textOpCls}">${row.column} ${OP_LABELS[row.op]} &ldquo;${row.values}&rdquo;${x}</span>`;
         }
       }
@@ -3692,10 +3707,7 @@ document.getElementById('drill-header-info').addEventListener('click', e => {
 
 document.getElementById('drill-body').addEventListener('click', e => {
   if (e.target.closest('.drill-back-btn'))  { _fetchDrillContent(); return; }
-  if (e.target.closest('.drill-alarm-save')) {
-    const btn = e.target.closest('.drill-alarm-save');
-    btn.textContent = 'Alert saved'; btn.disabled = true; return;
-  }
+  if (e.target.closest('.drill-alarm-save')) { saveAlarmForm(e.target.closest('.drill-alarm-save')); return; }
   const xBtn = e.target.closest('.drill-chip-x');
   if (xBtn) {
     e.stopPropagation();
@@ -3873,32 +3885,186 @@ async function openTxnView() {
   }
 }
 
+// ── Drill-down alert form ──────────────────────────────────────────────────
+//
+// The Alert form creates a real threshold alarm on the current datasource
+// (POST to sources:alarm_add). Its context is the chart's whole filter
+// expression plus the clicked series — merged as an extra `in` row, the
+// same mechanics drillAddFilter uses — serialized exactly the way
+// gatherParams serializes filter rows. The server stores that array
+// verbatim in alarm.context_filter, so the evaluator recomputes the same
+// slice the bar showed.
+//
+// Grouped tokens are refused up front: group sets are user-editable, and a
+// stored grouped reference would break silently — or worse, keep working
+// while its meaning changes. The server rejects them again with 400.
+
+function alarmContextRows() {
+  // Serialize the live filter rows exactly like gatherParams does …
+  const rows = [];
+  for (const row of filterRows) {
+    let vals;
+    if (row.op === 'in' || row.op === 'not_in') {
+      if (!row.values.size) continue;
+      vals = [...row.values];
+    } else {
+      if (!row.values) continue;
+      vals = [row.values];
+    }
+    rows.push({ col: row.column, op: row.op, vals,
+                andOr: row.andOr, indent: row.indent || 0 });
+  }
+  // … then merge the clicked series as an extra `in` row (no breakdown →
+  // no series row; the alarm then scopes to the filters alone).
+  if (_drillCtx && _drillCtx.groupBy) {
+    let row = rows.find(r => r.col === _drillCtx.groupBy && r.op === 'in');
+    if (!row) {
+      row = { col: _drillCtx.groupBy, op: 'in', vals: [],
+              andOr: 'and', indent: 0 };
+      rows.push(row);
+    }
+    if (!row.vals.includes(_drillCtx.rawKey)) row.vals.push(_drillCtx.rawKey);
+  }
+  return rows;
+}
+
+function alarmContextBlocked() {
+  if (_drillCtx && gbIsGrouped(_drillCtx.groupBy)) return true;
+  return filterRows.some(r => gbIsGrouped(r.column));
+}
+
+// Read-only chip display of the alarm context: the live filter rows plus
+// the clicked series, rendered through the summary renderer. Clones carry
+// their own Set so the live state is never mutated.
+function _alarmContextDisplayNodes() {
+  const nodes = filterRows.map(r => ({ ...r }));
+  if (_drillCtx && _drillCtx.groupBy) {
+    let row = nodes.find(r => r.column === _drillCtx.groupBy && r.op === 'in');
+    if (row) {
+      row.values = new Set(row.values);
+      row.values.add(_drillCtx.rawKey);
+    } else {
+      nodes.push({ id: -1, andOr: 'and', indent: 0,
+                   column: _drillCtx.groupBy, op: 'in',
+                   values: new Set([_drillCtx.rawKey]),
+                   _options: getFilterOptionsForCol(_drillCtx.groupBy) });
+    }
+  }
+  return _buildFilterTree(nodes);
+}
+
+function chartCsrfToken() {
+  // Same lookup order the query console uses, but page-wide: the cookie
+  // first, then any csrftoken input the page renders (#logout-form and the
+  // query panel both carry one).
+  const m = document.cookie.match(/csrftoken=([^;]+)/);
+  if (m) return m[1];
+  const input = document.querySelector('input[name=csrfmiddlewaretoken]');
+  return input ? input.value : '';
+}
+
 function openAlarmView() {
-  const dimName    = _drillCtx ? _resolveDimName(_drillCtx.rawKey) : '';
+  const body       = document.getElementById('drill-body');
   const intervalS  = _drillCtx ? _drillCtx.interval : 60;
-  const measure    = starcubesParams.measure ? starcubesParams.measure.replace(/\(.*/, '') : 'count';
-  const body = document.getElementById('drill-body');
+  const curMeasure = starcubesParams.measure || 'count(*)';
+  const blocked    = alarmContextBlocked();
+
+  // Metric options follow the source's measure catalog; the current chart
+  // measure is guaranteed present (sources without catalog rows get the
+  // same auto-list the main measure dropdown builds).
+  const mopts = [];
+  if (currentMeta && currentMeta.measures && currentMeta.measures.length) {
+    for (const m of currentMeta.measures) mopts.push([m.agg, m.name]);
+  } else {
+    mopts.push(['count(*)', 'count(*)']);
+    for (const c of (currentMeta ? currentMeta.fact_columns : [])) {
+      if (c.role === 'measure')
+        for (const fn of ['sum', 'avg', 'min', 'max'])
+          mopts.push([`${fn}(${c.name})`, `${fn}(${c.name})`]);
+    }
+  }
+  if (!mopts.some(([v]) => v === curMeasure))
+    mopts.unshift([curMeasure, curMeasure]);
+
+  const wopts = [];
+  const seenS = new Set();
+  for (const s of [intervalS, 300, 900, 3600]) {
+    if (seenS.has(s)) continue;
+    seenS.add(s);
+    wopts.push([s, s === intervalS ? `${fmtInterval(s)} (current)` : fmtInterval(s)]);
+  }
+
+  const ctxHtml = blocked
+    ? '<div class="drill-alarm-note">Grouped dimension filters cannot be used in alerts — group sets are editable and would silently change the alert\'s meaning. Switch the chart to plain filters.</div>'
+    : (_renderSummaryNodes(_alarmContextDisplayNodes(), { removable: false })
+       || '<span class="drill-alarm-global">whole datasource (no filters, no breakdown)</span>');
+
+  const optsHtml = (opts, sel) => opts.map(([v, l]) =>
+    `<option value="${v}"${v === sel ? ' selected' : ''}>${l}</option>`).join('');
+
   body.innerHTML =
     '<button class="drill-back-btn">← Breakdown</button>' +
     '<div class="drill-alarm-form">' +
-    `<div class="drill-alarm-row"><div class="drill-alarm-label">Context</div>` +
-    `<div class="drill-alarm-ctx">${dimName} &middot; ${fmtInterval(intervalS)} window</div></div>` +
-    `<div class="drill-alarm-row"><div class="drill-alarm-label">Metric</div>` +
-    `<select class="drill-alarm-select"><option value="count">${measure}</option></select></div>` +
-    `<div class="drill-alarm-row"><div class="drill-alarm-label">Condition</div>` +
-    `<div class="drill-alarm-cond">` +
-    `<select class="drill-alarm-select"><option>&gt;</option><option>&lt;</option><option>=</option></select>` +
-    `<input class="drill-alarm-input" type="number" placeholder="threshold" min="0"></div></div>` +
-    `<div class="drill-alarm-row"><div class="drill-alarm-label">Window</div>` +
-    `<select class="drill-alarm-select">` +
-    `<option value="${intervalS}">${fmtInterval(intervalS)} (current)</option>` +
-    `<option value="300">5 min</option><option value="900">15 min</option><option value="3600">1 h</option>` +
-    `</select></div>` +
-    `<div class="drill-alarm-row"><div class="drill-alarm-label">Notify via</div>` +
-    `<select class="drill-alarm-select"><option>Email</option><option>Slack</option><option>PagerDuty</option></select></div>` +
-    `<button class="drill-alarm-save" type="button">Save Alert</button>` +
+    '<div class="drill-alarm-row"><div class="drill-alarm-label">Context</div>' +
+    `<div class="drill-alarm-ctx">${ctxHtml}</div></div>` +
+    '<div class="drill-alarm-row"><div class="drill-alarm-label">Name</div>' +
+    '<input class="drill-alarm-input" id="drill-alarm-name" type="text" maxlength="200" placeholder="e.g. error count too high"></div>' +
+    '<div class="drill-alarm-row"><div class="drill-alarm-label">Metric</div>' +
+    `<select class="drill-alarm-select" id="drill-alarm-measure">${optsHtml(mopts, curMeasure)}</select></div>` +
+    '<div class="drill-alarm-row"><div class="drill-alarm-label">Condition</div>' +
+    '<div class="drill-alarm-cond">' +
+    `<select class="drill-alarm-select" id="drill-alarm-cond">${['&gt;', '&lt;', '=', '&gt;=', '&lt;='].map(o => `<option${o === '&gt;' ? ' selected' : ''}>${o}</option>`).join('')}</select>` +
+    '<input class="drill-alarm-input" id="drill-alarm-threshold" type="number" placeholder="threshold" required></div></div>' +
+    '<div class="drill-alarm-row"><div class="drill-alarm-label">Window</div>' +
+    `<select class="drill-alarm-select" id="drill-alarm-window">${optsHtml(wopts, intervalS)}</select></div>` +
+    '<div class="drill-alarm-row"><div class="drill-alarm-label">Notify via</div>' +
+    '<select class="drill-alarm-select"><option value="log">log (episode table)</option></select></div>' +
+    '<div class="drill-alarm-status" id="drill-alarm-status"></div>' +
+    `<button class="drill-alarm-save" type="button"${blocked ? ' disabled' : ''}>Save Alert</button>` +
     '</div>';
   positionDrillModal();
+}
+
+async function saveAlarmForm(btn) {
+  const status = document.getElementById('drill-alarm-status');
+  const nameEl = document.getElementById('drill-alarm-name');
+  const setStatus = (msg, cls) => {
+    if (status) { status.textContent = msg; status.className = 'drill-alarm-status' + (cls ? ' ' + cls : ''); }
+  };
+  if (alarmContextBlocked()) return;         // the form renders disabled — belt and braces
+  if (!nameEl || !nameEl.value.trim()) { setStatus('name is required', 'err'); return; }
+  const fd = new FormData();
+  fd.set('name', nameEl.value.trim());
+  fd.set('measure', document.getElementById('drill-alarm-measure').value);
+  fd.set('cond_op', document.getElementById('drill-alarm-cond').value);
+  fd.set('threshold', document.getElementById('drill-alarm-threshold').value || 0);
+  fd.set('window_s', document.getElementById('drill-alarm-window').value);
+  fd.set('notify_channels', 'log');
+  fd.set('context', JSON.stringify(alarmContextRows()));
+  btn.disabled = true;
+  setStatus('saving…');
+  try {
+    const r = await fetch(`/sources/${currentMeta.id}/alarms/add/`, {
+      method: 'POST',
+      headers: { 'X-CSRFToken': chartCsrfToken() },
+      body: fd,
+    });
+    // An anonymous user is redirected to the login page (middleware); the
+    // fetch follows it, and r.json() throws on the HTML body.
+    const d = await r.json().catch(
+      () => ({ ok: false, error: 'login required — reload the page' }));
+    if (r.ok && d.ok) {
+      btn.textContent = 'Alert saved';
+      setStatus('');
+      setTimeout(() => { btn.textContent = 'Save Alert'; btn.disabled = false; }, 1500);
+    } else {
+      setStatus(d.error || `HTTP ${r.status}`, 'err');
+      btn.disabled = false;
+    }
+  } catch (err) {
+    setStatus(err.message, 'err');
+    btn.disabled = false;
+  }
 }
 
 function renderDrillBody(data) {
