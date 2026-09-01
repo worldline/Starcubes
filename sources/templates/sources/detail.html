@@ -247,7 +247,7 @@
     <div class="card-header">
       <span class="card-title">Alarms</span>
       <span style="margin-left:auto;font-size:12px;color:var(--muted)">
-        Threshold rules. Notification backends (email/slack/pagerduty) are backlog — only <code>log</code> is wired today.
+        Threshold rules. A background loop evaluates them; firings land in the alarm_firing episode table — only <code>log</code> is wired today.
       </span>
     </div>
     <div class="card-body" style="padding:0">
@@ -256,6 +256,7 @@
           <tr>
             <th>Name</th>
             <th>Context</th>
+            <th>Comment</th>
             <th>Measure</th>
             <th style="text-align:center">Cond</th>
             <th style="text-align:right">Threshold</th>
@@ -266,21 +267,21 @@
           </tr>
         </thead>
         <tbody id="alarmBody">
-          <tr id="alarm-loading"><td colspan="9" class="text-muted" style="text-align:center;padding:16px">Loading…</td></tr>
+          <tr id="alarm-loading"><td colspan="10" class="text-muted" style="text-align:center;padding:16px">Loading…</td></tr>
         </tbody>
       </table>
     </div>
     <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
       <details>
         <summary style="cursor:pointer;font-weight:600">+ Add alarm</summary>
-        <form id="alarmAddForm" style="display:grid;grid-template-columns:1fr 1fr 1fr 130px 80px 110px 100px 1fr;gap:8px;align-items:end;margin-top:12px">
+        <form id="alarmAddForm" style="display:grid;grid-template-columns:1fr 1fr 130px 80px 110px 100px 1fr;gap:8px;align-items:end;margin-top:12px">
           {% csrf_token %}
           <div><label class="form-label">Name</label><input class="form-control" name="name" required></div>
-          <div><label class="form-label">Context dim</label><input class="form-control" name="context_dim" placeholder="e.g. peer_id (optional)"></div>
-          <div><label class="form-label">Context value</label><input class="form-control" name="context_value" placeholder="(optional)"></div>
+          <div><label class="form-label">Comment</label><input class="form-control" name="comment" placeholder="(optional)"></div>
           <div><label class="form-label">Measure</label>
             <select class="form-control" name="measure">
-              {% for a in measure_aggs %}<option{% if a == 'count(*)' %} selected{% endif %}>{{ a }}</option>{% endfor %}
+              {# quantile(col) is not a scalar an alarm threshold can compare against #}
+              {% for a in measure_aggs %}{% if "quantile" not in a %}<option{% if a == 'count(*)' %} selected{% endif %}>{{ a }}</option>{% endif %}{% endfor %}
             </select>
           </div>
           <div><label class="form-label">Cond</label>
@@ -294,7 +295,7 @@
           <div style="grid-column:1/-1;display:flex;gap:12px;align-items:center">
             <button type="submit" class="btn btn-primary btn-sm">Add</button>
             <label style="font-size:12px;color:var(--muted)"><input type="checkbox" name="enabled" checked> enabled</label>
-            <span class="text-muted" style="font-size:11px">Leave Context dim/value empty for a global alarm on this datasource.</span>
+            <span class="text-muted" style="font-size:11px">Alarms created here apply to the whole datasource — use the chart drill-down's Alert form to attach a filter context.</span>
           </div>
         </form>
         <div id="alarmAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
@@ -1176,10 +1177,16 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
 // startEdit/cancelEdit are the shared helpers; saving goes through a local
 // handler that re-reads the list, which keeps the display honest even when
 // the server clamps or rejects a field.
+//
+// The context (a.context_filter, the chart's flat filter rows) is shown as
+// a read-only summary — editing a filter expression is a UI of its own, so
+// the honest path is delete + re-create from the chart drill-down. The ⓘ
+// button opens a lazy-loaded sub-row with the change history (old/new
+// snapshots with user + timestamp) and the firing episodes.
 // ==========================================================================
 (function() {
   var DS = {{ ds.id }};
-  var MEASURE_AGGS = [{% for a in measure_aggs %}"{{ a|escapejs }}"{% if not forloop.last %}, {% endif %}{% endfor %}];
+  var MEASURE_AGGS = [{% for a in measure_aggs %}{% if "quantile" not in a %}"{{ a|escapejs }}"{% if not forloop.last %}, {% endif %}{% endif %}{% endfor %}];
   var COND_OPS = ['>', '<', '=', '>=', '<='];
 
   // 60 -> 1m, 300 -> 5m, 3600 -> 1h, 86400 -> 1d; anything else stays seconds.
@@ -1197,20 +1204,131 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     }).join('');
   }
 
+  var OP_NAMES = { in: 'in', not_in: 'not in', starts_with: 'starts with',
+                   starts_not_with: 'starts not with', contains: 'contains',
+                   not_contains: 'not contains' };
+
+  // Readable text rendering of the stored flat filter rows
+  // ({col, op, vals, andOr, indent}), honouring the indent nesting with
+  // parentheses — the same expression _buildWhere compiles server-side.
+  function ctxSummary(rows) {
+    if (!rows || !rows.length) return '<span class="text-muted">(global)</span>';
+    // Flat → nested, mirroring the stack parser both ends use.
+    var root = [], stack = [root], indents = [-1];
+    rows.forEach(function(r) {
+      var node = { r: r, children: [] };
+      var ind = r.indent || 0;
+      while (ind <= indents[indents.length - 1]) { stack.pop(); indents.pop(); }
+      stack[stack.length - 1].push(node);
+      stack.push(node.children);
+      indents.push(ind);
+    });
+    function renderNodes(nodes) {
+      var out = [];
+      nodes.forEach(function(n, i) {
+        if (i > 0) out.push((n.r.andOr || 'and').toUpperCase());
+        var cond = n.r.col + ' ' + (OP_NAMES[n.r.op] || n.r.op)
+          + ' (' + (n.r.vals || []).join(', ') + ')';
+        if (n.children.length)
+          cond += ' AND (' + renderNodes(n.children) + ')';
+        out.push(cond);
+      });
+      return out.join(' ');
+    }
+    // One escape pass over the whole rendered expression.
+    return esc(renderNodes(root));
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    return isNaN(d) ? iso : d.toLocaleString();
+  }
+
+  // Field-by-field old→new diff of two alarm snapshots.
+  var SNAP_FIELDS = ['name', 'context_filter', 'comment', 'measure', 'cond_op',
+                     'threshold', 'window_s', 'notify_channels', 'enabled'];
+  function snapDiff(oldRow, newRow) {
+    if (!oldRow || !newRow) return '';
+    var parts = [];
+    SNAP_FIELDS.forEach(function(f) {
+      var a = JSON.stringify(oldRow[f]) , b = JSON.stringify(newRow[f]);
+      if (a !== b) parts.push(f + ': ' + (a === 'null' ? '∅' : esc(a))
+                             + ' → ' + (b === 'null' ? '∅' : esc(b)));
+    });
+    return parts.join('<br>');
+  }
+
+  function detailRowHtml(id) {
+    return '<tr class="alarm-detail-row" data-for="' + id + '">'
+      + '<td colspan="10" style="background:var(--bg2, rgba(127,127,127,0.06));padding:10px 14px">'
+      +   '<div class="alarm-detail-body" data-id="' + id + '">'
+      +     '<span class="text-muted">Loading…</span>'
+      +   '</div>'
+      + '</td></tr>';
+  }
+
+  function loadAlarmDetail(id) {
+    var body = document.querySelector('.alarm-detail-body[data-id="' + id + '"]');
+    if (!body) return;
+    Promise.all([
+      postJSON('/sources/' + DS + '/alarms/' + id + '/history/', {}),
+      postJSON('/sources/' + DS + '/alarms/' + id + '/firings/', {})
+    ]).then(function(res) {
+      var hist = res[0].ok ? (res[0].history || []) : null;
+      var fire = res[1].ok ? (res[1].firings || []) : null;
+      if (hist === null || fire === null) {
+        body.innerHTML = '<span class="text-muted">Could not load details ('
+          + esc((res[0].error || res[1].error || 'error')) + ').</span>';
+        return;
+      }
+      var html = '<div style="font-size:12px">';
+      html += '<div style="font-weight:600;margin-bottom:4px">History</div>';
+      if (!hist.length) {
+        html += '<div class="text-muted">No changes recorded.</div>';
+      } else {
+        hist.forEach(function(h) {
+          html += '<div style="margin-bottom:6px"><span class="text-mono">'
+            + esc(h.kind) + '</span> · ' + esc(h.username) + ' · '
+            + esc(fmtDate(h.changed_at))
+            + (h.kind === 'updated' && snapDiff(h.old_row, h.new_row)
+               ? '<br><span class="text-muted" style="font-size:11px">'
+                 + snapDiff(h.old_row, h.new_row) + '</span>' : '')
+            + '</div>';
+        });
+      }
+      html += '<div style="font-weight:600;margin:10px 0 4px">Firings</div>';
+      if (!fire.length) {
+        html += '<div class="text-muted">No threshold breaches recorded.</div>';
+      } else {
+        fire.forEach(function(f) {
+          html += '<div style="margin-bottom:2px">'
+            + (f.open
+               ? '<strong>open</strong> since ' + esc(fmtDate(f.first_breach_at))
+               : esc(fmtDate(f.first_breach_at)) + ' – ' + esc(fmtDate(f.last_breach_at))
+                 + ' (closed ' + esc(fmtDate(f.closed_at)) + ')')
+            + ' · value ' + (f.last_value === null ? '∅' : f.last_value)
+            + '</div>';
+        });
+      }
+      html += '</div>';
+      body.innerHTML = html;
+    }).catch(function(e) {
+      body.innerHTML = '<span class="text-muted">Could not load details (' + esc(e) + ').</span>';
+    });
+  }
+
   function buildRow(a) {
-    var ctx = a.context_dim
-      ? esc(a.context_dim) + ' = ' + esc(a.context_value || '?')
-      : '<span class="text-muted">(global)</span>';
     var measures = MEASURE_AGGS.indexOf(a.measure) === -1
       ? [a.measure].concat(MEASURE_AGGS) : MEASURE_AGGS;
+    var cmt = a.comment || '';
     return '<tr data-id="' + a.id + '">'
       + '<td><span class="row-display"><strong>' + esc(a.name) + '</strong></span>'
       +     '<input class="row-edit cell-input" name="name" value="' + esc(a.name) + '"></td>'
-      + '<td><span class="row-display text-muted">' + ctx + '</span>'
-      +     '<span class="row-edit" style="gap:4px">'
-      +       '<input class="cell-input" name="context_dim" style="width:90px" placeholder="dim" value="' + esc(a.context_dim || '') + '">'
-      +       '<input class="cell-input" name="context_value" style="width:90px" placeholder="value" value="' + esc(a.context_value || '') + '">'
-      +     '</span></td>'
+      + '<td><span class="row-display text-muted" style="font-size:11px">' + ctxSummary(a.context_filter) + '</span></td>'
+      + '<td><span class="row-display text-muted" style="font-size:11px" title="' + esc(cmt) + '">'
+      +     esc(cmt.length > 40 ? cmt.slice(0, 40) + '…' : cmt || '—') + '</span>'
+      +     '<input class="row-edit cell-input" name="comment" style="width:140px" placeholder="(none)" value="' + esc(cmt) + '"></td>'
       + '<td><span class="row-display text-mono">' + esc(a.measure) + '</span>'
       +     '<select class="row-edit cell-input" name="measure">' + opts(measures, a.measure) + '</select></td>'
       + '<td style="text-align:center"><span class="row-display text-mono">' + esc(a.cond_op) + '</span>'
@@ -1225,6 +1343,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       +     '<input class="row-edit" type="checkbox" name="enabled"' + (a.enabled ? ' checked' : '') + '></td>'
       + '<td class="actions" style="text-align:right">'
       +   '<span class="row-display">'
+      +     '<button class="btn-icon" data-act="info" title="History &amp; firings">ⓘ</button>'
       +     '<button class="btn-icon" data-act="edit" title="Edit">✏</button>'
       +     '<button class="btn-icon" data-act="del" title="Delete" style="color:var(--danger)">✕</button>'
       +   '</span>'
@@ -1238,7 +1357,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   function render(alarms) {
     var tbody = document.getElementById('alarmBody');
     if (!alarms.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="text-muted" '
+      tbody.innerHTML = '<tr><td colspan="10" class="text-muted" '
         + 'style="text-align:center;padding:16px">No alarms yet.</td></tr>';
       return;
     }
@@ -1249,7 +1368,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     return postJSON('{% url "sources:alarms_list" ds.id %}', {}).then(function(d) {
       if (d.ok) render(d.alarms || []);
       else document.getElementById('alarmBody').innerHTML =
-        '<tr><td colspan="9" class="text-muted" style="text-align:center;padding:16px">'
+        '<tr><td colspan="10" class="text-muted" style="text-align:center;padding:16px">'
         + esc(d.error || 'Could not load alarms') + '</td></tr>';
     });
   }
@@ -1269,6 +1388,15 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     var act = btn.dataset.act;
     var tr = btn.closest('tr');
     var id = tr.dataset.id;
+    if (act === 'info') {
+      // Toggle the lazy-loaded history/firings sub-row beneath this alarm.
+      var existing = document.querySelector(
+        '.alarm-detail-row[data-for="' + id + '"]');
+      if (existing) { existing.remove(); return; }
+      tr.insertAdjacentHTML('afterend', detailRowHtml(id));
+      loadAlarmDetail(id);
+      return;
+    }
     if (act === 'edit')   { startEdit(btn, 'alarm'); return; }
     if (act === 'cancel') { cancelEdit(btn); return; }
     if (act === 'del') {
