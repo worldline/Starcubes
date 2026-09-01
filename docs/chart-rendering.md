@@ -84,6 +84,15 @@ panels, query console, provisional blocks) live in
   must not change any existing consumer's picture. See `docs/chart-app.md`,
   "Drawing the partial bin".
 
+- **The drill-down bar outline shares the same geometry as the ink it frames.**
+  The persistent selection (`ts.setSelection({ slotSec, key })`,
+  `@hgruber/timeseries.js` ≥ 0.10.4) is painted inside the same draw pass as
+  the bars, by the same `highlight_multibar` geometry — so a partial bin's
+  outline is as narrow as the bar, and a tier cross-fade never draws two
+  outlines. It repaints only while the referenced bar is actually drawn
+  (visible series, dominant block, non-skipped partial bin, inside the
+  viewport); state survives without painting until the bar returns.
+
 ## Fetch semantics
 
 - **`interval_end` is the requested window end, not the data horizon —

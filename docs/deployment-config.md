@@ -150,13 +150,13 @@ anything that is not in the user directory.
   reasons: (a) it defaults the container engine to `podman` (`CONTAINER_ENGINE`
   overrides), and (b) it pins the working directory to the repo root before
   delegating. There's no longer a submodule to initialize at build time —
-  the JS dependency (`@hgruber/timeseries.js@~0.10.3`) is pinned via the
+  the JS dependency (`@hgruber/timeseries.js@~0.10.4`) is pinned via the
   top-level `package.json`/`package-lock.json` pair and pulled by the
   `jsbuilder` Dockerfile stage through `npm ci`.
 
 - **Frontend JS dependencies live at the repo root.** Top-level
   `package.json`/`package-lock.json` declare the only frontend JS dep
-  (`@hgruber/timeseries.js`, pinned `~0.10.3`). The Dockerfile's `jsbuilder`
+  (`@hgruber/timeseries.js`, pinned `~0.10.4`). The Dockerfile's `jsbuilder`
   stage runs `npm ci --omit=dev` and copies `dist/timeseries.min.js` into
   `viz/static/timeseries/timeseries.js`, which `STATICFILES_DIRS` exposes to
   Django's `collectstatic`. `chart.html` loads it via

@@ -118,6 +118,28 @@ modal header (`#drill-header-info`) still renders through them, as does
 `fmtInterval()` for the alarm UI. Only the `#bar-tooltip` element, its CSS and
 `showBarTooltip()` were removed.
 
+## Bar selection
+
+Clicking a bar both opens the drill-down panel and marks the bar: the library's
+persistent selection (`ts.setSelection({ slotSec, key })` in `openDrillModal()`)
+draws a 2px outline in the `selection` palette colour, and it stays until
+`closeDrillModal()` clears it (`ts.clearSelection()`), or another bar is clicked.
+`closeDrillModal()` is the single close path — Close button, Escape (via the
+shared panel handler) all funnel through it, so one `clearSelection()` line is
+complete. No outside-click close exists anymore.
+
+`drillAddFilter()` deliberately does nothing to the selection: the panel stays
+open and `resetAndFetch(true)` runs, and the library re-resolves the outline
+every frame — a filter change that removes the bar removes the outline with it;
+one that keeps it keeps the outline. That is the whole reason no validation
+logic lives in chart.html. (`_drillCtx` additionally stores `selKey` — the raw
+click key with its `_` prefix — so a future feature can re-anchor the panel
+without reconstructing it from `rawKey`.)
+
+The momentary fill highlight the library's default click handler would draw is
+deliberately not used: it would overpaint the persistent outline and vanish on
+the next poll.
+
 ## Init and the start window
 
 `initTs()` builds the `TimeSeries` instance, and by then the window it should
@@ -719,7 +741,9 @@ the query console and the keyboard-shortcut panel — and there will be more. Th
 (`.fpanel`, `.fpanel-header`, `.fpanel-title`, `.fpanel-actions`,
 `.fpanel-close`) and one JS registration (`makeFloatingPanel(el, opts)`), both
 in `chart.html`. A new panel is two classes in the markup and one call; it must
-not bring its own drag handler, z-index, clamp or Escape wiring.
+not bring its own drag handler, z-index, clamp or Escape wiring. Closing the
+drill-down panel also clears the canvas's persistent bar outline
+(`closeDrillModal()` is the one place that calls `ts.clearSelection()`).
 
 ```
 <div id="my-panel" class="fpanel">

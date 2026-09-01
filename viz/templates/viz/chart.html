@@ -3651,7 +3651,10 @@ let _drillCtx = null;
 // there to be read *against* the chart, and a click anywhere on the canvas
 // (panning, picking another bar) threw its contents away. It closes by its
 // button or by Escape — the latter through the shared handler.
-function closeDrillModal() { drillModal.classList.remove('fp-open'); }
+function closeDrillModal() {
+  ts.clearSelection();                      // drop the bar outline with the panel
+  drillModal.classList.remove('fp-open');
+}
 document.getElementById('drill-close').addEventListener('click', closeDrillModal);
 makeFloatingPanel(drillModal, { onClose: closeDrillModal });
 // Resizable via the browser-native grip (CSS `resize: both` on #drill-modal);
@@ -3762,7 +3765,14 @@ async function openDrillModal(plot, n, key, value) {
   document.getElementById('drill-header-info').innerHTML =
     _barHeaderHtml(dimBtn, slotSec, value, plot.interval, color);
 
-  _drillCtx = { rawKey, slotSec, interval: plot.interval, groupBy: starcubesParams.group_by };
+  // Keep the clicked bar outlined until the panel closes (closeDrillModal) or
+  // another bar is clicked. The library re-resolves the outline on every frame
+  // — a refetch/filter that removes the bar removes the outline with it — so
+  // no validation lives here. The key is passed through untouched: the
+  // library matches it exactly as the click delivered it.
+  ts.setSelection({ slotSec, key });
+
+  _drillCtx = { rawKey, slotSec, interval: plot.interval, groupBy: starcubesParams.group_by, selKey: key };
   drillModal.classList.add('fp-open');
   fpBringToFront(drillModal);
   positionDrillModal();
