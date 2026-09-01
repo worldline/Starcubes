@@ -417,7 +417,13 @@
   }
   .popover.pop-open { display: block; }
   .popover--menu { padding: 5px; min-width: 216px; }
-  .popover--prefs { padding: 12px 14px; min-width: 232px; }
+  /* Fixed-position elements shrink-to-fit their content, so without a
+     definite width the long explanation lines would stretch this panel to
+     the full unwrapped sentence. Give it one instead of a min-width. */
+  .popover--prefs {
+    padding: 12px 14px; box-sizing: border-box;
+    width: 264px; max-width: calc(100vw - 16px);
+  }
 
   .menu-head {
     display: flex; align-items: center; gap: 9px;
@@ -1194,7 +1200,6 @@
   <div style="display:flex;align-items:center;gap:8px">
     <input type="number" id="prefs-bar-target" min="1" max="100" step="0.5" style="width:70px;padding:4px 6px;border:1px solid var(--input-border);border-radius:3px;background:var(--input-bg);color:var(--fg);font-size:13px">
     <span style="color:var(--muted);font-size:12px">px</span>
-    <button type="button" id="prefs-save" style="padding:4px 10px;font-size:12px;background:var(--btn-bg);color:var(--btn-color);border:none;border-radius:3px;cursor:pointer">Save</button>
     <button type="button" id="prefs-reset" style="padding:4px 10px;font-size:12px;background:var(--bg3);color:var(--body-color);border:1px solid var(--border);border-radius:3px;cursor:pointer">Reset</button>
   </div>
   <div style="font-size:11px;margin-top:5px;color:var(--muted)">Lower → finer resolution. Stored in this browser only; clears with site data.</div>
@@ -3225,7 +3230,6 @@ document.addEventListener('keydown', e => {
   const prefsYAxis = document.getElementById('prefs-yaxis');
   const prefsPartial = document.getElementById('prefs-partial');
   const prefsInput = document.getElementById('prefs-bar-target');
-  const prefsSave  = document.getElementById('prefs-save');
   const prefsReset = document.getElementById('prefs-reset');
   const prefsClose = document.getElementById('prefs-close');
 
@@ -3272,12 +3276,14 @@ document.addEventListener('keydown', e => {
 
   if (prefsClose) prefsClose.addEventListener('click', () => prefsPop.close(true));
 
-  if (prefsSave) prefsSave.addEventListener('click', () => {
+  // The bar target applies on commit (blur / Enter), like the other
+  // preference fields — no separate Save button: a Save in a settings
+  // panel reads as saving the whole panel, but it only ever touched this
+  // one input. An invalid or unchanged value is a no-op.
+  if (prefsInput) prefsInput.addEventListener('change', () => {
     const v = parseFloat(prefsInput.value);
-    if (!Number.isFinite(v) || v <= 0) {
-      prefsInput.focus();
-      return;
-    }
+    if (!Number.isFinite(v) || v <= 0) return;
+    if (v === starcubesBarTarget) return;
     writeBarTargetPref(v);
     starcubesBarTarget = v;
     if (ts && ts.setFadeBand) ts.setFadeBand(starcubesBarTarget, fadeLoPx());
