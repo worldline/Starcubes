@@ -366,8 +366,10 @@
      `title` is unusable for a toolbar: ~700 ms before it appears, no theme,
      no line breaks, and it never shows on keyboard focus. `data-tip` is the
      same string as the button's aria-label — the label always exists for a
-     screen reader, this only makes it visible. Use `\A` in the attribute for
-     a second line (white-space: pre-line honours it). */
+     screen reader, this only makes it visible. For a second line put a real
+     newline in the attribute (`&#10;`), which `white-space: pre-line`
+     honours; a CSS `\A` escape would not work — attr() hands the value
+     through verbatim, so the backslash would render as a backslash. */
   [data-tip] { position: relative; }
   [data-tip]::after, [data-tip]::before {
     position: absolute; left: 50%; opacity: 0;
@@ -729,7 +731,10 @@
     padding-bottom: 3px; margin-bottom: 6px;
   }
   .keys-list {
-    display: grid; grid-template-columns: max-content 1fr;
+    /* A shared floor for the key column, so the five groups' descriptions
+       start at one x instead of five. max-content still wins where a row is
+       wider than the floor (Ctrl/⌘+Enter). */
+    display: grid; grid-template-columns: minmax(9.5rem, max-content) 1fr;
     align-items: baseline; gap: 5px 14px; margin: 0;
   }
   .keys-list dt { display: flex; align-items: center; gap: 3px; }
@@ -999,8 +1004,10 @@
     box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus-ring) 45%, transparent);
   }
   .dtp-field input {
-    border: 0; background: none; outline: none; box-shadow: none;
-    padding: 0 2px 0 8px; min-width: 10.4em; font: inherit; color: inherit;
+    /* An explicit width, not a min-width: the browser's default size=20 is
+       what made the field two thirds wider than the value it holds. */
+    width: 10.4em; border: 0; background: none; outline: none; box-shadow: none;
+    padding: 0 2px 0 8px; font: inherit; color: inherit;
   }
   .dtp-open {
     display: flex; align-items: center; justify-content: center;
@@ -1108,10 +1115,10 @@
   <!-- source tabs injected here by loadSources() -->
   <span id="nav-spacer" class="nav-spacer"></span>
   {% if user.is_authenticated %}
-  {# Django's LogoutView only accepts POST, so logging out cannot be a link.
+  {% comment %} Django's LogoutView only accepts POST, so logging out cannot be a link.
      The form stays here, hidden, and the menu entry reaches it through the
      `form` attribute — which is what lets a submit button live outside its
-     own form. #}
+     own form. {% endcomment %}
   <form id="logout-form" method="post" action="{% url 'logout' %}" hidden>{% csrf_token %}</form>
   {% endif %}
   <button class="ibtn ibtn--plain" id="nav-menu-toggle" type="button"
@@ -1131,8 +1138,8 @@
     <span class="menu-label">Configure</span>
   </a>
   {% endif %}
-  {# The y-axis mode is client-side, so the preferences are useful without an
-     account — they stay in the menu for anonymous visitors too. #}
+  {% comment %} The y-axis mode is client-side, so the preferences are useful without an
+     account — they stay in the menu for anonymous visitors too. {% endcomment %}
   <button class="menu-item" role="menuitem" type="button" id="prefs-toggle" data-keep-open>
     <svg class="ic" aria-hidden="true"><use href="#ic-gear"></use></svg>
     <span class="menu-label">Preferences</span>
@@ -1222,8 +1229,8 @@
       </button>
     </span>
   </div>
-  {# Text, not icons: there is no symbol for "yesterday" that anyone reads
-     without a tooltip, and four short words are quicker than four guesses. #}
+  {% comment %} Text, not icons: there is no symbol for "yesterday" that anyone reads
+     without a tooltip, and four short words are quicker than four guesses. {% endcomment %}
   <div class="chip-group" id="range-presets" role="group" aria-label="Quick time ranges">
     <button type="button" class="chip" data-range="today">Today</button>
     <button type="button" class="chip" data-range="yesterday">Yesterday</button>
@@ -1237,7 +1244,7 @@
       <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
     </button>
     <button id="follow-toggle" class="ibtn" type="button"
-            aria-label="Follow mode" data-tip="Follow mode\A(seismograph)">
+            aria-label="Follow mode" data-tip="Follow mode&#10;(seismograph)">
       <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
       <span id="follow-dot"></span>
     </button>
@@ -1248,7 +1255,7 @@
     </button>
     {% endif %}
     <button id="keys-toggle" class="ibtn" type="button"
-            aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts\A(?)">
+            aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts&#10;(?)">
       <svg class="ic" aria-hidden="true"><use href="#ic-keyboard"></use></svg>
     </button>
     {% if user.is_authenticated %}
@@ -1293,9 +1300,9 @@
   <div id="legend-items"></div>
 </div>
 
-{# A .fpanel, per docs/chart-app.md: two classes and one makeFloatingPanel()
+{% comment %} A .fpanel, per docs/chart-app.md: two classes and one makeFloatingPanel()
    call buy drag, stacking, the clamp and Escape. No local wiring for any of
-   them. #}
+   them. {% endcomment %}
 <div id="keys-panel" class="fpanel">
   <div class="fpanel-header">
     <span class="fpanel-title">Keyboard shortcuts</span>
@@ -1386,7 +1393,7 @@
   </div>
   <div id="query-actions">
     <button id="query-run" class="ibtn ibtn--primary" type="button"
-            aria-label="Run" data-tip="Run\A(Ctrl/&#8984;+Enter)">
+            aria-label="Run" data-tip="Run&#10;(Ctrl/&#8984;+Enter)">
       <svg class="ic" aria-hidden="true"><use href="#ic-play"></use></svg>
     </button>
     <button id="query-cancel" class="ibtn" type="button" disabled
@@ -1395,7 +1402,7 @@
     </button>
     <button id="chart-sql" class="ibtn" type="button" disabled
             aria-label="Copy the chart's SQL into the editor"
-            data-tip="Copy the SQL behind\Athe active chart legend">
+            data-tip="Copy the SQL behind&#10;the active chart legend">
       <svg class="ic" aria-hidden="true"><use href="#ic-bar-chart"></use></svg>
     </button>
     <button id="query-format" class="ibtn" type="button"
@@ -2816,7 +2823,10 @@ function makePopover(btn, panel, opts) {
   const api = {
     btn, panel,
     isOpen() { return panel.classList.contains('pop-open'); },
-    open() {
+    // `focusFirst` is passed only when the keyboard opened it. A mouse click
+    // that lands a focus ring on the first entry looks like a selection the
+    // user did not make; arrow keys still enter the menu from the trigger.
+    open(focusFirst) {
       if (api.isOpen()) return;
       // Only ever one dropdown at a time — two anchored boxes overlapping is
       // never what the user asked for.
@@ -2825,7 +2835,7 @@ function makePopover(btn, panel, opts) {
       btn.setAttribute('aria-expanded', 'true');
       if (opts.onOpen) opts.onOpen();
       place();
-      if (opts.menu) { const it = items(); if (it.length) it[0].focus(); }
+      if (opts.menu && focusFirst) { const it = items(); if (it.length) it[0].focus(); }
     },
     close(refocus) {
       if (!api.isOpen()) return;
@@ -2834,10 +2844,14 @@ function makePopover(btn, panel, opts) {
       if (opts.onClose) opts.onClose();
       if (refocus) returnFocus.focus();
     },
-    toggle() { if (api.isOpen()) api.close(); else api.open(); },
+    toggle(focusFirst) { if (api.isOpen()) api.close(); else api.open(focusFirst); },
   };
 
-  btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); api.toggle(); });
+  // detail === 0 marks a click the browser synthesized from Enter or Space on
+  // the button, i.e. a keyboard activation.
+  btn.addEventListener('click', e => {
+    e.preventDefault(); e.stopPropagation(); api.toggle(e.detail === 0);
+  });
 
   // pointerdown, not click: a press that starts outside already dismisses,
   // which is the rule the date picker follows too.
@@ -2870,8 +2884,13 @@ function makePopover(btn, panel, opts) {
   });
 
   btn.addEventListener('keydown', e => {
-    if (opts.menu && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); api.open(); }
-    else if (e.key === 'Escape' && api.isOpen()) { e.preventDefault(); e.stopPropagation(); api.close(true); }
+    if (opts.menu && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+      e.preventDefault();
+      if (!api.isOpen()) api.open(true);
+      else { const it = items(); if (it.length) it[e.key === 'ArrowDown' ? 0 : it.length - 1].focus(); }
+    } else if (e.key === 'Escape' && api.isOpen()) {
+      e.preventDefault(); e.stopPropagation(); api.close(true);
+    }
   });
 
   window.addEventListener('resize', () => { if (api.isOpen()) place(); });
