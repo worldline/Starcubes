@@ -323,6 +323,8 @@
   .ibtn:disabled:hover { background: var(--toggle-bg); color: var(--toggle-color); }
   /* Borderless variant for the top bar, where a boxed button would compete
      with the source tabs. */
+  .ibtn[hidden] { display: none; }        /* inline-flex would beat UA [hidden] */
+  a.ibtn { text-decoration: none; }
   .ibtn--plain { border-color: transparent; background: none; }
   .ibtn--plain:hover { background: var(--toggle-hover); }
   /* The one accented action in a group (Run). */
@@ -945,9 +947,48 @@
   .btt-date { color: var(--legend-total-color); font-size: 11px; }
   .btt-val  { color: var(--body-color); }
 
+  /* ── Source control bar ─────────────────────────────────────────────────
+     Three groups — what to plot, which window, what to open — separated by
+     hairlines rather than by guesswork about the 16 px gap. `flex-wrap` on
+     form#ctrl means a narrow window breaks between groups, not inside one. */
+  .ctrl-field { display: flex; flex-direction: column; gap: 2px; }
+  .ctrl-caption { font-size: 11px; color: var(--label-color); }
+  .ctrl-sep {
+    width: 1px; height: 26px; align-self: flex-end; margin-bottom: 1px;
+    background: var(--ctrl-border); flex: 0 0 auto;
+  }
+  .ctrl-actions { display: flex; align-items: flex-end; gap: 6px; }
+  /* One height for every control on the bar, so the row has a baseline. */
+  form#ctrl select:not([multiple]) { height: 28px; padding: 0 4px; border-radius: 4px; }
+
+  /* from/to: the input and its calendar button share one frame, so the field
+     looks like the picker it is while keeping the keyboard entry a plain text
+     input — a button alone would have thrown that away. */
+  .dtp-field {
+    display: flex; align-items: center; box-sizing: border-box; height: 28px;
+    border: 1px solid var(--input-border); border-radius: 4px;
+    background: var(--input-bg);
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .dtp-field:focus-within {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--focus-ring) 45%, transparent);
+  }
+  .dtp-field input {
+    border: 0; background: none; outline: none; box-shadow: none;
+    padding: 0 2px 0 8px; min-width: 10.4em; font: inherit; color: inherit;
+  }
+  .dtp-open {
+    display: flex; align-items: center; justify-content: center;
+    width: 24px; height: 22px; margin-right: 2px; padding: 0;
+    border: 0; border-radius: 3px; background: none;
+    color: var(--muted); font-size: 14px; cursor: pointer;
+  }
+  .dtp-open:hover { color: var(--accent); background: var(--toggle-hover); }
+  .dtp-open:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -1px; }
+  @media (prefers-reduced-motion: reduce) { .dtp-field { transition: none; } }
+
   /* ── DateTime picker ──────────────────────────────────────────────────── */
-  .dtp-label { position: relative; }
-  .dtp-label input { min-width: 11em; }
   .dtp-popup {
     position: absolute; top: 100%; left: 0; margin-top: 2px;
     background: var(--dtp-bg); border: 1px solid var(--dtp-border);
@@ -1134,23 +1175,61 @@
     <svg class="ic ic-chevron" aria-hidden="true"><use href="#ic-chevron-down"></use></svg>
   </button>
   <label>measure<select name="measure"><option value="">count(*)</option></select></label>
-  <label class="dtp-label">from<input type="text" name="dtp_from" id="dtp-from" placeholder="YYYY-MM-DD HH:MM"></label>
-  <label class="dtp-label">to<input type="text" name="dtp_to" id="dtp-to" placeholder="YYYY-MM-DD HH:MM"></label>
-  <button id="legend-toggle" class="ibtn" type="button"
-          aria-label="Legend" data-tip="Legend">
-    <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
-  </button>
-  <button id="follow-toggle" class="ibtn" type="button"
-          aria-label="Follow mode" data-tip="Follow mode\A(seismograph)">
-    <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
-    <span id="follow-dot"></span>
-  </button>
-  {% if user.is_authenticated %}
-  <button id="query-toggle" class="ibtn" type="button"
-          aria-label="Query console" data-tip="Query console">
-    <svg class="ic" aria-hidden="true"><use href="#ic-terminal"></use></svg>
-  </button>
-  {% endif %}
+  <span class="ctrl-sep" aria-hidden="true"></span>
+  <div class="ctrl-field">
+    <label class="ctrl-caption" for="dtp-from">from</label>
+    <span class="dtp-field">
+      <input type="text" name="dtp_from" id="dtp-from" autocomplete="off"
+             placeholder="YYYY-MM-DD HH:MM">
+      <button type="button" class="dtp-open" id="dtp-from-open"
+              aria-label="Pick a start date" data-tip="Pick a start date">
+        <svg class="ic" aria-hidden="true"><use href="#ic-calendar"></use></svg>
+      </button>
+    </span>
+  </div>
+  <div class="ctrl-field">
+    <label class="ctrl-caption" for="dtp-to">to</label>
+    <span class="dtp-field">
+      <input type="text" name="dtp_to" id="dtp-to" autocomplete="off"
+             placeholder="YYYY-MM-DD HH:MM">
+      <button type="button" class="dtp-open" id="dtp-to-open"
+              aria-label="Pick an end date" data-tip="Pick an end date">
+        <svg class="ic" aria-hidden="true"><use href="#ic-calendar"></use></svg>
+      </button>
+    </span>
+  </div>
+  {# Text, not icons: there is no symbol for "yesterday" that anyone reads
+     without a tooltip, and four short words are quicker than four guesses. #}
+  <div class="chip-group" id="range-presets" role="group" aria-label="Quick time ranges">
+    <button type="button" class="chip" data-range="today">Today</button>
+    <button type="button" class="chip" data-range="yesterday">Yesterday</button>
+    <button type="button" class="chip" data-range="week">Week</button>
+    <button type="button" class="chip" data-range="month">Month</button>
+  </div>
+  <span class="ctrl-sep" aria-hidden="true"></span>
+  <div class="ctrl-actions">
+    <button id="legend-toggle" class="ibtn" type="button"
+            aria-label="Legend" data-tip="Legend">
+      <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
+    </button>
+    <button id="follow-toggle" class="ibtn" type="button"
+            aria-label="Follow mode" data-tip="Follow mode\A(seismograph)">
+      <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
+      <span id="follow-dot"></span>
+    </button>
+    {% if user.is_authenticated %}
+    <button id="query-toggle" class="ibtn" type="button"
+            aria-label="Query console" data-tip="Query console">
+      <svg class="ic" aria-hidden="true"><use href="#ic-terminal"></use></svg>
+    </button>
+    {% endif %}
+    {% if user.is_authenticated %}
+    <a id="source-config-link" class="ibtn" hidden
+       aria-label="Configure this datasource" data-tip="Configure this datasource">
+      <svg class="ic" aria-hidden="true"><use href="#ic-sliders"></use></svg>
+    </a>
+    {% endif %}
+  </div>
 </form>
 
 <div id="filter-panel" class="collapsed" style="display:none">
@@ -1231,6 +1310,11 @@ const TXN_URL     = "{% url 'viz:txn_json' %}";
 const SOURCES_URL = "{% url 'viz:api_sources' %}";
 const META_URL    = "{% url 'viz:api_source_meta' %}";
 const CHART_SQL_URL = "{% url 'viz:chart_sql' %}";
+// Reversed from sources/urls.py rather than assembled by hand: the sentinel
+// pk is swapped for the real one. A literal '/sources/' + id + '/' broke
+// silently the day the route moved, and nothing on this page noticed.
+const SOURCE_DETAIL_URL = "{% url 'sources:detail' 987654321 %}";
+function sourceDetailUrl(id) { return SOURCE_DETAIL_URL.replace('987654321', String(id)); }
 
 const form     = document.getElementById('ctrl');
 const info     = document.getElementById('info');
@@ -3637,10 +3721,14 @@ function renderDrillBody(data) {
 let _openPicker = null;
 
 class DateTimePicker {
-  constructor(input, { onChange, nextFocus }) {
+  // `trigger` is the calendar button drawn inside the field. It is not part
+  // of the picker's own DOM, so it has to be excluded from the outside-click
+  // dismiss below — otherwise pressing it would close and immediately reopen.
+  constructor(input, { onChange, nextFocus, trigger }) {
     this.input = input;
     this.onChange = onChange;
     this._nextFocus = nextFocus || null;
+    this._trigger = trigger || null;
     this._value = null;
     this._pending = null;
     this._pendingH = 0;
@@ -3668,11 +3756,21 @@ class DateTimePicker {
       setTimeout(() => { if (!this._isOpen) this._commitInput(); }, 100);
     });
     document.addEventListener('mousedown', e => {
-      if (this._isOpen && !this._popup.contains(e.target) && e.target !== this.input) {
+      if (this._isOpen && !this._popup.contains(e.target) && e.target !== this.input
+          && !(this._trigger && this._trigger.contains(e.target))) {
         this.close(true);
         this._commitInput();
       }
     });
+    if (this._trigger) {
+      // Keep the caret where it is: the button must not steal focus from the
+      // input, or every click would blur-commit a half-typed date.
+      this._trigger.addEventListener('mousedown', e => e.preventDefault());
+      this._trigger.addEventListener('click', () => {
+        if (this._isOpen) { this.close(true); this._commitInput(); }
+        else { this.input.focus(); this.open(); }
+      });
+    }
   }
 
   _commitInput() {
@@ -3834,27 +3932,92 @@ class DateTimePicker {
 
 const dtpFrom = new DateTimePicker(document.getElementById('dtp-from'), {
   nextFocus: document.getElementById('dtp-to'),
-  onChange(ms) {
-    if (!currentViewport) currentViewport = { tmin: 0, tmax: 0, ppms: 0 };
-    currentViewport.tmin = ms;
-    if (ts) ts.zoom(currentViewport.tmin, currentViewport.tmax);
-    resetAndFetch();
-  },
+  trigger: document.getElementById('dtp-from-open'),
+  onChange(ms) { applyRange(ms, null); },
 });
 const dtpTo = new DateTimePicker(document.getElementById('dtp-to'), {
   nextFocus: document.getElementById('dtp-from'),
-  onChange(ms) {
-    if (!currentViewport) currentViewport = { tmin: 0, tmax: 0, ppms: 0 };
-    currentViewport.tmax = ms;
-    if (ts) ts.zoom(currentViewport.tmin, currentViewport.tmax);
-    resetAndFetch();
-  },
+  trigger: document.getElementById('dtp-to-open'),
+  onChange(ms) { applyRange(null, ms); },
 });
+
+// The single entry point for a host-driven viewport change — both date fields
+// and all four presets. It zooms once and fires exactly one fetch cycle;
+// before this existed, each DateTimePicker.onChange called resetAndFetch on
+// its own, so a change that moved both edges ran two complete cycles.
+// Pass null for an edge that stays where it is.
+function applyRange(fromMs, toMs) {
+  if (!currentViewport) currentViewport = { tmin: 0, tmax: 0, ppms: 0 };
+  if (fromMs != null) currentViewport.tmin = fromMs;
+  if (toMs   != null) currentViewport.tmax = toMs;
+  if (ts) ts.zoom(currentViewport.tmin, currentViewport.tmax);
+  syncDateTimeInputs();
+  resetAndFetch();
+}
 
 function syncDateTimeInputs() {
   if (!currentViewport) return;
   if (currentViewport.tmin != null) dtpFrom.setValue(currentViewport.tmin);
   if (currentViewport.tmax != null) dtpTo.setValue(currentViewport.tmax);
+  updateRangePresetState();
+}
+
+// ── Time-range presets ───────────────────────────────────────────────────
+// Half-open [start, end) boundaries in *local* time. The week starts on
+// Monday, which is what the picker's grid and naturalBlock()'s 'isoweek' both
+// assume. Day arithmetic runs through setDate(), so a span across a DST
+// switch is 23 or 25 hours rather than a wrong 24.
+function _midnight(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+const RANGE_PRESETS = {
+  today() {
+    const a = _midnight(new Date()), b = new Date(a);
+    b.setDate(b.getDate() + 1);
+    return [a, b];
+  },
+  yesterday() {
+    const b = _midnight(new Date()), a = new Date(b);
+    a.setDate(a.getDate() - 1);
+    return [a, b];
+  },
+  week() {
+    const a = _midnight(new Date());
+    a.setDate(a.getDate() - ((a.getDay() + 6) % 7));   // back to Monday
+    const b = new Date(a);
+    b.setDate(b.getDate() + 7);
+    return [a, b];
+  },
+  month() {
+    const n = new Date();
+    return [new Date(n.getFullYear(), n.getMonth(), 1),
+            new Date(n.getFullYear(), n.getMonth() + 1, 1)];
+  },
+};
+
+const rangeChips = [...document.querySelectorAll('#range-presets .chip[data-range]')];
+for (const chip of rangeChips) {
+  chip.addEventListener('click', () => {
+    const make = RANGE_PRESETS[chip.dataset.range];
+    if (!make) return;
+    const [a, b] = make();
+    applyRange(a.getTime(), b.getTime());
+  });
+}
+
+// A chip is lit only while the window is *exactly* its range — one pan or
+// zoom of any size puts it out again, so it never claims a window it did not
+// produce. Called from syncDateTimeInputs(), i.e. on every viewport change.
+function updateRangePresetState() {
+  for (const chip of rangeChips) {
+    const make = RANGE_PRESETS[chip.dataset.range];
+    let on = false;
+    if (currentViewport && make) {
+      const [a, b] = make();
+      on = Math.round(currentViewport.tmin) === a.getTime()
+        && Math.round(currentViewport.tmax) === b.getTime();
+    }
+    chip.classList.toggle('active', on);
+    chip.setAttribute('aria-pressed', on ? 'true' : 'false');
+  }
 }
 
 // ── Data loading helpers ────────────────────────────────────────────────
@@ -3896,9 +4059,15 @@ function setActiveSourceTab(name) {
   document.querySelectorAll('.source-tab').forEach(b => {
     b.classList.toggle('active', b.dataset.name === name);
   });
+  // The Config button follows the active tab. Hidden until an id is known —
+  // an <a> without href is not a link, and an .ibtn is inline-flex, so
+  // [hidden] alone would not have hidden it (see .ibtn[hidden]).
   const cfgLink = document.getElementById('source-config-link');
   const id = window._sourceIdByName && window._sourceIdByName[name];
-  if (cfgLink && id) cfgLink.href = '/sources/' + id + '/';
+  if (cfgLink) {
+    if (id) { cfgLink.href = sourceDetailUrl(id); cfgLink.hidden = false; }
+    else    { cfgLink.removeAttribute('href');    cfgLink.hidden = true; }
+  }
   const brand = document.getElementById('nav-brand');
   if (brand && name) brand.href = '/?name=' + encodeURIComponent(name);
 }
