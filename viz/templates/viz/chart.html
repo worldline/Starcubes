@@ -905,23 +905,9 @@
     padding: 6px 12px; display: flex; align-items: center; gap: 8px;
     flex: 0 0 auto; flex-wrap: wrap;
   }
-  #query-run {
-    background: var(--btn-bg); color: var(--btn-color); border: none;
-    border-radius: 3px; padding: 4px 14px; cursor: pointer; font: inherit; font-size: 12px;
-  }
-  #query-run:disabled, #query-cancel:disabled, #chart-sql:disabled { opacity: 0.5; cursor: default; }
-  #query-cancel {
-    background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
-    padding: 3px 12px; cursor: pointer; font: inherit; font-size: 12px;
-    color: var(--toggle-color);
-  }
-  #query-cancel:not(:disabled):hover { background: var(--toggle-hover); }
-  #chart-sql {
-    background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
-    padding: 3px 12px; cursor: pointer; font: inherit; font-size: 12px;
-    color: var(--toggle-color);
-  }
-  #chart-sql:not(:disabled):hover { background: var(--toggle-hover); }
+  /* Chrome from .ibtn, one size down: five buttons plus a status line have
+     to fit a 380 px minimum panel width. */
+  #query-actions .ibtn { --ibtn-size: 26px; font-size: 14px; }
   #query-status  { font-size: 11px; color: var(--legend-total-color); flex: 1;
                    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #query-status.err { color: var(--filter-tag-not-in-border); white-space: normal; }
@@ -1399,10 +1385,27 @@
     <textarea id="query-sql" spellcheck="false" placeholder="SELECT ... — one read-only statement"></textarea>
   </div>
   <div id="query-actions">
-    <button id="query-run" type="button">Run</button>
-    <button id="query-cancel" type="button" disabled>Cancel</button>
-    <button id="chart-sql" type="button" disabled
-            title="Copy the SQL behind the active chart legend into the console">SQL</button>
+    <button id="query-run" class="ibtn ibtn--primary" type="button"
+            aria-label="Run" data-tip="Run\A(Ctrl/&#8984;+Enter)">
+      <svg class="ic" aria-hidden="true"><use href="#ic-play"></use></svg>
+    </button>
+    <button id="query-cancel" class="ibtn" type="button" disabled
+            aria-label="Cancel the running query" data-tip="Cancel">
+      <svg class="ic" aria-hidden="true"><use href="#ic-square"></use></svg>
+    </button>
+    <button id="chart-sql" class="ibtn" type="button" disabled
+            aria-label="Copy the chart's SQL into the editor"
+            data-tip="Copy the SQL behind\Athe active chart legend">
+      <svg class="ic" aria-hidden="true"><use href="#ic-bar-chart"></use></svg>
+    </button>
+    <button id="query-format" class="ibtn" type="button"
+            aria-label="Format the SQL" data-tip="Format the SQL">
+      <svg class="ic" aria-hidden="true"><use href="#ic-align-left"></use></svg>
+    </button>
+    <button id="query-csv" class="ibtn" type="button" disabled
+            aria-label="Download the result as CSV" data-tip="Download as CSV">
+      <svg class="ic" aria-hidden="true"><use href="#ic-download"></use></svg>
+    </button>
     <span id="query-status"></span>
     <span id="query-hint" title="Ctrl/Cmd+Enter runs the query">Ctrl+&#x23ce;</span>
   </div>
@@ -3325,11 +3328,6 @@ function applySeriesDirections() {
   }
 }
 
-function csvEscape(v) {
-  const s = String(v);
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
 legendCopy.addEventListener('click', async () => {
   const header = `${gbLabel(starcubesParams.group_by) || 'series'},total`;
   const lines = lastLegendRows.map(r => `${csvEscape(r.name)},${r.total}`);
@@ -4735,6 +4733,265 @@ window.addEventListener('popstate', async () => {
   if (typeof fetchRange === 'function') fetchRange = _wrapLoading(fetchRange);
 })();
 
+// RFC 4180 field quoting, shared by the legend's clipboard copy and the query
+// console's CSV download: quote only when the value contains a quote, a comma
+// or a line break, and double an embedded quote.
+function csvEscape(v) {
+  const s = String(v);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// ── SQL pretty-printer ───────────────────────────────────────────────────
+// Vanilla, no dependency, and deliberately conservative: it re-lays out
+// whitespace and upper-cases keywords, and rewrites nothing else. It knows
+// the same lexical shapes core/adhoc.validate_sql() knows — single quotes
+// with '' escapes, dollar-quoting, -- and nested /* */ comments, "quoted
+// identifiers" — and copies every one of them through character for
+// character.
+//
+// Idempotent by construction: the output is a pure function of the token
+// stream, whitespace is dropped before that stream exists, and every token
+// re-lexes to itself (a -- comment is always followed by a line break, so it
+// can never swallow what comes after it on a second pass).
+const SQL_KEYWORDS = new Set([
+  'ALL','AND','ANY','ARRAY','AS','ASC','BETWEEN','BY','CASE','CAST','CROSS',
+  'DESC','DISTINCT','ELSE','END','EXCEPT','EXISTS','FALSE','FETCH','FILTER',
+  'FIRST','FROM','FULL','GROUP','HAVING','ILIKE','IN','INNER','INTERSECT',
+  'INTERVAL','IS','JOIN','LAST','LATERAL','LEFT','LIKE','LIMIT','NATURAL',
+  'NEXT','NOT','NULL','NULLS','OFFSET','ON','ONLY','OR','ORDER','OUTER','OVER',
+  'PARTITION','RECURSIVE','RETURNING','RIGHT','ROW','ROWS','SELECT','SIMILAR',
+  'SOME','THEN','TRUE','UNION','UNNEST','USING','VALUES','WHEN','WHERE',
+  'WINDOW','WITH','WITHIN',
+]);
+// Keywords that open a new line whenever they appear at list level.
+const SQL_CLAUSE = new Set([
+  'SELECT','FROM','WHERE','HAVING','LIMIT','OFFSET','FETCH','WINDOW',
+  'RETURNING','VALUES','UNION','INTERSECT','EXCEPT','WITH',
+]);
+// First word of a join clause; 'OUTER' may sit between it and JOIN.
+const SQL_JOIN_LEAD = new Set(['JOIN','INNER','LEFT','RIGHT','FULL','CROSS','NATURAL']);
+const SQL_OPS3 = ['->>', '#>>'];
+const SQL_OPS2 = ['<=', '>=', '<>', '!=', '||', '::', '->', '=>', ':=', '#>', '@>', '<@'];
+const SQL_WORD_START = /[A-Za-z_-￿]/;
+const SQL_WORD_CHAR  = /[A-Za-z0-9_-￿]/;
+
+function lexSql(sql) {
+  const out = [];
+  const n = sql.length;
+  let i = 0;
+  while (i < n) {
+    const c = sql[i];
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\n' || c === '\f' || c === '\v') { i++; continue; }
+    if (c === '-' && sql[i + 1] === '-') {                        // line comment
+      let j = i;
+      while (j < n && sql[j] !== '\n') j++;
+      out.push({ t: 'lcomment', v: sql.slice(i, j).replace(/\s+$/, '') });
+      i = j; continue;
+    }
+    if (c === '/' && sql[i + 1] === '*') {                        // nested block comment
+      let j = i + 2, d = 1;
+      while (j < n && d > 0) {
+        if (sql[j] === '/' && sql[j + 1] === '*') { d++; j += 2; }
+        else if (sql[j] === '*' && sql[j + 1] === '/') { d--; j += 2; }
+        else j++;
+      }
+      out.push({ t: 'bcomment', v: sql.slice(i, j) });
+      i = j; continue;
+    }
+    if (c === '$') {                                              // dollar quoting
+      const m = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i));
+      if (m) {
+        const tag = m[0];
+        const end = sql.indexOf(tag, i + tag.length);
+        const j = end < 0 ? n : end + tag.length;
+        out.push({ t: 'str', v: sql.slice(i, j) });
+        i = j; continue;
+      }
+    }
+    if (c === "'" || c === '"') {                                 // string / quoted identifier
+      let j = i + 1;
+      while (j < n) {
+        if (sql[j] === c) { if (sql[j + 1] === c) j += 2; else { j++; break; } }
+        else j++;
+      }
+      out.push({ t: c === "'" ? 'str' : 'qident', v: sql.slice(i, j) });
+      i = j; continue;
+    }
+    if (SQL_WORD_START.test(c)) {                                 // word
+      let j = i;
+      while (j < n && SQL_WORD_CHAR.test(sql[j])) j++;
+      out.push({ t: 'word', v: sql.slice(i, j) });
+      i = j; continue;
+    }
+    if (c >= '0' && c <= '9') {                                   // number
+      let j = i;
+      while (j < n && /[0-9.]/.test(sql[j])) j++;
+      out.push({ t: 'num', v: sql.slice(i, j) });
+      i = j; continue;
+    }
+    const three = sql.substr(i, 3), two = sql.substr(i, 2);
+    if (SQL_OPS3.includes(three)) { out.push({ t: 'op', v: three }); i += 3; continue; }
+    if (SQL_OPS2.includes(two))   { out.push({ t: 'op', v: two });   i += 2; continue; }
+    out.push({ t: 'op', v: c });
+    i++;
+  }
+  return out;
+}
+
+const SQL_NO_SPACE_BEFORE = new Set([',', ')', ';', '.', '::', '$', '->', '->>', '#>', '#>>']);
+const SQL_NO_SPACE_AFTER  = new Set(['(', '.', '::', '$', '->', '->>', '#>', '#>>']);
+
+function formatSql(sql) {
+  const toks = lexSql(sql);
+  if (!toks.length) return '';
+
+  const IND = '  ';
+  const lines = [];
+  let cur = '', curIndent = 0;
+  let depth = 0;          // subquery nesting → indentation level
+  let plain = 0;          // function-call / value-list nesting
+  // One entry per open paren. `openIndent` is the indent of the line the '('
+  // landed on — what the contents indent against, and where the ')' goes. It
+  // is not always `depth`: an 'IN (' sits on an AND line, one level in.
+  // `prevDepth` restores the clause level, which the AND line must not shift.
+  const parens = [];
+  let betweenOpen = false;
+  let closedSub = false;  // the token just emitted was a subquery ')'
+  let glueNext = false;   // the token just emitted forbids a following space
+  let prev = null;
+
+  const flush = () => { const t = cur.replace(/\s+$/, ''); if (t.trim() !== '') lines.push(t); cur = ''; };
+  const nl = lvl => { flush(); curIndent = Math.max(0, lvl); cur = IND.repeat(curIndent); };
+  const put = (text, glue) => { cur += (cur.trim() === '' || glue) ? text : ' ' + text; };
+
+  const upOf = tk => (tk && tk.t === 'word' ? tk.v.toUpperCase() : (tk ? tk.v : ''));
+  // The next token that is not a comment.
+  const sig = k => { let j = k; while (toks[j] && (toks[j].t === 'lcomment' || toks[j].t === 'bcomment')) j++; return toks[j] || null; };
+  // Index of the JOIN that ends a join clause starting at k ('LEFT JOIN',
+  // 'FULL OUTER JOIN', 'JOIN'), or -1. Returns -1 for left(str, 2), whose
+  // next token is '(' rather than a word.
+  const joinRunEnd = k => {
+    const u = upOf(toks[k]);
+    if (!SQL_JOIN_LEAD.has(u)) return -1;
+    if (u === 'JOIN') return k;
+    for (let j = k + 1; toks[j] && toks[j].t === 'word'; j++) {
+      const w = upOf(toks[j]);
+      if (w === 'JOIN') return j;
+      if (w !== 'OUTER') return -1;
+    }
+    return -1;
+  };
+  // True when the clause opened at k has more than one top-level item, which
+  // is the only case where breaking after the keyword buys anything —
+  // 'SELECT *' stays on one line, a three-column list does not.
+  const clauseIsList = k => {
+    let p = 0;
+    for (let j = k + 1; j < toks.length; j++) {
+      const t = toks[j];
+      if (t.v === '(') p++;
+      else if (t.v === ')') { if (p === 0) return false; p--; }
+      else if (p > 0) continue;
+      else if (t.v === ',') return true;
+      else if (t.v === ';') return false;
+      else if (t.t === 'word' && (SQL_CLAUSE.has(upOf(t)) || SQL_JOIN_LEAD.has(upOf(t)))) return false;
+    }
+    return false;
+  };
+  // Clauses whose items each get their own line.
+  const LIST_CLAUSE = new Set(['SELECT', 'GROUP BY', 'ORDER BY']);
+  let pendingListBreak = -1;   // indent level to break to, or -1
+  let joinRunUntil = -1;       // suppress a second break on '… OUTER JOIN'
+
+  for (let k = 0; k < toks.length; k++) {
+    const tk = toks[k];
+    const up = upOf(tk);
+    const wasClosedSub = closedSub;
+    closedSub = false;
+    const glue = glueNext;
+    glueNext = false;
+
+    if (tk.t === 'lcomment') {
+      put(tk.v, glue);
+      nl(curIndent);                     // nothing may follow it on that line
+      prev = tk; continue;
+    }
+    if (tk.t === 'bcomment') { put(tk.v, glue); prev = tk; continue; }
+
+    // A pending "one item per line" break, deferred past SELECT's own
+    // modifiers. DISTINCT ON (...) cancels it: its list is not the select
+    // list, and breaking between them reads worse than leaving it alone.
+    if (pendingListBreak >= 0 && !(tk.t === 'word' && (up === 'DISTINCT' || up === 'ALL'))) {
+      if (tk.t === 'word' && up === 'ON') pendingListBreak = -1;
+      else { nl(pendingListBreak); pendingListBreak = -1; }
+    }
+
+    if (tk.t === 'word') {
+      let text = SQL_KEYWORDS.has(up) ? up : tk.v;
+      let twoWord = false;
+      if (plain === 0 && (up === 'GROUP' || up === 'ORDER') && upOf(toks[k + 1]) === 'BY') {
+        text = up + ' BY'; twoWord = true; k++;
+      }
+      if (up === 'BETWEEN') betweenOpen = true;
+      const joinEnd = (plain === 0 && k > joinRunUntil) ? joinRunEnd(k) : -1;
+
+      if (plain === 0 && (twoWord || SQL_CLAUSE.has(up) || joinEnd >= 0)) {
+        if (joinEnd >= 0) joinRunUntil = joinEnd;
+        nl(depth); put(text);
+        if (LIST_CLAUSE.has(text) && clauseIsList(k)) pendingListBreak = depth + 1;
+      } else if (plain === 0 && (up === 'AND' || up === 'OR')) {
+        // BETWEEN's own AND is part of the operator, not a new condition.
+        if (up === 'AND' && betweenOpen) { betweenOpen = false; put(text, glue); }
+        else { nl(depth + 1); put(text); }
+      } else {
+        put(text, glue);
+      }
+      prev = tk; continue;
+    }
+
+    if (tk.v === '(') {
+      // A subquery only at list level; count((SELECT 1)) stays one line.
+      const sub = plain === 0 && ['SELECT', 'WITH', 'VALUES'].includes(upOf(sig(k + 1)));
+      // A '(' right after a plain word or a ')' is a call: count(*), not IN (…).
+      const call = prev && ((prev.t === 'word' && !SQL_KEYWORDS.has(upOf(prev))) ||
+                            prev.t === 'qident' || prev.v === ')' || prev.v === ']');
+      put('(', glue || call);
+      if (sub) {
+        parens.push({ sub: true, openIndent: curIndent, prevDepth: depth });
+        depth = curIndent + 1; nl(depth);
+      } else {
+        parens.push({ sub: false }); plain++; glueNext = true;
+      }
+      prev = tk; continue;
+    }
+    if (tk.v === ')') {
+      const open = parens.pop();
+      if (open && open.sub) {
+        nl(open.openIndent); put(')'); depth = open.prevDepth; closedSub = true;
+      } else {
+        plain = Math.max(0, plain - 1); put(')', true);
+      }
+      prev = tk; continue;
+    }
+    if (tk.v === ',') {
+      put(',', true);
+      // After a closed subquery the comma separates CTEs, which belong one
+      // level out from a select-list item.
+      if (plain === 0) nl(depth + (wasClosedSub ? 0 : 1));
+      prev = tk; continue;
+    }
+    if (tk.v === ';') { put(';', true); nl(depth); prev = tk; continue; }
+
+    const unary = (tk.v === '-' || tk.v === '+') &&
+      (!prev || (prev.t === 'op' && prev.v !== ')') || prev.v === '(' || prev.v === ',' ||
+       (prev.t === 'word' && SQL_KEYWORDS.has(upOf(prev))));
+    put(tk.v, glue || SQL_NO_SPACE_BEFORE.has(tk.v));
+    if (SQL_NO_SPACE_AFTER.has(tk.v) || unary) glueNext = true;
+    prev = tk;
+  }
+  flush();
+  return lines.join('\n');
+}
+
 // ── Query console ───────────────────────────────────────────────────────
 //
 // Ad-hoc read-only SQL against the warehouse schema of the current source.
@@ -4764,6 +5021,8 @@ window.addEventListener('popstate', async () => {
   const histToggle  = document.getElementById('query-history-toggle');
   const histWrap    = document.getElementById('query-history-wrap');
   const histTable   = document.getElementById('query-history-table');
+  const formatBtn   = document.getElementById('query-format');
+  const csvBtn      = document.getElementById('query-csv');
 
   let state = { open: false, historyOpen: false, left: null, top: null,
                 width: null, height: null };
@@ -4895,8 +5154,15 @@ window.addEventListener('popstate', async () => {
   // ── Results ───────────────────────────────────────────────────────────
   const NUMERIC = /^-?[\d.,]+$/;
 
+  // The last payload the server sent, kept for the CSV export. Reading the
+  // table back out of the DOM instead would launder the data through the
+  // renderer — NULL comes out as the word "NULL", every value as a string.
+  let lastResult = null;
+
   function renderResults(data) {
     resultTable.replaceChildren();
+    lastResult = (data && data.columns && data.columns.length) ? data : null;
+    if (csvBtn) csvBtn.disabled = !lastResult;
     if (!data.columns.length) return;
     const thead = document.createElement('thead');
     const hrow = document.createElement('tr');
@@ -4931,6 +5197,54 @@ window.addEventListener('popstate', async () => {
       tbody.appendChild(tr);
     }
     resultTable.appendChild(tbody);
+  }
+
+  // ── Format ────────────────────────────────────────────────────────────
+  function formatEditor() {
+    const src = sqlBox.value;
+    if (!src.trim()) { setStatus('nothing to format', true); return; }
+    const out = formatSql(src);
+    sqlBox.focus();
+    if (out === src) { setStatus('already formatted'); return; }
+    sqlBox.setSelectionRange(0, sqlBox.value.length);
+    // execCommand, not `sqlBox.value = …`: it goes through the browser's own
+    // undo stack, so Ctrl+Z takes the formatting back. Deprecated but
+    // unreplaced — no standard API writes to a textarea undoably.
+    let ok = false;
+    try { ok = document.execCommand('insertText', false, out); } catch (e) { ok = false; }
+    if (!ok || sqlBox.value !== out) sqlBox.value = out;
+    sqlBox.setSelectionRange(sqlBox.value.length, sqlBox.value.length);
+    setStatus('formatted');
+  }
+
+  // ── CSV export ────────────────────────────────────────────────────────
+  // A file, not the clipboard: the row limit is 1000
+  // (STARCUBES_QUERY_ROW_LIMIT), and nothing useful happens when that lands
+  // in a paste buffer. Quoting is the shared csvEscape(); a NULL becomes an
+  // empty field, and the line ending is CRLF, both per RFC 4180.
+  function exportCsv() {
+    if (!lastResult) return;
+    const lines = [lastResult.columns.map(csvEscape).join(',')];
+    for (const row of lastResult.rows) {
+      lines.push(row.map(v => (v === null || v === undefined)
+        ? '' : csvEscape(typeof v === 'object' ? JSON.stringify(v) : v)).join(','));
+    }
+    // The BOM is the only reason Excel reads the file as UTF-8 rather than as
+    // the system code page.
+    const blob = new Blob(['\uFEFF' + lines.join('\r\n') + '\r\n'],
+                          { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    a.href = url;
+    a.download = 'starcubes-' + (sourceName() || 'query').replace(/[^\w.-]+/g, '_')
+               + '-' + stamp + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // Revoked a tick later: Safari needs the object URL to outlive the click.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    setStatus(lastResult.rows.length + ' row' + (lastResult.rows.length === 1 ? '' : 's') + ' exported');
   }
 
   // ── Run / cancel ──────────────────────────────────────────────────────
@@ -5153,6 +5467,8 @@ window.addEventListener('popstate', async () => {
   document.getElementById('query-close').addEventListener('click', () => setOpen(false));
   runBtn.addEventListener('click', runQuery);
   cancelBtn.addEventListener('click', cancelQuery);
+  formatBtn.addEventListener('click', formatEditor);
+  csvBtn.addEventListener('click', exportCsv);
 
   // Copy the SQL behind the active chart legend into the editor (no run).
   // The server builds it via core.query.build_chart_legend_sql — the
