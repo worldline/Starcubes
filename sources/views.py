@@ -1817,7 +1817,7 @@ def _clear_other_defaults(conn, pk: int, keep_id: int | None) -> None:
 
 
 @require_POST
-@_admin_required_json
+@_login_required_json
 def measure_add(request, pk: int):
     try:
         p = request.POST
@@ -1843,7 +1843,7 @@ def measure_add(request, pk: int):
 
 
 @require_POST
-@_admin_required_json
+@_login_required_json
 def measure_edit(request, pk: int, measure_id: int):
     try:
         p = request.POST
@@ -1871,7 +1871,7 @@ def measure_edit(request, pk: int, measure_id: int):
 
 
 @require_POST
-@_admin_required_json
+@_login_required_json
 def measure_delete(request, pk: int, measure_id: int):
     try:
         with _meta_engine().begin() as conn:
@@ -1999,6 +1999,7 @@ def _alarm_row_to_dict(row) -> dict:
 
 
 @require_POST
+@_login_required_json
 def alarms_list(request, pk: int):
     """All alarms for one datasource, as a JSON array.
 
@@ -2030,7 +2031,7 @@ def alarms_list(request, pk: int):
 
 
 @require_POST
-@_admin_required_json
+@_login_required_json
 def alarm_add(request, pk: int):
     """Create one alarm for the given datasource."""
     values, errors = _parse_alarm_fields(request)
@@ -2072,7 +2073,7 @@ def alarm_add(request, pk: int):
 
 
 @require_POST
-@_admin_required_json
+@_login_required_json
 def alarm_edit(request, pk: int, alarm_id: int):
     """Update one alarm. Same field set as add — no partial updates."""
     values, errors = _parse_alarm_fields(request)
@@ -2111,7 +2112,7 @@ def alarm_edit(request, pk: int, alarm_id: int):
 
 
 @require_POST
-@_admin_required_json
+@_login_required_json
 def alarm_delete(request, pk: int, alarm_id: int):
     """Delete one alarm. Idempotent — 200 even if the row was already gone."""
     try:
@@ -2260,7 +2261,7 @@ def group_dim_detail(request, pk: int, gs_id: int):
 
 
 @require_POST
-@_admin_required_json
+@_login_required_json
 def group_dim_add(request, pk: int):
     """Create an empty group dimension on one native dimension."""
     try:
@@ -2299,7 +2300,7 @@ def group_dim_add(request, pk: int):
 
 
 @require_POST
-@_admin_required_json
+@_login_required_json
 def group_dim_save(request, pk: int, gs_id: int):
     """Rename a group dimension and replace *its* groups atomically.
 
@@ -2389,7 +2390,7 @@ def group_dim_save(request, pk: int, gs_id: int):
 
 
 @require_POST
-@_admin_required_json
+@_login_required_json
 def group_dim_delete(request, pk: int, gs_id: int):
     """Delete one group dimension; its groups and members go with it."""
     try:

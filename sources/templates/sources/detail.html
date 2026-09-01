@@ -162,7 +162,7 @@
           <th>Graph Style</th>
           <th style="text-align:center;width:70px">Default</th>
           <th style="width:110px">Percentiles</th>
-          {% if user.is_superuser %}<th style="text-align:right">Actions</th>{% endif %}
+          <th style="text-align:right">Actions</th>
         </tr>
       </thead>
       <tbody id="measureBody">
@@ -196,7 +196,6 @@
             <span class="row-display text-mono">{{ m.percentiles|default:"—" }}</span>
             <input class="row-edit cell-input" name="percentiles" value="{{ m.percentiles|default:'' }}" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick)">
           </td>
-          {% if user.is_superuser %}
           <td class="actions">
             <span class="row-display">
               <button class="btn-icon" onclick="startEdit(this, 'measure')" title="Edit">✏</button>
@@ -207,14 +206,12 @@
               <button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>
             </span>
           </td>
-          {% endif %}
         </tr>
         {% empty %}
-        <tr id="measure-empty"><td colspan="{% if user.is_superuser %}7{% else %}6{% endif %}" class="empty-state">No measures yet — the chart falls back to a single count(*).</td></tr>
+        <tr id="measure-empty"><td colspan="7" class="empty-state">No measures yet — the chart falls back to a single count(*).</td></tr>
         {% endfor %}
       </tbody>
     </table>
-    {% if user.is_superuser %}
     <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
       <form id="measureAddForm" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
         {% csrf_token %}
@@ -241,7 +238,6 @@
       </form>
       <div id="measureAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
     </div>
-    {% endif %}
   </div>
 </div>
 
