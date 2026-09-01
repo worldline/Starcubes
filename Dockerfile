@@ -13,19 +13,34 @@ RUN mkdir -p /js/vendor/timeseries && \
        /js/vendor/timeseries/timeseries.js
 
 # ── Stage 2: Python build ─────────────────────────────────────────────────────
-FROM python:3.12-bookworm AS builder
+# slim + gcc instead of the full bookworm image: every requirements.txt wheel
+# is manylinux (nothing compiled from source) except uwsgi, which ships as
+# sdist only and needs a C compiler. gcc (no recommends) keeps this stage far
+# smaller than full bookworm's build-essential toolchain.
+FROM python:3.12-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/
 
 RUN pip install --no-cache-dir -r /tmp/requirements.txt uwsgi \
-    && rm -rf /tmp/requirements.txt
+    # Runtime image doesn't need pip / setuptools / wheel — strip them after
+    # the install, before the site-packages COPY into the runtime stage.
+    && rm -rf /usr/local/lib/python3.12/site-packages/pip* \
+              /usr/local/lib/python3.12/site-packages/setuptools* \
+              /usr/local/lib/python3.12/site-packages/wheel* \
+    # No package ships code under tests/ that is needed at runtime; pandas
+    # alone ships 36 MB of them. Delete every site-packages tests dir.
+    && find /usr/local/lib/python3.12/site-packages \
+        \( -name 'tests' -o -name 'test' \) -type d -exec rm -rf {} + \
+    && true
 
 # ── Stage 3: runtime ─────────────────────────────────────────────────────────
 FROM python:3.12-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx \
-        libxml2 \
         libaio1 \
     && rm -rf /var/lib/apt/lists/*
 

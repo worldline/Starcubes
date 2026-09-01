@@ -3,6 +3,15 @@ __pycache__
 .git
 .gitignore
 .claude
+# DB dumps and the collectstatic output (rebuilt by `manage.py bootstrap`
+# at container start — a host copy would ship stale assets).
+backups/
+staticfiles/
+*.zip
+# Presentation material, not app code.
+presentation/
+presentation.html
+slides.html
 *.md
 .dockerignore
 Dockerfile_orig
