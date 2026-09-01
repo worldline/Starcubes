@@ -6,6 +6,21 @@ all DB access via SQLAlchemy (same `_get_cached_engine` / `text()` /
 
 Read this when editing anything under `sources/`.
 
+## Nav bar
+
+Single `#nav-tabs` flex row, same pattern as the chart page (see
+`docs/chart-app.md`): source tabs, spacer, then everything else collapsed
+into `#nav-menu`, a `makePopover` dropdown behind the `#nav-menu-toggle`
+hamburger. Menu rows: username header (links to `sources:me`), Users /
+Profiles / Create new source / Manage (superuser-only; Manage additionally
+only on the `detail` page), theme toggle, About (`viz:slides`, new tab),
+Log out. The menu CSS/JS live in `sources/static/sources/nav.css` and
+`nav.js` — near-verbatim mirrors of the chart's inline copies, kept
+deliberately separate so the two apps don't share a static include. The
+base wiring script (theme helper + `makePopover` call) sits inside
+`{% block extra_js %}` of `base.html`; templates that override the block
+must start with `{{ block.super }}` (list/manage/new do).
+
 ## Pages at a glance
 
 The `/sources/` UI splits along three axes:
