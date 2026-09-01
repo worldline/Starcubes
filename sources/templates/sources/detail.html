@@ -168,16 +168,44 @@
       <tbody id="measureBody">
         {% for m in measures %}
         <tr id="measure-{{ m.id }}" data-id="{{ m.id }}">
-          <td>{{ m.ordinal }}</td>
-          <td>{{ m.name }}</td>
-          <td class="text-mono">{{ m.agg }}</td>
-          <td><span class="badge badge-dialect">{{ m.graph_style }}</span></td>
-          <td style="text-align:center">{% if m.is_default %}✓{% else %}—{% endif %}</td>
-          <td class="text-mono">{{ m.percentiles|default:"—" }}</td>
+          <td>
+            <span class="row-display">{{ m.ordinal }}</span>
+            <input class="row-edit cell-input" name="ordinal" type="number" value="{{ m.ordinal }}" style="width:60px">
+          </td>
+          <td>
+            <span class="row-display">{{ m.name }}</span>
+            <input class="row-edit cell-input" name="name" value="{{ m.name }}">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ m.agg }}</span>
+            <select class="row-edit cell-input" name="agg">
+              {% for a in measure_aggs %}<option value="{{ a }}"{% if m.agg == a %} selected{% endif %}>{{ a }}</option>{% endfor %}
+            </select>
+          </td>
+          <td>
+            <span class="row-display"><span class="badge badge-dialect">{{ m.graph_style }}</span></span>
+            <select class="row-edit cell-input" name="graph_style">
+              {% for g in graph_styles %}<option value="{{ g }}"{% if m.graph_style == g %} selected{% endif %}>{{ g }}</option>{% endfor %}
+            </select>
+          </td>
+          <td style="text-align:center">
+            <span class="row-display">{% if m.is_default %}✓{% else %}—{% endif %}</span>
+            <input class="row-edit" type="checkbox" name="is_default" {% if m.is_default %}checked{% endif %} style="margin:4px">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ m.percentiles|default:"—" }}</span>
+            <input class="row-edit cell-input" name="percentiles" value="{{ m.percentiles|default:'' }}" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick)">
+          </td>
           {% if user.is_superuser %}
           <td class="actions">
-            <button class="btn-icon" onclick="startEdit(this, 'measure')" title="Edit">✏</button>
-            <button class="btn-icon" onclick="deleteRow(this, '{% url "sources:measure_delete" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'))" title="Delete" style="color:var(--danger)">✕</button>
+            <span class="row-display">
+              <button class="btn-icon" onclick="startEdit(this, 'measure')" title="Edit">✏</button>
+              <button class="btn-icon" onclick="deleteRow(this, '{% url "sources:measure_delete" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'))" title="Delete" style="color:var(--danger)">✕</button>
+            </span>
+            <span class="row-edit" style="gap:4px">
+              <button class="btn btn-primary btn-sm" onclick="saveRow(this, '{% url "sources:measure_edit" ds.id 0 %}'.replace('/0/', '/'+this.closest('tr').dataset.id+'/'), 'measure')">Save</button>
+              <button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>
+            </span>
           </td>
           {% endif %}
         </tr>
@@ -186,6 +214,34 @@
         {% endfor %}
       </tbody>
     </table>
+    {% if user.is_superuser %}
+    <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
+      <form id="measureAddForm" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+        {% csrf_token %}
+        <div style="width:70px"><label class="form-label">Ordinal</label><input class="form-control" name="ordinal" type="number" value="0"></div>
+        <div style="flex:1;min-width:140px"><label class="form-label">Name</label><input class="form-control" name="name" required placeholder="Transaction count"></div>
+        <div style="width:170px">
+          <label class="form-label">Agg</label>
+          <select class="form-control" name="agg">
+            {% for a in measure_aggs %}<option>{{ a }}</option>{% endfor %}
+          </select>
+        </div>
+        <div style="width:130px">
+          <label class="form-label">Graph Style</label>
+          <select class="form-control" name="graph_style">
+            {% for g in graph_styles %}<option>{{ g }}</option>{% endfor %}
+          </select>
+        </div>
+        <div style="width:130px">
+          <label class="form-label">Percentiles</label>
+          <input class="form-control" name="percentiles" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick)">
+        </div>
+        <div style="padding-top:18px"><label style="font-size:12px;color:var(--muted)"><input type="checkbox" name="is_default"> default</label></div>
+        <div style="padding-top:18px"><button type="submit" class="btn btn-primary">Add</button></div>
+      </form>
+      <div id="measureAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
+    </div>
+    {% endif %}
   </div>
 </div>
 
@@ -682,6 +738,38 @@ function saveRow(btn, url, kind) {
     location.reload();
   });
 }
+
+// ==========================================================================
+// Measure add form
+// ==========================================================================
+(function() {
+  var form = document.getElementById('measureAddForm');
+  if (!form) return;  // admins only
+  var errEl = document.getElementById('measureAddErr');
+  form.addEventListener('submit', function(ev) {
+    ev.preventDefault();
+    errEl.style.display = 'none';
+    var data = {};
+    new FormData(form).forEach(function(v, k){ data[k] = v; });
+    if (typeof data.is_default === 'undefined') data.is_default = '';
+    var csrfToken = (document.cookie.match(/csrftoken=([^;]+)/) || [,''])[1];
+    fetch('{% url "sources:measure_add" ds.id %}', {
+      method: 'POST',
+      headers: {
+        'X-CSRFToken': csrfToken,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams(data).toString(),
+    }).then(function(r){ return r.json(); }).then(function(d) {
+      if (!d.ok) {
+        errEl.textContent = d.error || 'Add failed';
+        errEl.style.display = 'block';
+        return;
+      }
+      location.reload();
+    });
+  });
+})();
 
 // ==========================================================================
 // Alarms CRUD

@@ -445,11 +445,15 @@ def source_detail(request, pk: int):
     """
     ctx = _build_source_context(pk)
     # Carve the slim context detail.html needs. The keys not in this set
-    # are present in ``manage.html`` only.
+    # are present in ``manage.html`` only. measure_aggs / graph_styles are
+    # passed so admins get the same inline-edit / add-form pattern here
+    # that manage.html uses — see detail.html#L170-L236.
     return render(request, "sources/detail.html", {
-        "ds":         ctx["ds"],
-        "dimensions": ctx["dimensions"],
-        "measures":   ctx["measures"],
+        "ds":          ctx["ds"],
+        "dimensions":  ctx["dimensions"],
+        "measures":    ctx["measures"],
+        "measure_aggs": ctx["measure_aggs"],
+        "graph_styles": ctx["graph_styles"],
         "current_source_id":   ctx["current_source_id"],
         "current_source_name": ctx["current_source_name"],
     })
