@@ -23,9 +23,23 @@ behaviour of the ETL that *populates* it lives in
   any source-specific key names.
 - **Primary dimension** — when several fact columns share a dim table
   (e.g. `so_peer_1/2/3` and `src_peer` all reference `peer`), exactly one
-  `dimension` row is `is_primary = true`. That one drives DDL, dim import,
-  and the `read_dimensions` mapping; the rest only contribute their
-  fact-column-to-dim-table link for the transform stage.
+  `dimension` row is `is_primary = true`. That one supplies the group's
+  `dim_table` for the meta API's `dim_filters` payload; it still drives DDL,
+  dim import, and the `read_dimensions` mapping. The rest only contribute
+  their fact-column-to-dim-table link for the transform stage.
+- **Filter group** — `starcubes_meta.dimension.filter_group` (text, NULL):
+  rows sharing a non-null value form one **fan-out chart filter** — the UI
+  offers a single merged row (token = the group name, e.g. `so_peer` over
+  `so_peer_1/2/3`), and the server emits
+  `(f.so_peer_1 IN (…) OR f.so_peer_2 IN (…) OR f.so_peer_3 IN (…))`
+  (`NOT (… OR …)` for negative ops — "kein Member der Txn trifft zu").
+  Group membership is deliberately **not** dim_table-based: `src_peer`
+  shares `peer` but keeps its own single-column filter. Invariants (validated
+  in `Source.load`, core/source.py): members share one `dim_table`; the group
+  name must not contain `:` (collides with the `<col>:grouped:<slug>`
+  grammar) and must not equal a fact-column name. Grouped-token filters
+  (`<col>:grouped:<slug>`) do **not** fan out — see docs/backlog.md.
+  NULL = ordinary single-column behaviour.
 - **Inline dimension** — a dimension backed by a fixed CSV value set
   instead of a source DB lookup. `inline_values` text column on
   `starcubes_meta.dimension` holds `source_id,name[,description]` lines. When

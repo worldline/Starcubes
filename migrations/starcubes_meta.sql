@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.dimension (
     source_description  text,
     is_primary          boolean NOT NULL DEFAULT false,
     inline_values       text,
+    filter_group        text,
     UNIQUE (datasource_id, fact_column)
 );
 
@@ -784,3 +785,14 @@ ALTER TABLE starcubes_meta.alarm
 
 COMMENT ON COLUMN starcubes_meta.alarm.enabled IS
     'Rule is active. Persisted and editable, but no evaluation loop reads it yet — see docs/backlog.md.';
+
+
+-- 0027_dimension_filter_group.sql — backstop for installs created by the
+-- dimension block above, whose CREATE TABLE IF NOT EXISTS leaves an existing
+-- table alone, so the column has to be added explicitly.
+
+ALTER TABLE starcubes_meta.dimension
+    ADD COLUMN IF NOT EXISTS filter_group text;
+
+COMMENT ON COLUMN starcubes_meta.dimension.filter_group IS
+    'Fan-out filter group: rows sharing a non-null value form one chart filter that ORs over every member fact column (e.g. filter_group=so_peer over so_peer_1/2/3). NULL = ordinary single-column filter.';

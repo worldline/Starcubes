@@ -13,6 +13,32 @@ Other chart-side mechanics (resolution tiers, y-axis density, floating
 panels, query console, provisional blocks) live in
 [`docs/chart-app.md`](chart-app.md).
 
+## Filter fan-out over shared dimensions
+
+A filter on a fan-out group (see **Filter group** in
+[`docs/star-schema.md`](star-schema.md)) emits one dim-value subquery per
+member fact column, OR-ed together. Built in `_filter_sql`
+(`core/query.py`), so plot, quantiles, drill-down, transaction list and all
+copy-SQL variants inherit it. Shapes, for `so_peer` over
+`so_peer_1/2/3` on dim table `peer`:
+
+- `in`: `(f.so_peer_1 IN (SELECT index FROM <schema>.peer WHERE source_id = ANY(:flt0))
+  OR f.so_peer_2 IN (…) OR f.so_peer_3 IN (…))` — **one** shared `:flt0`
+  param reused by every member's subquery (SQLAlchemy `text()` accepts
+  repeated named params; `_inline_bind_params` substitutes all occurrences).
+- `not_in`: same OR wrapped in `NOT (…)` — AND of NOT IN, i.e. "none of the
+  transaction's peers matches".
+- `starts_with`/`contains`/…: one `… IN (SELECT index … WHERE name LIKE
+  :fltN_j)` per member, same OR/NOT shape; the LIKE patterns are shared
+  per value across members.
+- Single member / individual fact column (`src_peer`, `so_peer_2`):
+  byte-identical to the pre-fan-out single-column fragment — cache keys
+  (`core/cache.py` hashes the filter tree verbatim) and the SQL console
+  diff against those strings.
+
+Grouped-token filters (`<col>:grouped:<slug>`) do not fan out — see
+docs/backlog.md.
+
 ## Plot types
 
 - **Ladder plot types (`quantile-bands`, `quantile-steps`, `quantile-steps-open`,

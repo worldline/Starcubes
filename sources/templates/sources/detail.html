@@ -433,6 +433,7 @@ function saveRow(btn, url, prefix) {
       // inline_values display — show first line + "…" if multiline
       var iv = row.inline_values || '';
       spans[7].textContent = iv ? iv.split('\n')[0] + (iv.includes('\n') ? ' …' : '') : '—';
+      spans[8].textContent = row.filter_group || '—';
     } else if (prefix === 'idx') {
       tr.querySelectorAll('span.row-display')[0].textContent = row.column_name;
       tr.querySelectorAll('span.row-display')[1].innerHTML = '<span class="badge badge-dialect">' + row.method + '</span>';

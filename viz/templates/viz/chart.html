@@ -1521,14 +1521,30 @@ function getFilterColumns() {
   const dimCols = currentMeta.fact_columns
     .filter(c => (c.role === 'dimension' || c.role === 'auto-dimension') && c.dim_table)
     .sort((a, b) => a.name.localeCompare(b.name));
+  // Fan-out groups (dimension.filter_group, e.g. so_peer over so_peer_1/2/3):
+  // the group replaces its members' per-column rows with one merged entry;
+  // group-set sub-tokens stay only on non-member columns.
+  const merged = currentMeta.dim_filters || [];
+  const groupMembers = new Set(merged.flatMap(f => f.fact_cols));
   const result = [];
   for (const c of dimCols) {
+    if (groupMembers.has(c.name)) continue;
     result.push({ name: c.name, label: c.name });
     for (const s of sets.filter(s => s.col === c.name)) {
       result.push({ name: s.token, label: s.label });
     }
   }
+  for (const f of merged) result.push({ name: f.token, label: f.label });
   return result;
+}
+
+// A saved state or URL may still carry a member fact column (so_peer_1)
+// where the UI now offers the group token (so_peer). Rewrite it so old
+// bookmarks/states keep working and display as the merged row.
+function normalizeFilterCol(col) {
+  const f = (currentMeta.dim_filters || [])
+    .find(f => (f.fact_cols || []).includes(col));
+  return f ? f.token : col;
 }
 
 function getFilterOptionsForCol(colName) {
@@ -1541,6 +1557,8 @@ function getFilterOptionsForCol(colName) {
     opts.push(['(other)', '', '']);
     return opts;
   }
+  const f = (currentMeta.dim_filters || []).find(x => x.token === colName);
+  if (f) return currentMeta.dimensions[f.dim_table] || [];
   const fc = currentMeta.fact_columns.find(c => c.name === colName);
   return fc && fc.dim_table ? (currentMeta.dimensions[fc.dim_table] || []) : [];
 }
@@ -4367,7 +4385,7 @@ function applySourceState(name) {
   if (Array.isArray(state.filterRows)) {
     const validCols = new Set(getFilterColumns().map(c => c.name));
     filterRows = state.filterRows
-      .map(r => ({ ...r, column: normalizeGbToken(r.column) }))
+      .map(r => ({ ...r, column: normalizeFilterCol(normalizeGbToken(r.column)) }))
       .filter(r => validCols.has(r.column))
       .map(r => ({
         id: ++filterRowId, column: r.column, op: r.op,
@@ -4530,7 +4548,7 @@ function applyUrlParams() {
       vals = spec.slice(eq + 1).split(',');
       op = 'in';
     }
-    col = normalizeGbToken(col);
+    col = normalizeFilterCol(normalizeGbToken(col));
     const opts = getFilterOptionsForCol(col);
     const andOr = i === 0 ? 'and' : (andorList[i - 1] || 'and');
     const indent = parseInt(indentList[i] || '0', 10) || 0;

@@ -187,6 +187,17 @@ chart uses), and the throwaway instance was actively harmful: it passed no
 - `applySourceState(name)` reads and restores. Validates options exist before
   setting; reconstructs filter `Set` objects; calls `ts.zoom()` if viewport
   saved.
+- Filter columns are normalized on restore via `normalizeFilterCol()` — a
+  saved member fact column (`so_peer_1`) rewrites to its fan-out group token
+  (`so_peer`). Applies to both restore paths (localStorage and URL params);
+  the URL path additionally accepts old member tokens *and* the group token.
+  The meta API's `dim_filters` payload
+  (`[{token, label, dim_table, fact_cols}]`) drives `getFilterColumns()`:
+  group members collapse into one merged dropdown entry, non-grouped
+  dimensions keep their per-column rows, and the value list for a merged
+  entry comes from `currentMeta.dimensions[dim_table]` as usual. The server
+  still accepts individual member fact columns as filter cols (single-column
+  fragment unchanged) — the merged token is what the UI offers.
 
 ## Per-source plot memory (`sourceMemory`)
 

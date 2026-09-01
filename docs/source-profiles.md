@@ -146,6 +146,12 @@ self-contained file that survives a download/upload trip. `csv:` stays
 supported for hand-written profiles. Two fact columns may share one
 `dim_table`; the CSV is then carried once and spliced into both.
 
+**`filter_group`** — optional key on a `dimensions` entry: rows sharing the
+same non-null value form one fan-out chart filter (e.g. `filter_group:
+so_peer` on the `so_peer_1/2/3` entries). NULL/absent = ordinary
+single-column behaviour; see **Filter group** in
+[`docs/star-schema.md`](star-schema.md) for the semantics and invariants.
+
 ### `fact_indices` / `measures`
 
 ```yaml

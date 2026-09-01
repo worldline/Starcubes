@@ -165,6 +165,7 @@ class Dimension:
     source_description: str
     is_primary: bool  # several fact cols may share one dim_table; one is primary
     inline_values: Optional[str] = None  # CSV: source_id,name[,description] per line
+    filter_group: Optional[str] = None  # non-null: one chart filter ORs over all members
     group_sets: list[DimGroupSet] = field(default_factory=list)
 
     def default_group_set(self) -> Optional[DimGroupSet]:
@@ -264,7 +265,7 @@ class Source:
             dimensions = [Dimension(**r) for r in conn.execute(text(
                 "SELECT id, fact_column, dim_table, source_table, source_key, "
                 "       source_name, source_description, is_primary, "
-                "       inline_values "
+                "       inline_values, filter_group "
                 "  FROM starcubes_meta.dimension "
                 " WHERE datasource_id = :ds"
             ), {"ds": ds["id"]}).mappings().all()]
@@ -334,6 +335,33 @@ class Source:
                     f"graph_style={m.graph_style!r}; choose from "
                     f"{sorted(_VALID_GRAPH_STYLES)}")
 
+        fc_names = {c.name for c in fact_columns}
+        groups: dict[str, list[Dimension]] = {}
+        for d in dimensions:
+            if not d.filter_group:
+                continue
+            if ":" in d.filter_group:
+                raise ValueError(
+                    f"datasource {ds['name']!r}: dimension "
+                    f"{d.fact_column!r} filter_group={d.filter_group!r} "
+                    f"must not contain ':' (collides with the "
+                    f"<col>:grouped:<slug> filter token)")
+            groups.setdefault(d.filter_group, []).append(d)
+        for gname, members in groups.items():
+            if gname in fc_names:
+                fact_cols = ", ".join(sorted(
+                    d.fact_column for d in members))
+                raise ValueError(
+                    f"datasource {ds['name']!r}: filter_group {gname!r} "
+                    f"collides with a fact column of the same name "
+                    f"(members: {fact_cols})")
+            tables = {m.dim_table for m in members}
+            if len(tables) > 1:
+                raise ValueError(
+                    f"datasource {ds['name']!r}: filter_group {gname!r} "
+                    f"spans dim tables {sorted(tables)}; all members must "
+                    f"share one dim_table")
+
         if not ds["import_query"]:
             if not ds["base_table"]:
                 raise ValueError(
@@ -392,6 +420,21 @@ class Source:
 
     def primary_dimensions(self) -> list[Dimension]:
         return [d for d in self.dimensions if d.is_primary]
+
+    def filter_fanout(self) -> dict[str, list[str]]:
+        """{filter_group: sorted member fact columns} for non-null filter_group.
+
+        Group members share one dim_table (enforced in ``load``), so a chart
+        filter on the group token can OR the same dim-value subquery over
+        every member column. A transaction that passes through several peers
+        (so_peer_1/2/3) then matches once per peer role instead of forcing
+        the user to filter each column separately.
+        """
+        out: dict[str, list[str]] = {}
+        for d in self.dimensions:
+            if d.filter_group:
+                out.setdefault(d.filter_group, []).append(d.fact_column)
+        return {k: sorted(v) for k, v in out.items()}
 
     def dim_fact_to_table(self) -> dict[str, str]:
         """Mapping {fact_column: dim_table} for regular dim-mapped fact columns.

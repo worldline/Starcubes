@@ -65,11 +65,12 @@ def insert_profile_children(conn, ds_id: int, profile) -> None:
     _executemany(conn,
         "INSERT INTO starcubes_meta.dimension "
         "  (datasource_id, fact_column, dim_table, source_table, "
-        "   source_key, source_name, source_description, is_primary, inline_values) "
-        "VALUES (:ds, :fc, :dt, :st, :sk, :sn, :sd, :p, :iv)",
+        "   source_key, source_name, source_description, is_primary, "
+        "   inline_values, filter_group) "
+        "VALUES (:ds, :fc, :dt, :st, :sk, :sn, :sd, :p, :iv, :fg)",
         [{"ds": ds_id, "fc": fc, "dt": dt, "st": st,
-          "sk": sk, "sn": sn, "sd": sd, "p": p, "iv": iv}
-         for (fc, dt, st, sk, sn, sd, p, iv) in profile.dimensions_as_tuples()])
+          "sk": sk, "sn": sn, "sd": sd, "p": p, "iv": iv, "fg": fg}
+         for (fc, dt, st, sk, sn, sd, p, iv, fg) in profile.dimensions_as_tuples()])
     _executemany(conn,
         "INSERT INTO starcubes_meta.fact_index "
         "  (datasource_id, column_name, method) "

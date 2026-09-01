@@ -110,10 +110,14 @@ discussion captures.
   timestamp as UTC — `parse_dates={pc: {"utc": True}}` in the extract,
   `_as_utc` in `core/audit.py`, `_parse_dt` in `core/utils.py`, and a dozen
   `replace(tzinfo=timezone.utc)` calls. A source writing local time
-  therefore shows up shifted by its UTC offset everywhere: chart, audit
-  buckets, partition routing. Nothing detects it. Supporting it needs a
-  `source_timezone` column that converts on the way in, and it has to reach
-  all of those places at once — declaring it for the wall-clock term alone
-  would only move the inconsistency. The `end_time > max_wm` clamp in
-  `import_fact` bounds such a source to a freshness problem rather than data
-  loss, which is why this is a backlog item and not an open wound.
+  rather than data loss, which is why this is a backlog item and not an open
+  wound.
+- **Grouped-token filters do not fan out.** A filter_group
+  (`starcubes_meta.dimension.filter_group`, see docs/star-schema.md) fans
+  plain `in`/`not_in`/LIKE filters over every member fact column, but a
+  grouped token (`<col>:grouped:<slug>`) still resolves against the *one*
+  dimension row its group set is attached to. Group sets attach to a single
+  `dimension` row, so members of a filter_group can carry different (or no)
+  group sets — fanning out would need a "whose set wins" rule that is not
+  worth inventing until a real query needs it. Plain filters on the same
+  columns fan out normally.

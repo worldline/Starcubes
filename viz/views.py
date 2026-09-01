@@ -543,6 +543,27 @@ def api_source_meta(request):
                     "groups": group_list,
                 })
 
+        # Fan-out filter groups (dimension.filter_group, e.g. so_peer over
+        # so_peer_1/2/3): one merged chart-filter row per group, ORing over
+        # every member fact column. fact_columns stays untouched, so
+        # non-grouped dimensions keep their per-column filter rows.
+        dim_by_fc = {d.fact_column: d for d in source.dimensions}
+        dim_filters = []
+        for token, fact_cols in source.filter_fanout().items():
+            members = [dim_by_fc[c] for c in fact_cols]
+            dim_table = next(
+                (m.dim_table for m in members
+                 if m.is_primary and m.dim_table), None) or members[0].dim_table
+            if not dim_table:
+                continue
+            dim_filters.append({
+                "token":     token,
+                "label":     token,
+                "dim_table": dim_table,
+                "fact_cols": fact_cols,
+            })
+        dim_filters.sort(key=lambda f: f["token"])
+
         with _meta_engine().begin() as conn:
             wm = conn.execute(text(
                 "SELECT min(first_end_time) AS lo, "
@@ -558,6 +579,7 @@ def api_source_meta(request):
             "fact_columns":             fact_cols,
             "dimensions":               dimensions,
             "dim_group_sets":           dim_group_sets,
+            "dim_filters":              dim_filters,
             "measures":                 [{
                 "name":        m.name,
                 "agg":         m.agg,

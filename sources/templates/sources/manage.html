@@ -186,6 +186,7 @@
           <th>Source Desc</th>
           <th>Primary</th>
           <th>Inline Values</th>
+          <th>Filter Group</th>
           <th style="text-align:right">Actions</th>
         </tr>
       </thead>
@@ -224,6 +225,10 @@
             <span class="row-display text-mono dim-inline-display">{{ d.inline_values_display }}</span>
             <textarea class="row-edit cell-input dim-inline-edit" name="inline_values" rows="2" style="width:120px">{{ d.inline_values|default:'' }}</textarea>
           </td>
+          <td>
+            <span class="row-display text-mono">{{ d.filter_group|default:'—' }}</span>
+            <input class="row-edit cell-input" name="filter_group" value="{{ d.filter_group|default:'' }}">
+          </td>
           <td class="actions">
             <span class="row-display">
               <button class="btn-icon" onclick="startEdit(this, 'dim')" title="Edit">✏</button>
@@ -236,13 +241,13 @@
           </td>
         </tr>
         {% empty %}
-        <tr id="dim-empty"><td colspan="9" class="empty-state">No dimensions yet</td></tr>
+        <tr id="dim-empty"><td colspan="10" class="empty-state">No dimensions yet</td></tr>
         {% endfor %}
       </tbody>
     </table>
     <!-- Add row form -->
     <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
-      <form id="dimAddForm" style="display:grid;grid-template-columns:repeat(7,1fr) auto auto;gap:8px;align-items:end">
+      <form id="dimAddForm" style="display:grid;grid-template-columns:repeat(8,1fr) auto auto;gap:8px;align-items:end">
         {% csrf_token %}
         <div><label class="form-label">Fact Column</label><input class="form-control" name="fact_column" required></div>
         <div><label class="form-label">Dim Table</label><input class="form-control" name="dim_table" required></div>
@@ -252,6 +257,7 @@
         <div><label class="form-label">Source Desc</label><input class="form-control dim-src-input" name="source_description"></div>
         <div><label class="form-label">Primary</label><input type="checkbox" name="is_primary" style="margin-top:8px"></div>
         <div><label class="form-label">Inline Values</label><textarea class="form-control" name="inline_values" rows="2" placeholder="id,name,desc" oninput="toggleDimSourceFields(this)"></textarea></div>
+        <div><label class="form-label">Filter Group</label><input class="form-control" name="filter_group" placeholder="so_peer"></div>
         <div style="padding-top:18px"><button type="submit" class="btn btn-primary">Add</button></div>
       </form>
       <div id="dimAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
@@ -1555,6 +1561,7 @@ function saveRow(btn, url, prefix) {
       // inline_values display — show first line + "…" if multiline
       var iv = row.inline_values || '';
       spans[7].textContent = iv ? iv.split('\n')[0] + (iv.includes('\n') ? ' …' : '') : '—';
+      spans[8].textContent = row.filter_group || '—';
     } else if (prefix === 'idx') {
       tr.querySelectorAll('span.row-display')[0].textContent = row.column_name;
       tr.querySelectorAll('span.row-display')[1].innerHTML = '<span class="badge badge-dialect">' + row.method + '</span>';
@@ -1633,6 +1640,7 @@ function buildDimRow(pk, r) {
     '<td><span class="row-display text-mono">' + esc(r.source_description||'—') + '</span><input class="row-edit cell-input dim-src-input" name="source_description" value="' + esc(r.source_description||'') + '"></td>' +
     '<td><span class="row-display">' + (r.is_primary ? '✓' : '—') + '</span><input class="row-edit" type="checkbox" name="is_primary" ' + (r.is_primary ? 'checked' : '') + ' style="margin:4px"></td>' +
     '<td><span class="row-display text-mono dim-inline-display">' + esc(ivDisplay) + '</span><textarea class="row-edit cell-input dim-inline-edit" name="inline_values" rows="2" style="width:120px" oninput="toggleDimSourceFields(this)">' + esc(iv) + '</textarea></td>' +
+    '<td><span class="row-display text-mono">' + esc(r.filter_group||'—') + '</span><input class="row-edit cell-input" name="filter_group" value="' + esc(r.filter_group||'') + '"></td>' +
     '<td class="actions"><span class="row-display">' +
       '<button class="btn-icon" onclick="startEdit(this,\'dim\')" title="Edit">✏</button>' +
       '<button class="btn-icon" onclick="deleteDimRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +

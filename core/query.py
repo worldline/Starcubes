@@ -221,6 +221,19 @@ def _resolve_grouped_filter(
     return matching_indices, include_other, negate
 
 
+def _filter_fanout(dims_by_fact: dict) -> dict[str, list[str]]:
+    """{filter_group: sorted member fact columns} — see Source.filter_fanout.
+
+    Rebuilt per condition (O(#dims) per filter row — negligible). `getattr`
+    keeps it tolerant of any caller-built stub dimensions.
+    """
+    out: dict[str, list[str]] = {}
+    for d in dims_by_fact.values():
+        if getattr(d, "filter_group", None):
+            out.setdefault(d.filter_group, []).append(d.fact_column)
+    return {k: sorted(v) for k, v in out.items()}
+
+
 def _filter_sql(
     schema: str,
     fact_col: str,
@@ -263,7 +276,8 @@ def _filter_sql(
             clause = f"({clause} OR f.{real_col} != ALL(:{other_param}))"
         return (f"NOT ({clause})" if negate else clause), params
 
-    flt_dim = dims_by_fact.get(fact_col)
+    cols = _filter_fanout(dims_by_fact).get(fact_col) or [fact_col]
+    flt_dim = dims_by_fact.get(cols[0])
 
     if op in ("starts_with", "starts_not_with", "contains", "not_contains"):
         negate = op in ("starts_not_with", "not_contains")
@@ -280,17 +294,30 @@ def _filter_sql(
             inner = (f"SELECT index FROM {schema}.{flt_dim.dim_table} "
                      f" WHERE {or_expr}")
             in_op = "NOT IN" if negate else "IN"
-            return f"f.{fact_col} {in_op} ({inner})", params
+            if len(cols) == 1:
+                return f"f.{fact_col} {in_op} ({inner})", params
+            # Fan-out: the positive IN is built per member column and the
+            # whole OR negated — NOT((a IN …) OR (b IN …)) = "no member
+            # matches", never a double negation.
+            per_col = [f"f.{c} IN ({inner})" for c in cols]
+            expr = "(" + " OR ".join(per_col) + ")"
+            return (f"NOT ({expr})" if negate else expr), params
         else:
             return (f"NOT ({or_expr})" if negate else f"({or_expr})"), params
     elif flt_dim and flt_dim.dim_table:
+        params[param] = [str(v) for v in vals]
         inner = (f"SELECT index FROM {schema}.{flt_dim.dim_table} "
                  f" WHERE source_id = ANY(:{param})")
-        params[param] = [str(v) for v in vals]
         if op == "not_in":
-            return f"f.{fact_col} NOT IN ({inner})", params
-        else:
+            if len(cols) == 1:
+                return f"f.{fact_col} NOT IN ({inner})", params
+            per_col = [f"f.{c} IN ({inner})" for c in cols]
+            expr = "(" + " OR ".join(per_col) + ")"
+            return f"NOT {expr}", params
+        if len(cols) == 1:
             return f"f.{fact_col} IN ({inner})", params
+        per_col = [f"f.{c} IN ({inner})" for c in cols]
+        return "(" + " OR ".join(per_col) + ")", params
     else:
         params[param] = [int(v) for v in vals]
         if op == "not_in":
@@ -1062,6 +1089,8 @@ def timeseries_multibar(
 
     def _check_filter_col(col: str) -> None:
         if col in fact_cols:
+            return
+        if col in _filter_fanout(dims_by_fact):
             return
         real, slug, is_grouped = split_grouped_col(col)
         if is_grouped:

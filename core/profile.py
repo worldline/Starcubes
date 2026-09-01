@@ -128,6 +128,7 @@ class Dimension:
     source_description: str | None
     is_primary: bool
     inline_values: str | None
+    filter_group: str | None = None
 
 
 @dataclass(frozen=True)
@@ -213,10 +214,10 @@ class ExampleProfile:
 
     def dimensions_as_tuples(self) -> list[tuple]:
         """Match the historical ``(fact_col, dim_table, src_table, src_key,
-        src_name, src_desc, is_primary, inline_values)`` shape."""
+        src_name, src_desc, is_primary, inline_values, filter_group)`` shape."""
         return [(d.fact_column, d.dim_table, d.source_table, d.source_key,
                  d.source_name, d.source_description, d.is_primary,
-                 d.inline_values)
+                 d.inline_values, d.filter_group)
                 for d in self.dimensions]
 
     def fact_indices_as_tuples(self) -> list[tuple[str, str]]:
@@ -517,6 +518,7 @@ def _parse_profile(name: str, raw: dict[str, Any]) -> ExampleProfile:
                 source_description=dim.source_description,
                 is_primary=dim.is_primary,
                 inline_values=inline_by_dim[dim.dim_table],
+                filter_group=dim.filter_group,
             )
         filled_dimensions.append(dim)
 
@@ -612,6 +614,14 @@ def _parse_dimension(profile: str, idx: int, raw: Any) -> Dimension:
             f"profile {profile!r}: dimensions[{idx}] missing {exc.args[0]!r}")
     # source_table / source_key / source_name / source_description are
     # nullable for inline dimensions; ``None`` is encoded as ``null`` in YAML.
+    filter_group = raw.get("filter_group")
+    if filter_group is not None:
+        filter_group = str(filter_group).strip() or None
+        if filter_group and ":" in filter_group:
+            raise ProfileError(
+                f"profile {profile!r}: dimensions[{idx}].filter_group="
+                f"{filter_group!r} must not contain ':' (collides with the "
+                f"<col>:grouped:<slug> filter token)")
     return Dimension(
         fact_column=fact_column,
         dim_table=dim_table,
@@ -621,6 +631,7 @@ def _parse_dimension(profile: str, idx: int, raw: Any) -> Dimension:
         source_description=raw.get("source_description"),
         is_primary=bool(raw.get("is_primary", False)),
         inline_values=None,  # populated later from inline_dimensions
+        filter_group=filter_group,
     )
 
 
@@ -805,7 +816,7 @@ def dump_profile(ds: Mapping[str, Any],
         if source_table is None and inline_values:
             inline_dimensions.setdefault(str(dim["dim_table"]),
                                          {"values": inline_values})
-        dim_entries.append({
+        entry = {
             "fact_column": dim["fact_column"],
             "dim_table": dim["dim_table"],
             "source_table": source_table,
@@ -813,7 +824,10 @@ def dump_profile(ds: Mapping[str, Any],
             "source_name": dim.get("source_name"),
             "source_description": dim.get("source_description"),
             "is_primary": bool(dim.get("is_primary")),
-        })
+        }
+        if dim.get("filter_group"):
+            entry["filter_group"] = dim["filter_group"]
+        dim_entries.append(entry)
 
     doc: dict[str, Any] = {}
     if name:

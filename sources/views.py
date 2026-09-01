@@ -1578,11 +1578,11 @@ def dim_add(request, pk: int):
                 INSERT INTO starcubes_meta.dimension
                     (datasource_id, fact_column, dim_table,
                      source_table, source_key, source_name, source_description,
-                     is_primary, inline_values)
+                     is_primary, inline_values, filter_group)
                 VALUES
                     (:ds, :fact_column, :dim_table,
                      :source_table, :source_key, :source_name, :source_desc,
-                     :is_primary, :inline_values)
+                     :is_primary, :inline_values, :filter_group)
                 RETURNING *
             """), {
                 "ds":                 pk,
@@ -1594,6 +1594,7 @@ def dim_add(request, pk: int):
                 "source_desc":        source_desc,
                 "is_primary":         p.get("is_primary") == "on",
                 "inline_values":      inline_values,
+                "filter_group":       p.get("filter_group", "").strip() or None,
             }).mappings().one()
         return JsonResponse({"ok": True, "row": dict(row)}, json_dumps_params={"default": str})
     except Exception as exc:
@@ -1625,7 +1626,8 @@ def dim_edit(request, pk: int, dim_id: int):
                     source_name        = :source_name,
                     source_description = :source_desc,
                     is_primary         = :is_primary,
-                    inline_values      = :inline_values
+                    inline_values      = :inline_values,
+                    filter_group       = :filter_group
                 WHERE id = :id AND datasource_id = :ds
                 RETURNING *
             """), {
@@ -1639,6 +1641,7 @@ def dim_edit(request, pk: int, dim_id: int):
                 "source_desc":        source_desc,
                 "is_primary":         p.get("is_primary") == "on",
                 "inline_values":      inline_values,
+                "filter_group":       p.get("filter_group", "").strip() or None,
             }).mappings().one_or_none()
         if row is None:
             return JsonResponse({"ok": False, "error": "not found"}, status=404)
