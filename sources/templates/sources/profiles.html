@@ -69,6 +69,44 @@
 </div>
 
 <div class="card">
+  <div class="card-header">
+    <span class="card-title">Apply to a datasource</span>
+    <span style="margin-left:auto;font-size:12px;color:var(--muted)">
+      Both actions open the confirm dialog on that datasource's manage page.
+    </span>
+  </div>
+  <div class="card-body">
+    {% if sources %}
+    <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+      <div>
+        <label class="form-label" for="handoffProfile">Profile</label>
+        <select class="form-control" id="handoffProfile" style="min-width:220px">
+          {% for p in profiles %}{% if not p.error %}
+          <option value="{{ p.name }}">{{ p.name }}{% if p.origin == 'example' %} (example){% endif %}</option>
+          {% endif %}{% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="form-label" for="handoffSource">Datasource</label>
+        <select class="form-control" id="handoffSource" style="min-width:220px">
+          {% for s in sources %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}
+        </select>
+      </div>
+      <button type="button" class="btn btn-primary" id="handoffApply">Apply profile…</button>
+      <button type="button" class="btn btn-secondary" id="handoffSave">Save datasource as profile…</button>
+    </div>
+    <p class="text-muted" style="margin:12px 0 0;font-size:12px">
+      Applying replaces the datasource's fact columns, dimensions, indices,
+      measures and group dimensions. Name, schema and DSN are left alone, and
+      nothing is written until you confirm on the next page.
+    </p>
+    {% else %}
+    <p class="text-muted" style="margin:0">No datasources yet — create one first.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
   <div class="card-header"><span class="card-title">Upload</span></div>
   <div class="card-body">
     <form id="uploadForm" style="display:flex;gap:12px;align-items:center">
@@ -118,6 +156,24 @@
       else msg('✗ ' + (d.error || 'Upload failed'), false);
     }).catch(function(e) { msg(String(e), false); });
   });
+
+  // Apply / Save-as-profile are implemented once, on the manage page; this
+  // page just deep-links into the right dialog for the chosen datasource.
+  var hApply = document.getElementById('handoffApply');
+  if (hApply) {
+    var handoffTarget = function() {
+      return document.getElementById('handoffSource').value;
+    };
+    hApply.addEventListener('click', function() {
+      var slug = document.getElementById('handoffProfile').value;
+      if (!slug) { msg('No profile selected.', false); return; }
+      window.location = '/sources/' + handoffTarget() + '/manage/?apply=' +
+        encodeURIComponent(slug);
+    });
+    document.getElementById('handoffSave').addEventListener('click', function() {
+      window.location = '/sources/' + handoffTarget() + '/manage/?save-profile=1';
+    });
+  }
 
   document.querySelectorAll('[data-del-profile]').forEach(function(b) {
     b.addEventListener('click', function() {

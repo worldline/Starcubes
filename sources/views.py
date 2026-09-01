@@ -2917,8 +2917,15 @@ def profiles_page(request):
     msg = request.GET.get("msg", "")
     err = request.GET.get("err", "")
     profiles = iter_profiles()
+    # The apply/save flows are implemented once, on the manage page. This page
+    # only needs enough to build the target picker that deep-links there.
+    with _meta_engine().begin() as conn:
+        sources = [dict(r) for r in conn.execute(text(
+            "SELECT id, name FROM starcubes_meta.datasource ORDER BY name"
+        )).mappings().all()]
     return render(request, "sources/profiles.html", {
         "profiles": profiles,
+        "sources": sources,
         "msg": msg,
         "err": err,
     })

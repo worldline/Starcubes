@@ -13,17 +13,19 @@ The `/sources/` UI splits along three axes:
 | Audience          | Path                          | Purpose                                       |
 |-------------------|-------------------------------|-----------------------------------------------|
 | Any user          | `/sources/`                   | List of datasources with last-run status       |
-| Any user          | `/sources/<pk>/`              | Read-only detail (Basics, Group Dims, Measures, Alarms) |
+| Any user          | `/sources/<pk>/`              | Editable detail (Basics read-only; Group Dims, Measures, Alarms are CRUD) |
 | Superuser         | `/sources/<pk>/manage/`       | Full configuration (12 sub-tabs incl. ETL run / log) |
 | Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
 | Superuser         | `/sources/profiles/`          | Profile catalogue + upload (replaces the modal that used to live on `list.html`) |
 | Logged-in user    | `/sources/me/`                | Own profile, password change, query history    |
 | Superuser         | `/sources/settings/`          | User admin (create / edit / password / delete)  |
 
-The split between `detail` (read) and `manage` (full) keeps the per-row
-status bar and ETL monitor on the public-ish page, while pushing the
-destructive / configuration UI behind a superuser gate. The link to
-`manage` itself is rendered only for superusers.
+The split between `detail` and `manage` is about *audience*, not about
+read versus write. `detail` carries the three things any signed-in user is
+meant to curate — group dimensions, measures and alarms — and they are
+fully editable there. `manage` adds the schema, storage and ETL surface
+that only an operator has any use for, behind a superuser gate. The link
+to `manage` is rendered only for superusers.
 
 ## Role gates
 
@@ -42,18 +44,21 @@ Notes:
   `starcubes/middleware.py:RequireLoginMiddleware`, not by the decorators.
   The page decorators therefore cannot help anonymous users — they just
   refuse non-admins.
-- Every `@require_POST` JSON endpoint that mutates state takes
-  `@_admin_required_json` (so an un-authed POST is rejected with a JSON
-  403 instead of a 302 to `/login/`). Read-only JSON endpoints take
-  `@_login_required_json` so polling works for any logged-in user but
-  never leaks to anonymous traffic.
+- Configuration-shaped mutations (schema, ETL, storage, profiles) take
+  `@_admin_required_json`. The endpoints behind the user page —
+  `measures/*`, `group-dims/*`, `alarms/*` — take `@_login_required_json`
+  instead: gating them as admin makes the user page read-only and
+  defeats its purpose. Read-only JSON endpoints are login-only too, so
+  polling works for any logged-in user but never leaks to anonymous
+  traffic. Every endpoint carries a gate explicitly; none relies on
+  `RequireLoginMiddleware` alone.
 - Pages that build a configuration form (`source_new`, `source_manage`,
   `source_edit`) take `@_admin_required_page`. The list and detail pages
   stay accessible to any authenticated user.
 
 ## URL structure
 
-61 URL patterns total in `sources/urls.py`. Grouped by purpose:
+72 URL patterns total in `sources/urls.py`. Grouped by purpose:
 
 ### Pages
 - `GET /sources/` — list with last-run status badge per datasource
@@ -61,7 +66,9 @@ Notes:
 - `GET /sources/settings/` — user admin (superuser only)
 - `GET /sources/profiles/` — profile catalogue + upload form (superuser only)
 - `GET/POST /sources/new/` — create datasource (superuser only)
-- `GET /sources/<pk>/` — read-only detail (4 sub-tabs: Basics, Group Dims, Measures, Alarms)
+- `GET /sources/<pk>/` — user page (4 sub-tabs: Basics, Group Dims, Measures,
+  Alarms). Basics is read-only; the other three are editable by any signed-in
+  user — that is the point of the page, and their endpoints are login-only.
 - `GET /sources/<pk>/manage/` — full detail (12 sub-tabs incl. ETL run / log) (superuser only)
 - `GET/POST /sources/<pk>/edit/` — edit scalar fields (superuser only)
 - `POST /sources/<pk>/delete/` — delete (CASCADE in DB) (superuser only)
@@ -237,15 +244,19 @@ addresses one as `<fact_column>:grouped:<slug>`.
 ### JSON: alarms (per-datasource threshold alarms)
 A row in `starcubes_meta.alarm` binds a (context_dim, context_value,
 measure, cond_op, threshold) tuple to a notification channel list and a
-sliding window. The Alarms tab in both `detail.html` (read-only) and
-`manage.html` (admin) renders the CRUD; the alarm evaluation loop itself
-is not yet wired — see [`docs/backlog.md`](backlog.md).
-- `GET  .../alarms/` — list this datasource's alarms. Login-only.
+sliding window. The Alarms tab lives on `detail.html` only — alarms are a
+user concern, so `manage.html` does not carry a copy. The alarm evaluation
+loop itself is not yet wired — see [`docs/backlog.md`](backlog.md).
+
+All four endpoints are **login-only**: any signed-in user may manage the
+alarms of any datasource.
+- `GET  .../alarms/` — list this datasource's alarms (POST, despite the name).
 - `POST .../alarms/add/` — `name, context_dim, context_value, measure,
-  cond_op, threshold, window_s, notify_channels` (JSON array of strings).
-  Admin-only.
-- `POST .../alarms/<alarm_id>/edit/` — same fields, partial update. Admin-only.
-- `POST .../alarms/<alarm_id>/delete/` — admin-only.
+  cond_op, threshold, window_s, notify_channels` (comma-separated string,
+  not a JSON array) and `enabled` (checkbox semantics: absent means "field
+  not in this form" and defaults to true; present-but-empty is unchecked).
+- `POST .../alarms/<alarm_id>/edit/` — same field set; no partial updates.
+- `POST .../alarms/<alarm_id>/delete/`.
 
 `name` is unique per datasource (DB enforces). `window_s` must be `> 0`
 (CHECK constraint). `cond_op` is one of `>`, `>=`, `<`, `<=`, `=`, `!=`

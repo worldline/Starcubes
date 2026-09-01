@@ -3384,13 +3384,16 @@ function sortTable(th) {
 
   // ---- Apply -------------------------------------------------------------
 
-  function applyDialog() {
+  // `preselect` is the slug the profile catalogue deep-linked with
+  // (?apply=<slug>); omitted when the dialog is opened from this page.
+  function applyDialog(preselect) {
     fetch('/sources/profiles/list/')
       .then(function(r) { return r.json(); })
       .then(function(d) {
         var opts = (d.profiles || []).filter(function(p) { return !p.error; })
           .map(function(p) {
-            return '<option value="' + esc(p.name) + '">' + esc(p.name) +
+            return '<option value="' + esc(p.name) + '"' +
+              (p.name === preselect ? ' selected' : '') + '>' + esc(p.name) +
               (p.origin === 'example' ? ' (example)' : '') +
               (p.dialect ? ' — ' + esc(p.dialect) : '') + '</option>';
           }).join('');
@@ -3507,10 +3510,9 @@ function sortTable(th) {
   // IIFE has wired everything above.
   var qs = new URLSearchParams(window.location.search);
   if (qs.has('apply')) {
-    var slug = qs.get('apply');
-    fetch('/sources/profiles/' + encodeURIComponent(slug) + '/').then(function(r){return r.json();}).then(function(p){
-      applyDialog(p);
-    }).catch(function(e){ alert('Could not load profile "' + slug + '": ' + e); });
+    // applyDialog loads the catalogue itself; all it needs is which entry to
+    // preselect. Fetching the profile here as well only threw the result away.
+    applyDialog(qs.get('apply'));
   } else if (qs.get('save-profile') === '1') {
     saveDialog();
   }
