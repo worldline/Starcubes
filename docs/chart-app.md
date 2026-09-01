@@ -801,14 +801,19 @@ and `chart.html` never registered one. `initTs()` now calls
 `ts.setLegend({ toggle: toggleLegendPanel })`, so the key opens starcubes's own
 legend panel.
 
-All panels (`#legend`, `#drill-modal`, `#query-panel`, `#keys-panel`) are user-resizable
-via CSS `resize: both` plus the browser-native grip in the bottom-right corner.
-The legend and drill-down panels were made resizable to match the query
-console; their sizes are persisted across reloads by `localStorage` (keys
-`starcubes-legend`, `starcubes-drill-modal`, `starcubes-keys-panel`), written
-through a 200 ms
-debounced `ResizeObserver`. Min-width and min-height prevent the panels from
-being squashed below usable sizes; the existing `max-height: 80vh` /
-`max-width: 90vw` ceilings stay in CSS (rather than computed in JS as the
-legend used to do) so a programmatic `applyPersistedSize` and a browser drag
-honour the same limit.
+All panels except the legend are user-resizable via CSS `resize: both` plus the
+browser-native grip in the bottom-right corner; the legend is width-only
+(`resize: horizontal`). The legend's height is deliberately not user-resizable
+and not persisted: it is content-driven — it collapses to exactly the entries
+it shows — and capped at 75 % of the plot area's height (computed in
+`updateLegend()`, with a small floor so the header survives a tiny plot area;
+`#legend-items` scrolls once the cap bites). The legend shows "no data" when
+there are no series to list. The legend and drill-down panels were made
+resizable to match the query console; their sizes are persisted across reloads
+by `localStorage` (keys `starcubes-legend` — width only —, `starcubes-drill-modal`,
+`starcubes-keys-panel`), written through a 200 ms debounced `ResizeObserver`
+(the `applyPersistedSize`/`persistPanelSize` helpers take an `axes` argument,
+`'wh'` by default, `'w'` for the legend). Min-width and min-height prevent the
+other panels from being squashed below usable sizes; the other ceilings stay in
+CSS so a programmatic `applyPersistedSize` and a browser drag honour the same
+limit.

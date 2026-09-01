@@ -670,16 +670,16 @@
   .fpanel-close:hover { color: var(--legend-close-hover); }
 
   /* ── Legend ─────────────────────────────────────────────────────────── */
-  /* Native CSS resize (both axes) — the browser paints a grip in the bottom-right
-     corner. overflow: hidden is required, otherwise the browser ignores resize.
-     min-* prevents the legend from being squashed below its header. max-height
-     is enforced in CSS rather than JS so a browser drag and a programmatic size
-     (applyPersistedSize) both honour the same ceiling. */
+  /* Native CSS resize (horizontal only) — the browser paints a grip in the
+     bottom-right corner. overflow: hidden is required, otherwise the browser
+     ignores resize. The height is deliberately NOT user-resizable: it is
+     content-driven (collapses to exactly the entries it shows) and capped at
+     75 % of the plot area in updateLegend() — a vertical grip or a persisted
+     height would fight that on every refresh. */
   #legend {
     width: max-content; max-width: 90vw;
-    min-width: 220px; min-height: 80px;
-    max-height: 80vh;
-    resize: both; overflow: hidden;
+    min-width: 220px;
+    resize: horizontal; overflow: hidden;
   }
   #legend-copy { background: none; border: 1px solid var(--toggle-border); border-radius: 3px;
                  font-size: 10px; cursor: pointer; padding: 1px 6px;
@@ -696,7 +696,9 @@
                    color: var(--legend-copy-color); line-height: 1.4; }
   #legend-filter:hover { background: var(--legend-copy-hover-bg); color: var(--legend-copy-hover-color); }
   #legend-items { display: flex; flex-direction: column; gap: 2px;
-                  padding: 8px 12px; overflow-y: auto; }
+                  padding: 8px 12px; overflow-y: auto;
+                  flex: 0 1 auto; min-height: 0; }
+  .legend-empty { color: var(--legend-total-color); font-size: 11px; padding: 2px 0; }
   .legend-item { display: flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; }
   .legend-item:hover { background: var(--legend-hover-bg, rgba(128,128,128,0.15)); border-radius: 3px; }
   .legend-item.selected .legend-swatch { outline: 2px solid var(--toggle-color); outline-offset: 1px; }
@@ -2942,10 +2944,13 @@ function fpBringToFront(el) {
 
 function fpIsOpen(el) { return el.classList.contains('fp-open'); }
 
-// Persist a panel's {width, height} to localStorage on resize. Mirrors the
-// ResizeObserver wiring already used by #query-panel. The 200 ms debounce is
-// the same value as that handler so behaviour stays consistent across panels.
-function persistPanelSize(panel, storageKey) {
+// Persist a panel's {width, height} to localStorage on resize. `axes` limits
+// which dimensions are persisted — 'wh' (default) is both, 'w' is width only
+// (the legend: its height is content-driven and must never be persisted).
+// Mirrors the ResizeObserver wiring already used by #query-panel. The 200 ms
+// debounce is the same value as that handler so behaviour stays consistent
+// across panels.
+function persistPanelSize(panel, storageKey, axes = 'wh') {
   if (!window.ResizeObserver) return;
   let pending = null;
   new ResizeObserver(() => {
@@ -2955,8 +2960,8 @@ function persistPanelSize(panel, storageKey) {
       let cur;
       try { cur = JSON.parse(localStorage.getItem(storageKey) || '{}'); }
       catch (_) { cur = {}; }
-      cur.width  = panel.style.width  || cur.width;
-      cur.height = panel.style.height || cur.height;
+      if (axes.includes('w')) cur.width  = panel.style.width  || cur.width;
+      if (axes.includes('h')) cur.height = panel.style.height || cur.height;
       try { localStorage.setItem(storageKey, JSON.stringify(cur)); }
       catch (_) { /* localStorage may be unavailable; silently skip */ }
     }, 200);
@@ -2965,12 +2970,13 @@ function persistPanelSize(panel, storageKey) {
 
 // Apply a saved size if one exists. Called once at registration time so the
 // first user-driven open of the panel already picks up the persisted geometry.
-function applyPersistedSize(panel, storageKey) {
+// `axes` works as in persistPanelSize.
+function applyPersistedSize(panel, storageKey, axes = 'wh') {
   let saved;
   try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); }
   catch (_) { return; }
-  if (saved.width)  panel.style.width  = saved.width;
-  if (saved.height) panel.style.height = saved.height;
+  if (axes.includes('w') && saved.width)  panel.style.width  = saved.width;
+  if (axes.includes('h') && saved.height) panel.style.height = saved.height;
 }
 
 // Move a panel to viewport coordinates, clamped only as far as
@@ -3477,19 +3483,22 @@ function updateLegend() {
     if (match && match[1]) entry.name = match[1];
     if (match && match[2]) entry.desc = match[2];
   }
-  // Height is capped by the `max-height: 80vh` rule in #legend's CSS — that
-  // overrides anything we might have set here, so we no longer need to write
-  // it inline. (We used to compute 80% of the canvas height; CSS clamping
-  // removes the JS-side dependence on canvas metrics.)
   // Position: top-right of the chart's drawing area with 5px margin.
   // `fpMoved` (set by the shared drag handler) means the user placed it —
   // then this must not move it back on the next legend refresh.
   const canvas = document.getElementById('chart');
+  const area = ts ? ts.getPlotArea() : null;
+  const canvasRect = canvas.getBoundingClientRect();
+  const scaleY = canvasRect.height / (canvas.height || 1);
+  // Height: content-driven (collapses to exactly the entries it shows), capped
+  // at 75 % of the plot area. Recomputed on every refresh so a window resize
+  // or zoom changes the cap with it; #legend-items scrolls once the cap bites.
+  // The floor keeps the header itself visible on a tiny plot area.
+  const capPx = area ? Math.max(area.plotHeight * 0.75 * scaleY, 96)
+                     : window.innerHeight * 0.75;
+  legendEl.style.maxHeight = capPx + 'px';
   if (!legendEl.dataset.positioned && !legendEl.dataset.fpMoved) {
-    const area = ts ? ts.getPlotArea() : null;
-    const canvasRect = canvas.getBoundingClientRect();
     const scaleX = canvasRect.width / (canvas.width || 1);
-    const scaleY = canvasRect.height / (canvas.height || 1);
     const m = area ? area.margin : { top: 0, right: 0 };
     const rightOffset = (m.right * scaleX) + 5;
     const topOffset = (m.top * scaleY) + 5;
@@ -3507,6 +3516,8 @@ function updateLegend() {
   const sorted = [...seriesMap.entries()].sort((a, b) => b[1].total - a[1].total);
   lastLegendRows = sorted.map(([, entry]) => ({ name: entry.name, total: entry.total }));
   let html = '';
+  // No series in the rendered data — say so instead of rendering an empty box.
+  if (!sorted.length) html = '<div class="legend-empty">no data</div>';
   for (const [key, entry] of sorted) {
     const color = _seriesColor(key, entry.name);
     const name = entry.name === key && entry.name.length > 20
@@ -3545,10 +3556,11 @@ function updateLegend() {
 }
 
 makeFloatingPanel(legendEl, { onClose: closeLegend });
-// Resizable via the browser-native grip (CSS `resize: both` on #legend); the
-// size is persisted across reloads by localStorage.
-applyPersistedSize(legendEl, 'starcubes-legend');
-persistPanelSize(legendEl, 'starcubes-legend');
+// Resizable via the browser-native grip (CSS `resize: horizontal` on #legend);
+// only the width is persisted — the height is content-driven and capped at 75%
+// of the plot area in updateLegend(), so persisting it would fight the collapse.
+applyPersistedSize(legendEl, 'starcubes-legend', 'w');
+persistPanelSize(legendEl, 'starcubes-legend', 'w');
 
 // ── Bar hover tooltip ────────────────────────────────────────────────────
 // The card itself — DOM, positioning, theming — comes from the library
