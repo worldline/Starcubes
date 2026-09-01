@@ -712,6 +712,44 @@
   @keyframes follow-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
   @media (prefers-reduced-motion: reduce) { #follow-toggle.active #follow-dot { animation: none; } }
 
+  /* ── Keyboard shortcut panel ─────────────────────────────────────────────
+     Chrome, drag, stacking and Escape come from .fpanel; only the geometry
+     and the key/description grid are local. */
+  #keys-panel {
+    width: 470px; max-width: 92vw; max-height: 78vh;
+    min-width: 320px; min-height: 200px;
+    resize: both; overflow: hidden;
+  }
+  #keys-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 14px 14px; }
+  .keys-group + .keys-group { margin-top: 13px; }
+  .keys-group-title {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--legend-total-color);
+    border-bottom: 1px solid var(--filter-row-border);
+    padding-bottom: 3px; margin-bottom: 6px;
+  }
+  .keys-list {
+    display: grid; grid-template-columns: max-content 1fr;
+    align-items: baseline; gap: 5px 14px; margin: 0;
+  }
+  .keys-list dt { display: flex; align-items: center; gap: 3px; }
+  .keys-list dd { margin: 0; color: var(--body-color); }
+  .keys-list em { color: var(--legend-title-color); font-style: normal; font-weight: 600; }
+  kbd {
+    display: inline-block; box-sizing: border-box; min-width: 1.9em;
+    padding: 1px 5px; text-align: center;
+    border: 1px solid var(--toggle-border); border-bottom-width: 2px;
+    border-radius: 4px; background: var(--bg3); color: var(--body-color);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px; font-weight: 500; line-height: 1.5;
+  }
+  .keys-plus { color: var(--legend-total-color); font-size: 10px; }
+  .keys-note {
+    margin: 14px 0 0; padding-top: 9px;
+    border-top: 1px solid var(--filter-row-border);
+    font-size: 11px; line-height: 1.55; color: var(--legend-total-color);
+  }
+
   /* ── Drill-down modal ───────────────────────────────────────────────── */
   /* Native CSS resize (both axes); same contract as #legend and #query-panel.
      min-width keeps the filter-chip row from wrapping awkwardly. */
@@ -1223,6 +1261,10 @@
       <svg class="ic" aria-hidden="true"><use href="#ic-terminal"></use></svg>
     </button>
     {% endif %}
+    <button id="keys-toggle" class="ibtn" type="button"
+            aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts\A(?)">
+      <svg class="ic" aria-hidden="true"><use href="#ic-keyboard"></use></svg>
+    </button>
     {% if user.is_authenticated %}
     <a id="source-config-link" class="ibtn" hidden
        aria-label="Configure this datasource" data-tip="Configure this datasource">
@@ -1263,6 +1305,76 @@
     </span>
   </div>
   <div id="legend-items"></div>
+</div>
+
+{# A .fpanel, per docs/chart-app.md: two classes and one makeFloatingPanel()
+   call buy drag, stacking, the clamp and Escape. No local wiring for any of
+   them. #}
+<div id="keys-panel" class="fpanel">
+  <div class="fpanel-header">
+    <span class="fpanel-title">Keyboard shortcuts</span>
+    <button id="keys-close" class="fpanel-close" type="button" aria-label="Close">&times;</button>
+  </div>
+  <div id="keys-body">
+    <div class="keys-group">
+      <div class="keys-group-title">Navigation</div>
+      <dl class="keys-list">
+        <dt><kbd>&larr;</kbd><kbd>&rarr;</kbd></dt>
+        <dd>One window back / forward</dd>
+        <dt><kbd>Shift</kbd><span class="keys-plus">+</span><kbd>&larr;</kbd><kbd>&rarr;</kbd></dt>
+        <dd>One grid cell back / forward</dd>
+        <dt><kbd>&uarr;</kbd><kbd>&darr;</kbd></dt>
+        <dd>Zoom in / out, halving or doubling the window</dd>
+        <dt><kbd>Shift</kbd><span class="keys-plus">+</span><kbd>&uarr;</kbd><kbd>&darr;</kbd></dt>
+        <dd>One cell narrower / wider</dd>
+      </dl>
+    </div>
+    <div class="keys-group">
+      <div class="keys-group-title">Calendar &mdash; the unit the middle of the window falls in</div>
+      <dl class="keys-list">
+        <dt><kbd>t</kbd></dt><dd>Today, 00:00&ndash;24:00</dd>
+        <dt><kbd>d</kbd></dt><dd>That day</dd>
+        <dt><kbd>w</kbd></dt><dd>That ISO week, Monday to Monday</dd>
+        <dt><kbd>m</kbd></dt><dd>That month</dd>
+        <dt><kbd>y</kbd></dt><dd>That year</dd>
+      </dl>
+    </div>
+    <div class="keys-group">
+      <div class="keys-group-title">Follow mode</div>
+      <dl class="keys-list">
+        <dt><kbd>f</kbd></dt><dd>Anchor now at the right edge</dd>
+        <dt><kbd>p</kbd></dt><dd>Anchor now at the left edge</dd>
+        <dt><kbd>c</kbd></dt><dd>Anchor now in the middle</dd>
+        <dt><kbd>F</kbd><kbd>P</kbd></dt>
+        <dd>Same, but stretch the window onto now first</dd>
+      </dl>
+    </div>
+    <div class="keys-group">
+      <div class="keys-group-title">Display</div>
+      <dl class="keys-list">
+        <dt><kbd>l</kbd></dt><dd>Show / hide the legend</dd>
+        <dt><kbd>g</kbd></dt><dd>Grid snapping for the arrow keys on / off</dd>
+      </dl>
+    </div>
+    <div class="keys-group">
+      <div class="keys-group-title">Page</div>
+      <dl class="keys-list">
+        <dt><kbd>?</kbd></dt><dd>This panel</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Close the front-most menu or panel</dd>
+        <dt><kbd>Enter</kbd></dt><dd>In <em>from</em> / <em>to</em>: commit and jump to the other field</dd>
+        <dt><kbd>Ctrl</kbd><span class="keys-plus">/</span><kbd>&#8984;</kbd><span class="keys-plus">+</span><kbd>Enter</kbd></dt>
+        <dd>In the query console: run the statement</dd>
+        <dt><kbd>&uarr;</kbd><kbd>&darr;</kbd><kbd>Enter</kbd><kbd>Del</kbd></dt>
+        <dd>In the query history: select, load, remove</dd>
+      </dl>
+    </div>
+    <p class="keys-note">
+      Navigation, calendar, follow and display keys belong to the chart itself
+      and only fire while the plot has keyboard focus &mdash; click the chart
+      once, or Tab to it. The page keys work anywhere except inside a text
+      field.
+    </p>
+  </div>
 </div>
 
 {% if user.is_authenticated %}
@@ -2632,6 +2744,12 @@ function initTs() {
   // Apply stored theme to the freshly created canvas
   ts.setColors(_isDark ? TimeSeries.themes.dark : TimeSeries.themes.light);
 
+  // timeseries.js binds `l` to ts.toggleLegend(), which does nothing until a
+  // controller is registered. starcubes draws its own legend panel, so it
+  // registers that instead of the library's overlay — two lines, and the key
+  // stops being a documented no-op.
+  if (ts.setLegend) ts.setLegend({ toggle: toggleLegendPanel });
+
   ts.onStop(() => followToggle.classList.remove('active'));
   ts.onFollow(() => followToggle.classList.add('active'));
   attachBarTooltip();
@@ -3000,6 +3118,52 @@ themeToggle.addEventListener('click', () => {
 // Apply stored theme (FOUC prevention script already set data-theme on <html>)
 setThemeToggleUi(document.documentElement.getAttribute('data-theme') === 'dark');
 
+// ── Keyboard shortcut panel ──────────────────────────────────────────────
+// A plain .fpanel (docs/chart-app.md): the two classes in the markup and the
+// makeFloatingPanel() call below are the whole contract — no drag handler, no
+// z-index, no Escape wiring of its own.
+const keysPanel  = document.getElementById('keys-panel');
+const keysToggle = document.getElementById('keys-toggle');
+
+function closeKeysPanel() {
+  keysPanel.classList.remove('fp-open');
+  keysToggle.classList.remove('active');
+}
+function openKeysPanel() {
+  // Centred on first open; once dragged, `fpMoved` keeps it where the user
+  // put it, the same rule the drill panel follows.
+  keysPanel.classList.add('fp-open');   // measurable only once it is laid out
+  if (!keysPanel.dataset.fpMoved) {
+    const w = keysPanel.offsetWidth, h = keysPanel.offsetHeight;
+    fpMoveTo(keysPanel, (window.innerWidth - w) / 2, Math.max(16, (window.innerHeight - h) / 2));
+  }
+  keysToggle.classList.add('active');
+  fpBringToFront(keysPanel);
+}
+function toggleKeysPanel() {
+  if (fpIsOpen(keysPanel)) closeKeysPanel(); else openKeysPanel();
+}
+
+keysToggle.addEventListener('click', toggleKeysPanel);
+document.getElementById('keys-close').addEventListener('click', closeKeysPanel);
+makeFloatingPanel(keysPanel, { onClose: closeKeysPanel });
+applyPersistedSize(keysPanel, 'starcubes-keys-panel');
+persistPanelSize(keysPanel, 'starcubes-keys-panel');
+
+// `?` opens it from anywhere, with the same text-entry exclusion the Escape
+// handler uses — a question mark typed into the SQL editor stays a question
+// mark. The canvas's own keydown handler ignores `?` and does not
+// preventDefault, so the key still reaches this listener with the chart
+// focused.
+document.addEventListener('keydown', e => {
+  if (e.key !== '?' || e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+            t.tagName === 'SELECT' || t.isContentEditable)) return;
+  e.preventDefault();
+  toggleKeysPanel();
+});
+
 // ── Preferences popover ────────────────────────────────────────────────
 // Y-axis mode and bar pixel target are client-side preferences, stored in
 // localStorage. Both apply to every user, logged in or not; the canvas never
@@ -3081,17 +3245,22 @@ setThemeToggleUi(document.documentElement.getAttribute('data-theme') === 'dark')
   });
 })();
 
-legendToggle.addEventListener('click', () => {
+// Named, because three things reach it: the toolbar button, Escape via the
+// shared panel handler, and the library's `l` key (registered in initTs()).
+function toggleLegendPanel() {
   if (fpIsOpen(legendEl)) { closeLegend(); return; }
   legendEl.classList.add('fp-open');
+  legendToggle.classList.add('active');
   fpBringToFront(legendEl);
   updateLegend();
-});
+}
+legendToggle.addEventListener('click', toggleLegendPanel);
 function closeLegend() {
   legendSelected.clear();
   legendFilterBtn.style.display = 'none';
   legendSplitBtn.style.display = 'none';
   legendEl.classList.remove('fp-open');
+  legendToggle.classList.remove('active');
 }
 legendClose.addEventListener('click', closeLegend);
 legendFilterBtn.addEventListener('click', () => {
