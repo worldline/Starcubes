@@ -234,6 +234,79 @@ def _filter_fanout(dims_by_fact: dict) -> dict[str, list[str]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
+def build_filter_tree(flat_rows: list[dict]) -> list[dict]:
+    """Stack-parse flat filter rows into the nested tree `_build_where` takes.
+
+    Accepts either flat shape in the wild:
+      * the chart's serialization ``{col, op, vals, andOr, indent}``
+        (``gatherParams``; also what an alarm stores in
+        ``starcubes_meta.alarm.context_filter``),
+      * the URL parser's ``{'row': {col, op, vals}, 'andOr', indent}``.
+    Missing ``andOr`` defaults to 'and', missing ``indent`` to 0. Returns the
+    root node list ``{'andOr', 'row': {col, op, vals}, 'children': [...]}``.
+    """
+    root: list[dict] = []
+    stack: list[list[dict]] = [root]
+    indent_stack: list[int] = [-1]
+    for entry in flat_rows:
+        row = entry.get("row", entry)
+        node: dict = {
+            "andOr": entry.get("andOr", "and"),
+            "row": {"col": row["col"], "op": row["op"], "vals": row["vals"]},
+            "children": [],
+        }
+        indent = entry.get("indent", 0)
+        while indent <= indent_stack[-1]:
+            stack.pop()
+            indent_stack.pop()
+        stack[-1].append(node)
+        stack.append(node["children"])
+        indent_stack.append(indent)
+    return root
+
+
+def check_filter_col(source, col: str) -> None:
+    """Raise ValueError unless `col` is a filterable token for `source`.
+
+    Valid: a fact column, a fan-out filter_group token, or a grouped token
+    ``<col>:grouped:<slug>`` (incl. the legacy ``<col>:grouped``) resolving
+    to a dim-mapped column with an existing group set. The error message is
+    the one the chart surfaces verbatim, so it must not drift from what
+    `timeseries_multibar` used to raise from its closure.
+    """
+    fact_cols = {c.name for c in source.fact_columns}
+    dims_by_fact = {d.fact_column: d for d in source.dimensions}
+    if col in fact_cols:
+        return
+    if col in _filter_fanout(dims_by_fact):
+        return
+    real, slug, is_grouped = split_grouped_col(col)
+    if is_grouped:
+        d = dims_by_fact.get(real)
+        if (real in fact_cols and d and d.dim_table
+                and resolve_group_set(d, slug) is not None):
+            return
+    raise ValueError(
+        f"filter col {col!r} is not a valid fact column "
+        f"of {source.name!r}")
+
+
+def validate_filter_tree(source, nodes: list[dict]) -> None:
+    """Validate a nested filter tree (see `build_filter_tree` for the shape).
+
+    Raises the same ValueErrors `timeseries_multibar` raises for bad trees;
+    alarm contexts reuse this at save time and at evaluation time.
+    """
+    for node in nodes:
+        row = node["row"]
+        check_filter_col(source, row["col"])
+        if row["op"] not in _VALID_OPS:
+            raise ValueError(
+                f"filter op for {row['col']!r} must be one of "
+                f"{_VALID_OPS}, got {row['op']!r}")
+        validate_filter_tree(source, node["children"])
+
+
 def _filter_sql(
     schema: str,
     fact_col: str,
@@ -1070,8 +1143,8 @@ def timeseries_multibar(
             f"series_label must be 'source_id'|'name'|'index', "
             f"got {series_label!r}")
 
-    # Validate filter tree up front (the helper raises the same ValueErrors,
-    # but checking here keeps the original error messages and ordering).
+    # Validate filter tree up front — same rules and error messages the
+    # alarm CRUD and evaluator enforce through the module-level helpers.
     group_by_none = not group_by
     fact_cols = {c.name for c in source.fact_columns}
     if not group_by_none and group_by not in fact_cols:
@@ -1085,39 +1158,15 @@ def timeseries_multibar(
                 f"measure column {mcol!r} is not a fact column of "
                 f"{source.name!r}")
 
-    dims_by_fact = {d.fact_column: d for d in source.dimensions}
-
-    def _check_filter_col(col: str) -> None:
-        if col in fact_cols:
-            return
-        if col in _filter_fanout(dims_by_fact):
-            return
-        real, slug, is_grouped = split_grouped_col(col)
-        if is_grouped:
-            d = dims_by_fact.get(real)
-            if (real in fact_cols and d and d.dim_table
-                    and resolve_group_set(d, slug) is not None):
-                return
-        raise ValueError(
-            f"filter col {col!r} is not a valid fact column "
-            f"of {source.name!r}")
-
-    def _validate_tree(nodes: list[dict]) -> None:
-        for node in nodes:
-            row = node["row"]
-            _check_filter_col(row["col"])
-            if row["op"] not in _VALID_OPS:
-                raise ValueError(
-                    f"filter op for {row['col']!r} must be one of "
-                    f"{_VALID_OPS}, got {row['op']!r}")
-            _validate_tree(node["children"])
-
+    # Filter validation lives at module level (check_filter_col /
+    # validate_filter_tree) so the alarm CRUD and evaluator can reuse the
+    # exact same rules and error messages.
     if filter_tree is not None:
-        _validate_tree(filter_tree)
+        validate_filter_tree(source, filter_tree)
     else:
         for group in filter_groups or []:
             for cond in group:
-                _check_filter_col(cond["col"])
+                check_filter_col(source, cond["col"])
                 if cond["op"] not in _VALID_OPS:
                     raise ValueError(
                         f"filter op for {cond['col']!r} must be one of "
