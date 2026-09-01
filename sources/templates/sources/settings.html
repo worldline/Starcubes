@@ -40,21 +40,17 @@
           <tr data-uid="{{ u.pk }}">
             <td>{{ u.username }}</td>
             <td>
-              <span class="row-display text-muted">{{ u.email|default:"—" }}</span>
-              <input class="row-edit cell-input" name="email" value="{{ u.email|default:'' }}" placeholder="user@example.com">
+              <span class="text-muted">{{ u.email|default:"—" }}</span>
             </td>
             <td>
-              <span class="row-display">{% if u.has_usable_password %}password{% else %}SSO{% endif %}</span>
-              <span class="row-edit text-muted" style="font-size:11px">{% if u.has_usable_password %}password set{% else %}SSO only{% endif %}</span>
+              <span>{% if u.has_usable_password %}password{% else %}SSO{% endif %}</span>
             </td>
             <td>
-              <span class="row-display">{% if u.is_superuser %}✓{% else %}—{% endif %}</span>
-              <label class="row-edit" style="font-size:12px"><input type="checkbox" name="is_superuser" {% if u.is_superuser %}checked{% endif %}> admin</label>
+              <span>{% if u.is_superuser %}✓{% else %}—{% endif %}</span>
             </td>
             <td>{% if u.is_staff %}✓{% else %}—{% endif %}</td>
             <td>
-              <span class="row-display">{% if u.is_active %}✓{% else %}—{% endif %}</span>
-              <label class="row-edit" style="font-size:12px"><input type="checkbox" name="is_active" {% if u.is_active %}checked{% endif %}> active</label>
+              <span>{% if u.is_active %}✓{% else %}—{% endif %}</span>
             </td>
             <td style="color:var(--muted);font-size:12px">{{ u.date_joined|date:"Y-m-d" }}</td>
             <td style="text-align:right;white-space:nowrap">
@@ -97,11 +93,16 @@
                   <label class="form-label">Email</label>
                   <input class="form-control" name="email" value="{{ u.email|default:'' }}" style="width:240px">
                 </div>
-                <label style="font-size:12px"><input type="checkbox" name="is_superuser" {% if u.is_superuser %}checked{% endif %}> Superuser</label>
-                <label style="font-size:12px"><input type="checkbox" name="is_active" {% if u.is_active %}checked{% endif %}> Active</label>
+                {# Each checkbox is preceded by a hidden field of the same name so an
+                   unticked box still posts a value. Without it the browser omits the
+                   field entirely and the view cannot tell "cleared" from "not part of
+                   this form" — which made these flags set-only. #}
+                <label style="font-size:12px"><input type="hidden" name="is_superuser" value=""><input type="checkbox" name="is_superuser" {% if u.is_superuser %}checked{% endif %}> Superuser</label>
+                <label style="font-size:12px"><input type="hidden" name="is_staff" value=""><input type="checkbox" name="is_staff" {% if u.is_staff %}checked{% endif %}> Staff</label>
+                <label style="font-size:12px"><input type="hidden" name="is_active" value=""><input type="checkbox" name="is_active" {% if u.is_active %}checked{% endif %}> Active</label>
                 <button type="submit" class="btn btn-primary btn-sm">Save</button>
                 <button type="button" class="btn btn-secondary btn-sm"
-                        onclick="toggleUserEdit(this.closest('tr').previousElementSibling.previousElementSibling.querySelector('.btn-icon[title=\"Edit user\"]'))">Cancel</button>
+                        onclick="startUserEdit(this.closest('tr').previousElementSibling.previousElementSibling.querySelector('.btn-icon[title=\"Edit user\"]'))">Cancel</button>
               </form>
             </td>
           </tr>

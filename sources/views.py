@@ -15,6 +15,7 @@ import signal
 
 import sqlalchemy
 from django.conf import settings
+from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.models import User
 from django.http import (HttpResponse, HttpResponseBadRequest,
                          HttpResponseForbidden, JsonResponse)
@@ -799,6 +800,7 @@ def etl_run(request, pk: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
+@_login_required_json
 def etl_status(request, pk: int):
     try:
         with _meta_engine().begin() as conn:
@@ -2677,9 +2679,14 @@ def settings_page(request):
             email = request.POST.get("email")
             if email is not None:
                 target.email = email.strip()
-            # is_active — checkbox: absent means False.
+            # is_active — checkbox: absent means False. Guarded the same
+            # way as is_superuser below: deactivating your own account logs
+            # you out and leaves nobody holding this page.
             if "is_active" in request.POST:
-                target.is_active = (request.POST.get("is_active") == "on")
+                new_active = (request.POST.get("is_active") == "on")
+                if target.pk == request.user.pk and not new_active:
+                    return redirect(f"{request.path}?err=Cannot+deactivate+your+own+account.")
+                target.is_active = new_active
             # is_superuser — never let an admin demote themselves, that
             # would lock everyone out of the page that revokes the right.
             if "is_superuser" in request.POST:
@@ -2687,8 +2694,11 @@ def settings_page(request):
                 if target.pk == request.user.pk and not new_super:
                     return redirect(f"{request.path}?err=Cannot+demote+your+own+admin+rights.")
                 target.is_superuser = new_super
-                # Django's is_superuser implies is_staff; clearing superuser
-                # leaves staff alone — operators may want staff without admin.
+            # Django's is_superuser implies is_staff, but the two are set
+            # independently here: an operator may want staff without admin,
+            # and clearing superuser leaves staff alone.
+            if "is_staff" in request.POST:
+                target.is_staff = (request.POST.get("is_staff") == "on")
             target.save()
             return redirect(f"{request.path}?msg=User+%27{target.username}%27+updated.")
 
@@ -2767,6 +2777,10 @@ def my_profile(request):
             else:
                 request.user.set_password(new)
                 request.user.save()
+                # Changing the password rotates the hash the session cookie
+                # is signed against; without this the user is logged out on
+                # the very next request, right after being told it worked.
+                update_session_auth_hash(request, request.user)
                 return redirect("/sources/me/?msg=Password+updated.")
         return redirect(f"{request.path}?err={err}" if err else f"{request.path}?msg=Updated.")
 
