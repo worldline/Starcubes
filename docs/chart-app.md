@@ -4,11 +4,94 @@ The chart page supports multiple datasources with full per-source isolation.
 Read this when editing `viz/templates/viz/chart.html`, `viz/views.py`, or
 anything that touches `starcubesPush` / `loadedBlocks` / `sourceMemory`.
 
+## UI primitives
+
+Four things everything else on the page is built from, all inline in
+`chart.html` except the sprite. Inline is deliberate: the project runs without
+a manifest static-files storage (`starcubes/settings.py`), so an external
+`ui.css` would be served with no cache-busting hash.
+
+- **`viz/templates/viz/_icons.html`** — a hand-drawn `<symbol>` sprite,
+  `{% include %}`d right after `<body>`. Icons are
+  `<svg class="ic"><use href="#ic-…"></use></svg>`; `.ic` sets `fill: none;
+  stroke: currentColor`, both inherited properties, so a symbol needs no
+  dark-mode variant — it takes the colour of whatever button it sits in. No
+  icon font, no CDN, no licence question. Kept as its own template so
+  `sources/` can include the same sprite later.
+- **`.ibtn`** — the icon button (28 px square, 15 px glyph), with `:hover`,
+  `.active`, `:disabled` and a `:focus-visible` ring. Variants: `.ibtn--plain`
+  (borderless, for the top bar), `.ibtn--primary` (accented, for Run). It
+  replaced four near-identical ghost-button declarations that had drifted
+  apart. `.chip` is the same metrics in text form, and `.chip-group` welds a
+  row of them into one segmented control.
+- **`[data-tip]`** — a CSS tooltip, `::after` for the bubble and `::before`
+  for the arrow, `data-tip-pos="above"` to flip it. It exists because `title`
+  waits ~700 ms, cannot be themed, cannot wrap and never appears on keyboard
+  focus. **`data-tip` is not a label**: every icon button also carries an
+  `aria-label` with the same string.
+- **`makePopover(btn, panel, opts)`** — anchored dropdowns: toggle, outside
+  click, Escape, placement (flipping above the anchor when the viewport is
+  tight), `aria-expanded`, and `menu: true` for arrow-key roving over
+  `[role=menuitem]`. Used by `#nav-menu` and `#prefs-popover`. Deliberately
+  **not** a `.fpanel` — a dropdown is anchored, never dragged, never resized
+  and not part of the click-order stack. The shared Escape handler asks
+  `closeTopPopover()` first, so one key press closes one thing.
+
 ## Nav bar
 
-Single `#nav-tabs` flex row: `[Source1] [Source2] … [spacer] | Sources  ☀`.
-Source tabs are injected before `#nav-spacer` by `loadSources()`. Clicking a
-tab calls `setActiveSource(name)`.
+Single `#nav-tabs` flex row: `[Source1] [Source2] … [spacer] [☰]`. Source tabs
+are injected before `#nav-spacer` by `loadSources()`; clicking one calls
+`setActiveSource(name)`.
+
+Everything else collapsed into `#nav-menu`, a `makePopover` dropdown behind
+`#nav-menu-toggle`: username header, Configure (`sources:list`), Preferences,
+Theme, About starcubes, Log out. Anonymously it shows Preferences, Theme,
+About and Log in — the y-axis preferences are client-side and stay reachable
+without an account.
+
+Three things that break if they are touched carelessly:
+
+- **Logout must stay a POST** (Django's `LogoutView` requires it). The `<form>`
+  is hidden in the bar and the menu row is a `<button type="submit"
+  form="logout-form">`; the `form` attribute is what lets it live outside.
+- **`#theme-toggle` keeps its id and its handler**, but it is a menu row now.
+  `applyTheme()` no longer writes `textContent` — `setThemeToggleUi()` swaps
+  the `<use href>` and the label, both naming the theme the click switches
+  *to*. The row carries `data-keep-open`, so the menu stays up and the two
+  themes can be compared without reopening it.
+- The theme is still applied before paint by the inline `<head>` script and
+  persisted in `localStorage['starcubes-theme']`.
+
+## Source control bar (`form#ctrl`)
+
+Three groups separated by `.ctrl-sep` hairlines, wrapping between groups
+rather than inside one:
+
+```
+[group by ▾] [Filters] [measure ▾] │ [from 🗓] [to 🗓] [Today][Yesterday][Week][Month] │ [≡][~][>_][⌨][⚙]
+```
+
+- **from / to** are the same `DateTimePicker` they always were — the class was
+  fully built and simply invisible. Input and calendar button now share one
+  `.dtp-field` frame, so the field looks like the picker it is while keyboard
+  entry keeps working. The button is passed to the picker as `trigger`, which
+  exempts it from the outside-click dismiss (otherwise a press would close and
+  instantly reopen).
+- **Range presets** set half-open `[start, end)` bounds in local time, week
+  starting Monday (matching the picker grid and `naturalBlock`'s `isoweek`).
+  Day arithmetic goes through `setDate()`, so a span across a DST switch is 23
+  or 25 hours. A chip is `.active` only while the window matches its range
+  exactly.
+- **`applyRange(fromMs, toMs)`** is the single entry point for a host-driven
+  viewport change — both date fields and all four presets. It zooms once and
+  fires one fetch cycle. Before it existed each `DateTimePicker.onChange`
+  called `resetAndFetch()` itself, so a change moving both edges ran two full
+  cycles.
+- **Config** (`#source-config-link`) follows the active tab and is set in
+  `setActiveSourceTab()`. Its URL is reversed from `sources/urls.py` through a
+  sentinel pk (`{% url 'sources:detail' 987654321 %}`), not assembled as
+  `'/sources/' + id + '/'`, which used to break silently whenever the route
+  moved.
 
 ## Hover tooltip
 
@@ -165,8 +248,10 @@ mislabelled with the new params and painted onto the just-cleared canvas.
 
 ## Query console
 
-A floating, resizable ad-hoc SQL panel, toggled by the `Query` button that sits
-immediately right of `Follow` in `form#ctrl`. Both button and panel are wrapped
+A floating, resizable ad-hoc SQL panel, toggled by the terminal icon button
+that sits immediately right of Follow in `form#ctrl`. Its action row is five
+`.ibtn`s — Run, Cancel, Chart SQL, Format, CSV — followed by `#query-status`
+and the `Ctrl+⏎` hint. Both button and panel are wrapped
 in `{% if user.is_authenticated %}` — anonymous visitors get neither, and the
 whole JS block early-returns on a missing `#query-panel`.
 
@@ -274,6 +359,39 @@ stable key the plot path transports (see **Copy chart SQL** below). Quantile-ban
 series' full distribution (which the legend finalizes to its
 median / p25–p75 anyway). It does not run anything; the user still has to
 click Run.
+
+**Format** (`#query-format`) is a vanilla pretty-printer, `lexSql()` +
+`formatSql()` in `chart.html`. It knows the same lexical shapes
+`adhoc.validate_sql` knows — `''` escapes, dollar-quoting, `--` and nested
+`/* */` comments, `"quoted identifiers"` — and copies each of them through
+character for character; nothing inside one is ever wrapped or re-cased. It
+re-lays out whitespace and upper-cases a fixed keyword list, and that is all.
+
+Two properties it is required to have:
+
+- **Idempotent**, by construction rather than by testing: the output is a pure
+  function of the token stream, whitespace tokens are dropped before that
+  stream exists, and every emitted token re-lexes to itself. A `--` comment is
+  always followed by a line break, so it can never swallow the rest of a line
+  on a second pass.
+- **Undoable**: it inserts through `document.execCommand('insertText')`, not
+  `sqlBox.value = …`, so the browser's own undo stack keeps it and `Ctrl+Z`
+  takes the formatting back. Deprecated but unreplaced — no standard API
+  writes to a textarea undoably.
+
+Subquery parens indent against the line the `(` landed on, not against the
+clause depth: an `IN (` sits on an `AND` continuation line, one level in, and
+its `)` has to come back to that same column.
+
+**CSV** (`#query-csv`) downloads the last result as a file. It builds from the
+payload the server sent, never from the rendered table — the renderer turns
+NULL into the word "NULL" and every value into a string, and reading it back
+would launder both. Quoting is the shared `csvEscape()` (RFC 4180: quote only
+on `"`, `,`, CR or LF; double an embedded quote), NULL becomes an empty field,
+lines end CRLF, and a leading BOM is what makes Excel read the file as UTF-8
+rather than as the system code page. The button is disabled until a result
+exists. A file rather than the clipboard because `STARCUBES_QUERY_ROW_LIMIT`
+is 1000 and nothing useful happens when that lands in a paste buffer.
 
 **Panel chrome.** The console is one of the shared floating panels — chrome,
 header, drag, stacking and Escape all come from `.fpanel` /
@@ -604,8 +722,8 @@ numbers printed on the axis, over a 300 ms dissolve of the tick set.
 
 ## Floating panels
 
-Three draggable boxes float over the canvas — the legend, the drill-down panel
-and the query console — and there will be more. They share one CSS ruleset
+Four draggable boxes float over the canvas — the legend, the drill-down panel,
+the query console and the keyboard-shortcut panel — and there will be more. They share one CSS ruleset
 (`.fpanel`, `.fpanel-header`, `.fpanel-title`, `.fpanel-actions`,
 `.fpanel-close`) and one JS registration (`makeFloatingPanel(el, opts)`), both
 in `chart.html`. A new panel is two classes in the markup and one call; it must
@@ -673,11 +791,30 @@ be draggable by its whole body (with a hand-maintained list of child elements
 that were exempt), and now drags by its header like the other two. It gained
 the header rule the other two already had.
 
-All three panels (`#legend`, `#drill-modal`, `#query-panel`) are user-resizable
+`#keys-panel` is what that contract looks like in practice: two classes in the
+markup, one `makeFloatingPanel(el, {onClose})`, and `applyPersistedSize` /
+`persistPanelSize` for its geometry — no drag handler, no `z-index`, no Escape
+wiring of its own. It centres itself on first open and stops doing so once
+`fpMoved` is set. `?` opens it from anywhere, with the same
+INPUT/TEXTAREA/SELECT exclusion the Escape handler uses; the canvas's own
+keydown handler ignores `?` without calling `preventDefault`, so the key still
+arrives with the chart focused.
+
+Its content is generated from `timeseries.js`'s own key table
+(`doc/configuration.md`) and carries the footnote that makes the list honest:
+navigation, calendar, follow and display keys are bound to `canvas.onkeydown`
+by the library and only fire while the plot has focus. One of them, `l`, was
+listed by the library but dead here — `ts.toggleLegend()` needs a controller,
+and `chart.html` never registered one. `initTs()` now calls
+`ts.setLegend({ toggle: toggleLegendPanel })`, so the key opens starcubes's own
+legend panel.
+
+All panels (`#legend`, `#drill-modal`, `#query-panel`, `#keys-panel`) are user-resizable
 via CSS `resize: both` plus the browser-native grip in the bottom-right corner.
 The legend and drill-down panels were made resizable to match the query
 console; their sizes are persisted across reloads by `localStorage` (keys
-`starcubes-legend` and `starcubes-drill-modal`), written through a 200 ms
+`starcubes-legend`, `starcubes-drill-modal`, `starcubes-keys-panel`), written
+through a 200 ms
 debounced `ResizeObserver`. Min-width and min-height prevent the panels from
 being squashed below usable sizes; the existing `max-height: 80vh` /
 `max-width: 90vw` ceilings stay in CSS (rather than computed in JS as the

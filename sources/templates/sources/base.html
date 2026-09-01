@@ -144,7 +144,12 @@ body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* Nav — kept in sync with viz/chart.html #nav-tabs block */
+/* Nav — the bar itself (#nav-tabs, .nav-brand, .nav-spacer, the 44px height)
+   is still shared with viz/chart.html. The *right-hand side* deliberately is
+   not any more: chart.html collapsed its links into one hamburger menu
+   (#nav-menu, see docs/chart-app.md "Nav bar"), and this page keeps its text
+   links. Do not "re-sync" the two by hand — copy the icon sprite and the
+   .ibtn / makePopover primitives across if this page should follow. */
 #nav-tabs, .nav {
   display: flex; align-items: center;
   background: var(--bg2); border-bottom: 1px solid var(--border);

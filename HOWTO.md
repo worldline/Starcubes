@@ -767,19 +767,37 @@ until the first data arrives.
 
 ### Control bar
 
+The bar is three groups, separated by hairlines: **what to plot**, **which
+time window**, and **what to open**. Every icon button names itself on hover
+and on keyboard focus.
+
 | Control | Description |
 |---------|-------------|
 | Group By | Dropdown of dimension columns, each followed by its group dimensions (see the Group Dims tab). A group dimension is listed under its own name, prefixed with the underlying column (`peer → Peer countries`). |
-| Filters | Toggle button to show/hide the filter panel. |
+| Filters | Show/hide the filter panel. The arrow points down while it is open. |
 | Measure | Aggregation: `count(*)` (default) or `sum`/`avg`/`min`/`max` of a measure column. |
-| From / To | Datetime pickers defining the chart viewport. Enter commits the value and advances focus. |
+| From / To | Datetime fields defining the chart viewport. Type a value (`YYYY-MM-DD HH:MM`) and press Enter to commit and jump to the other field, or click the calendar icon in the field to pick one. |
+| Today / Yesterday / Week / Month | Quick ranges. Boundaries are local midnight, the end is exclusive, and the week starts on Monday. The chip stays highlighted only while the window matches it exactly — pan or zoom by any amount and it goes out. |
 | Legend | Opens the legend panel showing per-value totals. |
-| Follow | Toggles follow mode (seismograph-style auto-pan to "now"). Animated dot when active. |
+| Follow | Toggles follow mode (seismograph-style auto-pan to "now"). The dot in the corner of the button pulses while it is on. |
 | Query | Opens the ad-hoc SQL console over the chart (logged-in users only). See [Query console](#query-console). |
-| Prefs (⚙) | Per-user bar pixel target override (logged-in users only). See [Preferences](#preferences). |
+| Keys | Opens the keyboard-shortcut panel. `?` does the same from anywhere on the page. |
+| Config | Jumps to `/sources/<id>/` for the source whose tab is active (logged-in users only). |
 
-The navigation bar also shows the logged-in username, a logout button (✕), and
-a theme toggle (☀/☾). Logged-out users see a Login link.
+### The menu (☰)
+
+The top bar carries the source tabs and, on the right, a single menu button:
+
+| Entry | Does |
+|-------|------|
+| Configure | Opens the datasource overview at `/sources/`. |
+| Preferences | Y-axis mode, latest-bar trimming and the bar pixel target. See [Preferences](#preferences). Available logged out too — they are browser-local settings. |
+| Theme | Switches light/dark. The menu deliberately stays open so the two can be compared; the choice survives a reload. |
+| About starcubes | Opens the slide deck in a new tab. |
+| Log out / Log in | |
+
+The menu opens on click or `↓`, moves with `↑`/`↓`, and closes on Escape or a
+click outside.
 
 ### Filters
 
@@ -815,12 +833,58 @@ seismograph-style auto-panning. When active:
 
 ### Keyboard shortcuts
 
+Press `?` (or the keyboard button in the control bar) for this table inside
+the app.
+
+Most of these keys belong to the chart itself and only fire **while the plot
+has keyboard focus** — click the chart once, or Tab to it. The page keys at the
+bottom work anywhere except inside a text field.
+
+**Navigation** (chart focused)
+
 | Key | Action |
 |-----|--------|
-| ArrowLeft | Pan the viewport one "screen" left, snapping to calendar boundaries (second/minute/hour/day/week/month/year depending on zoom level) |
-| ArrowRight | Pan the viewport one "screen" right, same snapping |
-| Escape | Close the drill-down modal |
-| Enter | Commit datetime picker value and advance focus to the next input |
+| `←` / `→` | One window back / forward |
+| `Shift`+`←` / `→` | One grid cell back / forward |
+| `↑` / `↓` | Zoom in / out, halving or doubling the window |
+| `Shift`+`↑` / `↓` | One cell narrower / wider |
+
+**Calendar** (chart focused) — relative to the unit the *middle of the current
+window* falls in, not to the present
+
+| Key | Jumps to |
+|-----|----------|
+| `t` | Today, 00:00–24:00 |
+| `d` | That day |
+| `w` | That ISO week, Monday to Monday |
+| `m` | That month |
+| `y` | That year |
+
+**Follow mode** (chart focused)
+
+| Key | Anchors "now" at |
+|-----|------------------|
+| `f` | The right edge |
+| `p` | The left edge |
+| `c` | The middle |
+| `F` / `P` | The same, but the window is stretched onto "now" first |
+
+**Display** (chart focused)
+
+| Key | Toggles |
+|-----|---------|
+| `l` | The legend panel |
+| `g` | Grid snapping for the arrow keys. Nothing moves when you press it — it changes what the *next* arrow press does. |
+
+**Page**
+
+| Key | Action |
+|-----|--------|
+| `?` | Open / close the keyboard-shortcut panel |
+| `Escape` | Close the front-most menu or panel |
+| `Enter` | In *from* / *to*: commit the value and jump to the other field |
+| `Ctrl`/`Cmd`+`Enter` | In the query console: run the statement |
+| `↑` / `↓`, `Enter`, `Delete` | In the query history: select, load, remove |
 
 Panning uses local-time calendar snapping, not fixed millisecond offsets.
 This means a "day" pan across a DST boundary is exactly 23 or 25 hours of
@@ -875,7 +939,10 @@ That read-only guarantee is about *writes*, not about cost: the console can
 still read every table in the schema and can still run an expensive query. It
 is a tool for trusted operators, not a public endpoint.
 
-**Running and cancelling.** Press **Run** or `Ctrl`/`Cmd`+`Enter`. Plain
+**The action row** is five icon buttons — Run, Cancel, Chart SQL, Format and
+CSV — each of which names itself on hover.
+
+**Running and cancelling.** Press **Run** (▶) or `Ctrl`/`Cmd`+`Enter`. Plain
 `Enter` still inserts a newline, so multi-line SQL types normally. Nothing runs
 while you type. **Cancel** genuinely stops the query on the server, not just in
 the browser — it works even if another worker process picked up the request.
@@ -886,6 +953,20 @@ Queries are also killed automatically after 30 seconds
 line says so when a result was truncated, and also reports the row count and
 elapsed time. `NULL` is shown in italics, numbers are right-aligned, and the
 full value of a clipped cell is in its tooltip.
+
+**Format** re-indents the statement in the editor: main clauses on their own
+lines, one item per line in a multi-item `SELECT` / `GROUP BY` / `ORDER BY`,
+subqueries indented two spaces, keywords upper-cased. It never touches the
+inside of a string, a dollar-quoted body, a comment or a `"quoted identifier"`,
+and formatting an already-formatted statement changes nothing. `Ctrl`+`Z`
+takes it back.
+
+**CSV** downloads the current result as a file (`starcubes-<source>-<timestamp>.csv`).
+It is disabled until a query has returned something. `NULL` becomes an empty
+field; commas, quotes and line breaks inside values are quoted per RFC 4180,
+so the file opens correctly in Excel, LibreOffice and `csv.reader`. The file
+carries a UTF-8 BOM, which is what makes Excel read non-ASCII values
+correctly.
 
 **History** is stored per user and per source on the server, so it follows you
 between browsers. Expand **History** at the bottom of the panel to see every
@@ -918,7 +999,8 @@ for how the four read-only layers and cross-process cancellation are wired.*
 
 ### Preferences
 
-The gear button (⚙) in the navigation bar opens a preferences popover.
+**Preferences** in the ☰ menu (top right) opens a popover. It is available
+logged out too — every setting in it is browser-local.
 
 **Y axis** — the chart's y-axis is a *density*, so bars of different time
 resolutions stay the same height and only the numbers change when the chart
