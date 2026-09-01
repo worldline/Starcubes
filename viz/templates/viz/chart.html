@@ -709,13 +709,6 @@
   #follow-toggle.active #follow-dot { background: var(--follow-dot-active); animation: follow-pulse 1s ease-in-out infinite; }
   @keyframes follow-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
   @media (prefers-reduced-motion: reduce) { #follow-toggle.active #follow-dot { animation: none; } }
-  /* Top-bar leftovers; both move into the menu / source bar next. */
-  #source-config-link { font: inherit; font-size: 12px; color: var(--toggle-color); }
-  #source-config-link:hover { color: var(--accent, #6ea8fe); }
-  #theme-toggle { background: none; border: none; border-radius: 3px;
-                  padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
-                  color: var(--toggle-color); }
-  #theme-toggle:hover { background: var(--toggle-hover); }
 
   /* ── Drill-down modal ───────────────────────────────────────────────── */
   /* Native CSS resize (both axes); same contract as #legend and #query-panel.
@@ -1032,27 +1025,11 @@
     border-bottom-color: var(--btn-bg);
   }
   .source-tab.active:hover { background: var(--tab-active-bg); }
-  .nav-sep { width: 1px; background: var(--border); margin: 8px 4px; flex-shrink: 0; height: 24px; }
-  .nav-link {
-    padding: 0 14px; height: 44px; display: flex; align-items: center;
-    color: var(--label-color); font-size: 13px; font-weight: 500;
-    border-bottom: 2px solid transparent; text-decoration: none;
-    border-radius: 5px 5px 0 0;
-    transition: background 0.12s, color 0.12s;
-  }
-  .nav-link:hover { color: var(--body-color); background: var(--tab-active-hover-bg); text-decoration: none; }
-  .nav-link.active {
-    color: var(--tab-active-fg); font-weight: 600;
-    background: var(--tab-active-bg);
-    border-bottom-color: var(--btn-bg);
-  }
   .nav-spacer { flex: 1; }
-  .nav-user { font-size: 12px; color: var(--muted); margin-right: 4px; }
-  .nav-theme-btn {
-    background: none; border: none; cursor: pointer;
-    font-size: 16px; padding: 4px 8px; color: var(--label-color);
-  }
-  .nav-theme-btn:hover { color: var(--body-color); }
+  /* The one control left in the bar: everything that used to sit here as a
+     sixth equal-weight text link now lives in #nav-menu. Slightly larger than
+     a toolbar .ibtn — it is the only target in a 44 px bar. */
+  #nav-menu-toggle { --ibtn-size: 32px; font-size: 17px; margin-left: 4px; }
 </style>
 </head>
 <body>
@@ -1066,24 +1043,56 @@
   <!-- source tabs injected here by loadSources() -->
   <span id="nav-spacer" class="nav-spacer"></span>
   {% if user.is_authenticated %}
-  <a id="source-config-link" href="/sources/" title="Source configuration">configure</a>
+  {# Django's LogoutView only accepts POST, so logging out cannot be a link.
+     The form stays here, hidden, and the menu entry reaches it through the
+     `form` attribute — which is what lets a submit button live outside its
+     own form. #}
+  <form id="logout-form" method="post" action="{% url 'logout' %}" hidden>{% csrf_token %}</form>
   {% endif %}
-  <span class="nav-sep"></span>
+  <button class="ibtn ibtn--plain" id="nav-menu-toggle" type="button"
+          aria-label="Main menu" data-tip="Menu">
+    <svg class="ic" aria-hidden="true"><use href="#ic-menu"></use></svg>
+  </button>
+</div>
+
+<div id="nav-menu" class="popover popover--menu" role="menu" aria-label="Main menu">
   {% if user.is_authenticated %}
-  <span class="nav-user">{{ user.username }}</span>
-  <span id="user-menu" style="display:none;margin-right:4px;font-size:12px;color:var(--muted)"></span>
-  <button class="nav-theme-btn" id="prefs-toggle" type="button" title="Preferences" style="font-size:14px;border:none">&#x2699;</button>
-  <form method="post" action="{% url 'logout' %}" style="display:inline">{% csrf_token %}
-    <button type="submit" class="nav-theme-btn" title="Logout {{ user.username }}" style="font-size:13px;border:none">&#x2715;</button>
-  </form>
-  {% else %}
-  <span id="user-menu" style="display:none;margin-right:4px;font-size:12px;color:var(--muted)"></span>
-  {# The y-axis mode is client-side, so the popover is useful without an account. #}
-  <button class="nav-theme-btn" id="prefs-toggle" type="button" title="Preferences" style="font-size:14px;border:none">&#x2699;</button>
-  <a class="nav-link" href="{% url 'login' %}" style="font-size:13px">Login</a>
+  <div class="menu-head">
+    <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
+    <span class="menu-user">{{ user.username }}</span>
+  </div>
+  <a class="menu-item" role="menuitem" href="{% url 'sources:list' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-sliders"></use></svg>
+    <span class="menu-label">Configure</span>
+  </a>
   {% endif %}
-  <a class="nav-theme-btn" id="slides-link" href="{% url 'viz:slides' %}" target="_blank" rel="noopener" title="About starcubes (slides)" style="font-size:14px;text-decoration:none;border:none">&#x2139;</a>
-  <button class="nav-theme-btn" id="theme-toggle" type="button" title="Switch theme" style="border:none"></button>
+  {# The y-axis mode is client-side, so the preferences are useful without an
+     account — they stay in the menu for anonymous visitors too. #}
+  <button class="menu-item" role="menuitem" type="button" id="prefs-toggle" data-keep-open>
+    <svg class="ic" aria-hidden="true"><use href="#ic-gear"></use></svg>
+    <span class="menu-label">Preferences</span>
+  </button>
+  <button class="menu-item" role="menuitem" type="button" id="theme-toggle" data-keep-open>
+    <svg class="ic" aria-hidden="true"><use id="theme-toggle-icon" href="#ic-moon"></use></svg>
+    <span class="menu-label" id="theme-toggle-label">Dark theme</span>
+  </button>
+  <div class="menu-sep"></div>
+  <a class="menu-item" role="menuitem" id="slides-link" href="{% url 'viz:slides' %}"
+     target="_blank" rel="noopener">
+    <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>
+    <span class="menu-label">About starcubes</span>
+  </a>
+  {% if user.is_authenticated %}
+  <button class="menu-item" role="menuitem" type="submit" form="logout-form">
+    <svg class="ic" aria-hidden="true"><use href="#ic-log-out"></use></svg>
+    <span class="menu-label">Log out</span>
+  </button>
+  {% else %}
+  <a class="menu-item" role="menuitem" href="{% url 'login' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-log-in"></use></svg>
+    <span class="menu-label">Log in</span>
+  </a>
+  {% endif %}
 </div>
 
 <div id="prefs-popover" class="popover popover--prefs" role="dialog" aria-label="Preferences">
@@ -2563,10 +2572,14 @@ const _popovers = [];
 // opts.menu         true → role=menuitem roving focus with the arrow keys
 // opts.closeOnClick a click on a link/button inside closes it (default: menu);
 //                   an element carrying [data-keep-open] is exempt
+// opts.returnFocus  element focused when Escape closes it (default: trigger)
 // opts.onOpen / opts.onClose   hooks
 function makePopover(btn, panel, opts) {
   opts = opts || {};
   const align = opts.align || 'right';
+  // The preferences trigger lives inside the menu that opening it closes, so
+  // by close time it is display:none and cannot take focus back.
+  const returnFocus = opts.returnFocus || btn;
   const closeOnClick = opts.closeOnClick === undefined ? !!opts.menu : opts.closeOnClick;
   btn.setAttribute('aria-expanded', 'false');
   btn.setAttribute('aria-haspopup', opts.menu ? 'menu' : 'dialog');
@@ -2614,7 +2627,7 @@ function makePopover(btn, panel, opts) {
       panel.classList.remove('pop-open');
       btn.setAttribute('aria-expanded', 'false');
       if (opts.onClose) opts.onClose();
-      if (refocus) btn.focus();
+      if (refocus) returnFocus.focus();
     },
     toggle() { if (api.isOpen()) api.close(); else api.open(); },
   };
@@ -2858,32 +2871,50 @@ followToggle.addEventListener('click', () => {
   }
 });
 
+// ── Top-bar menu ─────────────────────────────────────────────────────────
+// Everything that used to sit in the top bar as a sixth equal-weight link —
+// configure, username, preferences, logout, about, theme — now hangs off one
+// hamburger. The mechanics (outside click, Escape, arrow keys, placement)
+// come from makePopover; only the entries are local.
+const navMenuToggle = document.getElementById('nav-menu-toggle');
+const navMenu       = document.getElementById('nav-menu');
+const navMenuPop    = makePopover(navMenuToggle, navMenu, { menu: true, align: 'right' });
+
 // ── Theme toggle ─────────────────────────────────────────────────────────
-const themeToggle = document.getElementById('theme-toggle');
+// #theme-toggle is a menu row now, not a glyph button: it carries an icon and
+// a label, and both name the theme the click will switch *to*.
+const themeToggle      = document.getElementById('theme-toggle');
+const themeToggleIcon  = document.getElementById('theme-toggle-icon');
+const themeToggleLabel = document.getElementById('theme-toggle-label');
+
+function setThemeToggleUi(dark) {
+  const target = dark ? 'light' : 'dark';
+  if (themeToggleIcon)  themeToggleIcon.setAttribute('href', dark ? '#ic-sun' : '#ic-moon');
+  if (themeToggleLabel) themeToggleLabel.textContent = dark ? 'Light theme' : 'Dark theme';
+  themeToggle.setAttribute('aria-label', 'Switch to ' + target + ' theme');
+}
 
 function applyTheme(dark) {
   if (dark) {
     document.documentElement.setAttribute('data-theme', 'dark');
-    themeToggle.textContent = '☀';
     if (ts) ts.setColors(TimeSeries.themes.dark);
   } else {
     document.documentElement.removeAttribute('data-theme');
-    themeToggle.textContent = '☾';
     if (ts) ts.setColors(TimeSeries.themes.light);
   }
+  setThemeToggleUi(dark);
   localStorage.setItem('starcubes-theme', dark ? 'dark' : 'light');
 }
 
+// [data-keep-open] on the row keeps the menu up, so the two themes can be
+// compared without reopening it between clicks.
 themeToggle.addEventListener('click', () => {
   const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
   applyTheme(!isDark);
 });
 
 // Apply stored theme (FOUC prevention script already set data-theme on <html>)
-(function() {
-  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
-  themeToggle.textContent = dark ? '☀' : '☾';
-})();
+setThemeToggleUi(document.documentElement.getAttribute('data-theme') === 'dark');
 
 // ── Preferences popover ────────────────────────────────────────────────
 // Y-axis mode and bar pixel target are client-side preferences, stored in
@@ -2906,7 +2937,8 @@ themeToggle.addEventListener('click', () => {
   // to the top-bar menu button rather than to #prefs-toggle, because the
   // trigger lives inside that menu and disappears when it closes.
   const prefsPop = makePopover(prefsToggle, prefsPopover, {
-    anchor: document.getElementById('nav-menu-toggle') || prefsToggle,
+    anchor: navMenuToggle || prefsToggle,
+    returnFocus: navMenuToggle || prefsToggle,
     onOpen() {
       prefsYAxis.value = yAxisMode;
       if (prefsPartial) prefsPartial.checked = partialBins;
