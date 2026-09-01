@@ -90,22 +90,13 @@ discussion captures.
   *including the cancel requests that would clear them*. The 30 s
   `statement_timeout` bounds it; raising `threads` or a per-user guard would
   bound it better.
-- **Alarm evaluation loop.** `starcubes_meta.alarm` (see
-  `migrations/0025_alarm.sql`) holds the configuration: a per-datasource
-  threshold over `(context_dim, context_value, measure, cond_op, threshold)`
-  with a sliding window and a `notify_channels text[]`. The CRUD and the
-  Alarms tab in `detail.html` / `manage.html` are wired — what is not wired
-  is the evaluator itself. A periodic job needs to (a) recompute the trailing
-  `window_s`-second aggregate over each alarm's `(context_dim, context_value,
-  measure)` slice, (b) compare against `cond_op`/`threshold`, (c) dispatch
-  one event per firing, and (d) record that the firing was seen so the next
-  cycle's idempotency check can suppress duplicates. The shape of step (c)
-  depends entirely on what `notify_channels` is allowed to mean — today it
-  is a free-form `text[]` with no schema. Decisions before any code lands:
-  the channel vocabulary (Slack webhook, e-mail, …), the dedupe window
-  (no re-fire for N minutes?), the run cadence (1 minute? per ETL run? per
-  audit?), and whether the dispatcher lives in the ETL subprocess, in the
-  Query console's `history_*` shape, or as a third loop.
+- **Alarm notification transports.** The alarm evaluator is wired
+  (`core/alarm.py`, `alarm_run --forever`, episodes in
+  `starcubes_meta.alarm_firing` — see `docs/alarm.md`), but the only
+  `notify_channel` with plumbing is `log` (the episode row plus the loop's
+  log file). `email`, `slack`, `pagerduty` remain vocabulary without a
+  transport. Known accepted trade-off: rows arriving late into an
+  already-evaluated window are never re-evaluated (see `docs/alarm.md`).
 - **Source-side timezone awareness.** The pipeline treats every naive source
   timestamp as UTC — `parse_dates={pc: {"utc": True}}` in the extract,
   `_as_utc` in `core/audit.py`, `_parse_dt` in `core/utils.py`, and a dozen

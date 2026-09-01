@@ -118,6 +118,12 @@ modal header (`#drill-header-info`) still renders through them, as does
 `fmtInterval()` for the alarm UI. Only the `#bar-tooltip` element, its CSS and
 `showBarTooltip()` were removed.
 
+The drill-down's Alert form is real since 0028: `openAlarmView()` renders it,
+`alarmContextRows()` serializes the active filter rows plus the clicked series
+(the `context` POST field), and `saveAlarmForm()` POSTs to `sources:alarm_add`
+(CSRF via cookie / page token, 409 and 400 shown inline, grouped tokens
+blocked before the POST — see `docs/alarm.md`).
+
 ## Bar selection
 
 Clicking a bar both opens the drill-down panel and marks the bar: the library's

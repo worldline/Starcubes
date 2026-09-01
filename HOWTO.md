@@ -912,8 +912,13 @@ Click any bar on the chart to open a drill-down modal:
   filter).
 - **IDs button**: shows up to 1000 primary key values for the clicked slot.
   "Copy all" copies them to the clipboard.
-- **Alert button**: mockup alert configuration (metric, condition, window,
-  notification channel).
+- **Alert button**: creates a real threshold alarm on this datasource. The
+  context is the chart's active filters plus the clicked series; pick a
+  name, metric, condition, threshold and window. The alarm is evaluated by
+  a background loop, and every breach period (first to last crossing) is
+  recorded on the datasource's Alarms tab (detail page, ⓘ button). Alerts
+  need a group-dimension-free view: grouped filters cannot be stored in an
+  alarm (group sets are editable and would silently change its meaning).
 
 The modal is draggable. Press Escape to close.
 

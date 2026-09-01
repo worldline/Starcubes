@@ -258,27 +258,49 @@ addresses one as `<fact_column>:grouped:<slug>`.
 - `POST .../group-dims/<gs_id>/delete/` — delete the set (groups CASCADE)
 
 ### JSON: alarms (per-datasource threshold alarms)
-A row in `starcubes_meta.alarm` binds a (context_dim, context_value,
-measure, cond_op, threshold) tuple to a notification channel list and a
-sliding window. The Alarms tab lives on `detail.html` only — alarms are a
-user concern, so `manage.html` does not carry a copy. The alarm evaluation
-loop itself is not yet wired — see [`docs/backlog.md`](backlog.md).
+A row in `starcubes_meta.alarm` binds a measure, comparison and threshold
+to a sliding window, an optional **filter context** and a notification
+channel list. The context is the chart's whole filter expression — the
+flat filter rows `[{col, op, vals, andOr, indent}]` as a JSON string in
+the `context` field, stored verbatim in `alarm.context_filter` jsonb;
+`NULL`/`[]` means the whole datasource. Grouped tokens
+(`<col>:grouped:<slug>`) are rejected at save time (400): group sets are
+user-editable and a stored grouped reference would silently change the
+alarm's meaning. Fan-out filter_group tokens stay allowed. The evaluator
+(`core/alarm.py`, driven by `alarm_run`/`alarm_resume_forever`) records
+firings as episodes in `starcubes_meta.alarm_firing` — see
+[`docs/alarm.md`](alarm.md). The Alarms tab lives on `detail.html` only —
+alarms are a user concern, so `manage.html` does not carry a copy. The
+chart drill-down's Alert form posts here too (with `context`).
 
-All four endpoints are **login-only**: any signed-in user may manage the
-alarms of any datasource.
+All six endpoints are **login-only**: any signed-in user may manage the
+alarms of any datasource. Every create/update also writes an
+`alarm_history` snapshot row (`kind` created/updated, `username`,
+`changed_at`, old/new row jsonb) — which is how comment changes are
+tracked, there is no separate comment history.
 - `GET  .../alarms/` — list this datasource's alarms (POST, despite the name).
-- `POST .../alarms/add/` — `name, context_dim, context_value, measure,
-  cond_op, threshold, window_s, notify_channels` (comma-separated string,
-  not a JSON array) and `enabled` (checkbox semantics: absent means "field
-  not in this form" and defaults to true; present-but-empty is unchecked).
-- `POST .../alarms/<alarm_id>/edit/` — same field set; no partial updates.
-- `POST .../alarms/<alarm_id>/delete/`.
+- `POST .../alarms/add/` — `name, comment, measure, cond_op, threshold,
+  window_s, notify_channels` (comma-separated string, not a JSON array),
+  `enabled` (checkbox semantics: absent means "field not in this form" and
+  defaults to true; present-but-empty is unchecked) and the optional
+  `context` (JSON string, see above).
+- `POST .../alarms/<alarm_id>/edit/` — same field set, except the context:
+  an absent `context` field keeps the stored one (the inline editor never
+  sends it — a filter expression is not inline-editable; delete +
+  re-create from the chart instead), a present one replaces it wholesale.
+- `POST .../alarms/<alarm_id>/delete/` — idempotent; history, comments
+  values and firings CASCADE away with the alarm.
+- `POST .../alarms/<alarm_id>/history/` — change history, newest first.
+- `POST .../alarms/<alarm_id>/firings/` — firing episodes, newest first
+  (`open: true` while `closed_at` is NULL).
 
 `name` is unique per datasource (DB enforces). `window_s` must be `> 0`
-(CHECK constraint). `cond_op` is one of `>`, `>=`, `<`, `<=`, `=`, `!=`
-(CHECK constraint). `notify_channels` is a Postgres `text[]` whose
-contents are opaque strings — the evaluator decides what they mean (see
-backlog).
+(CHECK constraint). `cond_op` is one of `>`, `>=`, `<`, `<=`, `=`
+(CHECK constraint — there is no `!=`). `measure` is `count(*)`, a bare
+fact column, or `func(col)` with `func` in `sum/avg/min/max` (`quantile`
+is not comparable and is rejected). `notify_channels` is a Postgres
+`text[]`; only `log` has plumbing today (the episode row plus the loop's
+log file) — the rest is vocabulary, see backlog.
 
 ### JSON: inline CRUD
 Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delete/`.
