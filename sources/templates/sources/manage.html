@@ -976,6 +976,7 @@
 {% endblock %}
 
 {% block extra_js %}
+{{ block.super }}
 <script>
 var DS_PK = {{ ds.id }};
 var DS_NAME = '{{ ds.name|escapejs }}';

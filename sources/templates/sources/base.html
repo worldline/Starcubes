@@ -15,6 +15,7 @@
 <script>
 (function(){var t=localStorage.getItem('starcubes-theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');})();
 </script>
+<link rel="stylesheet" href="{% static 'sources/nav.css' %}">
 <style>
 :root {
   --bg: #fff;
@@ -179,7 +180,6 @@ a:hover { text-decoration: underline; }
   border-bottom-color: var(--btn-bg);
 }
 .source-tab.active:hover { background: var(--tab-active-bg); }
-.nav-sep { width: 1px; background: var(--border); margin: 8px 4px; flex-shrink: 0; height: 24px; }
 .nav-link {
   padding: 0 14px; height: 44px; display: flex; align-items: center;
   color: var(--label-color); font-size: 13px; font-weight: 500;
@@ -188,12 +188,6 @@ a:hover { text-decoration: underline; }
 .nav-link:hover { color: var(--body-color); text-decoration: none; }
 .nav-link.active { color: var(--body-color); border-bottom-color: var(--btn-bg); }
 .nav-spacer { flex: 1; }
-.nav-user { font-size: 12px; color: var(--muted); margin-right: 4px; }
-.nav-theme-btn {
-  background: none; border: none; cursor: pointer;
-  font-size: 16px; padding: 4px 8px; color: var(--label-color);
-}
-.nav-theme-btn:hover { color: var(--body-color); }
 
 /* Layout — left-anchored under the nav's first source tab (not centered),
    so the content column, sub-tab row, and dim-tab row share one left edge.
@@ -693,6 +687,7 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
 </style>
 </head>
 <body>
+{% include "viz/_icons.html" %}
 <nav id="nav-tabs" class="nav">
   <a class="nav-brand" href="/{% if current_source_name %}?name={{ current_source_name|urlencode }}{% endif %}" title="Back to chart">
     <img class="nav-brand-logo nav-brand-logo-light" src="{% static 'viz/starcubes_lockup.svg' %}" alt="starcubes">
@@ -710,35 +705,94 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
      title="Add datasource">+</a>
   {% endif %}
   <span id="nav-spacer" class="nav-spacer"></span>
-  <span class="nav-sep"></span>
   {% if user.is_authenticated %}
-  {% if user.is_superuser %}
-  <a class="nav-theme-btn{% if request.resolver_match.url_name == 'settings' %} active{% endif %}"
-     href="{% url 'sources:settings' %}" title="Settings" style="text-decoration:none;font-size:16px">⚙</a>
+  <form id="logout-form" method="post" action="{% url 'logout' %}" hidden>{% csrf_token %}</form>
   {% endif %}
-  <span class="nav-user"><a href="{% url 'sources:me' %}" style="color:inherit;text-decoration:none">{{ user.username }}</a></span>
-  <form method="post" action="{% url 'logout' %}" style="display:inline">{% csrf_token %}
-    <button type="submit" class="nav-theme-btn" title="Logout {{ user.username }}" style="font-size:13px">&#x2715;</button>
-  </form>
-  {% endif %}
-  <button class="nav-theme-btn" id="themeToggle" title="Toggle theme" style="border:none">☀</button>
+  <button id="nav-menu-toggle" type="button" aria-label="Main menu" title="Menu">
+    <svg class="ic" aria-hidden="true"><use href="#ic-menu"></use></svg>
+  </button>
 </nav>
+<div id="nav-menu" class="popover popover--menu" role="menu" aria-label="Main menu">
+  {% if user.is_authenticated %}
+    <a class="menu-head" role="menuitem" href="{% url 'sources:me' %}">
+      <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
+      <span class="menu-user">{{ user.username }}</span>
+    </a>
+    {% if user.is_superuser %}
+      <a class="menu-item" role="menuitem" href="{% url 'sources:settings' %}">
+        <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>
+        <span class="menu-label">Users</span>
+      </a>
+      <a class="menu-item" role="menuitem" href="{% url 'sources:profiles' %}">
+        <svg class="ic" aria-hidden="true"><use href="#ic-book-open"></use></svg>
+        <span class="menu-label">Profiles</span>
+      </a>
+      <a class="menu-item" role="menuitem" href="{% url 'sources:new' %}">
+        <svg class="ic" aria-hidden="true"><use href="#ic-plus"></use></svg>
+        <span class="menu-label">Create new source</span>
+      </a>
+      {% if request.resolver_match.url_name == 'detail' and current_source_id %}
+        <a class="menu-item" role="menuitem" href="{% url 'sources:manage' current_source_id %}">
+          <svg class="ic" aria-hidden="true"><use href="#ic-sliders"></use></svg>
+          <span class="menu-label">Manage</span>
+        </a>
+      {% endif %}
+    {% endif %}
+  {% endif %}
+  <button class="menu-item" role="menuitem" type="button" id="nav-theme-toggle" data-keep-open>
+    <svg class="ic" aria-hidden="true" id="nav-theme-icon"><use href="#ic-moon"></use></svg>
+    <span class="menu-label" id="nav-theme-label">Dark theme</span>
+  </button>
+  <div class="menu-sep"></div>
+  <a class="menu-item" role="menuitem" href="{% url 'viz:slides' %}" target="_blank" rel="noopener">
+    <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>
+    <span class="menu-label">About starcubes</span>
+  </a>
+  {% if user.is_authenticated %}
+    <button class="menu-item" role="menuitem" type="submit" form="logout-form">
+      <svg class="ic" aria-hidden="true"><use href="#ic-log-out"></use></svg>
+      <span class="menu-label">Log out</span>
+    </button>
+  {% else %}
+    <a class="menu-item" role="menuitem" href="{% url 'login' %}">
+      <svg class="ic" aria-hidden="true"><use href="#ic-log-in"></use></svg>
+      <span class="menu-label">Log in</span>
+    </a>
+  {% endif %}
+</div>
 <main class="page">
   {% block content %}{% endblock %}
 </main>
+{% block extra_js %}
+<script src="{% static 'sources/nav.js' %}"></script>
 <script>
 (function(){
-  var btn = document.getElementById('themeToggle');
-  function applyTheme(t) {
-    document.documentElement.setAttribute('data-theme', t);
-    btn.textContent = t === 'dark' ? '☀' : '☾';
-    localStorage.setItem('starcubes-theme', t);
+  // Theme helper — kept in sync with the inline pre-paint script at the
+  // top of <head>. Exposed as window.starcubesTheme so any other widget
+  // (e.g. a future per-page theme toggle) shares the same state.
+  var html = document.documentElement;
+  function isDark() { return html.getAttribute('data-theme') === 'dark'; }
+  function apply(dark) {
+    html.setAttribute('data-theme', dark ? 'dark' : 'light');
+    try { localStorage.setItem('starcubes-theme', dark ? 'dark' : 'light'); } catch(e) {}
+    var ic = document.getElementById('nav-theme-icon');
+    var lb = document.getElementById('nav-theme-label');
+    if (ic) ic.querySelector('use').setAttribute('href', dark ? '#ic-sun' : '#ic-moon');
+    if (lb) lb.textContent = dark ? 'Light theme' : 'Dark theme';
   }
-  var cur = localStorage.getItem('starcubes-theme') || 'light';
-  applyTheme(cur);
-  btn.addEventListener('click', function() {
-    applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
-  });
+  window.starcubesTheme = { apply: apply, isDark: isDark };
+
+  // Reconcile label/icon with the theme the pre-paint script already set.
+  apply(isDark());
+
+  var themeBtn = document.getElementById('nav-theme-toggle');
+  if (themeBtn) themeBtn.addEventListener('click', function(){ apply(!isDark()); });
+
+  var btn  = document.getElementById('nav-menu-toggle');
+  var menu = document.getElementById('nav-menu');
+  if (btn && menu && window.makePopover) {
+    makePopover(btn, menu, { menu: true, align: 'right' });
+  }
 })();
 
 function csrfToken() {
@@ -1000,6 +1054,6 @@ document.getElementById('modal-overlay').addEventListener('click', function(e) {
   if (e.target === this) closeModal();
 });
 </script>
-{% block extra_js %}{% endblock %}
+{% endblock %}
 </body>
 </html>

@@ -1,0 +1,68 @@
+/* ── Sources nav menu — hamburger popover shared with chart.html ─────
+   The chart.html menu CSS is mirrored verbatim here so the sources-app
+   pages render the same dropdown without depending on chart.html's
+   inline <style>. Class names are kept identical on purpose so the two
+   copies can be merged later if desired. */
+
+/* Icon sizing — .ic is missing from sources/base.html so we declare it
+   here. The sprite uses Lucide idiom (1.75 stroke, round caps). */
+.ic { width: 1em; height: 1em; vertical-align: -.125em;
+      fill: none; stroke: currentColor; stroke-width: 1.75;
+      stroke-linecap: round; stroke-linejoin: round; }
+
+/* --focus-ring isn't defined in base.html's token block — local fallback
+   so the focus-visible outline renders in both themes. */
+:root { --focus-ring: rgba(74,127,212,0.6); }
+:root[data-theme="dark"] { --focus-ring: rgba(106,149,224,0.7); }
+
+/* Popover (dropdown) — anchored to its trigger, closes on outside click. */
+.popover {
+  position: fixed; z-index: 3000; display: none;
+  background: var(--bg2); color: var(--body-color);
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 10px 30px var(--shadow);
+  font-size: 13px;
+}
+.popover.pop-open { display: block; }
+.popover--menu { padding: 5px; min-width: 216px; }
+
+.menu-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 12px 9px 9px; margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  text-decoration: none;
+}
+.menu-head .ic { font-size: 15px; }
+.menu-head:hover .menu-user { color: var(--accent); }
+.menu-user {
+  font-size: 12px; font-weight: 600; color: var(--body-color);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.menu-item {
+  display: flex; align-items: center; gap: 9px;
+  box-sizing: border-box; width: 100%;
+  padding: 7px 12px 7px 9px; margin: 0;
+  background: none; border: 0; border-radius: 5px;
+  font: inherit; font-size: 13px; line-height: 1.2;
+  color: var(--body-color); text-align: left; text-decoration: none;
+  white-space: nowrap; cursor: pointer;
+}
+.menu-item .ic { font-size: 15px; color: var(--muted); }
+.menu-item:hover, .menu-item:focus-visible {
+  background: var(--tab-active-hover-bg); color: var(--body-color);
+  text-decoration: none;
+}
+.menu-item:hover .ic, .menu-item:focus-visible .ic { color: var(--accent); }
+.menu-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.menu-label { flex: 1 1 auto; }
+.menu-sep { height: 1px; background: var(--border); margin: 5px 0; }
+
+/* The hamburger trigger sits inside .nav at the topbar's right edge.
+   Mirrors the .nav-theme-btn look so the row stays visually even. */
+#nav-menu-toggle {
+  background: none; border: none; cursor: pointer; padding: 4px 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 16px;
+}
+#nav-menu-toggle:hover { color: var(--body-color); }
