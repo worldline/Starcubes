@@ -97,13 +97,25 @@ Keycloak-side client configuration:
   answers `400 Invalid HTTP_HOST header` and the login page never renders.
 
 **Behind a TLS-terminating proxy**, Django must be told to trust the
-forwarded scheme, or it will compute `redirect_uri=http://...` and Keycloak
-will reject it as a mismatch. This is a manual step, not set by default —
-the same posture as `STARCUBES_CSRF_TRUSTED_ORIGINS` (see the comment above
-it in `starcubes/settings.py`), which similarly can't be safely guessed for
-every deployment topology: the proxy must send `X-Forwarded-Proto: https`, and
-`SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")` must be
-added to `starcubes/settings.py` for that deployment.
+forwarded scheme, or it computes `redirect_uri=http://...` and Keycloak
+rejects it as a mismatch — and the CSRF origin check fails the same way,
+because the browser sends `Origin: https://<host>` while Django derives
+`http://<host>`. Set **`STARCUBES_TRUST_PROXY_SSL=1`**; it applies
+`SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")`.
+
+Two conditions must both hold, or this makes things worse rather than better:
+
+- the proxy must **set or overwrite** `X-Forwarded-Proto` on every request.
+  If it merely passes a client-supplied value through, anyone can forge it;
+- leave it at `0` when there is no TLS proxy. With the flag off, nginx pins
+  `X-Forwarded-Proto` / `X-Forwarded-Ssl` to the scheme it actually served, so
+  a client cannot claim https. That matters because uwsgi honours those two
+  headers on its own when it builds `wsgi.url_scheme` — the flag is what
+  decides whether they are believed, not merely a Django setting.
+
+The proxy must also forward the original `Host` header (nginx:
+`proxy_set_header Host $host;`), since the hostname and port in the redirect
+URI come from it.
 
 First successful SSO login auto-creates a Django user — no pre-created
 account needed — always as a plain non-superuser/non-staff account, exactly

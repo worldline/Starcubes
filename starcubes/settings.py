@@ -44,6 +44,28 @@ CSRF_TRUSTED_ORIGINS = [
     o for o in os.environ.get("STARCUBES_CSRF_TRUSTED_ORIGINS", "").split(",") if o
 ]
 
+# Behind a TLS-terminating proxy, Django only ever sees plain HTTP on the
+# inside and computes `http://...` for everything it derives from the request.
+# Two things break at once, both off-by-one-scheme: the CSRF origin check
+# (browser sends `Origin: https://host`, Django compares against
+# `http://host`) and the OIDC redirect_uri, which
+# mozilla_django_oidc.utils.absolutify() builds from request.is_secure() —
+# Keycloak then rejects it as a mismatch. Same shape as the missing port that
+# docker/nginx.conf's HTTP_HOST override fixes; see docs/deployment-config.md.
+#
+# Note where the switch actually bites: uwsgi already derives
+# `wsgi.url_scheme` from X-Forwarded-Proto / X-Forwarded-Ssl by itself, before
+# Django is involved, so in the bundled image the enforcement point is nginx —
+# docker/entrypoint.sh pins those headers to the real scheme unless this flag
+# is set. Setting SECURE_PROXY_SSL_HEADER here is the same decision expressed
+# at the Django layer: it keeps the behaviour correct under a WSGI server that
+# does not do the uwsgi trick, and states the intent in one obvious place.
+# Off by default: with no proxy in front, the headers come straight from the
+# client and a forged `X-Forwarded-Proto: https` would otherwise be believed.
+TRUST_PROXY_SSL = os.environ.get("STARCUBES_TRUST_PROXY_SSL", "0") == "1"
+if TRUST_PROXY_SSL:
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
 INSTALLED_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",

@@ -170,15 +170,31 @@ anything that is not in the user directory.
   sharp edge is a local *username* colliding with a `preferred_username`
   claim whose email differs, which hits Django's unique-username
   constraint on that identity's first SSO login instead of merging (a
-  500, not a silent failure). Deliberately **not** set anywhere is
-  `SECURE_PROXY_SSL_HEADER`: `mozilla-django-oidc.utils.absolutify()`
-  builds the OIDC `redirect_uri` from `request.is_secure()`, so behind a
-  TLS-terminating proxy Django needs to trust `X-Forwarded-Proto` or it
-  computes `http://...` and Keycloak rejects the redirect URI as a
-  mismatch — but that setting also flips CSRF cookie `Secure` flags
-  app-wide and would be wrong for a non-proxied (e.g. local) deployment,
-  so it's a documented manual step in `HOWTO.md` ("SSO login") rather than
-  inferred, same posture as `STARCUBES_CSRF_TRUSTED_ORIGINS` itself.
+  500, not a silent failure). `SECURE_PROXY_SSL_HEADER` is applied
+  only when **`STARCUBES_TRUST_PROXY_SSL=1`** is set:
+  `mozilla-django-oidc.utils.absolutify()` builds the OIDC `redirect_uri`
+  from `request.is_secure()`, so behind a TLS-terminating proxy Django must
+  trust `X-Forwarded-Proto` or it computes `http://...` and Keycloak rejects
+  the redirect URI as a mismatch. The CSRF origin check fails for the same
+  reason on the same deployments — one scheme, two symptoms, exactly like the
+  port lost via `HTTP_HOST` above. It stays **opt-in** rather than inferred
+  because trusting the header makes *any* request carrying
+  `X-Forwarded-Proto: https` count as secure: correct when a proxy sets that
+  header itself, forgeable by any client when no such proxy exists. The
+  enforcement point in the bundled image is **nginx, not Django**: uwsgi
+  derives `wsgi.url_scheme` from `X-Forwarded-Proto` / `X-Forwarded-Ssl` by
+  itself before Django is reached, so `docker/entrypoint.sh` writes
+  `/etc/nginx/starcubes-scheme.conf` on every start — pinning both headers to
+  the scheme nginx actually served when the flag is off, leaving them untouched
+  when it is on. `SECURE_PROXY_SSL_HEADER` in `settings.py` expresses the same
+  decision at the Django layer, where it would matter under a WSGI server that
+  does not do the uwsgi trick. Note the
+  knock-on effect once enabled — `request.is_secure()` turning `True` also
+  switches CSRF from origin-only to Django's stricter HTTPS path, which
+  additionally requires a matching `Referer` header. It does **not** by itself
+  set the `Secure` flag on cookies; `CSRF_COOKIE_SECURE` / `SESSION_COOKIE_SECURE`
+  are separate settings, still unset, and worth adding for an HTTPS-only
+  deployment.
 
 ## Build / dependencies
 

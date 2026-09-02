@@ -71,6 +71,10 @@ RUN mkdir -p /app/staticfiles /app/logs /run/nginx /var/log/nginx
 
 # ── Config files ──────────────────────────────────────────────────────────────
 COPY docker/nginx.conf /etc/nginx/nginx.conf
+# Placeholder so `nginx -t` works on the bare image; entrypoint.sh rewrites it
+# on every start according to STARCUBES_TRUST_PROXY_SSL.
+RUN printf 'uwsgi_param HTTP_X_FORWARDED_PROTO $scheme;\nuwsgi_param HTTP_X_FORWARDED_SSL   "";\n' \
+      > /etc/nginx/starcubes-scheme.conf
 COPY docker/uwsgi.ini  /etc/uwsgi.ini
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -89,10 +93,15 @@ RUN chmod +x /entrypoint.sh
 # names only. Reaching the container under any other name — the machine
 # hostname, a LAN address, a proxied domain — requires overriding this, or
 # Django answers 400 "Invalid HTTP_HOST header".
+# STARCUBES_TRUST_PROXY_SSL=1 makes Django trust `X-Forwarded-Proto: https`,
+# which it needs to build https:// URLs (CSRF origin, OIDC redirect_uri) when
+# TLS is terminated by a proxy in front of this container. Only enable it when
+# such a proxy exists and sets that header itself — see HOWTO.md "SSO login".
 ENV STARCUBES_POSTGRES_DSN="" \
     STARCUBES_SECRET_KEY="change-me-in-production" \
     STARCUBES_ALLOWED_HOSTS="127.0.0.1,localhost,[::1]" \
     STARCUBES_DEBUG="0" \
+    STARCUBES_TRUST_PROXY_SSL="0" \
     LD_LIBRARY_PATH="/app/oracle" \
     STARCUBES_LOG_DIR="/app/logs" \
     STARCUBES_ETL_LOG_STDOUT="1"
