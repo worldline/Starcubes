@@ -140,9 +140,11 @@ episode, across all datasources, newest first:
 | Value first → last | The aggregate value in the first and the last breaching window |
 
 **Open only** restricts the list to episodes still breaching — the "what is
-firing right now" lens. The same page is reachable from each datasource's
-Alarms tab via **All firings →**; per-alarm episodes also appear under the
-alarm's ⓘ button there.
+firing right now" lens. **Datasource** (the dropdown next to it) restricts
+the list to one source's episodes; both filters combine. The same page is
+reachable from each datasource's Alarms tab via **All firings →** and from
+the chart page's bell button (which arrives pre-filtered to the active
+source); per-alarm episodes also appear under the alarm's ⓘ button there.
 
 ### Creating a datasource
 

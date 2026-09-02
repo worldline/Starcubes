@@ -4,14 +4,23 @@
 {% block content %}
 {% include "sources/_global_tabs.html" %}
 
-<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin:0 0 12px">
+<form method="get" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin:0 0 12px">
+  <label for="ds-select" class="text-muted" style="font-size:12px">Datasource</label>
+  <select class="form-control" id="ds-select" name="ds" style="width:auto"
+          onchange="this.form.submit()">
+    <option value="">All sources</option>
+    {% for s in topbar_sources %}
+    <option value="{{ s.id }}"{% if s.id == ds %} selected{% endif %}>{{ s.name }}</option>
+    {% endfor %}
+  </select>
+  <input type="hidden" name="show" value="{{ show }}">
   <a class="btn btn-secondary{% if show != 'open' %} btn-primary{% endif %}"
-     href="{% url 'sources:alarm_firings' %}">All</a>
+     href="{% url 'sources:alarm_firings' %}{% if ds %}?ds={{ ds }}{% endif %}">All</a>
   <a class="btn btn-secondary{% if show == 'open' %} btn-primary{% endif %}"
-     href="{% url 'sources:alarm_firings' %}?show=open">Open only</a>
+     href="{% url 'sources:alarm_firings' %}?show=open{% if ds %}&amp;ds={{ ds }}{% endif %}">Open only</a>
   <a class="btn btn-secondary" href=""
      title="Reload the episode list">Refresh</a>
-</div>
+</form>
 
 <p class="text-muted" style="margin:0 0 12px;font-size:12px">
   One row per threshold breach episode — from the first to the last window that

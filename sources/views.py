@@ -2405,13 +2405,24 @@ def alarm_firings_page(request):
     The evaluator is one global process, so its output is one global page:
     every alarm_firing episode joined with its alarm rule and datasource,
     newest first. `?show=open` restricts it to episodes still open — the
-    "what is firing right now" lens. Login-only like every /sources/ page
-    (RequireLoginMiddleware gates the path prefix; no role split needed —
-    alarms are a user concern). Episodes of deleted alarms are gone with
-    the alarm (ON DELETE CASCADE), so the page needs no orphan handling.
+    "what is firing right now" lens. `?ds=<id>` restricts it to one
+    datasource (the chart page's firings button links here pre-filtered;
+    anything non-numeric just means unfiltered). Login-only like every
+    /sources/ page (RequireLoginMiddleware gates the path prefix; no role
+    split needed — alarms are a user concern). Episodes of deleted alarms
+    are gone with the alarm (ON DELETE CASCADE), so the page needs no
+    orphan handling.
     """
     show = request.GET.get("show", "all")
-    where = "WHERE f.closed_at IS NULL" if show == "open" else ""
+    ds_raw = request.GET.get("ds", "")
+    ds = int(ds_raw) if ds_raw.isdigit() else None
+    conds = []
+    if show == "open":
+        conds.append("f.closed_at IS NULL")
+    if ds is not None:
+        conds.append("a.datasource_id = :ds")
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    params = {"ds": ds} if ds is not None else {}
     with _meta_engine().begin() as conn:
         rows = conn.execute(text(
             "SELECT f.id, f.first_breach_at, f.last_breach_at, f.closed_at, "
@@ -2424,7 +2435,7 @@ def alarm_firings_page(request):
             "  JOIN starcubes_meta.datasource d ON d.id = a.datasource_id "
             f" {where} "
             " ORDER BY f.id DESC LIMIT 500"
-        )).mappings().all()
+        ), params).mappings().all()
 
     episodes = []
     for r in rows:
@@ -2445,7 +2456,7 @@ def alarm_firings_page(request):
             "duration": fmt_episode_span(span),
         })
     return render(request, "sources/firings.html",
-                  {"episodes": episodes, "show": show,
+                  {"episodes": episodes, "show": show, "ds": ds,
                    "total": len(episodes)})
 
 

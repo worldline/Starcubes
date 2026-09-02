@@ -1281,6 +1281,11 @@
        aria-label="Configure this datasource" data-tip="Configure this datasource">
       <svg class="ic" aria-hidden="true"><use href="#ic-sliders"></use></svg>
     </a>
+    <a id="firings-link" class="ibtn" hidden
+       aria-label="Alarm firings for this datasource"
+       data-tip="Alarm firings&#10;for this datasource">
+      <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
+    </a>
     {% endif %}
   </div>
 </form>
@@ -1455,6 +1460,9 @@ const CHART_SQL_URL = "{% url 'viz:chart_sql' %}";
 // silently the day the route moved, and nothing on this page noticed.
 const SOURCE_DETAIL_URL = "{% url 'sources:detail' 987654321 %}";
 function sourceDetailUrl(id) { return SOURCE_DETAIL_URL.replace('987654321', String(id)); }
+// Reversed for the same reason as SOURCE_DETAIL_URL (no pk to swap, though —
+// the datasource arrives as the ?ds= query param).
+const FIRINGS_URL = "{% url 'sources:alarm_firings' %}";
 
 const form     = document.getElementById('ctrl');
 const info     = document.getElementById('info');
@@ -4468,6 +4476,13 @@ function setActiveSourceTab(name) {
   if (cfgLink) {
     if (id) { cfgLink.href = sourceDetailUrl(id); cfgLink.hidden = false; }
     else    { cfgLink.removeAttribute('href');    cfgLink.hidden = true; }
+  }
+  // The firings button follows the active tab the same way, pre-filtered
+  // to this datasource (?ds=).
+  const firLink = document.getElementById('firings-link');
+  if (firLink) {
+    if (id) { firLink.href = FIRINGS_URL + '?ds=' + id; firLink.hidden = false; }
+    else    { firLink.removeAttribute('href');          firLink.hidden = true; }
   }
   const brand = document.getElementById('nav-brand');
   if (brand && name) brand.href = '/?name=' + encodeURIComponent(name);

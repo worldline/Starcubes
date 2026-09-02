@@ -92,6 +92,10 @@ rather than inside one:
   sentinel pk (`{% url 'sources:detail' 987654321 %}`), not assembled as
   `'/sources/' + id + '/'`, which used to break silently whenever the route
   moved.
+- **Firings** (`#firings-link`, logged-in only) follows the active tab the
+  same way and links to the global episode overview pre-filtered to it
+  (`sources:alarm_firings` + `?ds=<id>`). Same hidden-until-href pattern as
+  the Config link.
 
 ## Hover tooltip
 

@@ -313,10 +313,12 @@ log file) — the rest is vocabulary, see backlog.
 
 The **global episode overview** lives at `/sources/alarms/firings/`
 (`alarm_firings_page`, server-rendered, newest first, LIMIT 500,
-`?show=open` for the live breaches) — every `alarm_firing` episode joined
-with its alarm rule and datasource. It is linked from the shared tab bar
-(`_global_tabs.html`), from the hamburger menu ("Firings", any logged-in
-user) and from the Alarms tab ("All firings"); the per-alarm
+`?show=open` for the live breaches, `?ds=<id>` for one datasource — the
+`Datasource` dropdown submits both as GET params) — every `alarm_firing`
+episode joined with its alarm rule and datasource. It is linked from the
+shared tab bar (`_global_tabs.html`), from the hamburger menu ("Firings",
+any logged-in user), from the Alarms tab ("All firings") and from the
+chart toolbar's firings button (pre-filtered via `?ds=`); the per-alarm
 episodes remain in detail.html's ⓘ sub-row.
 
 ### JSON: inline CRUD

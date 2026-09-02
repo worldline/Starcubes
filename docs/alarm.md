@@ -102,4 +102,7 @@ psql … "SELECT id, name, eval_end FROM starcubes_meta.alarm WHERE enabled"
 
 The Alarms tab on `detail.html` shows the context summary, comment and
 per-alarm history/firing episodes (ⓘ button); the chart drill-down's
-Alert form creates alarms with a filter context.
+Alert form creates alarms with a filter context. The global episode
+overview (`/sources/alarms/firings/`, `alarm_firings_page`) takes
+`?show=open` (live breaches only) and `?ds=<id>` (one datasource — the
+chart toolbar's firings button links here pre-filtered that way).
