@@ -96,12 +96,17 @@ anything that is not in the user directory.
   not a convenience one (see below).
 
 - **`STARCUBES_ALLOWED_HOSTS` must name the real hostnames on any reachable
-  deployment.** It defaults to `*` (`starcubes/settings.py`, pinned to the same
-  value by `Dockerfile`), which disables Django's host validation entirely.
-  That default is fine for a throwaway local run, but combined with the
-  `$http_host` override above it means a forged `Host` header reaches the
-  application unchecked. Set it to the concrete names used to reach the
-  deployment, e.g. `127.0.0.1,localhost,example.internal`.
+  deployment.** Because of the `$http_host` override above, Django's
+  `ALLOWED_HOSTS` check is the only thing standing between a forged `Host`
+  header and the application — which makes this a security setting rather than
+  a convenience one. The container image therefore defaults it to the loopback
+  names only (`127.0.0.1,localhost,[::1]`, set in `Dockerfile`), **not** `*`,
+  which would switch the check off. Reaching the container under any other
+  name — the machine hostname, a LAN address, a proxied domain — means
+  overriding it (`-e STARCUBES_ALLOWED_HOSTS=127.0.0.1,localhost,example.internal`);
+  otherwise Django answers `400 Invalid HTTP_HOST header` before any view
+  runs. The `starcubes/settings.py` fallback stays `*` for `manage.py
+  runserver`, which is not exposed.
 
 - **`CSRF_TRUSTED_ORIGINS` can additionally be set via
   `STARCUBES_CSRF_TRUSTED_ORIGINS`** (comma-separated `scheme://host[:port]`

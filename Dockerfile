@@ -81,9 +81,17 @@ RUN chmod +x /entrypoint.sh
 # oracledb thick mode find Oracle instantclient in all processes
 # (including podman exec).  init_oracle_client() scans LD_LIBRARY_PATH
 # for libclntsh.so and enables thick mode automatically.
+# STARCUBES_ALLOWED_HOSTS is a security setting, not a convenience one:
+# docker/nginx.conf forwards the raw client Host header (uwsgi_param HTTP_HOST
+# $http_host) so Django sees the port it needs for the CSRF origin and the OIDC
+# redirect_uri, and Django's ALLOWED_HOSTS check is what makes trusting that
+# header safe. `*` would switch that check off, so the default is the loopback
+# names only. Reaching the container under any other name — the machine
+# hostname, a LAN address, a proxied domain — requires overriding this, or
+# Django answers 400 "Invalid HTTP_HOST header".
 ENV STARCUBES_POSTGRES_DSN="" \
     STARCUBES_SECRET_KEY="change-me-in-production" \
-    STARCUBES_ALLOWED_HOSTS="*" \
+    STARCUBES_ALLOWED_HOSTS="127.0.0.1,localhost,[::1]" \
     STARCUBES_DEBUG="0" \
     LD_LIBRARY_PATH="/app/oracle" \
     STARCUBES_LOG_DIR="/app/logs" \

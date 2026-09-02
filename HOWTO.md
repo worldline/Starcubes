@@ -88,9 +88,13 @@ Keycloak-side client configuration:
   on the client. A *missing port* there points at nginx's `HTTP_HOST` parameter
   rather than at the Keycloak config — see "CSRF" in
   `docs/deployment-config.md`.
-- **`STARCUBES_ALLOWED_HOSTS`** must name the real hostnames (not the `*`
-  default) on any deployment reachable by others: it is what validates the
-  `Host` header that the redirect URI and the CSRF origin are built from.
+- **`STARCUBES_ALLOWED_HOSTS`** must name the host you reach the app under.
+  The image defaults to the loopback names only (`127.0.0.1,localhost,[::1]`),
+  because this setting is what validates the `Host` header that the redirect
+  URI and the CSRF origin are built from. An SSO deployment is reachable under
+  a real hostname by definition, so it always has to override this — e.g.
+  `-e STARCUBES_ALLOWED_HOSTS=starcubes.example.com`. Without it Django
+  answers `400 Invalid HTTP_HOST header` and the login page never renders.
 
 **Behind a TLS-terminating proxy**, Django must be told to trust the
 forwarded scheme, or it will compute `redirect_uri=http://...` and Keycloak
