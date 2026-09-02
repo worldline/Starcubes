@@ -70,16 +70,48 @@ anything that is not in the user directory.
 
 ## CSRF
 
-- **`CSRF_TRUSTED_ORIGINS` must be set explicitly via `STARCUBES_CSRF_TRUSTED_ORIGINS`
-  (comma-separated `scheme://host[:port]` entries) for any deployment behind
-  the bundled nginx+uwsgi.** With `ALLOWED_HOSTS=["*"]` and nginx's catch-all
-  `server_name _;` in `docker/nginx.conf`, Django's Origin check on POST
-  (`request.get_host()`-derived "good origin" vs. the browser's `Origin`
-  header) is fragile across the nginx→uwsgi hop and rejects logins with
-  "Origin checking failed" even on a same-origin, same-scheme request. The
-  explicit allowlist sidesteps the derivation entirely. Empty by default —
-  must be set per deployment (e.g. `http://127.0.0.1:8080` for local docker
-  access, plus any other hostname/IP used to reach it).
+- **`docker/nginx.conf` must override `HTTP_HOST` with `$http_host` after
+  `include uwsgi_params;` — do not remove that line.** Debian's shipped
+  `/etc/nginx/uwsgi_params` sets `uwsgi_param HTTP_HOST $host;` since a
+  security update (the file in the image is dated 2026-06-18); it previously
+  used `$http_host`. The difference is the port: `$host` drops it. Django
+  builds `request.get_host()` from `HTTP_HOST`, and **two** things are derived
+  from it, so one missing port breaks both at once:
+
+  1. the CSRF "good origin" — becomes `http://example` while the browser
+     sends `Origin: http://example:8080`, so every POST 403s with
+     "Origin checking failed";
+  2. the OIDC `redirect_uri` — `mozilla_django_oidc.utils.absolutify()`
+     calls `request.build_absolute_uri()`, yielding
+     `http://example/oidc/callback/` without the port, which Keycloak rejects
+     with "Invalid parameter: redirect_uri".
+
+  This bites on any rebuild that pulls the newer nginx package, with no
+  application-code change in between — the symptom looks like an app
+  regression and is not one. nginx's own port-preserving idiom
+  (`$host$is_request_port$request_port`) needs nginx ≥ 1.30; the image ships
+  1.22.1, so `$http_host` is the only option. Passing the raw `Host` header
+  upstream is safe here **only because Django validates it** against
+  `ALLOWED_HOSTS` — which makes `STARCUBES_ALLOWED_HOSTS` a security setting,
+  not a convenience one (see below).
+
+- **`STARCUBES_ALLOWED_HOSTS` must name the real hostnames on any reachable
+  deployment.** It defaults to `*` (`starcubes/settings.py`, pinned to the same
+  value by `Dockerfile`), which disables Django's host validation entirely.
+  That default is fine for a throwaway local run, but combined with the
+  `$http_host` override above it means a forged `Host` header reaches the
+  application unchecked. Set it to the concrete names used to reach the
+  deployment, e.g. `127.0.0.1,localhost,example.internal`.
+
+- **`CSRF_TRUSTED_ORIGINS` can additionally be set via
+  `STARCUBES_CSRF_TRUSTED_ORIGINS`** (comma-separated `scheme://host[:port]`
+  entries). With `HTTP_HOST` correct it is no longer *required* — Django's
+  own Origin derivation works — but it stays useful as an explicit allowlist
+  for origins that differ from the `Host` Django sees (e.g. a proxy publishing
+  the app under another name). Empty by default. Note that an entry here
+  masks a broken `HTTP_HOST` for that one origin while every other hostname
+  still 403s; if only one access path works, suspect the `$host`/`$http_host`
+  issue above rather than adding more entries.
 
 ## SSO / OIDC
 

@@ -80,7 +80,17 @@ Keycloak-side client configuration:
 - **Confidential** client (not public — a client secret is required).
 - **Standard flow** (authorization code) enabled.
 - **Valid redirect URI**: exactly `https://<host>/oidc/callback/`, matching
-  the externally-reachable host of this deployment.
+  the externally-reachable host of this deployment — **including the port**
+  when it is not the scheme default (`http://host:8080/oidc/callback/` for a
+  plain-HTTP container run). Django derives this URI from the `Host` header it
+  receives; if Keycloak answers "Invalid parameter: redirect_uri", compare the
+  `redirect_uri=` value in the browser's address bar against what is registered
+  on the client. A *missing port* there points at nginx's `HTTP_HOST` parameter
+  rather than at the Keycloak config — see "CSRF" in
+  `docs/deployment-config.md`.
+- **`STARCUBES_ALLOWED_HOSTS`** must name the real hostnames (not the `*`
+  default) on any deployment reachable by others: it is what validates the
+  `Host` header that the redirect URI and the CSRF origin are built from.
 
 **Behind a TLS-terminating proxy**, Django must be told to trust the
 forwarded scheme, or it will compute `redirect_uri=http://...` and Keycloak
