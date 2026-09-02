@@ -5,6 +5,8 @@
 <div class="page-header">
   <h1 class="page-title">Datasources</h1>
   <span class="ms-auto" style="display:flex;gap:8px;align-items:center">
+    <a class="btn btn-secondary" href="{% url 'sources:alarm_firings' %}"
+       title="Threshold breach episodes across all datasources">Firings</a>
     {% if user.is_superuser %}
     <a class="btn btn-secondary" href="{% url 'sources:profiles' %}">Profiles…</a>
     <a class="btn btn-primary" href="{% url 'sources:new' %}">+ New Datasource</a>

@@ -8,6 +8,10 @@ urlpatterns = [
     path("",                                           views.source_list,    name="list"),
     path("me/",                                        views.my_profile,     name="me"),
     path("settings/",                                  views.settings_page,  name="settings"),
+    # Global alarm firing episodes (all datasources). A literal path — no
+    # collision with the <int:pk>/alarms/ routes, whose int converter only
+    # matches digits.
+    path("alarms/firings/",                            views.alarm_firings_page, name="alarm_firings"),
     # Profiles admin page — must precede the <str:slug> routes so the
     # "profiles" literal does not collide with the slug converter.
     path("profiles/",                                  views.profiles_page,     name="profiles"),

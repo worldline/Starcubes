@@ -2399,6 +2399,86 @@ def alarm_firings(request, pk: int, alarm_id: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
+def alarm_firings_page(request):
+    """The global firing-episode overview, across every datasource.
+
+    The evaluator is one global process, so its output is one global page:
+    every alarm_firing episode joined with its alarm rule and datasource,
+    newest first. `?show=open` restricts it to episodes still open — the
+    "what is firing right now" lens. Login-only like every /sources/ page
+    (RequireLoginMiddleware gates the path prefix; no role split needed —
+    alarms are a user concern). Episodes of deleted alarms are gone with
+    the alarm (ON DELETE CASCADE), so the page needs no orphan handling.
+    """
+    show = request.GET.get("show", "all")
+    where = "WHERE f.closed_at IS NULL" if show == "open" else ""
+    with _meta_engine().begin() as conn:
+        rows = conn.execute(text(
+            "SELECT f.id, f.first_breach_at, f.last_breach_at, f.closed_at, "
+            "       f.first_value, f.last_value, "
+            "       a.id AS alarm_id, a.name AS alarm_name, a.measure, "
+            "       a.cond_op, a.threshold, a.window_s, "
+            "       d.id AS ds_id, d.name AS ds_name "
+            "  FROM starcubes_meta.alarm_firing f "
+            "  JOIN starcubes_meta.alarm a ON a.id = f.alarm_id "
+            "  JOIN starcubes_meta.datasource d ON d.id = a.datasource_id "
+            f" {where} "
+            " ORDER BY f.id DESC LIMIT 500"
+        )).mappings().all()
+
+    episodes = []
+    for r in rows:
+        span = (r["last_breach_at"] - r["first_breach_at"]).total_seconds()
+        episodes.append({
+            "alarm_id": r["alarm_id"],
+            "alarm_name": r["alarm_name"],
+            "ds_id": r["ds_id"],
+            "ds_name": r["ds_name"],
+            "rule": (f"{r['measure']} {r['cond_op']} "
+                     f"{r['threshold']:g} ({fmt_window_s(r['window_s'])})"),
+            "open": r["closed_at"] is None,
+            "first_breach_at": r["first_breach_at"],
+            "last_breach_at": r["last_breach_at"],
+            "closed_at": r["closed_at"],
+            "first_value": r["first_value"],
+            "last_value": r["last_value"],
+            "duration": fmt_episode_span(span),
+        })
+    return render(request, "sources/firings.html",
+                  {"episodes": episodes, "show": show,
+                   "total": len(episodes)})
+
+
+def fmt_episode_span(seconds: float) -> str:
+    """Episode length as a compact human string (60 -> 1m, 3700 -> 1h 1m).
+
+    An episode spanning a single window has length 0 — shown as the
+    window-sized "≤ one window" hint by the caller, not here.
+    """
+    s = int(seconds)
+    if s <= 0:
+        return "—"
+    out = []
+    for unit, div in (("d", 86400), ("h", 3600), ("m", 60)):
+        n, s = divmod(s, div)
+        if n:
+            out.append(f"{n}{unit}")
+    if not out or s:
+        out.append(f"{s}s")
+    return " ".join(out[:2])
+
+
+def fmt_window_s(window_s: int) -> str:
+    """window_s 300 -> '5m' — same shape detail.html's fmtWindow produces."""
+    if window_s % 86400 == 0:
+        return f"{window_s // 86400}d"
+    if window_s % 3600 == 0:
+        return f"{window_s // 3600}h"
+    if window_s % 60 == 0:
+        return f"{window_s // 60}m"
+    return f"{window_s}s"
+
+
 # ---------------------------------------------------------------------------
 # Dimension groups (JSON)
 # ---------------------------------------------------------------------------

@@ -1,0 +1,87 @@
+{% extends "sources/base.html" %}
+{% block title %}starcubes — Alarm firings{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1 class="page-title">Alarm firings</h1>
+  <span class="ms-auto" style="display:flex;gap:8px;align-items:center">
+    <a class="btn btn-secondary{% if show != 'open' %} btn-primary{% endif %}"
+       href="{% url 'sources:alarm_firings' %}">All</a>
+    <a class="btn btn-secondary{% if show == 'open' %} btn-primary{% endif %}"
+       href="{% url 'sources:alarm_firings' %}?show=open">Open only</a>
+    <a class="btn btn-secondary" href=""
+       title="Reload the episode list">Refresh</a>
+  </span>
+</div>
+
+<p class="text-muted" style="margin:0 0 12px;font-size:12px">
+  One row per threshold breach episode — from the first to the last window that
+  crossed the alarm's threshold ({{ total }} shown, newest first). Open episodes
+  are still breaching; a closed episode ended at <em>Closed</em>, the first
+  window that fell back under the threshold.
+</p>
+
+{% if episodes %}
+<div class="card">
+<table class="data-table" id="firingsTable">
+  <thead>
+    <tr>
+      <th>Alarm</th>
+      <th>Datasource</th>
+      <th>Rule</th>
+      <th>Status</th>
+      <th>First breach <span style="font-weight:normal;opacity:.6">local tz</span></th>
+      <th>Last breach</th>
+      <th>Closed</th>
+      <th style="text-align:right">Duration</th>
+      <th style="text-align:right">Value first → last</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in episodes %}
+    <tr>
+      <td><a href="{% url 'sources:detail' e.ds_id %}"><strong>{{ e.alarm_name }}</strong></a></td>
+      <td class="text-muted">{{ e.ds_name }}</td>
+      <td class="text-mono text-muted" style="font-size:11px">{{ e.rule }}</td>
+      <td>
+        {% if e.open %}
+        <span class="badge badge-running"><span class="dot">●</span> open</span>
+        {% else %}
+        <span class="text-muted">closed</span>
+        {% endif %}
+      </td>
+      <td class="text-mono text-muted" data-ts="{{ e.first_breach_at|default:'' }}">{{ e.first_breach_at|default:'—' }}</td>
+      <td class="text-mono text-muted" data-ts="{{ e.last_breach_at|default:'' }}">{{ e.last_breach_at|default:'—' }}</td>
+      <td class="text-mono text-muted" data-ts="{{ e.closed_at|default:'' }}">{{ e.closed_at|default:'—' }}</td>
+      <td style="text-align:right" title="first → last breach">{{ e.duration }}</td>
+      <td style="text-align:right" class="text-mono">
+        {{ e.first_value|floatformat:-1|default:'∅' }} → {{ e.last_value|floatformat:-1|default:'∅' }}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<div class="card"><div class="card-body text-muted" style="padding:16px;text-align:center">
+  {% if show == 'open' %}
+  No open episodes — nothing is currently breaching a threshold.
+  {% else %}
+  No firing episodes recorded yet.
+  {% endif %}
+</div></div>
+{% endif %}
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// Convert server-rendered timestamps to local time (same snippet as
+// manage.html's ETL History table).
+document.querySelectorAll('[data-ts]').forEach(function(el) {
+  var ts = el.getAttribute('data-ts');
+  if (!ts) { el.textContent = '—'; return; }
+  var d = new Date(ts);
+  el.textContent = isNaN(d.getTime()) ? ts : d.toLocaleString();
+});
+</script>
+{% endblock %}

@@ -29,6 +29,7 @@ The `/sources/` UI splits along three axes:
 |-------------------|-------------------------------|-----------------------------------------------|
 | Any user          | `/sources/`                   | List of datasources with last-run status       |
 | Any user          | `/sources/<pk>/`              | Editable detail (Basics read-only; Group Dims, Measures, Alarms are CRUD) |
+| Any user          | `/sources/alarms/firings/`    | Global firing-episode overview (`?show=open` for the live breaches) |
 | Superuser         | `/sources/<pk>/manage/`       | Full configuration (12 sub-tabs incl. ETL run / log) |
 | Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
 | Superuser         | `/sources/profiles/`          | Profile catalogue + upload (replaces the modal that used to live on `list.html`) |
@@ -301,6 +302,13 @@ fact column, or `func(col)` with `func` in `sum/avg/min/max` (`quantile`
 is not comparable and is rejected). `notify_channels` is a Postgres
 `text[]`; only `log` has plumbing today (the episode row plus the loop's
 log file) — the rest is vocabulary, see backlog.
+
+The **global episode overview** lives at `/sources/alarms/firings/`
+(`alarm_firings_page`, server-rendered, newest first, LIMIT 500,
+`?show=open` for the live breaches) — every `alarm_firing` episode joined
+with its alarm rule and datasource. It is linked from the datasource
+list ("Firings") and from the Alarms tab ("All firings"); the per-alarm
+episodes remain in detail.html's ⓘ sub-row.
 
 ### JSON: inline CRUD
 Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delete/`.

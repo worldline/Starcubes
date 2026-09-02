@@ -122,6 +122,27 @@ Connection status badges auto-check each source DB on page load. While any
 ETL is running, the page polls every 3 seconds and updates the status badge
 automatically.
 
+### Alarm firings
+
+The **Firings** button on the datasource list opens the global episode
+overview at `/sources/alarms/firings/` — one row per threshold breach
+episode, across all datasources, newest first:
+
+| Column | Description |
+|--------|-------------|
+| Alarm / Datasource | The alarm that fired; the name links to its datasource's detail page (Alarms tab) |
+| Rule | The alarm's measure, comparison, threshold and window, e.g. `count(*) > 5 (5m)` |
+| Status | Pulsing `open` while the threshold is still being breached, `closed` after it cleared |
+| First / Last breach | Start and end of the breach period (local timezone) |
+| Closed | When the first window fell back under the threshold |
+| Duration | Last breach minus first breach |
+| Value first → last | The aggregate value in the first and the last breaching window |
+
+**Open only** restricts the list to episodes still breaching — the "what is
+firing right now" lens. The same page is reachable from each datasource's
+Alarms tab via **All firings →**; per-alarm episodes also appear under the
+alarm's ⓘ button there.
+
 ### Creating a datasource
 
 Click **+ New Datasource** on the list page. The form has four cards:
