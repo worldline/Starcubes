@@ -44,12 +44,13 @@ fully editable there. `manage` adds the schema, storage and ETL surface
 that only an operator has any use for, behind a superuser gate. The link
 to `manage` is rendered only for superusers.
 
-The three datasource-independent pages — settings (Users), profiles and
-firings — share the link-based tab bar `_global_tabs.html`, included at
-the top of each page. The active tab is derived from
-`request.resolver_match.url_name`, and the bar is permission-filtered to
-mirror the views: superusers see Users / Profiles / Firings, other users
-only Firings.
+The four datasource-independent pages — settings (Users), the datasource
+list, profiles and firings — share the link-based tab bar
+`_global_tabs.html`, included at the top of each page
+(Users / Datasources / Profiles / Firings). The active tab is derived
+from `request.resolver_match.url_name`, and the bar is
+permission-filtered to mirror the views: superusers see all four tabs,
+other logged-in users Datasources and Firings.
 
 ## Role gates
 

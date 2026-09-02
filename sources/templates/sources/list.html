@@ -2,14 +2,13 @@
 {% block title %}starcubes — Sources{% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <h1 class="page-title">Datasources</h1>
-  <span class="ms-auto" style="display:flex;gap:8px;align-items:center">
-    {% if user.is_superuser %}
-    <a class="btn btn-primary" href="{% url 'sources:new' %}">+ New Datasource</a>
-    {% endif %}
-  </span>
+{% include "sources/_global_tabs.html" %}
+
+{% if user.is_superuser %}
+<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin:0 0 12px">
+  <a class="btn btn-primary" href="{% url 'sources:new' %}">+ New Datasource</a>
 </div>
+{% endif %}
 
 {% if sources %}
 <div class="card">

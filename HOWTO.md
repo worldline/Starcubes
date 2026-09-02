@@ -107,7 +107,10 @@ usernames, or align the account's email first.
 
 ### Datasource list
 
-`/sources/` shows a card with one row per datasource:
+`/sources/` shows a card with one row per datasource. The page sits in
+the shared **Users / Datasources / Profiles / Firings** tab bar
+(Datasources active); **+ New Datasource** above the table is
+superuser-only:
 
 | Column | Description |
 |--------|-------------|
