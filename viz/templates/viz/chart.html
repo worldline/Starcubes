@@ -1153,9 +1153,24 @@
     <span class="menu-user">{{ user.username }}</span>
   </div>
   <a class="menu-item" role="menuitem" href="{% url 'sources:list' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-sliders"></use></svg>
-    <span class="menu-label">Configure</span>
+    <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
+    <span class="menu-label">Datasources</span>
   </a>
+  <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
+    <span class="menu-label">Firings</span>
+  </a>
+  {% if user.is_superuser %}
+  <a class="menu-item" role="menuitem" href="{% url 'sources:profiles' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-book-open"></use></svg>
+    <span class="menu-label">Profiles</span>
+  </a>
+  <a class="menu-item" role="menuitem" href="{% url 'sources:settings' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>
+    <span class="menu-label">Users</span>
+  </a>
+  {% endif %}
+  <div class="menu-sep"></div>
   {% endif %}
   {% comment %} The y-axis mode is client-side, so the preferences are useful without an
      account — they stay in the menu for anonymous visitors too. {% endcomment %}
@@ -1168,6 +1183,12 @@
     <span class="menu-label" id="theme-toggle-label">Dark theme</span>
   </button>
   <div class="menu-sep"></div>
+  {% if user.is_authenticated %}
+  <a class="menu-item" role="menuitem" href="{% url 'sources:me' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
+    <span class="menu-label">My Profile</span>
+  </a>
+  {% endif %}
   <a class="menu-item" role="menuitem" id="slides-link" href="{% url 'viz:slides' %}"
      target="_blank" rel="noopener">
     <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>

@@ -1,24 +1,23 @@
 {% comment %}
-Shared tab bar for the datasource-independent pages (settings, list,
-profiles, firings). Link-based tabs — each page keeps its own URL; the
+Shared tab bar for the datasource-independent pages (list, firings,
+profiles, settings). Link-based tabs — each page keeps its own URL; the
 active tab is derived from resolver_match, not client-side toggling.
-Permission-mirrors the views: Users/Profiles superuser-only, Datasources
-and Firings for every logged-in user. No #tabNav/data-tab — those belong
-to the JS-toggled in-page bars in detail/manage.
+Same order as the two hamburger menus: the every-user pages first
+(Datasources, Firings), then the superuser configuration (Profiles,
+Users) — permission-mirrors the views. No #tabNav/data-tab — those
+belong to the JS-toggled in-page bars in detail/manage.
 {% endcomment %}
 <div class="subtabs-bar">
   <div class="tabs">
-    {% if user.is_superuser %}
-    <a class="tab-btn{% if request.resolver_match.url_name == 'settings' %} active{% endif %}"
-       href="{% url 'sources:settings' %}">Users</a>
-    {% endif %}
     <a class="tab-btn{% if request.resolver_match.url_name == 'list' %} active{% endif %}"
        href="{% url 'sources:list' %}">Datasources</a>
+    <a class="tab-btn{% if request.resolver_match.url_name == 'alarm_firings' %} active{% endif %}"
+       href="{% url 'sources:alarm_firings' %}">Firings</a>
     {% if user.is_superuser %}
     <a class="tab-btn{% if request.resolver_match.url_name == 'profiles' %} active{% endif %}"
        href="{% url 'sources:profiles' %}">Profiles</a>
+    <a class="tab-btn{% if request.resolver_match.url_name == 'settings' %} active{% endif %}"
+       href="{% url 'sources:settings' %}">Users</a>
     {% endif %}
-    <a class="tab-btn{% if request.resolver_match.url_name == 'alarm_firings' %} active{% endif %}"
-       href="{% url 'sources:alarm_firings' %}">Firings</a>
   </div>
 </div>

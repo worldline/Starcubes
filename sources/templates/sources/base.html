@@ -146,11 +146,13 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* Nav — the bar itself (#nav-tabs, .nav-brand, .nav-spacer, the 44px height)
-   is still shared with viz/chart.html. The *right-hand side* deliberately is
-   not any more: chart.html collapsed its links into one hamburger menu
-   (#nav-menu, see docs/chart-app.md "Nav bar"), and this page keeps its text
-   links. Do not "re-sync" the two by hand — copy the icon sprite and the
-   .ibtn / makePopover primitives across if this page should follow. */
+   is still shared with viz/chart.html. The right-hand side's *mechanics*
+   (makePopover in nav.js vs. chart.html's inline copy) deliberately remain
+   separate; the menu *entries* though are kept identical to chart.html's
+   #nav-menu on purpose — same five nav rows (Datasources, Firings, Profiles,
+   Users, My Profile) in the same order, so the two apps read as one product.
+   Change both together (see docs/chart-app.md and docs/sources-app.md
+   "Nav bar"). */
 #nav-tabs, .nav {
   display: flex; align-items: center;
   background: var(--bg2); border-bottom: 1px solid var(--border);
@@ -715,40 +717,41 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
 </nav>
 <div id="nav-menu" class="popover popover--menu" role="menu" aria-label="Main menu">
   {% if user.is_authenticated %}
-    <a class="menu-head" role="menuitem" href="{% url 'sources:me' %}">
+    <div class="menu-head">
       <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
       <span class="menu-user">{{ user.username }}</span>
+    </div>
+    <a class="menu-item" role="menuitem" href="{% url 'sources:list' %}">
+      <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
+      <span class="menu-label">Datasources</span>
+    </a>
+    <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
+      <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
+      <span class="menu-label">Firings</span>
     </a>
     {% if user.is_superuser %}
-      <a class="menu-item" role="menuitem" href="{% url 'sources:settings' %}">
-        <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>
-        <span class="menu-label">Users</span>
-      </a>
       <a class="menu-item" role="menuitem" href="{% url 'sources:profiles' %}">
         <svg class="ic" aria-hidden="true"><use href="#ic-book-open"></use></svg>
         <span class="menu-label">Profiles</span>
       </a>
-      <a class="menu-item" role="menuitem" href="{% url 'sources:new' %}">
-        <svg class="ic" aria-hidden="true"><use href="#ic-plus"></use></svg>
-        <span class="menu-label">Create new source</span>
+      <a class="menu-item" role="menuitem" href="{% url 'sources:settings' %}">
+        <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>
+        <span class="menu-label">Users</span>
       </a>
-      {% if request.resolver_match.url_name == 'detail' and current_source_id %}
-        <a class="menu-item" role="menuitem" href="{% url 'sources:manage' current_source_id %}">
-          <svg class="ic" aria-hidden="true"><use href="#ic-sliders"></use></svg>
-          <span class="menu-label">Manage</span>
-        </a>
-      {% endif %}
     {% endif %}
-    <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
-      <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
-      <span class="menu-label">Firings</span>
-    </a>
+    <div class="menu-sep"></div>
   {% endif %}
   <button class="menu-item" role="menuitem" type="button" id="nav-theme-toggle" data-keep-open>
     <svg class="ic" aria-hidden="true" id="nav-theme-icon"><use href="#ic-moon"></use></svg>
     <span class="menu-label" id="nav-theme-label">Dark theme</span>
   </button>
   <div class="menu-sep"></div>
+  {% if user.is_authenticated %}
+    <a class="menu-item" role="menuitem" href="{% url 'sources:me' %}">
+      <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
+      <span class="menu-label">My Profile</span>
+    </a>
+  {% endif %}
   <a class="menu-item" role="menuitem" href="{% url 'viz:slides' %}" target="_blank" rel="noopener">
     <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>
     <span class="menu-label">About starcubes</span>

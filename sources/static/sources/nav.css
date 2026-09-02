@@ -31,10 +31,8 @@
   padding: 7px 12px 9px 9px; margin-bottom: 4px;
   border-bottom: 1px solid var(--border);
   color: var(--muted);
-  text-decoration: none;
 }
 .menu-head .ic { font-size: 15px; }
-.menu-head:hover .menu-user { color: var(--accent); }
 .menu-user {
   font-size: 12px; font-weight: 600; color: var(--body-color);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

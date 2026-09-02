@@ -11,16 +11,21 @@ Read this when editing anything under `sources/`.
 Single `#nav-tabs` flex row, same pattern as the chart page (see
 `docs/chart-app.md`): source tabs, spacer, then everything else collapsed
 into `#nav-menu`, a `makePopover` dropdown behind the `#nav-menu-toggle`
-hamburger. Menu rows: username header (links to `sources:me`), Users /
-Profiles / Create new source / Manage (superuser-only; Manage additionally
-only on the `detail` page), Firings (any logged-in user), theme toggle,
-About (`viz:slides`, new tab),
-Log out. The menu CSS/JS live in `sources/static/sources/nav.css` and
+hamburger. Menu rows: username header (display only), Datasources
+(`sources:list`) and Firings (`sources:alarm_firings`) for any logged-in
+user, Profiles / Users (superuser-only), theme toggle, My Profile
+(`sources:me`), About (`viz:slides`, new tab), Log out. The entry list is
+deliberately identical to chart.html's `#nav-menu` (same rows, same
+order) so the two apps read as one product — change both together. The
+menu CSS/JS live in `sources/static/sources/nav.css` and
 `nav.js` — near-verbatim mirrors of the chart's inline copies, kept
 deliberately separate so the two apps don't share a static include. The
 base wiring script (theme helper + `makePopover` call) sits inside
 `{% block extra_js %}` of `base.html`; templates that override the block
 must start with `{{ block.super }}` (list/manage/new/firings do).
+Create-new-source and Manage used to be menu rows; they live on their
+pages now (`+ New Datasource` on the list, the Manage link in the detail
+header).
 
 ## Pages at a glance
 
@@ -45,9 +50,10 @@ that only an operator has any use for, behind a superuser gate. The link
 to `manage` is rendered only for superusers.
 
 The four datasource-independent pages — settings (Users), the datasource
-list, profiles and firings — share the link-based tab bar
-`_global_tabs.html`, included at the top of each page
-(Users / Datasources / Profiles / Firings). The active tab is derived
+list, firings, profiles and settings — share the link-based tab bar
+`_global_tabs.html`, included at the top of each page. Tab order mirrors
+the two hamburger menus: Datasources, Firings, then the superuser-only
+Profiles, Users. The active tab is derived
 from `request.resolver_match.url_name`, and the bar is
 permission-filtered to mirror the views: superusers see all four tabs,
 other logged-in users Datasources and Firings.

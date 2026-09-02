@@ -813,13 +813,17 @@ and on keyboard focus.
 
 ### The menu (☰)
 
-The top bar carries the source tabs and, on the right, a single menu button:
+The top bar carries the source tabs and, on the right, a single menu button.
+The entries are the same as in the sources app's menu:
 
 | Entry | Does |
 |-------|------|
-| Configure | Opens the datasource overview at `/sources/`. |
+| Datasources | Opens the datasource overview at `/sources/`. |
+| Firings | The global threshold-breach episode overview. |
+| Profiles / Users | Superuser-only: the profile catalogue and user admin. |
 | Preferences | Y-axis mode, latest-bar trimming and the bar pixel target. See [Preferences](#preferences). Available logged out too — they are browser-local settings. |
 | Theme | Switches light/dark. The menu deliberately stays open so the two can be compared; the choice survives a reload. |
+| My Profile | Own profile, password change, query history (`/sources/me/`). |
 | About starcubes | Opens the slide deck in a new tab. |
 | Log out / Log in | |
 

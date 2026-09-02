@@ -44,10 +44,15 @@ are injected before `#nav-spacer` by `loadSources()`; clicking one calls
 `setActiveSource(name)`.
 
 Everything else collapsed into `#nav-menu`, a `makePopover` dropdown behind
-`#nav-menu-toggle`: username header, Configure (`sources:list`), Preferences,
-Theme, About starcubes, Log out. Anonymously it shows Preferences, Theme,
-About and Log in — the y-axis preferences are client-side and stay reachable
-without an account.
+`#nav-menu-toggle`: username header (display only), Datasources
+(`sources:list`) and Firings (`sources:alarm_firings`) for any logged-in
+user, Profiles / Users (superuser-only), Preferences, Theme, My Profile
+(`sources:me`), About starcubes, Log out. Anonymously it shows Preferences,
+Theme, About and Log in — the y-axis preferences are client-side and stay
+reachable without an account. The entry list is deliberately identical to
+the sources app's `#nav-menu` in `sources/templates/sources/base.html`
+(same rows, same order; Preferences is the chart-only extra) — change both
+together.
 
 Three things that break if they are touched carelessly:
 
