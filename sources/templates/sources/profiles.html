@@ -2,13 +2,12 @@
 {% block title %}Profiles — starcubes{% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <h1 class="page-title">Datasource Profiles</h1>
-  <span style="margin-left:auto;font-size:12px;color:var(--muted)">
-    A profile is a complete datasource configuration (fact columns, dimensions,
-    indices, measures, group dimensions) without any connection credentials.
-  </span>
-</div>
+{% include "sources/_global_tabs.html" %}
+
+<p class="text-muted" style="margin:0 0 12px;font-size:12px">
+  A profile is a complete datasource configuration (fact columns, dimensions,
+  indices, measures, group dimensions) without any connection credentials.
+</p>
 
 {% if msg %}
 <div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>

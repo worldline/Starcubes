@@ -378,6 +378,7 @@ tr.editing .row-edit { display: flex; }
   margin: 4px 1px -1px;
   border-radius: 5px 5px 0 0;
   transition: background 0.12s, color 0.12s;
+  text-decoration: none; /* anchors in _global_tabs.html: no a:hover underline */
 }
 .subtabs-bar .tab-btn:hover { background: var(--tab-active-hover-bg); }
 /* Subordinate tier: same accent tint as the top nav but lighter weight,
@@ -738,6 +739,10 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
         </a>
       {% endif %}
     {% endif %}
+    <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
+      <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
+      <span class="menu-label">Firings</span>
+    </a>
   {% endif %}
   <button class="menu-item" role="menuitem" type="button" id="nav-theme-toggle" data-keep-open>
     <svg class="ic" aria-hidden="true" id="nav-theme-icon"><use href="#ic-moon"></use></svg>

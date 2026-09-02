@@ -2,16 +2,15 @@
 {% block title %}starcubes — Alarm firings{% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <h1 class="page-title">Alarm firings</h1>
-  <span class="ms-auto" style="display:flex;gap:8px;align-items:center">
-    <a class="btn btn-secondary{% if show != 'open' %} btn-primary{% endif %}"
-       href="{% url 'sources:alarm_firings' %}">All</a>
-    <a class="btn btn-secondary{% if show == 'open' %} btn-primary{% endif %}"
-       href="{% url 'sources:alarm_firings' %}?show=open">Open only</a>
-    <a class="btn btn-secondary" href=""
-       title="Reload the episode list">Refresh</a>
-  </span>
+{% include "sources/_global_tabs.html" %}
+
+<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin:0 0 12px">
+  <a class="btn btn-secondary{% if show != 'open' %} btn-primary{% endif %}"
+     href="{% url 'sources:alarm_firings' %}">All</a>
+  <a class="btn btn-secondary{% if show == 'open' %} btn-primary{% endif %}"
+     href="{% url 'sources:alarm_firings' %}?show=open">Open only</a>
+  <a class="btn btn-secondary" href=""
+     title="Reload the episode list">Refresh</a>
 </div>
 
 <p class="text-muted" style="margin:0 0 12px;font-size:12px">
@@ -74,6 +73,7 @@
 {% endblock %}
 
 {% block extra_js %}
+{{ block.super }}
 <script>
 // Convert server-rendered timestamps to local time (same snippet as
 // manage.html's ETL History table).

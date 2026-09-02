@@ -13,13 +13,14 @@ Single `#nav-tabs` flex row, same pattern as the chart page (see
 into `#nav-menu`, a `makePopover` dropdown behind the `#nav-menu-toggle`
 hamburger. Menu rows: username header (links to `sources:me`), Users /
 Profiles / Create new source / Manage (superuser-only; Manage additionally
-only on the `detail` page), theme toggle, About (`viz:slides`, new tab),
+only on the `detail` page), Firings (any logged-in user), theme toggle,
+About (`viz:slides`, new tab),
 Log out. The menu CSS/JS live in `sources/static/sources/nav.css` and
 `nav.js` — near-verbatim mirrors of the chart's inline copies, kept
 deliberately separate so the two apps don't share a static include. The
 base wiring script (theme helper + `makePopover` call) sits inside
 `{% block extra_js %}` of `base.html`; templates that override the block
-must start with `{{ block.super }}` (list/manage/new do).
+must start with `{{ block.super }}` (list/manage/new/firings do).
 
 ## Pages at a glance
 
@@ -42,6 +43,13 @@ meant to curate — group dimensions, measures and alarms — and they are
 fully editable there. `manage` adds the schema, storage and ETL surface
 that only an operator has any use for, behind a superuser gate. The link
 to `manage` is rendered only for superusers.
+
+The three datasource-independent pages — settings (Users), profiles and
+firings — share the link-based tab bar `_global_tabs.html`, included at
+the top of each page. The active tab is derived from
+`request.resolver_match.url_name`, and the bar is permission-filtered to
+mirror the views: superusers see Users / Profiles / Firings, other users
+only Firings.
 
 ## Role gates
 
@@ -306,8 +314,9 @@ log file) — the rest is vocabulary, see backlog.
 The **global episode overview** lives at `/sources/alarms/firings/`
 (`alarm_firings_page`, server-rendered, newest first, LIMIT 500,
 `?show=open` for the live breaches) — every `alarm_firing` episode joined
-with its alarm rule and datasource. It is linked from the datasource
-list ("Firings") and from the Alarms tab ("All firings"); the per-alarm
+with its alarm rule and datasource. It is linked from the shared tab bar
+(`_global_tabs.html`), from the hamburger menu ("Firings", any logged-in
+user) and from the Alarms tab ("All firings"); the per-alarm
 episodes remain in detail.html's ⓘ sub-row.
 
 ### JSON: inline CRUD

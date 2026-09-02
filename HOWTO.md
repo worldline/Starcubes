@@ -124,7 +124,8 @@ automatically.
 
 ### Alarm firings
 
-The **Firings** button on the datasource list opens the global episode
+The **Firings** tab (and the hamburger menu's Firings item) opens the
+global episode
 overview at `/sources/alarms/firings/` — one row per threshold breach
 episode, across all datasources, newest first:
 
@@ -211,7 +212,7 @@ changes required.
 
 #### Saving and applying profiles
 
-- **Sources list → Profiles…** — the catalogue: what is available, what
+- **Hamburger menu → Profiles** (or the Profiles tab) — the catalogue: what is available, what
   each profile contains, and buttons to use, upload or delete one.
 - **Detail page → Basics → Save as Profile…** — writes this datasource's
   whole configuration to `profiles/user/<name>.yaml`, or downloads it as a

@@ -2,11 +2,7 @@
 {% block title %}Settings — starcubes{% endblock %}
 
 {% block content %}
-<div class="subtabs-bar">
-  <div class="tabs" id="tabNav">
-    <button class="tab-btn active" data-tab="users">Users ({{ users|length }})</button>
-  </div>
-</div>
+{% include "sources/_global_tabs.html" %}
 
 {% if msg %}
 <div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
@@ -16,7 +12,7 @@
 {% endif %}
 
 <!-- Users tab -->
-<div class="tab-panel active" id="tab-users">
+<div>
   <div class="card">
     <div class="card-header">
       <span class="card-title">Users</span>
@@ -93,10 +89,12 @@
                   <label class="form-label">Email</label>
                   <input class="form-control" name="email" value="{{ u.email|default:'' }}" style="width:240px">
                 </div>
-                {# Each checkbox is preceded by a hidden field of the same name so an
-                   unticked box still posts a value. Without it the browser omits the
-                   field entirely and the view cannot tell "cleared" from "not part of
-                   this form" — which made these flags set-only. #}
+                {% comment %}
+                Each checkbox is preceded by a hidden field of the same name so an
+                unticked box still posts a value. Without it the browser omits the
+                field entirely and the view cannot tell "cleared" from "not part of
+                this form" — which made these flags set-only.
+                {% endcomment %}
                 <label style="font-size:12px"><input type="hidden" name="is_superuser" value=""><input type="checkbox" name="is_superuser" {% if u.is_superuser %}checked{% endif %}> Superuser</label>
                 <label style="font-size:12px"><input type="hidden" name="is_staff" value=""><input type="checkbox" name="is_staff" {% if u.is_staff %}checked{% endif %}> Staff</label>
                 <label style="font-size:12px"><input type="hidden" name="is_active" value=""><input type="checkbox" name="is_active" {% if u.is_active %}checked{% endif %}> Active</label>
