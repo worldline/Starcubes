@@ -243,6 +243,17 @@ if OIDC_ENABLED:
     # is intentionally not wired up — local Django session logout (existing
     # LogoutView) is enough for now.
 
+    # Every failure branch of mozilla_django_oidc's callback view redirects
+    # to LOGIN_REDIRECT_URL_FAILURE, whose library default is "/" — which is
+    # exactly where a SUCCESSFUL login lands (LOGIN_REDIRECT_URL below).
+    # Without this override, "SSO said yes but I am not logged in" produces
+    # the same URL as a working login and leaves nothing to diagnose.
+    LOGIN_REDIRECT_URL_FAILURE = "/login/?sso=failed"
+    # Read by mozilla_django_oidc/urls.py at import time (import_from_settings),
+    # so the subclass takes over /oidc/callback/ without a second route in
+    # starcubes/urls.py — which would collide on the reverse() name.
+    OIDC_CALLBACK_CLASS = "starcubes.oidc.LoggingOIDCCallbackView"
+
 LOGIN_URL = "/login/"
 LOGIN_REDIRECT_URL = "/"
 LOGOUT_REDIRECT_URL = "/"
@@ -272,6 +283,20 @@ LOGGING = {
         "django.request": {
             "handlers": ["console"],
             "level": "INFO",
+            "propagate": False,
+        },
+        # Without a handler here these two propagate to a root logger that has
+        # none, so logging falls back to lastResort (WARNING only, no format).
+        # The SSO path is the one flow whose failures are otherwise completely
+        # silent — see starcubes/oidc.py's LoggingOIDCCallbackView.
+        "mozilla_django_oidc": {
+            "handlers": ["console"],
+            "level": STARCUBES_LOG_LEVEL,
+            "propagate": False,
+        },
+        "starcubes.oidc": {
+            "handlers": ["console"],
+            "level": STARCUBES_LOG_LEVEL,
             "propagate": False,
         },
     },

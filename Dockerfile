@@ -19,7 +19,12 @@ RUN mkdir -p /js/vendor/timeseries && \
 # smaller than full bookworm's build-essential toolchain.
 FROM python:3.12-slim-bookworm AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+# libpcre2-dev is not optional padding: uwsgi silently compiles WITHOUT its
+# regex features when it cannot find PCRE, which takes `route` rules and a
+# regex `static-map` with it — no error, they just stop matching. The runtime
+# stage already carries libpcre2-8-0 (nginx depends on it), so this costs
+# nothing in the final image.
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev libpcre2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/
@@ -32,8 +37,11 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt uwsgi \
               /usr/local/lib/python3.12/site-packages/wheel* \
     # No package ships code under tests/ that is needed at runtime; pandas
     # alone ships 36 MB of them. Delete every site-packages tests dir.
+    # Plural only — a singular `test` dir matches exactly one thing here, and
+    # it is django/test/, Django's own test framework package (520 KB). Not
+    # worth deleting, and deleting it breaks any import of django.test.
     && find /usr/local/lib/python3.12/site-packages \
-        \( -name 'tests' -o -name 'test' \) -type d -exec rm -rf {} + \
+        -name 'tests' -type d -exec rm -rf {} + \
     && true
 
 # ── Stage 3: runtime ─────────────────────────────────────────────────────────

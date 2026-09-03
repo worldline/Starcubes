@@ -131,6 +131,45 @@ but the emails differ, first SSO login for that identity fails with a
 uniqueness error; keep Keycloak usernames distinct from pre-existing local
 usernames, or align the account's email first.
 
+Two further cases the email lookup cannot resolve on its own, both handled
+by falling back to `preferred_username`:
+
+- **Several local accounts share one email address.** The account whose
+  username matches the Keycloak identity wins. If none of them matches, the
+  login is refused as ambiguous rather than guessed at — fix the duplicate
+  addresses in `auth_user`.
+- **The Keycloak identity has no email address.** Matching then runs on the
+  username alone. Merging with a local account by email obviously cannot
+  happen in that case, so give Keycloak users an email address if you rely
+  on that merge.
+
+The username is deliberately *not* consulted when an identity presents an
+email that simply matches no local account — that would let anyone who can
+choose their own `preferred_username` in Keycloak take over a same-named
+local account, superuser ones included.
+
+#### When SSO comes back but you are not logged in
+
+Every failure inside the OIDC callback used to redirect to `/`, which is
+also where a *successful* login lands — the two were indistinguishable.
+Failures now land on **`/login/?sso=failed`** and the login page says so.
+
+The reason is always written to the container log, one line per attempt:
+
+```sh
+podman logs <container> 2>&1 | grep -i oidc
+```
+
+A failed attempt logs `OIDC login failed:` followed by the fields that tell
+the branches apart — whether Keycloak itself reported an `error`, whether
+the session still carried its `oidc_states` entry (`had_oidc_states=False`
+means the session was lost between the redirect to Keycloak and the return,
+i.e. a cookie/host problem, not a Keycloak one), and whether a user was
+resolved and active. A successful one logs `OIDC login succeeded:` with the
+username. Note that a mismatched `state`, a bad JWT signature or a wrong
+nonce are *not* in this list: those abort with HTTP 400, and a broken
+token/userinfo endpoint with HTTP 500 — visible errors, not silent ones.
+
 ### Datasource list
 
 `/sources/` shows a card with one row per datasource. The page sits in

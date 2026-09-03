@@ -162,15 +162,25 @@ anything that is not in the user directory.
   account can never come back privileged — `sources/views.py:2246`'s
   `settings_page` is still the only place `is_superuser` is checked
   anywhere in the app, and it stays a manually-granted local flag for
-  both password and SSO accounts alike. `filter_users_by_claims()` is
-  deliberately left at the library default (matches existing users by
-  email, case-insensitive): a local password account and a Keycloak
-  identity sharing an email merge into one account on first SSO login,
-  which is treated as intentional rather than worked around — the one
-  sharp edge is a local *username* colliding with a `preferred_username`
-  claim whose email differs, which hits Django's unique-username
-  constraint on that identity's first SSO login instead of merging (a
-  500, not a silent failure). `SECURE_PROXY_SSL_HEADER` is applied
+  both password and SSO accounts alike. `filter_users_by_claims()` keeps the
+  library's email lookup as its **primary** key — a local password account
+  and a Keycloak identity sharing an email still merge into one account on
+  first SSO login, which is intentional rather than worked around — but the
+  plain lookup has two dead ends it cannot escape, both caused by point one
+  above decoupling the username from the matching key: several local
+  accounts sharing an email make every login fail with
+  `SuspiciousOperation("Multiple users returned")`, and an empty `email`
+  claim satisfies `verify_claims()` (`"email" in claims` is true for `""`)
+  while matching nothing, so each login retries `create_user()` and hits the
+  unique-username constraint from the second attempt on. Both are resolved
+  via `preferred_username`: the multi-hit case is narrowed by it, the
+  no-email case falls back to it. It is deliberately **not** consulted when
+  an identity presents an email matching no local account — that would let
+  anyone able to pick their own `preferred_username` in the IdP take over a
+  same-named local account, superuser ones included; that case keeps the old
+  behaviour, so a local *username* colliding with a `preferred_username`
+  claim whose email differs still hits Django's unique-username constraint
+  on first SSO login (a 500, not a silent failure). `SECURE_PROXY_SSL_HEADER` is applied
   only when **`STARCUBES_TRUST_PROXY_SSL=1`** is set:
   `mozilla-django-oidc.utils.absolutify()` builds the OIDC `redirect_uri`
   from `request.is_secure()`, so behind a TLS-terminating proxy Django must
@@ -195,6 +205,33 @@ anything that is not in the user directory.
   set the `Secure` flag on cookies; `CSRF_COOKIE_SECURE` / `SESSION_COOKIE_SECURE`
   are separate settings, still unset, and worth adding for an HTTPS-only
   deployment.
+
+- **`LOGIN_REDIRECT_URL_FAILURE` and `OIDC_CALLBACK_CLASS` are set on
+  purpose — do not drop them as redundant.** Every failure branch of
+  `mozilla_django_oidc`'s callback view redirects to
+  `LOGIN_REDIRECT_URL_FAILURE`, whose library default is `/` — which is
+  exactly where a *successful* login lands (`LOGIN_REDIRECT_URL`). Left at
+  the default, a broken SSO login is byte-for-byte indistinguishable from a
+  working one, which is how "Keycloak says yes but I am not logged in" went
+  undiagnosed. Failures now go to `/login/?sso=failed`, which the login
+  template renders as an error. `OIDC_CALLBACK_CLASS` points at
+  `starcubes.oidc.LoggingOIDCCallbackView`, which overrides only
+  `login_failure()` / `login_success()` — every exit of the library's `get()`
+  funnels through exactly one of the two, so that covers all of them without
+  duplicating its flow control. `mozilla_django_oidc/urls.py` reads the
+  setting via `import_from_settings` at import time, so no second route is
+  needed in `starcubes/urls.py` (which would collide on the `reverse()`
+  name). Both live inside the `if OIDC_ENABLED:` block so the SSO-off path is
+  unchanged. `LOGGING` gains handlers for the `mozilla_django_oidc` and
+  `starcubes.oidc` loggers for the same reason: without them both propagate
+  to a handler-less root and fall through to `logging.lastResort`.
+
+- **The `$host` regression predates `1a26763` ("Slim the container image").**
+  A starcubes image built before that commit already carries
+  `uwsgi_param HTTP_HOST $host` — the nginx package change came in with an
+  earlier rebuild. The slimming commit is not implicated in any login
+  breakage; what it did break was uwsgi's PCRE/routing support and
+  `django/test/` (see "Build / dependencies").
 
 ## Build / dependencies
 
@@ -232,6 +269,27 @@ anything that is not in the user directory.
   whatever resolved cleanly against it. Bumping Django past 5.2 requires
   confirming the deployment's PostgreSQL version first, not just checking
   the Django changelog.
+
+- **The image-slimming step has two traps that were sprung once already.**
+  `1a26763` shrank the builder to `python:3.12-slim-bookworm` and stripped
+  site-packages, and took two things with it that nothing complained about:
+
+  1. **uwsgi lost PCRE.** uwsgi compiles *without* its regex features when
+     the build host has no PCRE headers — no error, no warning in the image,
+     `route` rules and a regex `static-map` simply stop matching at runtime.
+     The builder therefore installs `libpcre2-dev` alongside `gcc` /
+     `libc6-dev`. It costs nothing in the final image: the runtime stage
+     already carries `libpcre2-8-0` as an nginx dependency. Verify with
+     `uwsgi --help | grep -ci pcre` inside the built image — it must be `>0`.
+  2. **`django/test/` was deleted.** The strip ran
+     `find … \( -name 'tests' -o -name 'test' \) -type d -exec rm -rf {} +`,
+     and the singular `test` matches exactly one directory in site-packages:
+     Django's own `django/test/` package (520 KB). The `find` is now plural
+     only. Verify with `ls -d …/site-packages/django/test` in the image.
+
+  Both were found by diffing a pre-slimming image against the current one —
+  the same technique that found the `HTTP_HOST` regression. Keep an image
+  from before a risky base-image change around long enough to diff it.
 
 ## Branding
 
