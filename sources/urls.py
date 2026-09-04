@@ -74,6 +74,7 @@ urlpatterns = [
     # and the chart drill-down's Alert form). History/firings are read-only.
     path("<int:pk>/alarms/",                            views.alarms_list,     name="alarms_list"),
     path("<int:pk>/alarms/add/",                        views.alarm_add,       name="alarm_add"),
+    path("<int:pk>/alarms/match-context/",              views.alarm_match_context, name="alarm_match_context"),
     path("<int:pk>/alarms/<int:alarm_id>/edit/",        views.alarm_edit,      name="alarm_edit"),
     path("<int:pk>/alarms/<int:alarm_id>/delete/",      views.alarm_delete,    name="alarm_delete"),
     path("<int:pk>/alarms/<int:alarm_id>/history/",     views.alarm_history,   name="alarm_history"),

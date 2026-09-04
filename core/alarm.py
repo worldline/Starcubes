@@ -129,6 +129,35 @@ def check_no_grouped_filters(tree: list[dict]) -> None:
             f"alarm's meaning): {', '.join(sorted(set(grouped)))}")
 
 
+def normalize_context_rows(rows: Optional[list[dict]]) -> list[tuple]:
+    """Canonical form of a context, for comparing two alarms' filters.
+
+    Two contexts are "the same filter" when this returns equal values. Each
+    row becomes ``(col, op, tuple(sorted(vals)), andOr, indent)``: the values
+    are sorted because their order never mattered, and stringified because a
+    context arrives as JSON from one caller and as jsonb from another.
+
+    The *row* order is deliberately preserved. Together with `indent` and
+    `andOr` it encodes the tree `build_filter_tree` rebuilds, so reordering
+    rows is not generally meaning-preserving. The cost is that two contexts
+    that differ only in a harmless reordering are not recognised as the same
+    — acceptable, because every context is produced by the same chart flow,
+    which emits its rows in a stable order.
+    """
+    out: list[tuple] = []
+    for raw in (rows or []):
+        if not isinstance(raw, dict):
+            continue
+        row = raw.get("row", raw)           # both flat shapes, as elsewhere
+        if not isinstance(row, dict):
+            continue
+        vals = tuple(sorted(str(v) for v in (row.get("vals") or [])))
+        out.append((str(row.get("col") or ""), str(row.get("op") or ""),
+                    vals, str(row.get("andOr") or "and"),
+                    int(row.get("indent") or 0)))
+    return out
+
+
 # Ops whose vals are dimension source_ids. `starts_with` and friends match
 # free text, and a grouped token's vals are group names — neither addresses a
 # dimension row, so neither is resolvable to a name.

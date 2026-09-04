@@ -1493,6 +1493,13 @@ function sourceDetailUrl(id) { return SOURCE_DETAIL_URL.replace('987654321', Str
 // Reversed for the same reason as SOURCE_DETAIL_URL (no pk to swap, though —
 // the datasource arrives as the ?ds= query param).
 const FIRINGS_URL = "{% url 'sources:alarm_firings' %}";
+// Same sentinel-pk trick as SOURCE_DETAIL_URL — these used to be assembled
+// as '/sources/' + id + '/alarms/…', which the route move would break just
+// as silently.
+const ALARM_ADD_URL   = "{% url 'sources:alarm_add' 987654321 %}";
+const ALARM_MATCH_URL = "{% url 'sources:alarm_match_context' 987654321 %}";
+function alarmAddUrl(id)   { return ALARM_ADD_URL.replace('987654321', String(id)); }
+function alarmMatchUrl(id) { return ALARM_MATCH_URL.replace('987654321', String(id)); }
 
 const form     = document.getElementById('ctrl');
 const info     = document.getElementById('info');
@@ -4090,10 +4097,52 @@ function openAlarmView() {
     `<select class="drill-alarm-select" id="drill-alarm-window">${optsHtml(wopts, intervalS)}</select></div>` +
     '<div class="drill-alarm-row"><div class="drill-alarm-label">Notify via</div>' +
     '<select class="drill-alarm-select"><option value="log">log (episode table)</option></select></div>' +
+    '<div id="drill-alarm-dup"></div>' +
     '<div class="drill-alarm-status" id="drill-alarm-status"></div>' +
     `<button class="drill-alarm-save" type="button"${blocked ? ' disabled' : ''}>Save Alert</button>` +
     '</div>';
   positionDrillModal();
+
+  // The duplicate hint depends on the metric, so it follows the dropdown.
+  const mEl = document.getElementById('drill-alarm-measure');
+  if (mEl) mEl.addEventListener('change', checkAlarmDuplicates);
+  checkAlarmDuplicates();
+}
+
+// Advisory only: two alarms over one slice are legitimate (a warning
+// threshold and a critical one), so this never disables the save — it just
+// makes sure the user knows before creating the third copy by accident. A
+// failed lookup leaves the form exactly as it was.
+async function checkAlarmDuplicates() {
+  const box = document.getElementById('drill-alarm-dup');
+  const mEl = document.getElementById('drill-alarm-measure');
+  if (!box || !mEl || !currentMeta) return;
+  box.innerHTML = '';
+  if (alarmContextBlocked()) return;
+  const fd = new FormData();
+  fd.set('context', JSON.stringify(alarmContextRows()));
+  fd.set('measure', mEl.value);
+  try {
+    const r = await fetch(alarmMatchUrl(currentMeta.id), {
+      method: 'POST',
+      headers: { 'X-CSRFToken': chartCsrfToken() },
+      body: fd,
+    });
+    const d = await r.json().catch(() => null);
+    if (!d || !d.ok || !d.matches || !d.matches.length) return;
+    const items = d.matches.map(m =>
+      `<li>${_escHtml(m.name)} <span class="drill-alarm-global">`
+      + `${_escHtml(m.cond_op)} ${_escHtml(m.threshold)} · `
+      + `${fmtInterval(m.window_s)}${m.enabled ? '' : ' · disabled'}`
+      + `</span></li>`).join('');
+    box.innerHTML = '<div class="drill-alarm-dup">'
+      + (d.matches.length === 1
+         ? 'An alert already watches this context with this metric:'
+         : `${d.matches.length} alerts already watch this context with this metric:`)
+      + `<ul>${items}</ul></div>`;
+  } catch (err) {
+    /* advisory — a failed lookup must not get in the way of saving */
+  }
 }
 
 async function saveAlarmForm(btn) {
@@ -4115,7 +4164,7 @@ async function saveAlarmForm(btn) {
   btn.disabled = true;
   setStatus('saving…');
   try {
-    const r = await fetch(`/sources/${currentMeta.id}/alarms/add/`, {
+    const r = await fetch(alarmAddUrl(currentMeta.id), {
       method: 'POST',
       headers: { 'X-CSRFToken': chartCsrfToken() },
       body: fd,

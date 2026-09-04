@@ -41,7 +41,7 @@ from core.profile import (ProfileError, delete_profile, dump_profile,
                           profile_path, save_profile, validate_profile_name,
                           MAX_PROFILE_BYTES)
 from core.alarm import (check_no_grouped_filters, measure_value_expr,
-                        resolve_context_labels)
+                        normalize_context_rows, resolve_context_labels)
 from core.query import (build_filter_tree, grouped_label, grouped_token,
                         MEASURE_FUNCS, slugify_group_set,
                         validate_filter_tree)
@@ -1933,6 +1933,35 @@ _ALARM_CONTEXT_OPS = {"in", "not_in", "starts_with", "starts_not_with",
                       "contains", "not_contains"}
 
 
+def _parse_context_field(raw_ctx):
+    """Parse the `context` POST field → (rows, error_message).
+
+    `None` rows with no error means the field was absent, which the edit
+    path reads as "keep the stored context". Shared by the alarm CRUD and
+    the duplicate lookup so the accepted shape — and the wording that
+    rejects it — cannot drift between them.
+    """
+    if raw_ctx is None:
+        return None, None
+    raw = raw_ctx.strip()
+    if not raw:
+        return [], None
+    try:
+        parsed = _json.loads(raw)
+    except ValueError:
+        return None, "context must be a JSON array of filter rows"
+    if not isinstance(parsed, list) or not all(
+            isinstance(r, dict) and isinstance(r.get("col"), str)
+            and r.get("op") in _ALARM_CONTEXT_OPS
+            and isinstance(r.get("vals"), list)
+            and all(isinstance(v, (str, int)) for v in r["vals"])
+            for r in parsed):
+        return None, ("context rows must be "
+                      "{col, op, vals[, andOr, indent]} "
+                      f"with op one of {sorted(_ALARM_CONTEXT_OPS)}")
+    return parsed, None
+
+
 def _parse_alarm_fields(request) -> tuple[dict, dict]:
     """Validate POST fields for an alarm and return (values, errors).
 
@@ -2013,27 +2042,11 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
         values["measure"] = measure
 
     if "context" in request.POST:
-        raw_ctx = (request.POST.get("context") or "").strip()
-        if not raw_ctx:
-            values["context_rows"] = []
+        rows, ctx_err = _parse_context_field(request.POST.get("context"))
+        if ctx_err:
+            errors["context"] = ctx_err
         else:
-            try:
-                parsed = _json.loads(raw_ctx)
-            except ValueError:
-                errors["context"] = "context must be a JSON array of filter rows"
-            else:
-                if not isinstance(parsed, list) or not all(
-                        isinstance(r, dict) and isinstance(r.get("col"), str)
-                        and r.get("op") in _ALARM_CONTEXT_OPS
-                        and isinstance(r.get("vals"), list)
-                        and all(isinstance(v, (str, int)) for v in r["vals"])
-                        for r in parsed):
-                    errors["context"] = ("context rows must be "
-                                         "{col, op, vals[, andOr, indent]} "
-                                         "with op one of "
-                                         f"{sorted(_ALARM_CONTEXT_OPS)}")
-                else:
-                    values["context_rows"] = parsed
+            values["context_rows"] = rows
 
     raw_channels = request.POST.get("notify_channels", "")
     if isinstance(raw_channels, str):
@@ -2168,6 +2181,55 @@ def alarms_list(request, pk: int):
                                  pk, [a["context_filter"] for a in alarms])})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_login_required_json
+def alarm_match_context(request, pk: int):
+    """Existing alarms that already watch this slice with this measure.
+
+    Read-only lookup behind the "you already have an alarm for this" hint
+    the chart and the Alarms tab show while an alarm is being created. It
+    never blocks a save: two alarms over one slice are legitimate — a
+    warning threshold and a critical one, a short window and a long one.
+    The point is that the user finds out before creating the third copy by
+    accident.
+
+    "Already watched" means the same normalized context
+    (core.alarm.normalize_context_rows) *and* the same measure. Matching on
+    the context alone would flag every alarm on a busy slice regardless of
+    what it measures; matching the whole rule would only ever fire on an
+    exact copy, which the name uniqueness constraint already refuses.
+    """
+    rows, ctx_err = _parse_context_field(request.POST.get("context") or "")
+    if ctx_err:
+        return JsonResponse({"ok": False, "error": ctx_err,
+                             "fields": {"context": ctx_err}}, status=400)
+    measure = (request.POST.get("measure") or "count(*)").strip() or "count(*)"
+    wanted = normalize_context_rows(rows)
+    try:
+        with _meta_engine().begin() as conn:
+            candidates = conn.execute(text(
+                "SELECT id, name, context_filter, measure, cond_op, "
+                "       threshold, window_s, enabled "
+                "  FROM starcubes_meta.alarm "
+                " WHERE datasource_id = :ds AND measure = :m "
+                " ORDER BY name"
+            ), {"ds": pk, "m": measure}).mappings().all()
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+    matches = [{
+        "id": r["id"],
+        "name": r["name"],
+        "measure": r["measure"],
+        "cond_op": r["cond_op"],
+        "threshold": float(r["threshold"]),
+        "window_s": r["window_s"],
+        "enabled": bool(r["enabled"]),
+    } for r in candidates
+        if normalize_context_rows(r["context_filter"]) == wanted]
+    return JsonResponse({"ok": True, "matches": matches,
+                         "context_labels": _context_labels(pk, [rows])})
 
 
 @require_POST
