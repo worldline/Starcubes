@@ -265,7 +265,7 @@
             <th style="text-align:right">Window (s)</th>
             <th>Channels</th>
             <th style="text-align:center;width:70px">Enabled</th>
-            <th style="text-align:right;width:110px">Actions</th>
+            <th style="text-align:right;width:130px">Actions</th>
           </tr>
         </thead>
         <tbody id="alarmBody">
@@ -1410,6 +1410,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       +   '<span class="row-display">'
       +     '<button class="btn-icon" data-act="info" title="History &amp; firings">ⓘ</button>'
       +     '<button class="btn-icon" data-act="edit" title="Edit">✏</button>'
+      +     '<button class="btn-icon" data-act="clone" title="Clone \u2014 same context, change the metric">⧉</button>'
       +     '<button class="btn-icon" data-act="del" title="Delete" style="color:var(--danger)">✕</button>'
       +   '</span>'
       +   '<span class="row-edit" style="gap:4px">'
@@ -1419,8 +1420,15 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       + '</td></tr>';
   }
 
+  // Kept because a row carries only its id: context_filter, comment and
+  // notify_channels live nowhere in the DOM in a form Clone could read back.
+  var alarmsById = {};
+  var alarmNames = [];
+
   function render(alarms, labels) {
     ctxLabels = labels || {};
+    alarmsById = {};
+    alarmNames = alarms.map(function(a) { alarmsById[a.id] = a; return a.name; });
     var tbody = document.getElementById('alarmBody');
     if (!alarms.length) {
       tbody.innerHTML = '<tr><td colspan="10" class="text-muted" '
@@ -1448,6 +1456,44 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     return fd;
   }
 
+  // "(copy)", then "(copy 2)", … — checked against the names already loaded
+  // rather than letting alarm_add answer 409, because the collision is
+  // predictable here and a rejected save is a worse way to learn about it.
+  // Same shape as _group_set_slug's suffixing, on the client and for names.
+  function copyName(base) {
+    var taken = {};
+    alarmNames.forEach(function(n) { taken[n] = 1; });
+    var candidate = base + ' (copy)';
+    for (var n = 2; taken[candidate]; n++) candidate = base + ' (copy ' + n + ')';
+    return candidate;
+  }
+
+  // Fills the add form from an existing alarm instead of creating anything:
+  // the clone is only worth having once its metric has been changed, so it is
+  // the user who saves it. The duplicate hint fires immediately — it names the
+  // very alarm this came from, and clears as soon as the metric differs.
+  function cloneAlarm(id) {
+    var a = alarmsById[id];
+    if (!a) return;
+    var f = document.getElementById('alarmAddForm');
+    f.elements.name.value    = copyName(a.name);
+    f.elements.comment.value = a.comment || '';
+    f.elements.measure.value = a.measure;
+    f.elements.cond_op.value = a.cond_op;
+    f.elements.threshold.value = a.threshold;
+    f.elements.window_s.value  = a.window_s;
+    // The list hands these back as an array; alarm_add wants the csv string.
+    f.elements.notify_channels.value = (a.notify_channels || []).join(',');
+    f.elements.enabled.checked = !!a.enabled;
+    document.getElementById('alarmAddErr').style.display = 'none';
+    openAddPanel(true);
+    setAddContext(a.context_filter, ctxLabels);
+    f.elements.name.focus();
+    f.elements.name.select();
+    document.getElementById('alarmAddPanel')
+      .scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
   document.getElementById('alarmBody').addEventListener('click', function(ev) {
     var btn = ev.target.closest('[data-act]');
     if (!btn) return;
@@ -1464,6 +1510,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       return;
     }
     if (act === 'edit')   { startEdit(btn, 'alarm'); return; }
+    if (act === 'clone')  { cloneAlarm(id); return; }
     if (act === 'cancel') { cancelEdit(btn); return; }
     if (act === 'del') {
       if (!confirm('Delete this alarm?')) return;
