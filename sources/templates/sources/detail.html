@@ -1600,9 +1600,18 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   var incoming = readIncomingContext();
   var wantNew  = new URLSearchParams(location.search).get('new-alarm');
   if (wantNew) document.querySelector('#tab-alarms details').open = true;
-  // The label map arrives with the list, so the incoming context is rendered
-  // once names are available rather than showing ids and then swapping them.
-  refresh().then(function() { setAddContext(incoming); });
+  // The context comes from the URL, so it is shown straight away. It used to
+  // wait for refresh() in order to render names instead of ids on the first
+  // paint — but that tied the carried-over filter to a network round-trip it
+  // does not need, and a list that failed to load took the context with it,
+  // silently leaving the form global. checkAddDuplicates resolves the names a
+  // moment later anyway (it returns context_labels for exactly this context).
+  setAddContext(incoming);
+  refresh().catch(function(e) {
+    document.getElementById('alarmBody').innerHTML =
+      '<tr><td colspan="10" class="text-muted" style="text-align:center;'
+      + 'padding:16px">' + esc(String(e)) + '</td></tr>';
+  });
 })();
 </script>
 {% endblock %}
