@@ -127,6 +127,13 @@ must not import from `viz/`, same constraint as `core/`).
 - Django management commands live under `sources/management/commands/`.
   They import from `core/` but never the reverse. `core/` must not import
   Django. Use `manage.py <command>` for all CLI operations.
+- **`{# … #}` in a Django template is single-line only.** A newline between
+  the delimiters is not a comment: Django stops recognising it, and the text
+  is served to the browser as page content. It fails silently — the page
+  still renders, the prose just shows up in the GUI — so nothing but reading
+  the rendered output catches it. Use `{% comment %} … {% endcomment %}` for
+  anything spanning more than one line, and keep `{# … #}` for true
+  one-liners. This has bitten us repeatedly; see the check below.
 
 ## Key files (most-touched, top of mind)
 
@@ -173,11 +180,21 @@ this table as a manifest.
    Run an undefined-name check too — `ruff check --select F821 core/ viz/
    sources/` or `python -m pyflakes` — whenever a function's locals were
    extracted into a helper.
-2. **SQL** — `psql -f migrations/0001_starcubes_meta.sql` must be idempotent.
+2. **Templates** — after editing any `.html`, check that no `{# … #}`
+   comment spans a line break, or its text ships to the browser:
+
+   ```
+   grep -rn '{#' --include=*.html . | grep -v '#}'
+   ```
+
+   Any hit is a leaking comment (rewrite it as `{% comment %}`). Rendering
+   the page is the only other way to see it, since a leak neither raises
+   nor breaks the layout — the prose simply appears on the page.
+3. **SQL** — `psql -f migrations/0001_starcubes_meta.sql` must be idempotent.
    Re-running is part of the contract; verify by running twice.
-3. **Seed round-trip** — `manage.py seed_example --force --skip-initial-ddl`
+4. **Seed round-trip** — `manage.py seed_example --force --skip-initial-ddl`
    followed by `Source.load(meta, dsn, 'source')` must return a `Source`
    whose `fact_columns` / `dimensions` / `indices` match the seed tuples.
-4. **ETL parity** — when the first real ETL runs, compare row counts for
+5. **ETL parity** — when the first real ETL runs, compare row counts for
    the same `[last_end_time, end_time)` window. Throughput should be
    within 10% — the copy path is unchanged.

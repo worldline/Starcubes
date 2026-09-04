@@ -294,9 +294,12 @@
           <div><label class="form-label">Threshold</label><input class="form-control" name="threshold" type="number" step="any" required></div>
           <div><label class="form-label">Window (s)</label><input class="form-control" name="window_s" type="number" value="300" min="1" required></div>
           <div><label class="form-label">Channels (csv)</label><input class="form-control" name="notify_channels" placeholder="log"></div>
-          {# The context is carried in, not typed: a filter expression is a UI of
-             its own, and the chart already has it. The hidden field holds the
-             flat filter rows verbatim; the box beside it is the readable form. #}
+          {% comment %}
+            The context is carried in, not typed: a filter expression is a UI
+            of its own, and the chart already has it. The hidden field holds
+            the flat filter rows verbatim; the box beside it is the readable
+            form.
+          {% endcomment %}
           <div style="grid-column:1/-1">
             <label class="form-label">Context</label>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
