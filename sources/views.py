@@ -2570,13 +2570,19 @@ def firings_context(episodes, show, *, url_all, url_open, ds=None, scoped=False)
     datasource dropdown, the datasource's own Firings tab drops both the
     dropdown and the Datasource column and links out to the global page
     instead. ``url_all`` / ``url_open`` are the two filter links, built by
-    the caller because each page filters within its own URL.
+    the caller because each page filters within its own URL, and
+    ``url_refresh`` is whichever of them is the view being shown. Refresh
+    needs that spelled out rather than an empty href: the sub-tabs on the
+    datasource page are toggled client-side, so the browser's URL still
+    names whichever tab the user arrived on, and reloading it would leave
+    the Firings tab.
     """
     # The key is ``firings_ds``, not ``ds``: detail.html's ``ds`` is the
     # datasource row itself, and this context is merged into that page's.
     return {"episodes": episodes, "show": show, "firings_ds": ds,
             "total": len(episodes), "scoped": scoped,
-            "url_all": url_all, "url_open": url_open}
+            "url_all": url_all, "url_open": url_open,
+            "url_refresh": url_open if show == "open" else url_all}
 
 
 def alarm_firings_page(request):

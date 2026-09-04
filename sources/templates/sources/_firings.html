@@ -9,7 +9,9 @@ to pick a datasource with, so the dropdown becomes a link out to the
 global page and the Datasource column drops out of the table. The two
 filter links come in as url_all / url_open because each page filters
 within its own URL — the global page by `?show=`, the tab by reloading
-onto `?tab=firings`.
+onto `?tab=firings`. Refresh names its URL for the same reason: an empty
+href reloads whatever the address bar holds, and the sub-tab was
+activated client-side without touching it.
 {% endcomment %}
 <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin:0 0 12px">
   {% if scoped %}
@@ -32,7 +34,7 @@ onto `?tab=firings`.
      href="{{ url_all }}">All</a>
   <a class="btn btn-secondary{% if show == 'open' %} btn-primary{% endif %}"
      href="{{ url_open }}">Open only</a>
-  <a class="btn btn-secondary" href=""
+  <a class="btn btn-secondary" href="{{ url_refresh }}"
      title="Reload the episode list">Refresh</a>
 </div>
 
