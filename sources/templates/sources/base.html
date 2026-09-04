@@ -803,6 +803,20 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
   }
 })();
 
+// The brand is the way back to the chart. On its own it can only name the
+// datasource (?name=<source>), which leaves the chart to restore the rest from
+// its own localStorage — per-browser, and blind to which view was left. When
+// something hands us the chart's query string as ?back=, the brand returns to
+// exactly that view instead.
+//
+// The value is only ever pasted behind a fixed '/?' prefix, never taken as a
+// URL of its own, so it cannot turn into an open redirect.
+(function() {
+  var back = new URLSearchParams(location.search).get('back');
+  var brand = document.querySelector('.nav-brand');
+  if (back && brand) brand.href = '/?' + back;
+})();
+
 function csrfToken() {
   var m = document.cookie.match(/csrftoken=([^;]+)/);
   return m ? m[1] : '';

@@ -4644,6 +4644,17 @@ function updateAlarmLink(nameOverride) {
       }
     }
   }
+  // The way back. The brand link on the sources pages is a plain
+  // /?name=<source>, which now restores the source's last state from
+  // localStorage — good enough in the common case, but it cannot know which
+  // *view* the user left, and it is per-browser. Carrying the chart's own
+  // query string makes the return exact and shareable.
+  //
+  // Appended last and only if it fits: the alarm context is the more important
+  // freight, and without `back` the localStorage restore still covers the trip.
+  const back = '&back=' + encodeURIComponent(buildHistoryParams().toString());
+  if (url.length + back.length <= ALARM_CTX_URL_MAX) url += back;
+
   link.href = url;
   link.hidden = false;
 }
