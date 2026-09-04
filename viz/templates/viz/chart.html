@@ -5022,6 +5022,18 @@ window.addEventListener('popstate', async () => {
     }
     await loadMeta(form.elements.name.value);
     applyUrlParams();
+    // A URL the app built always carries group_by (buildHistoryParams writes it
+    // unconditionally), so its absence marks a URL that names a source and
+    // nothing else — the brand link back from /sources/, or a bare visit. Only
+    // then does the per-source state in localStorage get a say; a shared link
+    // carrying filters still wins, and so does an explicit ?group_by=.
+    //
+    // Before initTs(), which pins its first frame to currentViewport: restoring
+    // afterwards would paint today's default window and then jump. This is the
+    // same order setActiveSource() uses (loadMeta → applySourceState → fetch),
+    // which is why switching tabs restored state while reloading did not.
+    if (!new URLSearchParams(location.search).has('group_by'))
+      applySourceState(form.elements.name.value);
     if (!ts) initTs();
     gatherParams();
     // Legend defaults to on — opened through the same path as the toolbar
