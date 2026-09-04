@@ -1,6 +1,8 @@
 # starcubes How-to
 
-Guide to using the starcubes GUI and configuring datasources.
+Guide to using the starcubes GUI and configuring datasources. See the
+[README](README.md) for what starcubes is and what it looks like, and
+[`docs/internals.md`](docs/internals.md) for the architecture behind it.
 
 ## Table of contents
 

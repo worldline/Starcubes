@@ -1,8 +1,10 @@
 # Claude agent notes for starcubes
 
-Context for future Claude sessions. Read `README.md` first for the
-user-facing picture and `HOWTO.md` for operator guidance; this file is
-the index into the agent-/developer-facing deep references.
+Context for future Claude sessions. `README.md` is the shop window —
+the pitch and the screenshots, nothing an agent needs. Read
+`docs/internals.md` for the architecture and the CLI, and `HOWTO.md` for
+operator guidance; this file is the index into the agent-/developer-facing
+deep references.
 
 ## Git workflow
 
@@ -33,6 +35,10 @@ branch — **`master` is the only long-lived branch.**
 
 ## Sub-docs (read when relevant)
 
+- **[`docs/internals.md`](docs/internals.md)** — the former README:
+  component map, architecture diagram, repo layout, the `manage.py` quick
+  start and the anatomy of a datasource definition. Read when you need the
+  shape of the whole system rather than one corner of it.
 - **[`docs/sources-app.md`](docs/sources-app.md)** — full URL map, gotchas,
   and inline-CRUD UX for the `/sources/` GUI. Read when touching anything
   under `sources/`.

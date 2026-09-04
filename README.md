@@ -1,262 +1,192 @@
-# starcubes
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="viz/static/viz/starcubes_lockup_dark.svg">
+    <img src="viz/static/viz/starcubes_lockup.svg" alt="starcubes" height="64">
+  </picture>
+</p>
 
-A single-app datawarehouse. Pulls rows from arbitrary SQL sources (Oracle,
-Postgres, MySQL, MSSQL) into a compact star schema on Postgres and serves them
-as stacked-bar timeseries with arbitrary dimension filters.
+<p align="center">
+  <b>Point starcubes at a SQL database and get a fast, filterable timeseries of
+  what happens in it — without modelling a warehouse by hand.</b>
+</p>
 
-Successor to the earlier hard-coded ETL in `star.py`. Optimised for
-**minimal storage** (smallint-keyed dimensions, BRIN index, unlogged monthly
-partitions), **maximum load throughput** (three-stage extract / transform /
-load pipeline with psycopg `COPY FROM`), and **configurability** (every
-datasource lives as metadata rows in `starcubes_meta`, editable from a GUI).
+- **Configure a source in a form, not in dbt.** Base table, watermark column,
+  a row per fact column — that is the whole model. Save it as a profile and
+  the next install is one click.
+- **Built for volume.** The 3.9 million transactions in the screenshots
+  below sit in 345 MB: smallint-keyed dimensions, range partitions, BRIN
+  on the time column, `COPY FROM` on the load path.
+- **One self-hosted container.** No Airbyte, no dbt, no Superset — one image,
+  one Postgres, one login.
 
-## Status <!-- maintainer -->
+![The chart](docs/img/chart-hero.png)
 
-**Built**
+## What it's for
 
-- `core/` — framework-agnostic ETL engine:
-  - `source.py` — `Source` / `FactColumn` / `Dimension` / `FactIndex` dataclasses + `Source.load` + shared engine cache (`_get_cached_engine`).
-  - `schema.py` — `create_fact`, `create_dim_tables`, `create_indices`, `drop_indices`, `drop_schema`, `sync_schema`, `import_dimensions`, `read_dimensions`, `ensure_starcubes_meta`.
-  - `etl.py` — the three-stage pipeline port of `star.py:import_fact`, parameterised by a `Source`. Supports window overrides (`--start`/`--end`/`--limit`), HWM rounding (`_ceil_second`), and forever mode. Maintenance functions: `truncate_last_partition`, `truncate_partition`, `drop_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`.
-  - `query.py` — `timeseries_multibar` JSON producer for the viz front end (bars ordered ascending per slot).
-  - `cache.py` — server-side cache for frozen `plot_json` responses (count(\*), past-only, HWM-bounded). `make_cache_key`, `is_cacheable`, `get_cached_plot`, `put_cached_plot`, `bump_cache_epoch`, `clear_cache`.
-  - `utils.py` — shared utilities (`_parse_dt`, `_pid_alive`). No Django imports.
-- `migrations/` — consolidated metadata schema (`starcubes_meta.sql`) + incremental migrations (`0002`–`0012` including `etl_forever`, `partition_period`, `auto-dimension` role, and `query_cache`).
-- `manage.py seed_example` — seeds an example Oracle payment-transaction datasource with hard-coded config.
-- `manage.py etl_run` — incremental ETL pass, forever mode, and maintenance actions (see below).
-- `manage.py query_multibar` — produces a multibar JSON file for offline testing against `timeseries.js`.
-- `manage.py create_indices` / `manage.py drop_indices` — build or remove FK constraints + indices for a datasource.
-- `manage.py query_cache_clear` — flush the server-side plot cache (whole DB or single datasource).
-- `starcubes/` — Django project (`settings.py`, `urls.py`, `wsgi.py`, `middleware.py`). Login system with `RequireLoginMiddleware` (protects `/sources/` and `/admin/`), plus optional Keycloak/OIDC SSO (`mozilla-django-oidc`, `starcubes/oidc.py`) alongside password login — off by default, auto-provisions non-privileged users on first login when configured. `SQLAlchemyPoolMiddleware` logs warnings for leaked connections.
-- `sources/` — Django app: full datasource CRUD + ETL monitor GUI. Inline CRUD for fact columns, dimensions, indices. ETL Commands tab with Run ETL (window overrides), Forever ETL, Data Cleanup, Metadata, and Schema actions. Schema creation, sync (dry-run/confirm), and drop. Connection status badges. Seed-data preload on create.
-- `viz/` — Django app: filter UI + JSON endpoint + vendored `@hgruber/timeseries.js@~0.10.3` (npm dep). Chart has follow-mode toggle, seismograph auto-refresh, arrow-key viewport panning, per-user bar preferences, and login-gated Group Dims tab.
-- SQLAlchemy engine cache prevents connection leaks — one pool per (dsn, connect_args) pair.
+You have an operational database — payments, orders, requests, events — and
+you want to see its shape over time: how many, of what kind, broken down by
+whatever dimension you care about right now, over a week or over a year, in
+seconds rather than minutes.
 
-**Not yet**
+Getting there usually means three products. Airbyte or Meltano move the rows,
+dbt models the star schema, Superset or Grafana draws the chart — three tools,
+three UIs, and the modelling in the middle is still yours to write. starcubes
+is the middle. It reads your source on a high watermark, keeps a compact star
+schema on Postgres, and serves a stacked-bar timeseries straight off it.
 
-- Multi-dialect `WHERE`-clause construction is still Oracle-only (`to_timestamp` literals). When a second non-Oracle source is wired up, switch to SQLAlchemy bind parameters.
-
-## Why this exists <!-- end user -->
-
-No single OSS project delivers "configure an arbitrary SQL source → compact
-star schema with smallint-keyed dimensions → fast filterable stacked-bar
-timeseries" as one self-hosted app. Airbyte / Meltano handle the source side
-but not the star-schema shape. Superset / Metabase / Grafana handle viz but
-expect data already modelled. The closest combo — Airbyte + dbt + Superset —
-is three tools, three UIs, and you still write the star models by hand.
-
-## Architecture <!-- operator -->
-
-```
-                              starcubes_meta.*
-                        (one datasource per row,
-                         edited from the GUI)
-                                   |
-                                   v
-  +------- source DB ------+  +-- core/etl.py --+  +----- Postgres ------+
-  | Oracle / PG / MySQL /  |  |  extract  ----> |  |  starcubes_meta         |
-  | MSSQL (SQLAlchemy URL) |->|  transform ---> |->|  starcubes_<name>       |
-  +------------------------+  |  load (COPY)    |  |    fact (part.)     |
-                              +-----------------+  |    dim_*            |
-                                                   +---------------------+
-                                                             ^
-                                                             |
-                                                      viz / filter UI
-                                                      (Django + timeseries.js)
-```
-
-- One Postgres schema per datasource (`starcubes_<name>`). Different sources
-  have incompatible shapes, so they stay isolated — same DB, separate schemas.
-- Per-datasource fact table: monthly `RANGE` partitions, unlogged, BRIN on the
-  time column, smallint foreign keys into dim tables.
-- Dim tables: `smallserial` primary key, `source_id text`, `name`, `description`.
-  Max 32 767 values per dim.
-- Three flavours of dimension: **regular** (values imported from a source
-  lookup table), **inline** (CSV in metadata, e.g. ISO 4217 codes), and
-  **auto-dimension** (no upfront values; the ETL discovers new source values
-  on the fly and inserts dim rows for them).
-
-## Repo layout <!-- maintainer -->
-
-```
-core/                       framework-agnostic ETL core (no Django imports)
-  source.py                 Source / Dimension / FactColumn / FactIndex dataclasses
-  schema.py                 DDL + dim import/read + sync_schema + ensure_starcubes_meta
-  etl.py                    three-stage extract/transform/load engine + maintenance ops
-  query.py                  timeseries_multibar JSON producer
-  cache.py                  server-side cache for frozen plot_json responses
-  adhoc.py                  read-only ad-hoc SQL for the chart's Query console
-  utils.py                  shared utilities (_parse_dt, _pid_alive)
-starcubes/                      Django project (settings, urls, wsgi, middleware)
-  middleware.py              RequireLoginMiddleware + SQLAlchemyPoolMiddleware
-viz/                        Django app: chart page + JSON endpoint
-  views.py                  chart, plot_json, api_sources, api_source_meta, query_* console endpoints
-  urls.py
-  apps.py
-  templates/viz/chart.html  filter bar + canvas + follow-mode toggle + keyboard pan + prefs popover + query console
-  templates/registration/login.html  login page (theme-aware)
-  static/                    starcubes static assets (logo, slides, vendored timeseries.js)
-migrations/
-  starcubes_meta.sql             consolidated initial schema (idempotent)
-  0002_etl_unmapped.sql      unmapped-value tracking per run
-  0003_per_column_projection.sql  per-column source_expr + base_table
-  0004_inline_values.sql     inline_values on dimension
-  0008_etl_forever.sql       forever ETL session tracking
-  0010_partition_period.sql  per-datasource partition granularity (day/week/month)
-  0011_auto_dimension_role.sql  add 'auto-dimension' to fact_column.role
-  0012_query_cache.sql       starcubes_meta.query_cache + datasource.cache_epoch
-  0019_query_history.sql     per-user SQL history for the chart's Query console
-  0021_etl_run_log.sql      etl_run.log_path / log_tail — per-run ETL log file pointer
-sources/                      Django app: datasource CRUD + ETL monitor GUI
-  management/commands/
-    etl_run.py               manage.py etl_run — incremental ETL, forever mode, maintenance actions
-    seed_example.py           manage.py seed_example — seed example Oracle payment-transaction datasource
-    query_multibar.py        manage.py query_multibar — multibar JSON for offline testing
-    create_indices.py         manage.py create_indices — build FKs + indices
-    drop_indices.py           manage.py drop_indices — drop FKs + indices
-    query_cache_clear.py     manage.py query_cache_clear — flush server-side plot cache
-examples.sql                reference SQL for the viz JSON shape
-Dockerfile                  multi-stage: JS vendor (npm ci @hgruber/timeseries.js) → Python deps → nginx+uwsgi runtime
-package.json + package-lock.json  frontend JS dependency, pinned ~0.10.3
-docker/
-  build.sh                  build wrapper — defaults CONTAINER_ENGINE=podman, delegates to the build engine
-  entrypoint.sh              runs manage.py bootstrap (migrate + collectstatic), then nginx+uwsgi
-requirements.txt
-```
-
-## Quick start <!-- operator -->
-
-Prerequisites: a Postgres DB for the warehouse, and an Oracle source DB
-(for the example seed). The Dockerfile sets all three up.
-
-To build the container image, always use `docker/build.sh` rather than
-calling `podman build`/`docker build` directly — the wrapper defaults the
-container engine to `podman` and pins the working directory to the repo
-root:
+## Five minutes to a chart
 
 ```bash
-./docker/build.sh                 # uses podman by default
-CONTAINER_ENGINE=docker ./docker/build.sh
+./docker/build.sh                                    # podman by default
+podman run -p 8080:8080 \
+  -e STARCUBES_POSTGRES_DSN=postgresql://user:pw@host:5432/starcubes \
+  starcubes:latest
 ```
 
-The `jsbuilder` Dockerfile stage runs `npm ci` against the top-level
-`package.json`/`package-lock.json` to fetch `@hgruber/timeseries.js@~0.10.3`
-from the npm registry and drops the pre-built bundle into
-`viz/static/timeseries/timeseries.js`.
+The first boot applies the schema and creates an `admin` / `admin` login —
+change it. Then, at `http://localhost:8080/sources/`:
 
-```bash
-# 1. Apply the metadata schema (idempotent — safe to re-run).
-#    The consolidated starcubes_meta.sql creates the full schema including
-#    incremental tables; you can also run the numbered 000N_*.sql files
-#    in order if upgrading from an older install.
-psql "$STARCUBES_POSTGRES_DSN" -f migrations/starcubes_meta.sql
+1. **New Datasource** — name, dialect, connection URL.
+2. **Apply a profile**, or fill in the base table, watermark column and fact
+   columns yourself.
+3. **Run ETL**, and open the chart.
 
-# 2. Seed the example datasource (registers config + creates fact/dim DDL +
-#    loads dimensions from Oracle).
-export STARCUBES_POSTGRES_DSN=postgresql://user:pw@pg:5432/starcubes
-export STARCUBES_SOURCE_DSN='oracle+oracledb://user:pw@oracle:1521/SID'
-.venv/bin/python manage.py seed_example
+![The datasource list](docs/img/sources-list.png)
 
-# 3. Run the first ETL pass (no indices yet — fastest COPY).
-.venv/bin/python manage.py etl_run --name source
+A profile is a whole datasource configuration — fact columns, dimensions,
+indices, measures, group dimensions — as one YAML file, deliberately without
+any credentials. Download one, hand it to a colleague, apply it to a fresh
+install.
 
-# 4. After the first ETL, build the BRIN/btree indices and FKs.
-.venv/bin/python manage.py create_indices --name source
+![The profile catalogue](docs/img/profiles.png)
 
-# 5. Run the Django dev server.
-.venv/bin/python manage.py runserver
-# open http://localhost:8000/?name=source&group_by=app_loc
-#                            &from=2026-04-27+00:00&to=2026-04-27+12:00
+Prefer the command line? `manage.py seed_example`, `manage.py etl_run`,
+`manage.py create_indices` do the same thing — see
+[`docs/internals.md`](docs/internals.md#quick-start).
+
+## What it's like to use
+
+### Slice it without writing SQL
+
+Group by any dimension, filter on any other. Filters nest with AND/OR, take
+`is in` / `is not in` / `contains` / `starts with`, and live in the URL — so
+a view you found is a link you can send.
+
+![Filters](docs/img/chart-filters.png)
+
+### Click a bar, see what is in it
+
+Every bar breaks down into its dimensions, and from there into the individual
+primary keys behind it. The same panel starts an alarm on exactly the slice
+you are looking at.
+
+![Drill-down](docs/img/chart-drilldown.png)
+
+### Set a threshold on the view you are in
+
+The bell carries the chart's active filter into a new alarm as its context.
+Alarms are evaluated by the ETL itself, once after every load, over the
+trailing window at the data's own clock — not the wall clock. Breaches are
+recorded as episodes with a first-breach and a closed watermark, so a
+threshold that flapped for an hour is one row, not sixty.
+
+![Alarms](docs/img/source-alarms.png)
+
+### Ask the database directly
+
+A read-only SQL console against the datasource's own schema, with a
+single-statement guard, a cancel button, per-user history and CSV export.
+
+![Query console](docs/img/chart-console.png)
+
+### Watch the loads
+
+Start an incremental run, override its window, run it forever at an interval,
+or kill it. Every run writes a row and its own log file.
+
+![ETL commands](docs/img/manage-etlcmds.png)
+
+And see what it costs you on disk, per table and per partition.
+
+![Storage](docs/img/manage-storage.png)
+
+## Features
+
+| | |
+|---|---|
+| **Ingest** | Oracle, Postgres, MySQL, SQL Server via SQLAlchemy URLs |
+| | Incremental loads on a high watermark, resumable, killable |
+| | Late-arrival overlap for sources that publish out of order |
+| | Auto-dimensions — new values discovered and keyed during the load |
+| | Three-stage extract / transform / load with `COPY FROM` |
+| **Storage** | One Postgres schema per datasource, star-shaped |
+| | Smallint dimension keys, up to 32 767 values per dimension |
+| | Day / week / month range partitions, gap-filled automatically |
+| | BRIN on the time column; indices built after the first bulk load |
+| **Explore** | Stacked-bar timeseries with an interval ladder and follow mode |
+| | Nested filters, grouped dimensions, drill-down to primary keys |
+| | Quantile bands, error bars, candlesticks for non-count measures |
+| | Server-side plot cache for frozen, past-only windows |
+| | Read-only SQL console with history and CSV export |
+| **Operate** | Threshold alarms with firing episodes, evaluated by the ETL |
+| | Gap audit: bucket counts, PK set-diff, and per-id detail |
+| | Datasource profiles as portable YAML |
+| | Password login, optional Keycloak / OIDC SSO |
+
+## How it works
+
+```
+                     starcubes_meta
+           (one datasource per row, edited in the GUI)
+                             |
+                             v
+  +----------------+   +-------------------+   +-------------------+
+  |   source DB    |   |    core/etl.py    |   |     Postgres      |
+  |                |   |                   |   |                   |
+  | Oracle / PG    |-->| extract           |-->| starcubes_<name>  |
+  | MySQL / MSSQL  |   |   transform       |   |   fact (part.)    |
+  |                |   |     load (COPY)   |   |   dim_*           |
+  +----------------+   +-------------------+   +-------------------+
+                                                        ^
+                                                        |
+                                             chart / alarms / audit
 ```
 
-The ETL is incremental. On first run it fills from the beginning; on every
-subsequent run it picks up from the last successful high watermark recorded
-in `starcubes_meta.etl_run`. Step 4 is one-shot — re-running it errors on the
-existing indices. Use `manage.py drop_indices --name source` if you ever need
-a clean re-bulk-load.
+Each datasource gets its own Postgres schema, because two sources rarely have
+compatible shapes. The fact table is range-partitioned on its time column and
+carries smallint foreign keys into per-dimension tables — which is where the
+93 bytes per row come from. Dimensions come in three flavours: imported from a
+source lookup table, inlined as CSV in the metadata, or discovered by the ETL
+as it goes.
 
-### Login
+The full picture — pipeline stages, watermark arithmetic, partition
+lifecycle, schema decisions — is in [`docs/internals.md`](docs/internals.md).
 
-The Sources GUI and admin require login. `RequireLoginMiddleware` protects
-`/sources/` and `/admin/`; the chart page at `/` is public (but per-user
-preferences like bar pixel target require authentication). Create a
-superuser with `manage.py createsuperuser`, then log in at `/login/`.
+## Requirements
 
-### Management commands reference
+- **Postgres** for the warehouse.
+- **A SQL source**: Oracle, Postgres, MySQL or SQL Server. Oracle is the
+  dialect in production use today; the ETL's window literals are still
+  Oracle-shaped and need the bind-parameter conversion tracked in
+  [`docs/backlog.md`](docs/backlog.md) before another dialect is loaded.
+- **Podman or Docker**, or Python 3.12 with `requirements.txt`.
 
-`manage.py etl_run` supports several modes beyond a plain incremental pass:
+## Documentation
 
-| Flag | Description |
-|------|-------------|
-| `--forever SECONDS` | Re-run ETL continuously at the given interval |
-| `--forever-id ID` | Resume an existing forever session (set by the GUI) |
-| `--start TIMESTAMP` | Override the high watermark start time |
-| `--end TIMESTAMP` | Override the end time (skip source max query) |
-| `--limit N` | Cap rows extracted per run |
-| `--refresh-counts` | Refresh dim count columns from the fact table |
-| `--import-dims` | Import/update dimension tables |
-| `--truncate-last` | Truncate the oldest fact partition |
-| `--delete-from TIMESTAMP` | Delete fact rows at or after the given time |
-| `--clear-etl-history` | Delete all etl_run rows for the datasource |
-| `--set-highwatermark` | Set HWM to max(partition_column) in fact |
-| `--vacuum-analyze` | VACUUM ANALYZE the fact table |
-| `--create-partitions N` | Create N future monthly partitions |
-
-If `--name` is omitted and only one datasource exists, it is auto-detected.
-
-```
-.venv/bin/python manage.py seed_example --help
-
-  --postgres-dsn DSN     Postgres URL (or env STARCUBES_POSTGRES_DSN)
-  --source-dsn DSN       Oracle URL (or env STARCUBES_SOURCE_DSN)
-  --name NAME            datasource name (default: source)
-  --schema SCHEMA        target Postgres schema (default: starcubes_source)
-  --profile NAME         profile under profiles/ (default: oracle_payments;
-                         see docs/source-profiles.md and profiles/*/*.yaml)
-  --force                replace any existing datasource with the same name
-  --skip-initial-ddl     register config only; skip create_fact + import_dimensions
-                         (useful for offline setup / re-hydration from a dump)
-```
-
-### Producing a multibar JSON for offline testing
-
-```bash
-.venv/bin/python manage.py query_multibar --name source \
-    --group-by response --interval 60 \
-    --from '2026-04-24 00:00+02' --to '2026-04-25 00:00+02' \
-    --indent 2 > plot.json
-```
-
-The output matches the shape documented in `examples.sql:43–62` and consumed
-by `timeseries.js`.
-
-## Adding a new datasource <!-- operator -->
-
-Use the GUI at `/sources/new/` or write a seed script modelled on
-`manage.py seed_example`. You need
-
-- a `base_table` (or full `import_query`) that projects every fact column you
-  want to store;
-- a `watermark_column` (source-side column used for the incremental boundary,
-  does **not** need to be in the SELECT list) and optionally a
-  `watermark_max_query` (`SELECT max(<wm>) FROM <base_table>`) that lets the
-  ETL skip the wrap-subquery scan;
-- optionally a `late_arrival_overlap_s`, if the source can make rows visible
-  out of watermark order — the load window then reaches that many seconds
-  back past the high watermark and drops what it already has by primary key.
-  Pair it with `watermark_fact_expr` when the watermark is not itself a fact
-  column. The Audit tab on the datasource page measures how much overlap a
-  given source actually needs, and backfills whatever slipped past it;
-- `fact_column` rows describing the warehouse layout (one `time` role, one
-  `pk` role, N `measure` / `dimension` / `auto-dimension` roles) — each with
-  a `source_expr` projection;
-- `dimension` rows mapping each fact column to its source lookup table. Where
-  several fact columns share one dim table (e.g. `so_peer_1/2/3` → `peer`),
-  mark exactly one row `is_primary = true`. For `auto-dimension` columns,
-  set `dim_table` and `is_primary = true`; leave `source_table` and
-  `inline_values` null and the ETL will populate the table on first sight
-  of each value;
-- optional `fact_index` rows.
+| | |
+|---|---|
+| [`HOWTO.md`](HOWTO.md) | Driving the GUI, and every configuration field explained |
+| [`docs/internals.md`](docs/internals.md) | Architecture, repo layout, CLI quick start |
+| [`docs/star-schema.md`](docs/star-schema.md) | Domain vocabulary and schema decisions |
+| [`docs/etl-engine.md`](docs/etl-engine.md) | The three-stage pipeline in detail |
+| [`docs/etl-audit.md`](docs/etl-audit.md) | The three audit modes |
+| [`docs/alarm.md`](docs/alarm.md) | Alarm evaluation and firing episodes |
+| [`docs/chart-app.md`](docs/chart-app.md) | The chart UI |
+| [`docs/chart-rendering.md`](docs/chart-rendering.md) | Plot types and partial bins |
+| [`docs/sources-app.md`](docs/sources-app.md) | The sources GUI |
+| [`docs/source-profiles.md`](docs/source-profiles.md) | The profile format |
+| [`docs/deployment-config.md`](docs/deployment-config.md) | Container, env vars, SSO |
+| [`docs/backlog.md`](docs/backlog.md) | Known unfinished work |
 
 ## Acknowledgements
 
@@ -265,4 +195,3 @@ Use the GUI at `/sources/new/` or write a seed script modelled on
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
-- Current JSON shape the viz consumes is documented in `examples.sql:43–62`.
