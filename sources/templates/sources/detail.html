@@ -274,8 +274,21 @@
       </table>
     </div>
     <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
-      <details>
-        <summary style="cursor:pointer;font-weight:600">+ Add alarm</summary>
+      {% comment %}
+        No "add alarm" entry point here. An alarm without a context watches the
+        whole datasource, which is rarely what anyone means, and this used to be
+        the most inviting way to create one by accident. The form is still here
+        — the bell fills it, Clone fills it — but it opens on request, not as an
+        offer. A deliberately global alarm is still reachable: open a chart with
+        no filters and press the bell.
+      {% endcomment %}
+      <div id="alarmAddHint" class="text-muted" style="font-size:12px">
+        &#9432; Alarms are created from a chart view &mdash; the bell carries its
+        filter here as the alarm's context.
+        <a href="/?name={{ ds.name|urlencode }}">Open chart &rarr;</a>
+        Or clone an existing alarm and change its metric.
+      </div>
+      <div id="alarmAddPanel" hidden>
         <form id="alarmAddForm" style="display:grid;grid-template-columns:1fr 1fr 130px 80px 110px 100px 1fr;gap:8px;align-items:end;margin-top:12px">
           {% csrf_token %}
           <div><label class="form-label">Name</label><input class="form-control" name="name" required></div>
@@ -313,11 +326,12 @@
           <div style="grid-column:1/-1;display:flex;gap:12px;align-items:center">
             <button type="submit" class="btn btn-primary btn-sm">Add</button>
             <label style="font-size:12px;color:var(--muted)"><input type="checkbox" name="enabled" checked> enabled</label>
-            <span class="text-muted" style="font-size:11px">Open the bell on a chart to bring its filter here as the context; without one the alarm covers the whole datasource.</span>
+            <button type="button" id="alarmAddCancel" class="btn btn-secondary btn-sm">Cancel</button>
+            <span class="text-muted" style="font-size:11px">A context-less alarm watches the whole datasource.</span>
           </div>
         </form>
         <div id="alarmAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
-      </details>
+      </div>
     </div>
   </div>
 </div>
@@ -1481,6 +1495,9 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
         return;
       }
       form.reset();
+      // Closed before the context is cleared: setAddContext checks for
+      // duplicates, and a shut form has nothing to warn about.
+      openAddPanel(false);
       // reset() does not clear a hidden input's value, and the freshly saved
       // context must not silently carry into the next alarm.
       setAddContext(null);
@@ -1502,6 +1519,18 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   // ======================================================================
   var addCtxRows = null;
 
+  // The add form opens on request only — from the bell (?new-alarm=1) or from
+  // Clone — so the hint takes its place until then.
+  function addPanelOpen() {
+    return !document.getElementById('alarmAddPanel').hidden;
+  }
+  // Every caller follows this with setAddContext, which runs the duplicate
+  // check itself — doing it here too would just cost a second request.
+  function openAddPanel(open) {
+    document.getElementById('alarmAddPanel').hidden = !open;
+    document.getElementById('alarmAddHint').hidden = open;
+  }
+
   function setAddContext(rows, labels) {
     addCtxRows = (rows && rows.length) ? rows : null;
     var box   = document.getElementById('alarmAddCtx');
@@ -1519,12 +1548,11 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   // the same slice are the normal case. Mirrors the chart's Alert form.
   function checkAddDuplicates() {
     var box = document.getElementById('alarmAddDup');
-    var det = document.querySelector('#tab-alarms details');
     if (!box) return;
     box.innerHTML = '';
     // Only while the form is actually open — a closed form would cost every
     // visitor of the tab a request for a hint nobody is looking at.
-    if (!det || !det.open) return;
+    if (!addPanelOpen()) return;
     var fd = new FormData();
     fd.append('context', addCtxRows ? JSON.stringify(addCtxRows) : '');
     fd.append('measure',
@@ -1557,8 +1585,13 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
 
   document.getElementById('alarmAddCtxClear')
     .addEventListener('click', function() { setAddContext(null); });
-  document.querySelector('#tab-alarms details')
-    .addEventListener('toggle', checkAddDuplicates);
+  document.getElementById('alarmAddCancel')
+    .addEventListener('click', function() {
+      setAddContext(null);
+      document.getElementById('alarmAddForm').reset();
+      document.getElementById('alarmAddErr').style.display = 'none';
+      openAddPanel(false);
+    });
   document.querySelector('#alarmAddForm [name=measure]')
     .addEventListener('change', checkAddDuplicates);
 
@@ -1572,8 +1605,8 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     }
     var blocked = q.get('context-blocked');
     if (blocked) {
-      // The note lives inside the <details>, so it has to be open to be read.
-      document.querySelector('#tab-alarms details').open = true;
+      // The note lives inside the panel, so it has to be open to be read.
+      openAddPanel(true);
       var errEl = document.getElementById('alarmAddErr');
       errEl.textContent = blocked === 'toolong'
         ? 'The chart filter was too large for the link and this browser would '
@@ -1599,7 +1632,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
 
   var incoming = readIncomingContext();
   var wantNew  = new URLSearchParams(location.search).get('new-alarm');
-  if (wantNew) document.querySelector('#tab-alarms details').open = true;
+  if (wantNew) openAddPanel(true);
   // The context comes from the URL, so it is shown straight away. It used to
   // wait for refresh() in order to render names instead of ids on the first
   // paint — but that tied the carried-over filter to a network round-trip it
