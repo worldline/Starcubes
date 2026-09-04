@@ -1,0 +1,110 @@
+{% comment %}
+The firing-episode list, shared by the global page (sources/firings.html)
+and the per-datasource Firings tab (sources/detail.html). Both get their
+rows from views._firing_episodes and their context from
+views.firings_context, so the two views of the same episodes cannot drift.
+
+`scoped` is the only switch: on a datasource's own page there is nothing
+to pick a datasource with, so the dropdown becomes a link out to the
+global page and the Datasource column drops out of the table. The two
+filter links come in as url_all / url_open because each page filters
+within its own URL — the global page by `?show=`, the tab by reloading
+onto `?tab=firings`.
+{% endcomment %}
+<div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin:0 0 12px">
+  {% if scoped %}
+  <a class="btn btn-secondary" href="{% url 'sources:alarm_firings' %}"
+     title="Firing episodes across every datasource">All firings &#8599;</a>
+  {% else %}
+  <form method="get" style="display:flex;gap:8px;align-items:center">
+    <label for="ds-select" class="text-muted" style="font-size:12px">Datasource</label>
+    <select class="form-control" id="ds-select" name="ds" style="width:auto"
+            onchange="this.form.submit()">
+      <option value="">All sources</option>
+      {% for s in topbar_sources %}
+      <option value="{{ s.id }}"{% if s.id == firings_ds %} selected{% endif %}>{{ s.name }}</option>
+      {% endfor %}
+    </select>
+    <input type="hidden" name="show" value="{{ show }}">
+  </form>
+  {% endif %}
+  <a class="btn btn-secondary{% if show != 'open' %} btn-primary{% endif %}"
+     href="{{ url_all }}">All</a>
+  <a class="btn btn-secondary{% if show == 'open' %} btn-primary{% endif %}"
+     href="{{ url_open }}">Open only</a>
+  <a class="btn btn-secondary" href=""
+     title="Reload the episode list">Refresh</a>
+</div>
+
+<p class="text-muted" style="margin:0 0 12px;font-size:12px">
+  One row per threshold breach episode ({{ total }} shown, newest first). Every
+  time is the <em>data</em> high watermark at the ETL load that saw the change,
+  not the wall clock: <em>First breach</em> is how far the data had come when
+  the threshold was first crossed, <em>Closed</em> how far it had come when the
+  value was first back under it. Open episodes are still breaching.
+</p>
+
+{% if episodes %}
+<div class="card">
+<table class="data-table" id="firingsTable">
+  <thead>
+    <tr>
+      <th>Alarm</th>
+      {% if not scoped %}<th>Datasource</th>{% endif %}
+      <th>Rule</th>
+      <th>Status</th>
+      <th>First breach <span style="font-weight:normal;opacity:.6">local tz</span></th>
+      <th>Last breach</th>
+      <th>Closed</th>
+      <th style="text-align:right">Duration</th>
+      <th style="text-align:right">Value first &rarr; last</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for e in episodes %}
+    <tr>
+      <td><a href="{% url 'sources:detail' e.ds_id %}?tab=alarms"><strong>{{ e.alarm_name }}</strong></a></td>
+      {% if not scoped %}<td class="text-muted">{{ e.ds_name }}</td>{% endif %}
+      <td class="text-mono text-muted" style="font-size:11px">{{ e.rule }}</td>
+      <td>
+        {% if e.open %}
+        <span class="badge badge-running"><span class="dot">&#9679;</span> open</span>
+        {% else %}
+        <span class="text-muted">closed</span>
+        {% endif %}
+      </td>
+      <td class="text-mono text-muted" data-ts="{{ e.first_breach_at|default:'' }}">{{ e.first_breach_at|default:'—' }}</td>
+      <td class="text-mono text-muted" data-ts="{{ e.last_breach_at|default:'' }}">{{ e.last_breach_at|default:'—' }}</td>
+      <td class="text-mono text-muted" data-ts="{{ e.closed_at|default:'' }}">{{ e.closed_at|default:'—' }}</td>
+      <td style="text-align:right" title="first &rarr; last breach">{{ e.duration }}</td>
+      <td style="text-align:right" class="text-mono">
+        {{ e.first_value|floatformat:-1|default:'∅' }} &rarr; {{ e.last_value|floatformat:-1|default:'∅' }}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<script>
+{% comment %}
+Timestamp localisation travels with the table, not with the page: the tab
+version is included mid-content, and the script only touches the rows
+above it. Scoped to #firingsTable so it can never claim another page's
+[data-ts] cells.
+{% endcomment %}
+document.querySelectorAll('#firingsTable [data-ts]').forEach(function(el) {
+  var ts = el.getAttribute('data-ts');
+  if (!ts) { el.textContent = '—'; return; }
+  var d = new Date(ts);
+  el.textContent = isNaN(d.getTime()) ? ts : d.toLocaleString();
+});
+</script>
+{% else %}
+<div class="card"><div class="card-body text-muted" style="padding:16px;text-align:center">
+  {% if show == 'open' %}
+  No open episodes &mdash; nothing is currently breaching a threshold{% if scoped %} for this datasource{% endif %}.
+  {% else %}
+  No firing episodes recorded{% if scoped %} for this datasource{% endif %} yet.
+  {% endif %}
+</div></div>
+{% endif %}

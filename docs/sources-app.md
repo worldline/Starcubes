@@ -36,6 +36,7 @@ The `/sources/` UI splits along three axes:
 | Any user          | `/sources/`                   | List of datasources with last-run status       |
 | Any user          | `/sources/<pk>/`              | Editable detail (Basics read-only; Group Dims, Measures, Alarms are CRUD) |
 | Any user          | `/sources/alarms/firings/`    | Global firing-episode overview (`?show=open` for the live breaches) |
+| Any user          | `/sources/<pk>/?tab=firings`  | The same overview scoped to one datasource (`&show=open` likewise) |
 | Superuser         | `/sources/<pk>/manage/`       | Full configuration (12 sub-tabs incl. ETL run / log) |
 | Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
 | Superuser         | `/sources/profiles/`          | Profile catalogue + upload (replaces the modal that used to live on `list.html`) |
@@ -382,12 +383,30 @@ The **global episode overview** lives at `/sources/alarms/firings/`
 `?show=open` for the live breaches, `?ds=<id>` for one datasource — the
 `Datasource` dropdown submits both as GET params) — every `alarm_firing`
 episode joined with its alarm rule and datasource. It is linked from the
-shared tab bar (`_global_tabs.html`), from the hamburger menu ("Firings",
-any logged-in user) and from the Alarms tab twice — "Firings here →"
-(pre-filtered via `?ds=`) and "All firings →". The chart's bell used to be
-the pre-filtered entrance; it points at the alarm rules now, and the Alarms
-tab's own link took that job over. The per-alarm episodes remain in
+shared tab bar (`_global_tabs.html`) and from the hamburger menu
+("Firings", any logged-in user). The per-alarm episodes remain in
 detail.html's ⓘ sub-row.
+
+The same list is a **Firings tab on the datasource page**, and it is the
+same code twice over:
+
+- `views._firing_episodes(show, ds)` reads and formats the episodes for
+  both, so an episode means the same thing on either page;
+- `sources/_firings.html` renders both, with `views.firings_context()`
+  filling it. Its one switch is `scoped`: on a datasource's own page the
+  `Datasource` dropdown makes no sense, so it becomes an "All firings ↗"
+  link to the global page and the `Datasource` column drops out of the
+  table. `url_all` / `url_open` come from the caller because each page
+  filters inside its own URL — `?show=` globally, `?tab=firings[&show=open]`
+  on the tab, which reloads the detail page and lands back on the tab
+  through the existing `?tab=` deep-link.
+
+The tab is rendered with the page rather than fetched, because the sub-tabs
+are toggled client-side and there is no navigation to hang a lazy load off;
+the cost is one extra meta query per detail page load. The Alarms tab's
+header links to it with a single "Firings →" (`?tab=firings`) — the tab
+itself carries the way out to the global overview. The `firings_context`
+key is `firings_ds`, not `ds`: detail.html's `ds` is the datasource row.
 
 ### JSON: inline CRUD
 Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delete/`.

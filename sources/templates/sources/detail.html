@@ -13,6 +13,7 @@
     <button class="tab-btn" data-tab="group-dims">Group Dims</button>
     <button class="tab-btn" data-tab="measures">Measures ({{ measures|length }})</button>
     <button class="tab-btn" data-tab="alarms">Alarms</button>
+    <button class="tab-btn" data-tab="firings">Firings</button>
   </div>
 </div>
 
@@ -321,8 +322,13 @@
     <div class="card-header">
       <span class="card-title">Alarms</span>
       <span style="margin-left:auto;font-size:12px;color:var(--muted);display:flex;gap:12px;align-items:center">
-        <a href="{% url 'sources:alarm_firings' %}?ds={{ ds.id }}" style="font-size:12px">Firings here &rarr;</a>
-        <a href="{% url 'sources:alarm_firings' %}" style="font-size:12px">All firings &rarr;</a>
+        {% comment %}
+          One link, to the sibling Firings tab: the episodes for this
+          datasource now live on this page, and that tab carries the link
+          out to the global overview. Two links out of here (?ds= plus the
+          unfiltered one) would only compete with it.
+        {% endcomment %}
+        <a href="?tab=firings" style="font-size:12px">Firings &rarr;</a>
         Threshold rules, evaluated after every ETL load over the last window of loaded data; firings land in the alarm_firing episode table &mdash; only <code>log</code> is wired today.
       </span>
     </div>
@@ -364,6 +370,18 @@
       </div>
     </div>
   </div>
+</div>
+
+{% comment %}
+  Firings tab — the global episode overview (/sources/alarms/firings/)
+  scoped to this datasource. Same rows, same table: both come from
+  views._firing_episodes and sources/_firings.html, with `scoped` dropping
+  the datasource dropdown and the Datasource column and putting an
+  "All firings" link in their place. The All / Open only links reload this
+  page onto ?tab=firings, which the sub-tab deep-link puts back here.
+{% endcomment %}
+<div class="tab-panel" id="tab-firings">
+  {% include "sources/_firings.html" %}
 </div>
 
 <!-- Persistent status bar — ETL state for this datasource. -->

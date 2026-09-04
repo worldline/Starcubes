@@ -20,6 +20,7 @@ from django.contrib.auth.models import User
 from django.http import (HttpResponse, HttpResponseBadRequest,
                          HttpResponseForbidden, JsonResponse)
 from django.shortcuts import redirect, render
+from django.urls import reverse
 from django.views.decorators.http import require_POST
 from sqlalchemy import text
 
@@ -449,6 +450,17 @@ def source_detail(request, pk: int):
     nothing for them to act on.
     """
     ctx = _build_source_context(pk)
+    # The Firings tab is the global overview scoped to this datasource —
+    # same reader, same template partial, so the two cannot drift. It is
+    # server-rendered with the page (the sub-tabs are JS-toggled, so there
+    # is no request to hang a lazy load off), and `?show=open` filters it
+    # by reloading the page onto `?tab=firings`.
+    show = request.GET.get("show", "all")
+    detail_url = reverse("sources:detail", args=[pk])
+    firings = firings_context(
+        _firing_episodes(show, pk), show, scoped=True,
+        url_all=f"{detail_url}?tab=firings",
+        url_open=f"{detail_url}?tab=firings&show=open")
     # Carve the slim context detail.html needs. The keys not in this set
     # are present in ``manage.html`` only. measure_aggs / graph_styles are
     # passed so admins get the same inline-edit / add-form pattern here
@@ -461,6 +473,7 @@ def source_detail(request, pk: int):
         "graph_styles": ctx["graph_styles"],
         "current_source_id":   ctx["current_source_id"],
         "current_source_name": ctx["current_source_name"],
+        **firings,
     })
 
 
@@ -2496,23 +2509,18 @@ def alarm_firings(request, pk: int, alarm_id: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
-def alarm_firings_page(request):
-    """The global firing-episode overview, across every datasource.
+def _firing_episodes(show: str = "all", ds: int | None = None):
+    """The firing-episode rows every firings view renders.
 
-    The evaluator is one global process, so its output is one global page:
-    every alarm_firing episode joined with its alarm rule and datasource,
-    newest first. `?show=open` restricts it to episodes still open — the
-    "what is firing right now" lens. `?ds=<id>` restricts it to one
-    datasource (the chart page's firings button links here pre-filtered;
-    anything non-numeric just means unfiltered). Login-only like every
-    /sources/ page (RequireLoginMiddleware gates the path prefix; no role
-    split needed — alarms are a user concern). Episodes of deleted alarms
-    are gone with the alarm (ON DELETE CASCADE), so the page needs no
-    orphan handling.
+    One reader for the global page (``alarm_firings_page``) and for the
+    per-datasource Firings tab on ``source_detail``, the same way the two
+    share ``sources/_firings.html`` for the rendering — an episode must
+    mean the same thing and be formatted the same way on both, and the
+    only difference between the pages is the scope. ``show="open"`` keeps
+    the still-breaching episodes, ``ds`` scopes to one datasource.
+    Newest first, capped at 500. Episodes of deleted alarms are gone with
+    the alarm (ON DELETE CASCADE), so there is no orphan handling.
     """
-    show = request.GET.get("show", "all")
-    ds_raw = request.GET.get("ds", "")
-    ds = int(ds_raw) if ds_raw.isdigit() else None
     conds = []
     if show == "open":
         conds.append("f.closed_at IS NULL")
@@ -2552,9 +2560,49 @@ def alarm_firings_page(request):
             "last_value": r["last_value"],
             "duration": fmt_episode_span(span),
         })
-    return render(request, "sources/firings.html",
-                  {"episodes": episodes, "show": show, "ds": ds,
-                   "total": len(episodes)})
+    return episodes
+
+
+def firings_context(episodes, show, *, url_all, url_open, ds=None, scoped=False):
+    """The context ``sources/_firings.html`` expects, in one place.
+
+    ``scoped`` is what the partial switches on: the global page offers the
+    datasource dropdown, the datasource's own Firings tab drops both the
+    dropdown and the Datasource column and links out to the global page
+    instead. ``url_all`` / ``url_open`` are the two filter links, built by
+    the caller because each page filters within its own URL.
+    """
+    # The key is ``firings_ds``, not ``ds``: detail.html's ``ds`` is the
+    # datasource row itself, and this context is merged into that page's.
+    return {"episodes": episodes, "show": show, "firings_ds": ds,
+            "total": len(episodes), "scoped": scoped,
+            "url_all": url_all, "url_open": url_open}
+
+
+def alarm_firings_page(request):
+    """The global firing-episode overview, across every datasource.
+
+    The evaluator is one global process, so its output is one global page:
+    every alarm_firing episode joined with its alarm rule and datasource,
+    newest first. `?show=open` restricts it to episodes still open — the
+    "what is firing right now" lens. `?ds=<id>` restricts it to one
+    datasource (the chart page's firings button links here pre-filtered;
+    anything non-numeric just means unfiltered). Login-only like every
+    /sources/ page (RequireLoginMiddleware gates the path prefix; no role
+    split needed — alarms are a user concern).
+
+    The table itself lives in ``sources/_firings.html``, shared with the
+    per-datasource Firings tab; see ``_firing_episodes``.
+    """
+    show = request.GET.get("show", "all")
+    ds_raw = request.GET.get("ds", "")
+    ds = int(ds_raw) if ds_raw.isdigit() else None
+    base = reverse("sources:alarm_firings")
+    ds_q = f"&ds={ds}" if ds is not None else ""
+    return render(request, "sources/firings.html", firings_context(
+        _firing_episodes(show, ds), show, ds=ds,
+        url_all=f"{base}?show=all{ds_q}",
+        url_open=f"{base}?show=open{ds_q}"))
 
 
 def fmt_episode_span(seconds: float) -> str:

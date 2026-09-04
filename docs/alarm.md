@@ -150,4 +150,6 @@ The chart drill-down's Alert form is the other creating path.
 
 The global episode overview (`/sources/alarms/firings/`,
 `alarm_firings_page`) takes `?show=open` (live breaches only) and `?ds=<id>`
-(one datasource — the Alarms tab's "Firings here →" links there).
+(one datasource). The datasource page shows the same list as its Firings
+tab (`?tab=firings`), from the same reader and the same template partial —
+see [`docs/sources-app.md`](sources-app.md).
