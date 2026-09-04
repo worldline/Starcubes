@@ -890,6 +890,15 @@
     background: var(--toggle-hover); border: 1px solid var(--toggle-border);
     border-radius: 4px; padding: 6px 8px;
   }
+  .drill-alarm-hint {
+    font-size: 11px; color: var(--legend-total-color); margin-top: 4px;
+  }
+  .drill-alarm-dup {
+    font-size: 11px; color: var(--body-color);
+    background: var(--toggle-hover); border: 1px solid var(--toggle-border);
+    border-radius: 4px; padding: 6px 8px;
+  }
+  .drill-alarm-dup ul { margin: 4px 0 0; padding-left: 16px; }
   .drill-alarm-status { font-size: 11px; min-height: 14px; color: var(--legend-total-color); }
   .drill-alarm-status.err { color: #c0392b; }
   .drill-alarm-save {
@@ -3927,6 +3936,13 @@ async function openTxnView() {
 // Grouped tokens are refused up front: group sets are user-editable, and a
 // stored grouped reference would break silently — or worse, keep working
 // while its meaning changes. The server rejects them again with 400.
+//
+// That ban is about *filter* columns only, which is exactly what the server
+// checks (core/alarm.py:check_no_grouped_filters). A grouped column on the
+// group_by axis is not stored anywhere — it only decides how the chart splits
+// its series — so it does not block the alarm: the clicked series is dropped
+// from the context and the alarm scopes to the filter rows alone. The form
+// says so rather than leaving the narrower context unexplained.
 
 function alarmContextRows() {
   // Serialize the live filter rows exactly like gatherParams does …
@@ -3943,9 +3959,10 @@ function alarmContextRows() {
     rows.push({ col: row.column, op: row.op, vals,
                 andOr: row.andOr, indent: row.indent || 0 });
   }
-  // … then merge the clicked series as an extra `in` row (no breakdown →
-  // no series row; the alarm then scopes to the filters alone).
-  if (_drillCtx && _drillCtx.groupBy) {
+  // … then merge the clicked series as an extra `in` row (no breakdown, or a
+  // grouped breakdown → no series row; the alarm then scopes to the filters
+  // alone — see alarmIgnoredGrouping).
+  if (_drillCtx && _drillCtx.groupBy && !gbIsGrouped(_drillCtx.groupBy)) {
     let row = rows.find(r => r.col === _drillCtx.groupBy && r.op === 'in');
     if (!row) {
       row = { col: _drillCtx.groupBy, op: 'in', vals: [],
@@ -3957,9 +3974,26 @@ function alarmContextRows() {
   return rows;
 }
 
+function _escHtml(v) {
+  return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// The grouped filter columns that make an alarm unsaveable, [] when there are
+// none. A grouped group_by is deliberately not in here — see alarmIgnoredGrouping.
+function alarmBlockedCols() {
+  return [...new Set(filterRows.filter(r => gbIsGrouped(r.column))
+                               .map(r => gbLabel(r.column)))];
+}
+
 function alarmContextBlocked() {
-  if (_drillCtx && gbIsGrouped(_drillCtx.groupBy)) return true;
-  return filterRows.some(r => gbIsGrouped(r.column));
+  return alarmBlockedCols().length > 0;
+}
+
+// Label of the grouped breakdown whose clicked series is being left out of the
+// context, or null when the breakdown is plain (or absent).
+function alarmIgnoredGrouping() {
+  return (_drillCtx && gbIsGrouped(_drillCtx.groupBy))
+    ? gbLabel(_drillCtx.groupBy) : null;
 }
 
 // Read-only chip display of the alarm context: the live filter rows plus
@@ -3967,7 +4001,7 @@ function alarmContextBlocked() {
 // their own Set so the live state is never mutated.
 function _alarmContextDisplayNodes() {
   const nodes = filterRows.map(r => ({ ...r }));
-  if (_drillCtx && _drillCtx.groupBy) {
+  if (_drillCtx && _drillCtx.groupBy && !gbIsGrouped(_drillCtx.groupBy)) {
     let row = nodes.find(r => r.column === _drillCtx.groupBy && r.op === 'in');
     if (row) {
       row.values = new Set(row.values);
@@ -4023,10 +4057,18 @@ function openAlarmView() {
     wopts.push([s, s === intervalS ? `${fmtInterval(s)} (current)` : fmtInterval(s)]);
   }
 
+  // A grouped *filter* blocks the alarm; a grouped *breakdown* only drops the
+  // clicked series from the context, and says so.
+  const ignored = alarmIgnoredGrouping();
   const ctxHtml = blocked
-    ? '<div class="drill-alarm-note">Grouped dimension filters cannot be used in alerts — group sets are editable and would silently change the alert\'s meaning. Switch the chart to plain filters.</div>'
-    : (_renderSummaryNodes(_alarmContextDisplayNodes(), { removable: false })
-       || '<span class="drill-alarm-global">whole datasource (no filters, no breakdown)</span>');
+    ? '<div class="drill-alarm-note">Grouped dimension filters cannot be used in alerts — group sets are editable and would silently change the alert\'s meaning: '
+      + alarmBlockedCols().map(_escHtml).join(', ')
+      + '. Switch those filter rows to plain columns.</div>'
+    : ((_renderSummaryNodes(_alarmContextDisplayNodes(), { removable: false })
+        || '<span class="drill-alarm-global">whole datasource (no filters)</span>')
+       + (ignored
+          ? `<div class="drill-alarm-hint">\u24d8 The \u201c${_escHtml(ignored)}\u201d breakdown is ignored in the alert \u2014 group sets are editable, so the clicked series cannot be stored. The alert covers the context above.</div>`
+          : ''));
 
   const optsHtml = (opts, sel) => opts.map(([v, l]) =>
     `<option value="${v}"${v === sel ? ' selected' : ''}>${l}</option>`).join('');
