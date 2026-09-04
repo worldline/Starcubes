@@ -82,11 +82,11 @@ branch — **`master` is the only long-lived branch.**
   `profiles.html` / `manage.html`.
 - **[`docs/alarm.md`](docs/alarm.md)** — alarm evaluation: the
   `context_filter` jsonb shape (the chart's flat filter rows, grouped
-  tokens forbidden), the `eval_end` cursor model and its late-arrival
-  trade-off, the `alarm_firing` episode state machine, the global
-  `alarm_forever` loop. Read when editing `core/alarm.py`,
-  `sources/management/commands/alarm_run.py`, or the alarm UI in
-  `detail.html` / `chart.html`.
+  tokens forbidden), the sliding `[hwm − window_s, hwm)` window and its
+  trade-offs, the HWM-stamped `alarm_firing` episode state machine, and
+  why the ETL load is the only evaluator. Read when editing
+  `core/alarm.py`, `sources/management/commands/alarm_run.py`, the alarm
+  hook in `etl_run.py`, or the alarm UI in `detail.html` / `chart.html`.
 
 ## Repo state
 
@@ -105,7 +105,8 @@ The repo is **mid-rewrite** from a hard-coded Oracle single-file ETL
 - `migrations/` — numbered `000N_*.sql`, idempotent. The consolidated
   `starcubes_meta.sql` is used by `core/schema.py`.
 - Management commands under `sources/management/commands/`:
-  `etl_run`, `etl_resume_forever`, `alarm_run`, `alarm_resume_forever`,
+  `etl_run` (also the alarm evaluator — it runs a scoped `run_alarm_cycle`
+  after every load), `etl_resume_forever`, `alarm_run` (manual single cycle),
   `seed_example`, `query_multibar`, `create_indices`, `drop_indices`,
   `query_cache_clear`, `bootstrap`.
 
@@ -135,12 +136,12 @@ must not import from `viz/`, same constraint as `core/`).
 | `core/schema.py` | `create_fact`, `create_indices`, `drop_indices`, `import_dimensions`, `read_dimensions`, `ensure_starcubes_meta(engine, force=)`. `validate_schema_name` + `ensure_schema` — the schema name goes unquoted into ~70 f-string SQL sites, so it is constrained to `^[a-z_][a-z0-9_]{0,62}$` rather than quoted (see [`docs/star-schema.md`](docs/star-schema.md)); `ensure_schema` is called by `create_fact`, `create_dim_tables` and `import_dimensions` alike. Partition lifecycle: `list_fact_partitions`, `create_future_partitions` (append-only, manual), `ensure_partitions_for` (gap-filling, called every `import_fact` run), `vacuum_analyze_fact`. See [`docs/star-schema.md`](docs/star-schema.md). |
 | `core/etl.py` | `import_fact` — the three-stage pipeline; calls `ensure_partitions_for` before starting workers. `_resume_state` returns `(last_end_time, extract_from, existing_pks)`; `_overlap_pks` loads the PK set for the late-arrival overlap. The window's upper bound is `max(max_wm − watermark_lag_s, src_now − wallclock_lag_s)`, clamped up to the HWM so it can never rewind. `backfill=True` re-loads a closed window without moving the HWM. `_load_auto_dim_maps` + `_resolve_auto_dim_chunk` for parent-process auto-dim discovery. `EtlAborted` for user-initiated kills; `EtlStageFailed` (+ `_put_with_abort`/`_join_with_abort`/`_raise_if_failed`) for a dead transform/load worker. Throughput metrics: `_snapshot_stats`/`_build_stats_payload` read the shared `mp.Array` into the `stats` jsonb shape (now including live `queues`/`workers`); `_rate`/`_fmt_rate` compute/format rows-per-second; `_bound_log_size` truncates the process's own log file in place. Uses `logging.getLogger(__name__)`, never `print()`. Maintenance: `truncate_last_partition`, `delete_fact_from`, `clear_etl_history`, `set_highwatermark`. See [`docs/etl-engine.md`](docs/etl-engine.md). |
 | `core/query.py` | `timeseries_multibar` — multibar JSON producer. Bars ordered ascending by dim count. `split_grouped_col`/`resolve_group_set`/`slugify_group_set`/`grouped_token`/`grouped_label` own the `<col>:grouped:<slug>` token; `build_group_by_indices` resolves group names for grouped drill-down. `build_filter_tree` (flat rows → nested tree) + `validate_filter_tree`/`check_filter_col` are the shared filter validation — chart endpoints, the alarm CRUD and the evaluator all use them, so error messages must not drift. See [`docs/chart-rendering.md`](docs/chart-rendering.md) for ladder-plot specifics. |
-| `core/alarm.py` | Alarm evaluation (Django-free): `run_alarm_cycle` loads all enabled alarms and `Source.load`s once per datasource; `evaluate_alarm` advances the `alarm.eval_end` cursor in `window_s` steps to the fact clock (`fact_max_time`) and runs the `alarm_firing` episode state machine; `check_no_grouped_filters` enforces the grouped-token ban at save time *and* in the evaluator; `measure_value_expr` owns the `count(*)` special case. See [`docs/alarm.md`](docs/alarm.md). |
+| `core/alarm.py` | Alarm evaluation (Django-free): `run_alarm_cycle(meta, dsn, datasource_id=, source=)` loads the enabled alarms (optionally for one datasource, optionally reusing a `Source` the caller already holds); `evaluate_alarm` evaluates the one trailing window `[hwm − window_s, hwm)` at the fact clock (`fact_max_time`), skips itself when the HWM did not move, and stamps every `alarm_firing` episode transition with that HWM; `check_no_grouped_filters` enforces the grouped-token ban at save time *and* in the evaluator; `measure_value_expr` owns the `count(*)` special case. **Driven by `etl_run` after every load — there is no forever loop.** See [`docs/alarm.md`](docs/alarm.md). |
 | `core/audit.py` | `audit_window` — per-bucket source-vs-fact row-count reconciliation; `audit_ids` — PK set difference naming the exact missing/surplus/duplicate rows; `audit_id_details` — targeted second pass giving each named id its own watermark-column value, the `etl_run` that should have caught it, and `last_end_time − that value` as the lower bound on the needed lag (both operands source-clock, so no skew); `_fetch_id_array` — the streaming id reader (see the memory note); `gap_span` folds the gap buckets into one backfill window. No Django imports. See [`docs/etl-audit.md`](docs/etl-audit.md). |
 | `core/cache.py` | Server-side `plot_json` cache helpers. `make_cache_key`, `is_cacheable`, `get_cached_plot`, `put_cached_plot`, `bump_cache_epoch`, `clear_cache`. No Django imports. |
 | `core/utils.py` | `_parse_dt`, `_pid_alive`, `tail_file`, `format_pks` (applies `datasource.pk_format` to a list of raw PKs — shared by the chart drill-down and the Audit tab's id lists). No Django imports. |
 | `core/adhoc.py` | Query console backend: `validate_sql` (single-statement SELECT/WITH lexer), `run_query` (read-only txn + server-side cursor + `application_name` tag), `cancel_query` (`pg_stat_activity` → `pg_cancel_backend`), `history_list` / `history_list_user` / `history_delete` / `history_delete_user`. No Django imports. See [`docs/deployment-config.md`](docs/deployment-config.md). |
-| `migrations/starcubes_meta.sql` | Consolidated idempotent meta-schema (0001–0028 combined — 0025 adds the per-datasource alarm table, 0026 the `enabled` flag 0025 omitted, 0028 replaces `context_dim`/`context_value` with `context_filter jsonb` + `comment` + `eval_end` and adds `alarm_history`/`alarm_firing`/`alarm_forever`). Used by `core/schema.py`. Per-step migrations live in `migrations/000N_*.sql`. |
+| `migrations/starcubes_meta.sql` | Consolidated idempotent meta-schema (0001–0029 combined — 0025 adds the per-datasource alarm table, 0026 the `enabled` flag 0025 omitted, 0028 replaces `context_dim`/`context_value` with `context_filter jsonb` + `comment` + `eval_end` and adds `alarm_history`/`alarm_firing`/`alarm_forever`, 0029 drops `alarm_forever` again and re-comments `eval_end`/`alarm_firing` for the HWM semantics). Used by `core/schema.py`. Per-step migrations live in `migrations/000N_*.sql`. |
 | `starcubes/settings.py` | Reads `STARCUBES_POSTGRES_DSN` from env. Custom DB backend, `CsrfViewMiddleware` in MIDDLEWARE. See [`docs/deployment-config.md`](docs/deployment-config.md). |
 | `starcubes/db_backends/` | Custom PG backend package — ensures `starcubes_meta` schema exists, sets search_path. |
 | `starcubes/middleware.py` | `RequireLoginMiddleware` — gates `/sources/` and `/admin/`. |

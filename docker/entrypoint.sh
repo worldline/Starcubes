@@ -7,9 +7,6 @@ python3 /app/manage.py bootstrap
 # ── Resume any forever ETL sessions left active by the previous container ────
 python3 /app/manage.py etl_resume_forever
 
-# ── Start the global alarm evaluation loop (idempotent across restarts) ──────
-python3 /app/manage.py alarm_resume_forever
-
 # ── Trust (or not) the proxy's forwarded scheme ──────────────────────────────
 # uwsgi honours X-Forwarded-Proto / X-Forwarded-Ssl by itself when setting
 # wsgi.url_scheme, which is what Django's request.is_secure() reads. That is

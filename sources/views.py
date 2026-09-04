@@ -2063,7 +2063,7 @@ def _alarm_row_to_dict(row) -> dict:
     Kept separate from the SELECTs so list/add/edit can all render the
     same shape (the editor reads it back the same way the list does).
     context_filter arrives already decoded (psycopg2 turns jsonb into a
-    Python list). eval_end is the evaluator's runtime cursor, not user
+    Python list). eval_end is the evaluator's runtime HWM marker, not user
     configuration — it is deliberately left out.
     """
     return {
@@ -2214,7 +2214,7 @@ def alarm_edit(request, pk: int, alarm_id: int):
     The context (a whole filter expression) is not inline-editable: when
     the `context` field is absent the stored context_filter is kept as-is;
     when present (chart / API callers) it replaces it wholesale. The
-    evaluator's eval_end cursor is never touched here — edits do not reset
+    evaluator's eval_end marker is never touched here — edits do not reset
     evaluation progress. Old and new snapshots land in alarm_history in
     the same transaction as the UPDATE.
     """
@@ -2463,8 +2463,9 @@ def alarm_firings_page(request):
 def fmt_episode_span(seconds: float) -> str:
     """Episode length as a compact human string (60 -> 1m, 3700 -> 1h 1m).
 
-    An episode spanning a single window has length 0 — shown as the
-    window-sized "≤ one window" hint by the caller, not here.
+    The span is measured on the data high watermark (last_breach_at minus
+    first_breach_at), so an episode seen by a single load has length 0 —
+    shown as the "≤ one window" hint by the caller, not here.
     """
     s = int(seconds)
     if s <= 0:

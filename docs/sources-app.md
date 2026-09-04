@@ -283,9 +283,9 @@ the `context` field, stored verbatim in `alarm.context_filter` jsonb;
 (`<col>:grouped:<slug>`) are rejected at save time (400): group sets are
 user-editable and a stored grouped reference would silently change the
 alarm's meaning. Fan-out filter_group tokens stay allowed. The evaluator
-(`core/alarm.py`, driven by `alarm_run`/`alarm_resume_forever`) records
-firings as episodes in `starcubes_meta.alarm_firing` — see
-[`docs/alarm.md`](alarm.md). The Alarms tab lives on `detail.html` only —
+(`core/alarm.py`, driven by `etl_run` after every load) records firings as
+episodes in `starcubes_meta.alarm_firing`, stamped with the data high
+watermark — see [`docs/alarm.md`](alarm.md). The Alarms tab lives on `detail.html` only —
 alarms are a user concern, so `manage.html` does not carry a copy. The
 chart drill-down's Alert form posts here too (with `context`).
 

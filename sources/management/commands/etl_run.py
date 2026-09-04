@@ -18,6 +18,7 @@ from django.core.management.base import BaseCommand
 
 from sqlalchemy import text
 
+from core.alarm import run_alarm_cycle
 from core.etl import import_fact, truncate_last_partition, delete_fact_from, \
                       clear_etl_history, set_highwatermark, EtlAborted
 from core.schema import import_dimensions, refresh_dim_counts, \
@@ -311,6 +312,21 @@ class Command(BaseCommand):
                     log.exception("%s: ETL run failed, continuing loop", source.name)
                     rows = 0
 
+                # Alarms are evaluated here and nowhere else: a load is
+                # the only thing that moves the data high watermark, and the
+                # HWM is what an alarm window slides with. Runs after a
+                # caught ETL failure too — evaluate_alarm skips itself when
+                # the HWM did not move, so a failed or backfill run costs
+                # one cheap max() per alarm and changes nothing.
+                try:
+                    alarm_counts = run_alarm_cycle(
+                        meta, dsn, datasource_id=source.id, source=source)
+                except Exception:
+                    # Never let an alarm problem colour the ETL's outcome.
+                    log.exception("%s: alarm evaluation failed, continuing",
+                                  source.name)
+                    alarm_counts = None
+
                 iteration += 1
 
                 # Window overrides only apply to the first iteration.
@@ -329,6 +345,15 @@ class Command(BaseCommand):
                     ), {"ds": source.id}).mappings().all()
 
                 self.stdout.write(f"\n{source.name}: loaded {rows} rows this run.\n")
+                if alarm_counts is not None and alarm_counts["alarms"]:
+                    ac = alarm_counts
+                    self.stdout.write(
+                        f"alarms: {ac['alarms']} evaluated, "
+                        f"windows={ac['windows']} breaches={ac['breaches']} "
+                        f"episodes +{ac['episodes_opened']}"
+                        f"/~{ac['episodes_extended']}"
+                        f"/closed {ac['episodes_closed']} "
+                        f"errors={ac['errors']}")
                 self.stdout.write("recent etl_run rows (newest first):")
                 for r in last_runs:
                     self.stdout.write(

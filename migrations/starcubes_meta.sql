@@ -820,7 +820,7 @@ COMMENT ON COLUMN starcubes_meta.alarm.context_filter IS
 COMMENT ON COLUMN starcubes_meta.alarm.comment IS
     'Free-text comment on this alarm. Changes are tracked through alarm_history snapshots like any other field.';
 COMMENT ON COLUMN starcubes_meta.alarm.eval_end IS
-    'Evaluation cursor: end of the last evaluated window (fact clock). NULL = never evaluated; the first evaluation checks exactly one trailing window_s window.';
+    'The data high watermark this alarm was last evaluated at (fact clock). NULL = never evaluated. Every ETL load evaluates one trailing window [eval_end - window_s, eval_end); a load that does not move the HWM is skipped. Written by the evaluator only, never touching updated_at.';
 
 CREATE TABLE IF NOT EXISTS starcubes_meta.alarm_history (
     id         serial PRIMARY KEY,
@@ -852,19 +852,18 @@ CREATE INDEX IF NOT EXISTS ix_alarm_firing_alarm
 CREATE UNIQUE INDEX IF NOT EXISTS ux_alarm_firing_open
     ON starcubes_meta.alarm_firing (alarm_id) WHERE closed_at IS NULL;
 
-CREATE TABLE IF NOT EXISTS starcubes_meta.alarm_forever (
-    id             serial PRIMARY KEY,
-    singleton      boolean NOT NULL DEFAULT true CHECK (singleton),
-    pid            int,
-    interval_s     int NOT NULL,
-    started_at     timestamptz NOT NULL DEFAULT now(),
-    stopped_at     timestamptz,
-    status         text NOT NULL
-                     CHECK (status IN ('running', 'stopping', 'stopped', 'failed')),
-    stop_requested boolean NOT NULL DEFAULT false,
-    error          text
-);
+-- 0029_alarm_hwm_semantics.sql — alarms are evaluated by the ETL load, at
+-- the data high watermark. See migrations/0029_alarm_hwm_semantics.sql.
+-- Mirror block.
 
--- At most one active (running/stopping) evaluator session world-wide.
-CREATE UNIQUE INDEX IF NOT EXISTS ux_alarm_forever_active
-    ON starcubes_meta.alarm_forever (singleton) WHERE status IN ('running', 'stopping');
+-- The global evaluator session table (alarm_forever) is retired: etl_run
+-- evaluates each datasource's alarms after its own load, so there is no
+-- standalone loop left to pin a session for.
+DROP TABLE IF EXISTS starcubes_meta.alarm_forever;
+
+COMMENT ON COLUMN starcubes_meta.alarm_firing.first_breach_at IS
+    'The data high watermark at the load that first saw the threshold breached — the start of the episode on the data''s own time axis.';
+COMMENT ON COLUMN starcubes_meta.alarm_firing.last_breach_at IS
+    'The data high watermark at the most recent load that still saw the threshold breached.';
+COMMENT ON COLUMN starcubes_meta.alarm_firing.closed_at IS
+    'The data high watermark at the first load that saw the value back under the threshold. NULL = the episode is still open.';

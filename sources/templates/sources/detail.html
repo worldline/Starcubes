@@ -248,7 +248,7 @@
       <span class="card-title">Alarms</span>
       <span style="margin-left:auto;font-size:12px;color:var(--muted);display:flex;gap:12px;align-items:center">
         <a href="{% url 'sources:alarm_firings' %}" style="font-size:12px">All firings →</a>
-        Threshold rules. A background loop evaluates them; firings land in the alarm_firing episode table — only <code>log</code> is wired today.
+        Threshold rules, evaluated after every ETL load over the last window of loaded data; firings land in the alarm_firing episode table — only <code>log</code> is wired today.
       </span>
     </div>
     <div class="card-body" style="padding:0">
