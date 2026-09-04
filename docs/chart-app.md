@@ -92,24 +92,38 @@ rather than inside one:
   fires one fetch cycle. Before it existed each `DateTimePicker.onChange`
   called `resetAndFetch()` itself, so a change moving both edges ran two full
   cycles.
-- **Config** (`#source-config-link`) follows the active tab and is set in
-  `setActiveSourceTab()`. Its URL is reversed from `sources/urls.py` through a
-  sentinel pk (`{% url 'sources:detail' 987654321 %}`), not assembled as
-  `'/sources/' + id + '/'`, which used to break silently whenever the route
-  moved.
-- **Alarms** (`#alarms-link`, the bell, logged-in only) follows the active tab
-  the same way and opens the datasource's Alarms tab with the add form ready
-  and the live filter as its context (`sources:detail` +
-  `?tab=alarms&new-alarm=1&context=<json>`). Same hidden-until-href pattern as
-  the Config link, but its href also carries the filter, so `updateAlarmLink()`
-  is called from `gatherParams()` — the one point every filter change passes
-  through — as well as from `setActiveSourceTab()`.
-  A filter row over a group set cannot be an alarm context and travels as
-  `context-blocked=grouped`; a context past `ALARM_CTX_URL_MAX` (4000 chars)
-  goes through `sessionStorage['starcubes-alarm-context']` as
-  `context=session`, and if that fails too, `context-blocked=toolong`.
-  It used to point at the firing episodes; that view is still one click away
-  from the menu and from the Alarms tab's own per-datasource link.
+- **Three configuration links** — Group Dims (`#source-groupdims-link`),
+  Measures (`#source-measures-link`) and the Alarms bell (`#alarms-link`),
+  logged-in only. They follow the active tab in `setActiveSourceTab()` and are
+  built together in `updateSourceLinks()`, which `gatherParams()` calls — the
+  one point every filter change passes through. Their URLs are reversed from
+  `sources/urls.py` through a sentinel pk (`{% url 'sources:detail' 987654321 %}`),
+  not assembled as `'/sources/' + id + '/'`, which used to break silently
+  whenever the route moved. There used to be a single Config link landing on
+  Basics; the two tabs a chart user actually edits are worth their own doors,
+  and Basics is read-only anyway.
+- **All three carry the live filter** as an alarm context, so the context
+  survives any trip from the chart into the configuration, not just the bell's.
+  The bell adds `new-alarm=1` and lands on `?tab=alarms` with the add form
+  open; Group Dims and Measures land on their own tab and leave the context
+  waiting in a collapsed card above the alarm table (see
+  [`docs/sources-app.md`](sources-app.md)).
+  `alarmContextParam()` decides how the context travels **once** for all three
+  — they share one `sessionStorage` key, and a context that goes by URL for one
+  link must not go by session for the next. A filter row over a group set
+  cannot be an alarm context and travels as `context-blocked=grouped`; a
+  context past `ALARM_CTX_URL_MAX` (4000 chars) goes through
+  `sessionStorage['starcubes-alarm-context']` as `context=session`, and if that
+  fails too, `context-blocked=toolong`. `back=` (the chart's own query string)
+  is appended last and only if it fits.
+  The bell used to point at the firing episodes; that view is still one click
+  away from the menu and from the Alarms tab's own per-datasource link.
+- **The return trip** is `chartUrl()` in `sources/templates/sources/detail.html`:
+  every alarm row links back into the chart with its stored `context_filter`
+  re-serialized as `filter=`/`andor=`/`indent=`, mirroring
+  `buildHistoryParams()`. It always writes `group_by`, even empty — the boot
+  IIFE restores per-source state from localStorage exactly when the URL has
+  none, and that restore would replace the filter rows it just handed over.
 
 ## Hover tooltip
 

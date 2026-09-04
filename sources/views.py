@@ -2200,12 +2200,21 @@ def alarm_match_context(request, pk: int):
     the context alone would flag every alarm on a busy slice regardless of
     what it measures; matching the whole rule would only ever fire on an
     exact copy, which the name uniqueness constraint already refuses.
+
+    ``any_measure=1`` drops the measure half of that test and answers with
+    every alarm watching this slice. That is what the Alarms tab uses to
+    highlight the rows a carried-over chart filter belongs to — there the
+    question is "which alarms are about this slice", not "am I writing a
+    duplicate". Each match carries its own ``measure``, so one lookup serves
+    both: the tab filters the duplicate hint down to the form's measure
+    client-side instead of asking again on every measure change.
     """
     rows, ctx_err = _parse_context_field(request.POST.get("context") or "")
     if ctx_err:
         return JsonResponse({"ok": False, "error": ctx_err,
                              "fields": {"context": ctx_err}}, status=400)
     measure = (request.POST.get("measure") or "count(*)").strip() or "count(*)"
+    any_measure = bool(request.POST.get("any_measure"))
     wanted = normalize_context_rows(rows)
     try:
         with _meta_engine().begin() as conn:
@@ -2213,8 +2222,9 @@ def alarm_match_context(request, pk: int):
                 "SELECT id, name, context_filter, measure, cond_op, "
                 "       threshold, window_s, enabled "
                 "  FROM starcubes_meta.alarm "
-                " WHERE datasource_id = :ds AND measure = :m "
-                " ORDER BY name"
+                " WHERE datasource_id = :ds "
+                + ("" if any_measure else "AND measure = :m ")
+                + " ORDER BY name"
             ), {"ds": pk, "m": measure}).mappings().all()
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})

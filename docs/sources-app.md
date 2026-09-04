@@ -289,6 +289,34 @@ watermark — see [`docs/alarm.md`](alarm.md). The Alarms tab lives on `detail.h
 alarms are a user concern, so `manage.html` does not carry a copy. The
 chart drill-down's Alert form posts here too (with `context`).
 
+The tab is one half of a round trip with the chart:
+
+- **Into the chart**: every alarm row carries a `↗` link built by `chartUrl()`,
+  which re-serializes the stored `context_filter` into the chart's
+  `filter=`/`andor=`/`indent=` parameters (mirroring `buildHistoryParams()` in
+  `chart.html`) plus the alarm's own measure. `group_by` is always written,
+  even empty — without it the chart restores its per-source state from
+  localStorage and drops the filter. It names the first context column that is
+  a groupable dimension (`GROUPABLE_COLS`, from the datasource's `dimension`
+  rows); a fan-out filter token like `so_peer` is not one, and there the link
+  falls back to no breakdown — one series over exactly what the alarm measures.
+- **Out of the chart**: the three configuration links there (Group Dims,
+  Measures, the bell) all carry the live filter as `?context=<json>`. The add
+  card above the alarm table has three states — `hidden` (nothing carried in,
+  and there is no add button), `collapsed` (a context is waiting: the card
+  names it and offers to open) and `open` (the bell's `new-alarm=1`, Clone, or
+  the collapsed card's button). Closing or saving returns to `collapsed` with
+  the context intact, so a second alarm over the same slice needs no trip back;
+  **Clear** is the only way to drop it. While a context waits in a tab the user
+  is not on, the Alarms tab button carries a `.has-ctx` dot.
+- **Which alarms the context belongs to**: with a context held, the tab asks
+  `match-context?any_measure=1` once and tints those rows (`.ctx-match`, an
+  accent bar plus a light wash) with a title saying why; the collapsed head
+  counts them ("2 alarms below watch it"). Only a context that was carried in
+  highlights — an empty one matches every global alarm, which would say
+  nothing. The lookup repeats after a save, delete or inline edit, not on a
+  plain tab-click refresh: nothing changed there.
+
 All six endpoints are **login-only**: any signed-in user may manage the
 alarms of any datasource. Every create/update also writes an
 `alarm_history` snapshot row (`kind` created/updated, `username`,
@@ -310,6 +338,11 @@ tracked, there is no separate comment history.
   would flag every alarm on a busy slice, the whole rule only an exact copy
   the name uniqueness already refuses. Also returns `context_labels` for the
   submitted context, which the list's map cannot cover.
+  `any_measure=1` drops the measure half and answers with every alarm watching
+  the slice — that is the highlight lookup described below. Each match carries
+  its own `measure`, so the Alarms tab gets both answers from one request and
+  filters the duplicate hint client-side; changing the form's measure costs no
+  round trip.
 The Alarms tab has **no add button**. An alarm without a context watches the
 whole datasource, which is rarely meant, and a form that could not carry a
 filter was the most inviting way to create one by accident. The form opens on

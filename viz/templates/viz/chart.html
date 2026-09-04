@@ -1307,9 +1307,21 @@
       <svg class="ic" aria-hidden="true"><use href="#ic-keyboard"></use></svg>
     </button>
     {% if user.is_authenticated %}
-    <a id="source-config-link" class="ibtn" hidden
-       aria-label="Configure this datasource" data-tip="Configure this datasource">
-      <svg class="ic" aria-hidden="true"><use href="#ic-sliders"></use></svg>
+    {% comment %}
+      Two doors into the datasource's configuration instead of one landing on
+      Basics: group dimensions and measures are the two things a chart user
+      actually edits. Both carry the live filter along as an alarm context —
+      see updateSourceLinks.
+    {% endcomment %}
+    <a id="source-groupdims-link" class="ibtn" hidden
+       aria-label="Group dimensions for this datasource"
+       data-tip="Group dimensions&#10;for this datasource">
+      <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>
+    </a>
+    <a id="source-measures-link" class="ibtn" hidden
+       aria-label="Measures for this datasource"
+       data-tip="Measures&#10;for this datasource">
+      <svg class="ic" aria-hidden="true"><use href="#ic-bar-chart"></use></svg>
     </a>
     <a id="alarms-link" class="ibtn" hidden
        aria-label="Alarms for this datasource"
@@ -4580,31 +4592,23 @@ function setActiveSourceTab(name) {
   document.querySelectorAll('.source-tab').forEach(b => {
     b.classList.toggle('active', b.dataset.name === name);
   });
-  // The Config button follows the active tab. Hidden until an id is known —
-  // an <a> without href is not a link, and an .ibtn is inline-flex, so
-  // [hidden] alone would not have hidden it (see .ibtn[hidden]).
-  const cfgLink = document.getElementById('source-config-link');
-  const id = window._sourceIdByName && window._sourceIdByName[name];
-  if (cfgLink) {
-    if (id) { cfgLink.href = sourceDetailUrl(id); cfgLink.hidden = false; }
-    else    { cfgLink.removeAttribute('href');    cfgLink.hidden = true; }
-  }
-  // The bell follows the active tab the same way. It leads to the alarm
-  // *rules*, not the firing episodes: creating an alarm for what the chart
-  // is showing is the thing a chart user wants from here, and the episode
-  // overview stays one click away from the Alarms tab and the menu.
-  const alarmLink = document.getElementById('alarms-link');
-  if (alarmLink) {
-    if (id) { alarmLink.hidden = false; updateAlarmLink(name); }
-    else    { alarmLink.removeAttribute('href'); alarmLink.hidden = true; }
-  }
+  // The three configuration buttons — group dims, measures, alarms — follow
+  // the active tab; updateSourceLinks hides them while the name has no id
+  // (an <a> without href is not a link, and an .ibtn is inline-flex, so
+  // [hidden] alone would not have hidden it — see .ibtn[hidden]). The bell
+  // leads to the alarm *rules*, not the firing episodes: creating an alarm for
+  // what the chart is showing is the thing a chart user wants from here, and
+  // the episode overview stays one click away from the Alarms tab and the menu.
+  updateSourceLinks(name);
   const brand = document.getElementById('nav-brand');
   if (brand && name) brand.href = '/?name=' + encodeURIComponent(name);
 }
 
-// The bell carries the live filter over as the new alarm's context, so its
-// href is rebuilt whenever the filter changes — gatherParams() is that
-// moment, and setActiveSourceTab covers the source switch.
+// Every link from the chart into the datasource's configuration carries the
+// live filter along as an alarm context, so their hrefs are rebuilt whenever
+// the filter changes — gatherParams() is that moment, and setActiveSourceTab
+// covers the source switch. The bell opens the add form outright; group dims
+// and measures land on their own tab and leave the context waiting there.
 //
 // A filter row over a group set cannot become an alarm context (group sets
 // are editable, so the alarm's meaning would drift); the link then says so
@@ -4613,37 +4617,47 @@ function setActiveSourceTab(name) {
 // the query string stays the shareable path, this is only its fallback.
 const ALARM_CTX_URL_MAX = 4000;
 
-function updateAlarmLink(nameOverride) {
-  const link = document.getElementById('alarms-link');
-  if (!link) return;
+// The context freight, decided once for all three links: they share the one
+// sessionStorage key, so the fallback must not be written three times, and a
+// context that travels by URL for one link must not travel by session for the
+// next. Measured against the longest of the three bases so the choice holds
+// for all of them.
+function alarmContextParam(longestBase) {
+  if (alarmContextBlocked()) return '&context-blocked=grouped';
+  const rows = alarmContextRows(false);
+  if (!rows.length) return '';
+  const json = JSON.stringify(rows);
+  const qs = '&context=' + encodeURIComponent(json);
+  if (longestBase.length + qs.length <= ALARM_CTX_URL_MAX) return qs;
+  try {
+    sessionStorage.setItem('starcubes-alarm-context', json);
+    return '&context=session';
+  } catch (err) {
+    // Neither the URL nor session storage can take it. Say which, rather
+    // than blaming the grouped-dimension rule.
+    return '&context-blocked=toolong';
+  }
+}
+
+function updateSourceLinks(nameOverride) {
   // The source switch passes its name in: setActiveSourceTab runs before the
   // form field is guaranteed to hold it.
   const name = nameOverride || form.elements.name.value;
   const id   = window._sourceIdByName && window._sourceIdByName[name];
-  if (!id) { link.removeAttribute('href'); link.hidden = true; return; }
-
-  let url = sourceDetailUrl(id) + '?tab=alarms&new-alarm=1';
-  if (alarmContextBlocked()) {
-    url += '&context-blocked=grouped';
-  } else {
-    const rows = alarmContextRows(false);
-    if (rows.length) {
-      const json = JSON.stringify(rows);
-      const qs = '&context=' + encodeURIComponent(json);
-      if (url.length + qs.length <= ALARM_CTX_URL_MAX) {
-        url += qs;
-      } else {
-        try {
-          sessionStorage.setItem('starcubes-alarm-context', json);
-          url += '&context=session';
-        } catch (err) {
-          // Neither the URL nor session storage can take it. Say which,
-          // rather than blaming the grouped-dimension rule.
-          url += '&context-blocked=toolong';
-        }
-      }
+  const links = [
+    ['source-groupdims-link', '?tab=group-dims'],
+    ['source-measures-link',  '?tab=measures'],
+    ['alarms-link',           '?tab=alarms&new-alarm=1'],
+  ];
+  if (!id) {
+    for (const [elId] of links) {
+      const el = document.getElementById(elId);
+      if (el) { el.removeAttribute('href'); el.hidden = true; }
     }
+    return;
   }
+  const base = sourceDetailUrl(id);
+  const ctx = alarmContextParam(base + links[links.length - 1][1]);
   // The way back. The brand link on the sources pages is a plain
   // /?name=<source>, which now restores the source's last state from
   // localStorage — good enough in the common case, but it cannot know which
@@ -4653,10 +4667,14 @@ function updateAlarmLink(nameOverride) {
   // Appended last and only if it fits: the alarm context is the more important
   // freight, and without `back` the localStorage restore still covers the trip.
   const back = '&back=' + encodeURIComponent(buildHistoryParams().toString());
-  if (url.length + back.length <= ALARM_CTX_URL_MAX) url += back;
-
-  link.href = url;
-  link.hidden = false;
+  for (const [elId, tab] of links) {
+    const el = document.getElementById(elId);
+    if (!el) continue;
+    let url = base + tab + ctx;
+    if (url.length + back.length <= ALARM_CTX_URL_MAX) url += back;
+    el.href = url;
+    el.hidden = false;
+  }
 }
 
 const loadingOverlay = document.getElementById('loading-overlay');
@@ -4952,9 +4970,9 @@ function gatherParams() {
     }
   }
   saveSourceState(starcubesParams.name);
-  // The bell's href carries these filters, so it is refreshed here — the one
-  // point every filter change passes through.
-  updateAlarmLink();
+  // The configuration links carry these filters, so they are refreshed here —
+  // the one point every filter change passes through.
+  updateSourceLinks();
 }
 
 function buildHistoryParams() {

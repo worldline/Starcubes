@@ -245,6 +245,9 @@ a:hover { text-decoration: underline; }
 .btn-sm { padding: 3px 10px; font-size: 12px; }
 .btn-icon { padding: 3px 6px; font-size: 14px; background: none; border: none; cursor: pointer; color: var(--muted); }
 .btn-icon:hover { color: var(--fg); }
+/* Row actions that are real links (open elsewhere, middle-clickable) rather
+   than buttons — same box, without the anchor's underline. */
+a.btn-icon { display: inline-block; text-decoration: none; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Tables */
@@ -272,6 +275,15 @@ a:hover { text-decoration: underline; }
 }
 .data-table tr:last-child td { border-bottom: none; }
 .data-table tr:hover td { background: var(--bg2); }
+/* Rows the page's current context belongs to — today the alarms watching the
+   chart filter that was carried in. Tinted rather than boxed, so a highlighted
+   row still reads as one row of the table; the accent bar on the first cell is
+   what survives when color-mix is not available. Placed after :hover so the
+   tint stays put while the pointer moves over it. */
+.data-table tr.ctx-match > td {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.data-table tr.ctx-match > td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .data-table .actions { white-space: nowrap; text-align: right; }
 
 /* Badges */
@@ -366,6 +378,9 @@ tr.editing .row-edit { display: flex; }
 }
 .tab-btn:hover { color: var(--fg); }
 .tab-btn.active { color: var(--fg); border-bottom-color: var(--accent); }
+/* Something is waiting in a tab the user is not looking at — today that is a
+   filter context carried in from the chart, sitting in the Alarms tab. */
+.tab-btn.has-ctx::after { content: '•'; margin-left: 4px; color: var(--accent); }
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
@@ -768,6 +783,37 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
     </a>
   {% endif %}
 </div>
+{% comment %}
+  The POST helpers every content block builds on, defined *before* the block
+  that uses them. They used to live in the extra_js block below, which runs
+  after the page content: a content script that called postJSON while parsing
+  — the alarm table's first refresh() does exactly that — died on a
+  ReferenceError, and its "Loading…" placeholder stayed on screen forever.
+  Nothing here touches the DOM, so it is safe this early.
+{% endcomment %}
+<script>
+function csrfToken() {
+  var m = document.cookie.match(/csrftoken=([^;]+)/);
+  return m ? m[1] : '';
+}
+
+function postJSON(url, formOrData) {
+  var body;
+  if (formOrData instanceof HTMLFormElement) {
+    body = new FormData(formOrData);
+  } else if (formOrData instanceof FormData) {
+    body = formOrData;
+  } else {
+    body = new FormData();
+    for (var k in formOrData) body.append(k, formOrData[k]);
+  }
+  return fetch(url, {
+    method: 'POST',
+    headers: {'X-CSRFToken': csrfToken()},
+    body: body,
+  }).then(function(r){ return r.json(); });
+}
+</script>
 <main class="page">
   {% block content %}{% endblock %}
 </main>
@@ -816,28 +862,6 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
   var brand = document.querySelector('.nav-brand');
   if (back && brand) brand.href = '/?' + back;
 })();
-
-function csrfToken() {
-  var m = document.cookie.match(/csrftoken=([^;]+)/);
-  return m ? m[1] : '';
-}
-
-function postJSON(url, formOrData) {
-  var body;
-  if (formOrData instanceof HTMLFormElement) {
-    body = new FormData(formOrData);
-  } else if (formOrData instanceof FormData) {
-    body = formOrData;
-  } else {
-    body = new FormData();
-    for (var k in formOrData) body.append(k, formOrData[k]);
-  }
-  return fetch(url, {
-    method: 'POST',
-    headers: {'X-CSRFToken': csrfToken()},
-    body: body,
-  }).then(function(r){ return r.json(); });
-}
 
 var _openPicker = null;
 
