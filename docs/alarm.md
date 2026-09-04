@@ -31,9 +31,15 @@ is identical by construction to what the user saw. The chart drill-down's
 Alert form merges the clicked series into the context as an extra `in`
 row (same mechanics as `drillAddFilter`). `NULL`/`[]` = whole datasource.
 
-Two ways in, both carrying a context: the drill-down's Alert form (filters
-plus the clicked series) and the toolbar's bell, which opens the Alarms tab
-with the live filters and no series — `alarmContextRows(false)`.
+Three ways in. The drill-down's Alert form (filters plus the clicked series);
+the toolbar's bell, which opens the Alarms tab with the live filters and no
+series (`alarmContextRows(false)`); and **Clone** on an existing alarm, which
+copies its context into the add form so only the metric needs changing. The
+Alarms tab offers no context-less add button — a global alarm is created
+deliberately, by pressing the bell on a chart with no filters.
+
+The bell also carries the chart's own query string as `back=`, which the brand
+link on the sources pages uses to return to exactly the view that was left.
 
 The rows store dimension **ids**, because an id is what the fact table joins
 on and what survives a rename. `core.alarm.resolve_context_labels` maps them

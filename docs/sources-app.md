@@ -310,6 +310,17 @@ tracked, there is no separate comment history.
   would flag every alarm on a busy slice, the whole rule only an exact copy
   the name uniqueness already refuses. Also returns `context_labels` for the
   submitted context, which the list's map cannot cover.
+The Alarms tab has **no add button**. An alarm without a context watches the
+whole datasource, which is rarely meant, and a form that could not carry a
+filter was the most inviting way to create one by accident. The form opens on
+request only — from the chart's bell (`?new-alarm=1`) or from Clone — and a
+hint pointing at the chart stands in its place until then. A deliberately
+global alarm stays reachable: open a chart with no filters and press the bell.
+**Clone** (⧉ per row) fills that same form from an existing alarm, including
+its context, with a `(copy)` name made unique against the loaded names; nothing
+is written until the user saves, so a clone exists only once its metric has
+been changed.
+
 - `POST .../alarms/add/` — `name, comment, measure, cond_op, threshold,
   window_s, notify_channels` (comma-separated string, not a JSON array),
   `enabled` (checkbox semantics: absent means "field not in this form" and

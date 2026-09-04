@@ -221,8 +221,19 @@ chart uses), and the throwaway instance was actively harmful: it passed no
 
 - `saveSourceState(name)` writes to localStorage (called before leaving a source)
 - `applySourceState(name)` reads and restores. Validates options exist before
-  setting; reconstructs filter `Set` objects; calls `ts.zoom()` if viewport
-  saved.
+  setting; reconstructs filter `Set` objects; sets `currentViewport` from the
+  saved window.
+- **Read on both paths**: the source switch in `setActiveSource()`, and the boot
+  IIFE — the latter only when the URL carries no `group_by`.
+  `buildHistoryParams()` writes that parameter unconditionally, so its absence
+  marks a URL that names a source and nothing else (the brand link back from
+  `/sources/`, or a bare visit); a shared link carrying filters still wins.
+  Until this existed, booting went through `applyUrlParams()` alone — which
+  clears `filterRows` unconditionally — so switching tabs restored state while
+  reloading the same URL did not.
+- Order matters: `applySourceState` runs **before** `initTs()`, which pins its
+  first frame to `currentViewport` (`initialView`). Restoring afterwards would
+  paint today's default window and then jump.
 - Filter columns are normalized on restore via `normalizeFilterCol()` — a
   saved member fact column (`so_peer_1`) rewrites to its fan-out group token
   (`so_peer`). Applies to both restore paths (localStorage and URL params);
