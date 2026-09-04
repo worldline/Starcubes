@@ -1567,14 +1567,20 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       // One-shot: a reload should not resurrect a context the user cleared.
       sessionStorage.removeItem('starcubes-alarm-context');
     }
-    if (q.get('context-blocked')) {
+    var blocked = q.get('context-blocked');
+    if (blocked) {
       // The note lives inside the <details>, so it has to be open to be read.
       document.querySelector('#tab-alarms details').open = true;
       var errEl = document.getElementById('alarmAddErr');
-      errEl.textContent = 'The chart filter contains a grouped dimension and '
-        + 'cannot be stored as an alarm context — group sets are editable, so '
-        + 'the alarm\'s meaning would drift. Switch those filter rows to plain '
-        + 'columns, or create the alarm for the whole datasource.';
+      errEl.textContent = blocked === 'toolong'
+        ? 'The chart filter was too large for the link and this browser would '
+          + 'not hold it either, so it could not be carried over. The form '
+          + 'below covers the whole datasource; narrow the filter in the '
+          + 'chart and try again.'
+        : 'The chart filter contains a grouped dimension and cannot be stored '
+          + 'as an alarm context — group sets are editable, so the alarm\'s '
+          + 'meaning would drift. Switch those filter rows to plain columns, '
+          + 'or create the alarm for the whole datasource.';
       errEl.style.display = 'block';
     }
     if (!raw) return null;

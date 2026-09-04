@@ -1311,9 +1311,9 @@
        aria-label="Configure this datasource" data-tip="Configure this datasource">
       <svg class="ic" aria-hidden="true"><use href="#ic-sliders"></use></svg>
     </a>
-    <a id="firings-link" class="ibtn" hidden
-       aria-label="Alarm firings for this datasource"
-       data-tip="Alarm firings&#10;for this datasource">
+    <a id="alarms-link" class="ibtn" hidden
+       aria-label="Alarms for this datasource"
+       data-tip="Alarms&#10;for this datasource">
       <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
     </a>
     {% endif %}
@@ -1490,9 +1490,6 @@ const CHART_SQL_URL = "{% url 'viz:chart_sql' %}";
 // silently the day the route moved, and nothing on this page noticed.
 const SOURCE_DETAIL_URL = "{% url 'sources:detail' 987654321 %}";
 function sourceDetailUrl(id) { return SOURCE_DETAIL_URL.replace('987654321', String(id)); }
-// Reversed for the same reason as SOURCE_DETAIL_URL (no pk to swap, though —
-// the datasource arrives as the ?ds= query param).
-const FIRINGS_URL = "{% url 'sources:alarm_firings' %}";
 // Same sentinel-pk trick as SOURCE_DETAIL_URL — these used to be assembled
 // as '/sources/' + id + '/alarms/…', which the route move would break just
 // as silently.
@@ -3951,7 +3948,9 @@ async function openTxnView() {
 // from the context and the alarm scopes to the filter rows alone. The form
 // says so rather than leaving the narrower context unexplained.
 
-function alarmContextRows() {
+// `includeDrill === false` leaves the clicked series out: the control bar's
+// bell has no clicked series, only the filter rows.
+function alarmContextRows(includeDrill) {
   // Serialize the live filter rows exactly like gatherParams does …
   const rows = [];
   for (const row of filterRows) {
@@ -3969,14 +3968,15 @@ function alarmContextRows() {
   // … then merge the clicked series as an extra `in` row (no breakdown, or a
   // grouped breakdown → no series row; the alarm then scopes to the filters
   // alone — see alarmIgnoredGrouping).
-  if (_drillCtx && _drillCtx.groupBy && !gbIsGrouped(_drillCtx.groupBy)) {
-    let row = rows.find(r => r.col === _drillCtx.groupBy && r.op === 'in');
+  const drill = (includeDrill === false) ? null : _drillCtx;
+  if (drill && drill.groupBy && !gbIsGrouped(drill.groupBy)) {
+    let row = rows.find(r => r.col === drill.groupBy && r.op === 'in');
     if (!row) {
-      row = { col: _drillCtx.groupBy, op: 'in', vals: [],
+      row = { col: drill.groupBy, op: 'in', vals: [],
               andOr: 'and', indent: 0 };
       rows.push(row);
     }
-    if (!row.vals.includes(_drillCtx.rawKey)) row.vals.push(_drillCtx.rawKey);
+    if (!row.vals.includes(drill.rawKey)) row.vals.push(drill.rawKey);
   }
   return rows;
 }
@@ -4589,15 +4589,63 @@ function setActiveSourceTab(name) {
     if (id) { cfgLink.href = sourceDetailUrl(id); cfgLink.hidden = false; }
     else    { cfgLink.removeAttribute('href');    cfgLink.hidden = true; }
   }
-  // The firings button follows the active tab the same way, pre-filtered
-  // to this datasource (?ds=).
-  const firLink = document.getElementById('firings-link');
-  if (firLink) {
-    if (id) { firLink.href = FIRINGS_URL + '?ds=' + id; firLink.hidden = false; }
-    else    { firLink.removeAttribute('href');          firLink.hidden = true; }
+  // The bell follows the active tab the same way. It leads to the alarm
+  // *rules*, not the firing episodes: creating an alarm for what the chart
+  // is showing is the thing a chart user wants from here, and the episode
+  // overview stays one click away from the Alarms tab and the menu.
+  const alarmLink = document.getElementById('alarms-link');
+  if (alarmLink) {
+    if (id) { alarmLink.hidden = false; updateAlarmLink(name); }
+    else    { alarmLink.removeAttribute('href'); alarmLink.hidden = true; }
   }
   const brand = document.getElementById('nav-brand');
   if (brand && name) brand.href = '/?name=' + encodeURIComponent(name);
+}
+
+// The bell carries the live filter over as the new alarm's context, so its
+// href is rebuilt whenever the filter changes — gatherParams() is that
+// moment, and setActiveSourceTab covers the source switch.
+//
+// A filter row over a group set cannot become an alarm context (group sets
+// are editable, so the alarm's meaning would drift); the link then says so
+// with context-blocked instead of carrying a filter the target would reject.
+// A context too long for a URL travels through sessionStorage instead —
+// the query string stays the shareable path, this is only its fallback.
+const ALARM_CTX_URL_MAX = 4000;
+
+function updateAlarmLink(nameOverride) {
+  const link = document.getElementById('alarms-link');
+  if (!link) return;
+  // The source switch passes its name in: setActiveSourceTab runs before the
+  // form field is guaranteed to hold it.
+  const name = nameOverride || form.elements.name.value;
+  const id   = window._sourceIdByName && window._sourceIdByName[name];
+  if (!id) { link.removeAttribute('href'); link.hidden = true; return; }
+
+  let url = sourceDetailUrl(id) + '?tab=alarms&new-alarm=1';
+  if (alarmContextBlocked()) {
+    url += '&context-blocked=grouped';
+  } else {
+    const rows = alarmContextRows(false);
+    if (rows.length) {
+      const json = JSON.stringify(rows);
+      const qs = '&context=' + encodeURIComponent(json);
+      if (url.length + qs.length <= ALARM_CTX_URL_MAX) {
+        url += qs;
+      } else {
+        try {
+          sessionStorage.setItem('starcubes-alarm-context', json);
+          url += '&context=session';
+        } catch (err) {
+          // Neither the URL nor session storage can take it. Say which,
+          // rather than blaming the grouped-dimension rule.
+          url += '&context-blocked=toolong';
+        }
+      }
+    }
+  }
+  link.href = url;
+  link.hidden = false;
 }
 
 const loadingOverlay = document.getElementById('loading-overlay');
@@ -4893,6 +4941,9 @@ function gatherParams() {
     }
   }
   saveSourceState(starcubesParams.name);
+  // The bell's href carries these filters, so it is refreshed here — the one
+  // point every filter change passes through.
+  updateAlarmLink();
 }
 
 function buildHistoryParams() {
