@@ -247,6 +247,7 @@
     <div class="card-header">
       <span class="card-title">Alarms</span>
       <span style="margin-left:auto;font-size:12px;color:var(--muted);display:flex;gap:12px;align-items:center">
+        <a href="{% url 'sources:alarm_firings' %}?ds={{ ds.id }}" style="font-size:12px">Firings here →</a>
         <a href="{% url 'sources:alarm_firings' %}" style="font-size:12px">All firings →</a>
         Threshold rules, evaluated after every ETL load over the last window of loaded data; firings land in the alarm_firing episode table — only <code>log</code> is wired today.
       </span>
@@ -293,10 +294,23 @@
           <div><label class="form-label">Threshold</label><input class="form-control" name="threshold" type="number" step="any" required></div>
           <div><label class="form-label">Window (s)</label><input class="form-control" name="window_s" type="number" value="300" min="1" required></div>
           <div><label class="form-label">Channels (csv)</label><input class="form-control" name="notify_channels" placeholder="log"></div>
+          {# The context is carried in, not typed: a filter expression is a UI of
+             its own, and the chart already has it. The hidden field holds the
+             flat filter rows verbatim; the box beside it is the readable form. #}
+          <div style="grid-column:1/-1">
+            <label class="form-label">Context</label>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <span id="alarmAddCtx" class="text-muted" style="font-size:11px"></span>
+              <button type="button" id="alarmAddCtxClear" class="btn btn-secondary btn-sm"
+                      style="display:none">Clear</button>
+            </div>
+            <input type="hidden" name="context" id="alarmAddCtxInput">
+            <div id="alarmAddDup" style="font-size:11px;margin-top:6px"></div>
+          </div>
           <div style="grid-column:1/-1;display:flex;gap:12px;align-items:center">
             <button type="submit" class="btn btn-primary btn-sm">Add</button>
             <label style="font-size:12px;color:var(--muted)"><input type="checkbox" name="enabled" checked> enabled</label>
-            <span class="text-muted" style="font-size:11px">Alarms created here apply to the whole datasource — use the chart drill-down's Alert form to attach a filter context.</span>
+            <span class="text-muted" style="font-size:11px">Open the bell on a chart to bring its filter here as the context; without one the alarm covers the whole datasource.</span>
           </div>
         </form>
         <div id="alarmAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
@@ -324,13 +338,24 @@
 (function() {
   var btns = document.querySelectorAll('#tabNav .tab-btn');
   var panels = document.querySelectorAll('.tab-panel');
-  btns.forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      var target = btn.dataset.tab;
-      btns.forEach(function(b) { b.classList.toggle('active', b === btn); });
-      panels.forEach(function(p) { p.classList.toggle('active', p.id === 'tab-' + target); });
+  function activate(btn) {
+    if (!btn) return;
+    btns.forEach(function(b) { b.classList.toggle('active', b === btn); });
+    panels.forEach(function(p) {
+      p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab);
     });
+  }
+  btns.forEach(function(btn) {
+    btn.addEventListener('click', function() { activate(btn); });
   });
+  // ?tab=<name> deep-links a sub-tab, which is what lets the chart's bell
+  // land on Alarms rather than on Basics. The click handler stays the only
+  // other way in, so both paths run the same activation.
+  var want = new URLSearchParams(location.search).get('tab');
+  if (want) {
+    var btn = document.querySelector('#tabNav .tab-btn[data-tab="' + CSS.escape(want) + '"]');
+    if (btn) activate(btn);
+  }
 })();
 
 // ==========================================================================
@@ -1453,6 +1478,9 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
         return;
       }
       form.reset();
+      // reset() does not clear a hidden input's value, and the freshly saved
+      // context must not silently carry into the next alarm.
+      setAddContext(null);
       refresh();
     }).catch(function(e) {
       errEl.textContent = String(e);
@@ -1460,10 +1488,112 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     });
   });
 
+  // ======================================================================
+  // Add-form context — carried in from the chart's bell, never typed here.
+  //
+  // The chart hands the filter over as ?context=<json>, or parks it in
+  // sessionStorage and sends ?context=session when the rows would make the
+  // URL unreasonably long. ?context-blocked=1 says the chart had a filter
+  // it cannot express as an alarm context (a filter over a group set, whose
+  // meaning would drift as the group is edited).
+  // ======================================================================
+  var addCtxRows = null;
+
+  function setAddContext(rows, labels) {
+    addCtxRows = (rows && rows.length) ? rows : null;
+    var box   = document.getElementById('alarmAddCtx');
+    var input = document.getElementById('alarmAddCtxInput');
+    var clr   = document.getElementById('alarmAddCtxClear');
+    input.value = addCtxRows ? JSON.stringify(addCtxRows) : '';
+    box.innerHTML = addCtxRows
+      ? ctxSummary(addCtxRows, labels || ctxLabels)
+      : '<span class="text-muted">(global) — the whole datasource</span>';
+    clr.style.display = addCtxRows ? '' : 'none';
+    checkAddDuplicates();
+  }
+
+  // Advisory hint, never a block: a warning threshold and a critical one over
+  // the same slice are the normal case. Mirrors the chart's Alert form.
+  function checkAddDuplicates() {
+    var box = document.getElementById('alarmAddDup');
+    var det = document.querySelector('#tab-alarms details');
+    if (!box) return;
+    box.innerHTML = '';
+    // Only while the form is actually open — a closed form would cost every
+    // visitor of the tab a request for a hint nobody is looking at.
+    if (!det || !det.open) return;
+    var fd = new FormData();
+    fd.append('context', addCtxRows ? JSON.stringify(addCtxRows) : '');
+    fd.append('measure',
+      document.querySelector('#alarmAddForm [name=measure]').value);
+    postJSON('{% url "sources:alarm_match_context" ds.id %}', fd)
+      .then(function(d) {
+        if (!d.ok) return;
+        // The endpoint resolves the names for *this* context, which the list's
+        // label map cannot cover: an incoming filter may name values no
+        // existing alarm uses.
+        if (d.context_labels && addCtxRows) {
+          document.getElementById('alarmAddCtx').innerHTML =
+            ctxSummary(addCtxRows, d.context_labels);
+        }
+        if (!d.matches || !d.matches.length) return;
+        var items = d.matches.map(function(m) {
+          return '<li>' + esc(m.name) + ' <span class="text-muted">'
+            + esc(m.cond_op) + ' ' + esc(m.threshold) + ' · '
+            + fmtWindow(m.window_s) + (m.enabled ? '' : ' · disabled')
+            + '</span></li>';
+        }).join('');
+        box.innerHTML = '<div class="text-muted">'
+          + (d.matches.length === 1
+             ? 'An alarm already watches this context with this measure:'
+             : d.matches.length + ' alarms already watch this context with this measure:')
+          + '<ul style="margin:4px 0 0;padding-left:16px">' + items + '</ul></div>';
+      })
+      .catch(function() { /* advisory — a failed lookup changes nothing */ });
+  }
+
+  document.getElementById('alarmAddCtxClear')
+    .addEventListener('click', function() { setAddContext(null); });
+  document.querySelector('#tab-alarms details')
+    .addEventListener('toggle', checkAddDuplicates);
+  document.querySelector('#alarmAddForm [name=measure]')
+    .addEventListener('change', checkAddDuplicates);
+
+  function readIncomingContext() {
+    var q = new URLSearchParams(location.search);
+    var raw = q.get('context');
+    if (raw === 'session') {
+      raw = sessionStorage.getItem('starcubes-alarm-context');
+      // One-shot: a reload should not resurrect a context the user cleared.
+      sessionStorage.removeItem('starcubes-alarm-context');
+    }
+    if (q.get('context-blocked')) {
+      // The note lives inside the <details>, so it has to be open to be read.
+      document.querySelector('#tab-alarms details').open = true;
+      var errEl = document.getElementById('alarmAddErr');
+      errEl.textContent = 'The chart filter contains a grouped dimension and '
+        + 'cannot be stored as an alarm context — group sets are editable, so '
+        + 'the alarm\'s meaning would drift. Switch those filter rows to plain '
+        + 'columns, or create the alarm for the whole datasource.';
+      errEl.style.display = 'block';
+    }
+    if (!raw) return null;
+    try {
+      var rows = JSON.parse(raw);
+      return Array.isArray(rows) && rows.length ? rows : null;
+    } catch (e) { return null; }
+  }
+
   // Refresh on tab activation too, so users coming back see fresh data.
   var alarmsTabBtn = document.querySelector('#tabNav .tab-btn[data-tab="alarms"]');
   if (alarmsTabBtn) alarmsTabBtn.addEventListener('click', refresh);
-  refresh();
+
+  var incoming = readIncomingContext();
+  var wantNew  = new URLSearchParams(location.search).get('new-alarm');
+  if (wantNew) document.querySelector('#tab-alarms details').open = true;
+  // The label map arrives with the list, so the incoming context is rendered
+  // once names are available rather than showing ids and then swapping them.
+  refresh().then(function() { setAddContext(incoming); });
 })();
 </script>
 {% endblock %}
