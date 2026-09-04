@@ -31,15 +31,42 @@ is identical by construction to what the user saw. The chart drill-down's
 Alert form merges the clicked series into the context as an extra `in`
 row (same mechanics as `drillAddFilter`). `NULL`/`[]` = whole datasource.
 
-**Grouped tokens are forbidden.** Group sets are user-editable in the
-Group Dims tab (rename, delete, re-group — any logged-in user), so a
-stored `<col>:grouped:<slug>` reference would break silently, or worse:
-keep working while its meaning changes. The CRUD rejects grouped tokens
-at save time (`core.alarm.check_no_grouped_filters`), the chart's Alert
-form blocks them before the POST, and the evaluator checks again
-defensively. Fan-out tokens (`dimension.filter_group`) stay allowed —
-they are admin-configured, and a broken one fails validation loudly in
-the loop's log.
+Two ways in, both carrying a context: the drill-down's Alert form (filters
+plus the clicked series) and the toolbar's bell, which opens the Alarms tab
+with the live filters and no series — `alarmContextRows(false)`.
+
+The rows store dimension **ids**, because an id is what the fact table joins
+on and what survives a rename. `core.alarm.resolve_context_labels` maps them
+to names for display only — one query per dim table for a whole list, never
+written back, so a rename shows through the next time the list is opened. An
+id whose dimension row is gone is shown raw and flagged rather than quietly
+passing for a name.
+
+`core.alarm.normalize_context_rows` gives a context a canonical form (values
+sorted and stringified; row order kept, because it encodes the tree together
+with `indent`/`andOr`). `sources:alarm_match_context` uses it to point out
+alarms already watching the same context **with the same measure** — advisory
+only, since a warning threshold and a critical one over one slice are the
+normal case.
+
+**Grouped tokens are forbidden — in filter columns.** Group sets are
+user-editable in the Group Dims tab (rename, delete, re-group — any
+logged-in user), so a stored `<col>:grouped:<slug>` reference would break
+silently, or worse: keep working while its meaning changes. The CRUD
+rejects grouped filter columns at save time
+(`core.alarm.check_no_grouped_filters`), the chart's Alert form blocks them
+before the POST, and the evaluator checks again defensively.
+
+A grouped **group_by** is a different matter and does *not* block anything:
+it only decides how the chart splits its series and is never stored. The
+clicked series is simply left out of the context, the alarm scopes to the
+filter rows alone, and the form says so (`alarmIgnoredGrouping()`) rather
+than leaving the narrower context unexplained. The chart used to refuse both
+cases; the server only ever checked filter columns.
+
+Fan-out tokens (`dimension.filter_group`) stay allowed — they are
+admin-configured, and a broken one fails validation loudly in the loop's
+log.
 
 ## Evaluation — one sliding window per load
 
@@ -107,9 +134,14 @@ psql … "SELECT id, name, eval_end FROM starcubes_meta.alarm WHERE enabled"
 once and exits. Running it while an ETL load is in flight is harmless — both
 paths take the same HWM skip and the same `ux_alarm_firing_open` guard.
 
-The Alarms tab on `detail.html` shows the context summary, comment and
-per-alarm history/firing episodes (ⓘ button); the chart drill-down's
-Alert form creates alarms with a filter context. The global episode
-overview (`/sources/alarms/firings/`, `alarm_firings_page`) takes
-`?show=open` (live breaches only) and `?ds=<id>` (one datasource — the
-chart toolbar's firings button links here pre-filtered that way).
+The Alarms tab on `detail.html` shows the context summary (names, not ids),
+comment and per-alarm history/firing episodes (ⓘ button). Its add form takes
+a context too — carried in, never typed, since a filter expression is a UI of
+its own: `?tab=alarms&new-alarm=1&context=<json>` from the chart's bell, with
+`context=session` (sessionStorage) as the fallback for a context too long for
+a URL and `context-blocked=grouped|toolong` when it cannot be carried at all.
+The chart drill-down's Alert form is the other creating path.
+
+The global episode overview (`/sources/alarms/firings/`,
+`alarm_firings_page`) takes `?show=open` (live breaches only) and `?ds=<id>`
+(one datasource — the Alarms tab's "Firings here →" links there).

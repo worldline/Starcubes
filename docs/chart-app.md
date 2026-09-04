@@ -97,10 +97,19 @@ rather than inside one:
   sentinel pk (`{% url 'sources:detail' 987654321 %}`), not assembled as
   `'/sources/' + id + '/'`, which used to break silently whenever the route
   moved.
-- **Firings** (`#firings-link`, logged-in only) follows the active tab the
-  same way and links to the global episode overview pre-filtered to it
-  (`sources:alarm_firings` + `?ds=<id>`). Same hidden-until-href pattern as
-  the Config link.
+- **Alarms** (`#alarms-link`, the bell, logged-in only) follows the active tab
+  the same way and opens the datasource's Alarms tab with the add form ready
+  and the live filter as its context (`sources:detail` +
+  `?tab=alarms&new-alarm=1&context=<json>`). Same hidden-until-href pattern as
+  the Config link, but its href also carries the filter, so `updateAlarmLink()`
+  is called from `gatherParams()` — the one point every filter change passes
+  through — as well as from `setActiveSourceTab()`.
+  A filter row over a group set cannot be an alarm context and travels as
+  `context-blocked=grouped`; a context past `ALARM_CTX_URL_MAX` (4000 chars)
+  goes through `sessionStorage['starcubes-alarm-context']` as
+  `context=session`, and if that fails too, `context-blocked=toolong`.
+  It used to point at the firing episodes; that view is still one click away
+  from the menu and from the Alarms tab's own per-datasource link.
 
 ## Hover tooltip
 
@@ -128,10 +137,22 @@ modal header (`#drill-header-info`) still renders through them, as does
 `showBarTooltip()` were removed.
 
 The drill-down's Alert form is real since 0028: `openAlarmView()` renders it,
-`alarmContextRows()` serializes the active filter rows plus the clicked series
-(the `context` POST field), and `saveAlarmForm()` POSTs to `sources:alarm_add`
-(CSRF via cookie / page token, 409 and 400 shown inline, grouped tokens
-blocked before the POST — see `docs/alarm.md`).
+`alarmContextRows(includeDrill)` serializes the active filter rows plus the
+clicked series (the `context` POST field — `includeDrill === false` leaves the
+series out, which is what the control bar's bell asks for), and
+`saveAlarmForm()` POSTs to `sources:alarm_add` (CSRF via cookie / page token,
+409 and 400 shown inline — see `docs/alarm.md`).
+
+Only a grouped **filter** blocks the save (`alarmContextBlocked()` /
+`alarmBlockedCols()`); a grouped **group_by** is not stored anywhere, so it
+merely drops the clicked series and says so (`alarmIgnoredGrouping()`). That
+is the same line the server draws.
+
+`checkAlarmDuplicates()` asks `sources:alarm_match_context` for alarms already
+watching this context with this metric and lists them above the save button.
+Advisory only — two alarms over one slice are the normal case — and it follows
+the metric dropdown. Both alarm endpoints reverse through a sentinel pk
+(`alarmAddUrl`/`alarmMatchUrl`), like `sourceDetailUrl`.
 
 ## Bar selection
 

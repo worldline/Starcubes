@@ -295,6 +295,21 @@ alarms of any datasource. Every create/update also writes an
 `changed_at`, old/new row jsonb) — which is how comment changes are
 tracked, there is no separate comment history.
 - `GET  .../alarms/` — list this datasource's alarms (POST, despite the name).
+  Carries `context_labels` — `{filter_column: {source_id: name}}` for every
+  context on the page, resolved server-side in one pass
+  (`core.alarm.resolve_context_labels`), so the Context column reads as names
+  rather than the ids it stores. A column that resolves to a dim table is
+  always present in the map, which is what lets the tab flag an id whose
+  dimension row is gone instead of letting it pass for a name. Cosmetic: an
+  unreachable fact database degrades to raw ids, never to an error.
+- `POST .../alarms/match-context/` — alarms already watching a given context
+  with a given measure (`context` + `measure`, same shapes as add). Read-only,
+  behind the duplicate hint in the chart's Alert form and the Alarms tab's add
+  form; it never blocks a save. "Already watched" is normalized context
+  (`core.alarm.normalize_context_rows`) **plus** measure — the context alone
+  would flag every alarm on a busy slice, the whole rule only an exact copy
+  the name uniqueness already refuses. Also returns `context_labels` for the
+  submitted context, which the list's map cannot cover.
 - `POST .../alarms/add/` — `name, comment, measure, cond_op, threshold,
   window_s, notify_channels` (comma-separated string, not a JSON array),
   `enabled` (checkbox semantics: absent means "field not in this form" and
@@ -324,9 +339,11 @@ The **global episode overview** lives at `/sources/alarms/firings/`
 `Datasource` dropdown submits both as GET params) — every `alarm_firing`
 episode joined with its alarm rule and datasource. It is linked from the
 shared tab bar (`_global_tabs.html`), from the hamburger menu ("Firings",
-any logged-in user), from the Alarms tab ("All firings") and from the
-chart toolbar's firings button (pre-filtered via `?ds=`); the per-alarm
-episodes remain in detail.html's ⓘ sub-row.
+any logged-in user) and from the Alarms tab twice — "Firings here →"
+(pre-filtered via `?ds=`) and "All firings →". The chart's bell used to be
+the pre-filtered entrance; it points at the alarm rules now, and the Alarms
+tab's own link took that job over. The per-alarm episodes remain in
+detail.html's ⓘ sub-row.
 
 ### JSON: inline CRUD
 Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delete/`.
