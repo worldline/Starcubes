@@ -1181,7 +1181,9 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
 //
 // The context (a.context_filter, the chart's flat filter rows) is shown as
 // a read-only summary — editing a filter expression is a UI of its own, so
-// the honest path is delete + re-create from the chart drill-down. The ⓘ
+// the honest path is delete + re-create from the chart drill-down. It stores
+// dimension *ids*; the names come with the list response (context_labels,
+// resolved server-side per request) so a rename shows through immediately. The ⓘ
 // button opens a lazy-loaded sub-row with the change history (old/new
 // snapshots with user + timestamp) and the firing episodes.
 // ==========================================================================
@@ -1212,7 +1214,20 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   // Readable text rendering of the stored flat filter rows
   // ({col, op, vals, andOr, indent}), honouring the indent nesting with
   // parentheses — the same expression _buildWhere compiles server-side.
-  function ctxSummary(rows) {
+  // `labels` is {col: {source_id: name}} from the list response. A column is
+  // present there exactly when it resolves to a dim table, so a value missing
+  // from a present map is an id whose dimension row is gone — shown raw and
+  // flagged, rather than silently passing for a name.
+  var ID_OPS = { in: 1, not_in: 1 };
+  function ctxValue(row, v, labels) {
+    var map = (labels || {})[row.col];
+    if (!map || !ID_OPS[row.op]) return esc(v);
+    if (map[v] !== undefined) return esc(map[v]);
+    return '<span title="No dimension row for this id \u2014 it may have been '
+      + 'removed since the alarm was created">' + esc(v) + ' \u26a0</span>';
+  }
+
+  function ctxSummary(rows, labels) {
     if (!rows || !rows.length) return '<span class="text-muted">(global)</span>';
     // Flat → nested, mirroring the stack parser both ends use.
     var root = [], stack = [root], indents = [-1];
@@ -1224,20 +1239,24 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       stack.push(node.children);
       indents.push(ind);
     });
+    // Escaping happens per value (ctxValue) rather than once over the whole
+    // string, because a flagged id carries markup of its own.
     function renderNodes(nodes) {
       var out = [];
       nodes.forEach(function(n, i) {
         if (i > 0) out.push((n.r.andOr || 'and').toUpperCase());
-        var cond = n.r.col + ' ' + (OP_NAMES[n.r.op] || n.r.op)
-          + ' (' + (n.r.vals || []).join(', ') + ')';
+        var vals = (n.r.vals || []).map(function(v) {
+          return ctxValue(n.r, v, labels);
+        });
+        var cond = esc(n.r.col) + ' ' + esc(OP_NAMES[n.r.op] || n.r.op)
+          + ' (' + vals.join(', ') + ')';
         if (n.children.length)
           cond += ' AND (' + renderNodes(n.children) + ')';
         out.push(cond);
       });
       return out.join(' ');
     }
-    // One escape pass over the whole rendered expression.
-    return esc(renderNodes(root));
+    return renderNodes(root);
   }
 
   function fmtDate(iso) {
@@ -1319,6 +1338,9 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     });
   }
 
+  // Label map for the alarm list currently rendered, from the last response.
+  var ctxLabels = {};
+
   function buildRow(a) {
     var measures = MEASURE_AGGS.indexOf(a.measure) === -1
       ? [a.measure].concat(MEASURE_AGGS) : MEASURE_AGGS;
@@ -1326,7 +1348,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     return '<tr data-id="' + a.id + '">'
       + '<td><span class="row-display"><strong>' + esc(a.name) + '</strong></span>'
       +     '<input class="row-edit cell-input" name="name" value="' + esc(a.name) + '"></td>'
-      + '<td><span class="row-display text-muted" style="font-size:11px">' + ctxSummary(a.context_filter) + '</span></td>'
+      + '<td><span class="row-display text-muted" style="font-size:11px">' + ctxSummary(a.context_filter, ctxLabels) + '</span></td>'
       + '<td><span class="row-display text-muted" style="font-size:11px" title="' + esc(cmt) + '">'
       +     esc(cmt.length > 40 ? cmt.slice(0, 40) + '…' : cmt || '—') + '</span>'
       +     '<input class="row-edit cell-input" name="comment" style="width:140px" placeholder="(none)" value="' + esc(cmt) + '"></td>'
@@ -1355,7 +1377,8 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       + '</td></tr>';
   }
 
-  function render(alarms) {
+  function render(alarms, labels) {
+    ctxLabels = labels || {};
     var tbody = document.getElementById('alarmBody');
     if (!alarms.length) {
       tbody.innerHTML = '<tr><td colspan="10" class="text-muted" '
@@ -1367,7 +1390,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
 
   function refresh() {
     return postJSON('{% url "sources:alarms_list" ds.id %}', {}).then(function(d) {
-      if (d.ok) render(d.alarms || []);
+      if (d.ok) render(d.alarms || [], d.context_labels);
       else document.getElementById('alarmBody').innerHTML =
         '<tr><td colspan="10" class="text-muted" style="text-align:center;padding:16px">'
         + esc(d.error || 'Could not load alarms') + '</td></tr>';

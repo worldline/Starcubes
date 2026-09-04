@@ -18,6 +18,12 @@ derived at evaluation time via `core.query.build_filter_tree` and compiled
 with the same `_build_where` the chart endpoints use, so an alarm evaluates
 precisely the slice the user was looking at.
 
+The rows store dimension *ids*, because an id is what the fact table joins
+on and what survives a rename. An id is not what a user recognises, though,
+so `resolve_context_labels` looks the names up at display time — never
+writing them back, so a renamed dimension row reads correctly the next time
+the list is opened.
+
 Grouped tokens (`<col>:grouped:<slug>`) are forbidden in alarm contexts:
 group sets are user-editable (any logged-in user can rename, delete or
 re-group them in the Group Dims tab), so a stored grouped reference would
@@ -121,6 +127,101 @@ def check_no_grouped_filters(tree: list[dict]) -> None:
             f"grouped dimension filters cannot be used in alarms "
             f"(group sets are editable and would silently change the "
             f"alarm's meaning): {', '.join(sorted(set(grouped)))}")
+
+
+# Ops whose vals are dimension source_ids. `starts_with` and friends match
+# free text, and a grouped token's vals are group names — neither addresses a
+# dimension row, so neither is resolvable to a name.
+_LABELLED_OPS = {"in", "not_in"}
+
+
+def resolve_context_labels(
+        source: Source,
+        contexts: list[Optional[list[dict]]],
+) -> dict[str, dict[str, str]]:
+    """Map the ids stored in alarm contexts to their dimension names.
+
+    Returns ``{filter_column: {source_id: name}}`` over every row of every
+    context in `contexts`. A context stores ids (`peer_id in (9999)`) because
+    ids are what the fact table joins on and what survives a rename — but an
+    id is not what the user recognises, so the *display* resolves it. Nothing
+    is written back: the name is looked up when it is shown, so a renamed
+    dimension row reads correctly the next time the list is opened.
+
+    Whole lists are resolved in one call on purpose: the lookup is one query
+    per dim *table*, not one per alarm, so an alarm list of any size costs the
+    same handful of queries.
+
+    Column resolution mirrors `core.query._filter_sql` exactly — including
+    fan-out tokens (`dimension.filter_group`), which resolve through the
+    dim_table their members share. A dim table that is configured but not
+    created yet is skipped rather than raised, the same stance `viz.views`
+    takes for its meta endpoint.
+
+    A column that resolves to a dim table always appears in the result, even
+    when none of its ids are left — that is what lets the caller tell an id
+    whose dimension row has gone (show it raw, flagged) from a column that
+    never carried names in the first place (show it raw, unremarkably).
+    """
+    dims_by_fact = {d.fact_column: d for d in source.dimensions}
+    fanout = source.filter_fanout()
+    table_of: dict[str, Optional[str]] = {}
+
+    def _dim_table(col: str) -> Optional[str]:
+        if col not in table_of:
+            if split_grouped_col(col)[2]:
+                table_of[col] = None            # vals are group names already
+            else:
+                member = (fanout.get(col) or [col])[0]
+                dim = dims_by_fact.get(member)
+                table_of[col] = (dim.dim_table
+                                 if dim and dim.dim_table else None)
+        return table_of[col]
+
+    ids_by_col: dict[str, set[str]] = {}
+    ids_by_table: dict[str, set[str]] = {}
+    for ctx in contexts:
+        for raw in (ctx or []):
+            if not isinstance(raw, dict):
+                continue
+            # Tolerate both flat shapes build_filter_tree accepts.
+            row = raw.get("row", raw)
+            if not isinstance(row, dict) or row.get("op") not in _LABELLED_OPS:
+                continue
+            col, vals = row.get("col"), row.get("vals") or []
+            if not col or not vals:
+                continue
+            table = _dim_table(col)
+            if not table:
+                continue
+            ids = {str(v) for v in vals}
+            ids_by_col.setdefault(col, set()).update(ids)
+            ids_by_table.setdefault(table, set()).update(ids)
+
+    if not ids_by_table:
+        return {}
+
+    names: dict[str, dict[str, str]] = {}
+    with source.dest_engine().begin() as conn:
+        for table, ids in ids_by_table.items():
+            qname = f"{source.schema_name}.{table}"
+            if conn.execute(text("SELECT to_regclass(:q)"),
+                            {"q": qname}).scalar() is None:
+                continue
+            rows = conn.execute(text(
+                f"SELECT source_id, name FROM {qname} "
+                f" WHERE source_id = ANY(:ids)"
+            ), {"ids": sorted(ids)}).all()
+            names[table] = {str(r[0]): r[1] for r in rows if r[1] is not None}
+
+    out: dict[str, dict[str, str]] = {}
+    for col, ids in ids_by_col.items():
+        table = table_of[col]
+        if table is None or table not in names:
+            continue                      # no dim table, or it does not exist
+        found = names[table]
+        out[col] = {i: found[i] for i in ids if i in found}
+    return out
 
 
 def measure_value_expr(source: Source, measure: str) -> str:

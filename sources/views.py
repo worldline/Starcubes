@@ -40,7 +40,8 @@ from core.profile import (ProfileError, delete_profile, dump_profile,
                           iter_profiles, load_profile, profile_origin,
                           profile_path, save_profile, validate_profile_name,
                           MAX_PROFILE_BYTES)
-from core.alarm import check_no_grouped_filters, measure_value_expr
+from core.alarm import (check_no_grouped_filters, measure_value_expr,
+                        resolve_context_labels)
 from core.query import (build_filter_tree, grouped_label, grouped_token,
                         MEASURE_FUNCS, slugify_group_set,
                         validate_filter_tree)
@@ -2083,6 +2084,26 @@ def _alarm_row_to_dict(row) -> dict:
     }
 
 
+def _context_labels(pk: int, contexts) -> dict:
+    """{filter_column: {source_id: name}} for a set of alarm contexts.
+
+    A context stores dimension ids; the names live in the dim tables and are
+    resolved for display only (see core.alarm.resolve_context_labels). Purely
+    cosmetic, so every failure degrades to raw ids: the alarm list has to
+    render even when the fact database is unreachable or a dim table has not
+    been created yet.
+    """
+    if not any(contexts):
+        return {}
+    try:
+        source = Source.load(_meta_engine(),
+                             dest_dsn=settings.STARCUBES_POSTGRES_DSN,
+                             name_or_id=pk)
+        return resolve_context_labels(source, contexts)
+    except Exception:
+        return {}
+
+
 def _validate_alarm_context(pk: int, values: dict):
     """Semantically validate an alarm's context + measure against the Source.
 
@@ -2139,8 +2160,12 @@ def alarms_list(request, pk: int):
                 " WHERE datasource_id = :ds "
                 " ORDER BY name"
             ), {"ds": pk}).mappings().all()
-        return JsonResponse({"ok": True,
-                             "alarms": [_alarm_row_to_dict(r) for r in rows]})
+        alarms = [_alarm_row_to_dict(r) for r in rows]
+        # One label map for the whole page — the ids are resolved in a single
+        # pass over every context, so the cost does not grow with the list.
+        return JsonResponse({"ok": True, "alarms": alarms,
+                             "context_labels": _context_labels(
+                                 pk, [a["context_filter"] for a in alarms])})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
 
