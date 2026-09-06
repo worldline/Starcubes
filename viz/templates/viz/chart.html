@@ -1198,11 +1198,10 @@
     <span class="menu-label">My Profile</span>
   </a>
   {% endif %}
-  <a class="menu-item" role="menuitem" id="slides-link" href="{% url 'viz:slides' %}"
-     target="_blank" rel="noopener">
+  <button class="menu-item" role="menuitem" type="button" id="about-open">
     <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>
     <span class="menu-label">About starcubes</span>
-  </a>
+  </button>
   {% if user.is_authenticated %}
   <button class="menu-item" role="menuitem" type="submit" form="logout-form">
     <svg class="ic" aria-hidden="true"><use href="#ic-log-out"></use></svg>
@@ -5976,5 +5975,6 @@ function formatSql(sql) {
   };
 })();
 </script>
+{% include "viz/about.html" %}
 </body>
 </html>

@@ -100,6 +100,7 @@ TEMPLATES = [
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
                 "sources.context_processors.topbar_sources",
+                "starcubes.context_processors.about_info",
             ],
         },
     },

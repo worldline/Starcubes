@@ -767,10 +767,10 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
       <span class="menu-label">My Profile</span>
     </a>
   {% endif %}
-  <a class="menu-item" role="menuitem" href="{% url 'viz:slides' %}" target="_blank" rel="noopener">
+  <button class="menu-item" role="menuitem" type="button" id="about-open">
     <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>
     <span class="menu-label">About starcubes</span>
-  </a>
+  </button>
   {% if user.is_authenticated %}
     <button class="menu-item" role="menuitem" type="submit" form="logout-form">
       <svg class="ic" aria-hidden="true"><use href="#ic-log-out"></use></svg>
@@ -1101,5 +1101,11 @@ document.getElementById('modal-overlay').addEventListener('click', function(e) {
 });
 </script>
 {% endblock %}
+{% comment %}
+  Outside extra_js on purpose: a child template that overrides that
+  block without {{ block.super }} would otherwise drop the dialog from
+  its page, leaving the menu row wired to nothing.
+{% endcomment %}
+{% include "viz/about.html" %}
 </body>
 </html>

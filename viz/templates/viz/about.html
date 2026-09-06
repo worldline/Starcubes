@@ -1,0 +1,140 @@
+{% load static %}
+{% comment %}
+  The About dialog, shared verbatim by the two independent page shells:
+  sources/base.html and viz/chart.html. It is a self-contained include —
+  markup, styles and behaviour in one file — because those two trees share
+  no stylesheet, only the CSS custom properties both define
+  (--bg2/--bg3/--border/--fg/--muted/--accent/--shadow) and the
+  [data-theme="dark"] switch both drive.
+
+  To place it on a page: include this file once, and give the menu row that
+  opens it id="about-open". Everything else wires itself up.
+
+  The facts come from the `about` context processor
+  (starcubes.context_processors.about_info), so no view has to pass them.
+{% endcomment %}
+<style>
+  #about-overlay {
+    display: none; position: fixed; inset: 0; z-index: 4000;
+    background: rgba(0,0,0,.45);
+    align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  #about-overlay.visible { display: flex; }
+  #about-box {
+    position: relative; box-sizing: border-box;
+    width: 100%; max-width: 440px; max-height: 100%; overflow-y: auto;
+    background: var(--bg2); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 12px 40px var(--shadow);
+    padding: 26px 26px 20px;
+    font-size: 13px; line-height: 1.5;
+    text-align: center;
+  }
+  #about-close {
+    position: absolute; top: 8px; right: 10px;
+    width: 24px; height: 24px; padding: 0; line-height: 1;
+    background: transparent; color: var(--muted);
+    border: none; border-radius: 3px; cursor: pointer; font-size: 18px;
+  }
+  #about-close:hover { color: var(--fg); }
+  .about-logo { height: 40px; width: auto; }
+  .about-logo-dark { display: none; }
+  [data-theme="dark"] .about-logo-light { display: none; }
+  [data-theme="dark"] .about-logo-dark  { display: inline; }
+  .about-version {
+    margin-top: 10px; font-size: 15px; font-weight: 600; letter-spacing: .01em;
+  }
+  .about-pre {
+    display: inline-block; margin-left: 6px; padding: 1px 7px;
+    border: 1px solid var(--accent); border-radius: 10px;
+    color: var(--accent); font-size: 10.5px; font-weight: 600;
+    letter-spacing: .04em; text-transform: uppercase; vertical-align: 2px;
+  }
+  .about-tagline {
+    margin: 10px auto 18px; max-width: 34em; color: var(--muted);
+  }
+  .about-slides {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 7px 14px; border-radius: 5px;
+    background: var(--accent); color: var(--accent-fg, #fff);
+    text-decoration: none; font-size: 13px; font-weight: 500;
+  }
+  .about-slides:hover { background: var(--accent-hover, var(--accent)); }
+  .about-facts {
+    width: 100%; margin: 20px 0 0; border-collapse: collapse;
+    font-size: 12px; text-align: left;
+  }
+  .about-facts th, .about-facts td {
+    padding: 4px 0; border-top: 1px solid var(--border); font-weight: 400;
+  }
+  .about-facts th { color: var(--muted); width: 42%; }
+  .about-facts td { font-variant-numeric: tabular-nums; }
+  .about-footer {
+    margin-top: 16px; padding-top: 12px;
+    border-top: 1px solid var(--border);
+    color: var(--muted); font-size: 11.5px;
+  }
+</style>
+
+<div id="about-overlay" role="dialog" aria-modal="true" aria-label="About starcubes">
+  <div id="about-box">
+    <button type="button" id="about-close" aria-label="Close">&times;</button>
+
+    <img class="about-logo about-logo-light" src="{% static 'viz/starcubes_lockup.svg' %}" alt="starcubes">
+    <img class="about-logo about-logo-dark"  src="{% static 'viz/starcubes_lockup_dark.svg' %}" alt="starcubes">
+
+    <div class="about-version">Version {{ about.version }}{% if about.is_prerelease %}<span class="about-pre">pre-release</span>{% endif %}</div>
+
+    <p class="about-tagline">
+      Point starcubes at a SQL database and get a fast, filterable timeseries
+      of what happens in it — one container, one Postgres, one login.
+    </p>
+
+    <a class="about-slides" href="{% url 'viz:slides' %}" target="_blank" rel="noopener">
+      Open the slide deck &rarr;
+    </a>
+
+    <table class="about-facts">
+      {% if about.build_ref %}
+        <tr><th>Commit</th><td>{{ about.build_ref }}</td></tr>
+      {% endif %}
+      {% if about.build_date %}
+        <tr><th>Built</th><td>{{ about.build_date }}</td></tr>
+      {% endif %}
+      <tr><th>Python</th><td>{{ about.python_version }}</td></tr>
+      <tr><th>Django</th><td>{{ about.django_version }}</td></tr>
+      {% if about.timeseries_version %}
+        <tr><th>timeseries.js</th><td>{{ about.timeseries_version }}</td></tr>
+      {% endif %}
+    </table>
+
+    <div class="about-footer">MIT License &middot; &copy; 2026 Holger Gruber</div>
+  </div>
+</div>
+
+<script>
+(function() {
+  var overlay = document.getElementById('about-overlay');
+  var opener  = document.getElementById('about-open');
+  if (!overlay || !opener) return;
+
+  function open()  { overlay.classList.add('visible'); }
+  function close() { overlay.classList.remove('visible'); }
+
+  opener.addEventListener('click', open);
+  document.getElementById('about-close').addEventListener('click', close);
+
+  {% comment %}
+    Backdrop click closes, a click inside the box does not. The listener sits
+    on the overlay rather than on document, so the very click that opened the
+    dialog — on a menu row somewhere else entirely — cannot close it again on
+    the way back up.
+  {% endcomment %}
+  overlay.addEventListener('click', function(e) { if (e.target === this) close(); });
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && overlay.classList.contains('visible')) close();
+  });
+})();
+</script>

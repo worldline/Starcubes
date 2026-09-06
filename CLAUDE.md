@@ -57,6 +57,11 @@ branch — **`master` is the only long-lived branch.**
   `viz/templates/viz/chart.html` or `core/query.py`.
 - **[`docs/backlog.md`](docs/backlog.md)** — known unfinished work. Read when
   planning new work or assessing scope.
+- **[`docs/releases.md`](docs/releases.md)** — the git tag *is* the version
+  (no number is stored in the tree), what a major/minor/patch bump promises
+  an operator, how pre-release tags work, and the steps that cut a release.
+  Read before tagging a release, editing `docker/build.sh` or
+  `starcubes/version.py`, or changing what the About dialog reports.
 - **[`docs/source-profiles.md`](docs/source-profiles.md)** — read when touching
   `core/profile.py`, `sources/profile_store.py`, `profiles/`, `seed_example.py`,
   or the profile UI in `new.html` / `profiles.html` / `manage.html`.

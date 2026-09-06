@@ -121,6 +121,34 @@ ENV STARCUBES_OIDC_ISSUER="" \
     STARCUBES_OIDC_CLIENT_SECRET="" \
     STARCUBES_OIDC_DISPLAY_NAME="Keycloak"
 
+# ── Build identity ────────────────────────────────────────────────────────────
+# The version comes from the git tag, and the tag cannot travel in the COPY
+# above: `.dockerignore` keeps `.git` out of the build context on purpose, so
+# nothing inside the image can run `git describe`. docker/build.sh resolves
+# the version, the commit and the build time outside and passes all three in;
+# starcubes/version.py reads them back out of the environment, where they
+# take precedence over the git lookup it would do in a checkout.
+#
+# Empty defaults are deliberate: a bare `podman build -f Dockerfile .` that
+# bypasses build.sh still produces a working image, one that reports its
+# version as "unknown" rather than claiming a wrong one.
+#
+# Last in the file so that a new commit — which changes only these three
+# values — invalidates no layer above them.
+ARG STARCUBES_VERSION=""
+ARG STARCUBES_BUILD_REF=""
+ARG STARCUBES_BUILD_DATE=""
+ENV STARCUBES_VERSION=$STARCUBES_VERSION \
+    STARCUBES_BUILD_REF=$STARCUBES_BUILD_REF \
+    STARCUBES_BUILD_DATE=$STARCUBES_BUILD_DATE
+
+LABEL org.opencontainers.image.title="starcubes" \
+      org.opencontainers.image.description="Timeseries analytics over a SQL source: ETL, star schema and chart in one container" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$STARCUBES_VERSION" \
+      org.opencontainers.image.revision="$STARCUBES_BUILD_REF" \
+      org.opencontainers.image.created="$STARCUBES_BUILD_DATE"
+
 EXPOSE 8080
 
 ENTRYPOINT ["/entrypoint.sh"]
