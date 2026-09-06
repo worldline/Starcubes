@@ -149,24 +149,32 @@ def slides(request):
     """Serve the blueprint slide deck (repo-root presentation.html).
 
     The deck references its assets with paths relative to the repo root, so
-    at "/slides" the browser asks for "/presentation/…" — `presentation_asset`
-    streams those from disk."""
+    at "/slides" the browser asks for "/presentation/…", "/docs/img/…" and
+    "/viz/static/viz/…" — `deck_asset` streams those from disk."""
     path = settings.BASE_DIR / "presentation.html"
     if not path.exists():
         raise Http404("presentation.html not found")
     return FileResponse(open(path, "rb"), content_type="text/html")
 
 
-def presentation_asset(request, rest):
-    """Stream one file under presentation/ (the deck's local assets).
+# Repo-root directories the deck may pull assets from, keyed by the first
+# URL segment the browser resolves them to. Everything else stays unrouted.
+DECK_ROOTS = {
+    "presentation": "presentation",
+    "docs": "docs",
+    "viz": "viz/static/viz",
+}
 
-    Guarded like the staticfile helper: resolve under BASE_DIR, no `..`
-    parts, images served with their content type, everything else octet-stream.
-    """
-    root = (settings.BASE_DIR / "presentation").resolve()
-    path = (root / rest).resolve()
-    if root != path and root not in path.parents:
-        raise Http404("outside presentation/")
+
+def deck_asset(request, root, rest):
+    """Stream one deck asset from its repo-root directory (`DECK_ROOTS`).
+
+    Guarded: resolve under BASE_DIR, no `..` parts; known extensions get
+    their content type, everything else octet-stream."""
+    base = (settings.BASE_DIR / DECK_ROOTS[root]).resolve()
+    path = (base / rest).resolve()
+    if base != path and base not in path.parents:
+        raise Http404("outside the deck roots")
     if not path.is_file():
         raise Http404("no such deck asset")
     content_type = {

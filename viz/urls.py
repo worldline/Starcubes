@@ -8,9 +8,12 @@ urlpatterns = [
     path("",                 views.chart,           name="chart"),
     path("slides",           views.slides,          name="slides"),
     # Static support for the deck served at /slides: it references its assets
-    # with paths relative to the repo root ("presentation/assets/…"), so at
-    # "/slides" the browser asks for "/presentation/…" — streamed from disk.
-    path("presentation/<path:rest>", views.presentation_asset, name="presentation_asset"),
+    # with paths relative to the repo root, so at "/slides" the browser asks
+    # for "/presentation/…", "/docs/img/…" and "/viz/static/viz/…" —
+    # `deck_asset` streams those from disk (guarded, see DECK_ROOTS).
+    path("presentation/<path:rest>",     views.deck_asset, {"root": "presentation"}, name="deck_presentation"),
+    path("docs/<path:rest>",             views.deck_asset, {"root": "docs"},         name="deck_docs"),
+    path("viz/static/viz/<path:rest>",   views.deck_asset, {"root": "viz"},          name="deck_viz"),
     path("plot.json",        views.plot_json,       name="plot_json"),
     path("drill.json",       views.drill_json,      name="drill_json"),
     path("txn.json",         views.txn_json,        name="txn_json"),

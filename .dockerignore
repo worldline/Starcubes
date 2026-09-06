@@ -8,10 +8,9 @@ __pycache__
 backups/
 staticfiles/
 *.zip
-# Presentation material, not app code.
-presentation/
-presentation.html
-slides.html
+# The slide deck IS app code: the GUI's "About starcubes" menu links to
+# /slides, and viz.views.slides streams repo-root presentation.html plus
+# its assets under presentation/.
 *.md
 .dockerignore
 Dockerfile_orig
