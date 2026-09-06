@@ -7,6 +7,10 @@ app_name = "viz"
 urlpatterns = [
     path("",                 views.chart,           name="chart"),
     path("slides",           views.slides,          name="slides"),
+    # Static support for the deck served at /slides: it references its assets
+    # with paths relative to the repo root ("presentation/assets/…"), so at
+    # "/slides" the browser asks for "/presentation/…" — streamed from disk.
+    path("presentation/<path:rest>", views.presentation_asset, name="presentation_asset"),
     path("plot.json",        views.plot_json,       name="plot_json"),
     path("drill.json",       views.drill_json,      name="drill_json"),
     path("txn.json",         views.txn_json,        name="txn_json"),

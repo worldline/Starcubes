@@ -146,13 +146,38 @@ def chart(request):
 
 
 def slides(request):
-    """Serve the self-contained reveal.js slide deck (repo-root slides.html).
+    """Serve the blueprint slide deck (repo-root presentation.html).
 
-    The deck loads all its assets from a CDN, so we just stream the file."""
-    path = settings.BASE_DIR / "slides.html"
+    The deck references its assets with paths relative to the repo root, so
+    at "/slides" the browser asks for "/presentation/…" — `presentation_asset`
+    streams those from disk."""
+    path = settings.BASE_DIR / "presentation.html"
     if not path.exists():
-        raise Http404("slides.html not found")
+        raise Http404("presentation.html not found")
     return FileResponse(open(path, "rb"), content_type="text/html")
+
+
+def presentation_asset(request, rest):
+    """Stream one file under presentation/ (the deck's local assets).
+
+    Guarded like the staticfile helper: resolve under BASE_DIR, no `..`
+    parts, images served with their content type, everything else octet-stream.
+    """
+    root = (settings.BASE_DIR / "presentation").resolve()
+    path = (root / rest).resolve()
+    if root != path and root not in path.parents:
+        raise Http404("outside presentation/")
+    if not path.is_file():
+        raise Http404("no such deck asset")
+    content_type = {
+        ".css": "text/css",
+        ".js": "text/javascript",
+        ".svg": "image/svg+xml",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".woff2": "font/woff2",
+    }.get(path.suffix, "application/octet-stream")
+    return FileResponse(open(path, "rb"), content_type=content_type)
 
 
 def plot_json(request):
