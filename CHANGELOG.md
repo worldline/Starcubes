@@ -25,6 +25,20 @@ runs through further pre-release tags — see
   reported, never built — an unattended index build on a large fact table
   would block every load for hours. A renamed source column now refuses the
   run with the column named, instead of failing mid-extract.
+- **Periodic maintenance now happens without anyone remembering it.** A new
+  `manage.py etl_housekeeping` — also a **Housekeeping** card in the ETL
+  Commands tab, and run automatically by a forever session every six hours —
+  updates planner statistics on the partitions actually being written and
+  summarises BRIN index ranges. Neither happened before: the load only ever
+  inserts, so autovacuum's thresholds are effectively never reached, which
+  left statistics stale on exactly the partition every chart reads and left
+  the newest data outside the BRIN index altogether. Nothing about that was
+  visible; everything was just slower. The same run reports how close each
+  dimension is to its hard 32767-value ceiling — a mis-configured automatic
+  dimension otherwise fails mid-load with no warning — and records partition
+  sizes over time, so growth is something you can see coming rather than
+  discover. The interval is per datasource on the edit form; 0 turns the
+  automatic run off. Safe to run during a live load.
 - **A datasource can only be loaded by one process at a time.** A hand-run
   `manage.py etl_run` used to run happily alongside a live forever session,
   which can duplicate rows and race the dimension tables. It refuses now, and

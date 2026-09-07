@@ -47,6 +47,7 @@ urlpatterns = [
     path("<int:pk>/etl/drop-partition/",                views.etl_drop_partition,     name="etl_drop_partition"),
     path("<int:pk>/etl/vacuum-analyze/",               views.etl_vacuum_analyze,   name="etl_vacuum_analyze"),
     path("<int:pk>/etl/preflight/",                    views.etl_preflight,        name="etl_preflight"),
+    path("<int:pk>/etl/housekeeping/",                 views.etl_housekeeping,     name="etl_housekeeping"),
     path("<int:pk>/etl/set-highwatermark/",            views.etl_set_highwatermark, name="etl_set_highwatermark"),
     path("<int:pk>/etl/clear-history/",                 views.etl_clear_history,    name="etl_clear_history"),
     path("<int:pk>/etl/create-partitions/",             views.etl_create_partitions, name="etl_create_partitions"),

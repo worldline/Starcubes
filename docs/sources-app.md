@@ -214,6 +214,12 @@ crashed/orphaned sessions are revived.
 - `POST .../etl/truncate-partition/` — truncate a named partition
 - `POST .../etl/drop-partition/` — drop a named partition
 - `POST .../etl/vacuum-analyze/` — VACUUM ANALYZE fact table
+- `POST .../etl/housekeeping/` — run the periodic maintenance now instead of
+  waiting for `housekeeping_interval_s`: targeted `ANALYZE`, BRIN range
+  summarisation, dimension fill levels, partition sizes. Returns
+  `{report: {...}}`, the same structure written to
+  `starcubes_meta.housekeeping_run`. **Not** a dry run, unlike the preflight
+  button — and it takes no datasource lock, so it works during forever mode.
 - `POST .../etl/preflight/` — run the pre-load checks without loading
   anything. Returns `{report: {checks: [{code, level, message, detail}],
   repairs, blocked, ran_at}}`, the same structure every run writes into

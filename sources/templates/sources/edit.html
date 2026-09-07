@@ -152,6 +152,11 @@
         <div class="form-hint">Absolute deadline in <em>source</em> wall-clock seconds: every row gets this long to become visible. The window's upper bound is the later of the two lags, so this one keeps the window moving when traffic pauses and the watermark lag freezes. Must be greater than the watermark lag. <strong>0 disables the term entirely</strong> &mdash; that is not the same as a zero-length deadline. Measure it with the Audit tab's &ldquo;Details&rdquo; button on missing IDs. Reads <code>LOCALTIMESTAMP</code> on the source connection, so that session's timezone must match the one the watermark column is written in &mdash; a mismatch shifts this term by the whole UTC offset and makes it win every run.</div>
       </div>
       <div class="form-group">
+        <label class="form-label">Housekeeping Interval (s)</label>
+        <input class="form-control" name="housekeeping_interval_s" type="number" min="0" step="1" value="{{ ds.housekeeping_interval_s|default:21600 }}">
+        <div class="form-hint">Seconds between automatic housekeeping runs, checked by the forever loop after each load: targeted <code>ANALYZE</code> of the partitions being written, BRIN range summarisation, dimension fill levels and partition sizes. Defaults to 6&nbsp;hours and is deliberately on &mdash; the load is COPY-only, so autovacuum's thresholds are effectively never reached, statistics on the newest partition go stale and BRIN ranges are never summarised, which silently stops the index covering the newest data. 0 disables the automatic run; the ETL&nbsp;Commands tab and <code>manage.py etl_housekeeping</code> still work by hand.</div>
+      </div>
+      <div class="form-group">
         <label class="form-label">Watermark Fact Expression</label>
         <input class="form-control mono" name="watermark_fact_expr" value="{{ ds.watermark_fact_expr|default:'' }}">
         <div class="form-hint">Fact-side SQL reproducing the watermark column, used to find already-loaded rows in the overlap window and by the Audit tab. Leave blank to use the partition column. Example: <code>create_time + total * interval &#39;1 millisecond&#39;</code></div>

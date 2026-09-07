@@ -60,6 +60,7 @@
         <dt>Bar Pixel Target</dt><dd>{{ ds.bar_pixel_target }}</dd>
         <dt>PK Format</dt><dd class="mono">{{ ds.pk_format|default:'—' }}</dd>
         <dt>Late Arrival Overlap</dt><dd>{% if ds.late_arrival_overlap_s %}{{ ds.late_arrival_overlap_s }} s{% else %}off{% endif %}</dd>
+        <dt>Housekeeping</dt><dd>{% if ds.housekeeping_interval_s %}every {{ ds.housekeeping_interval_s }} s{% else %}manual only{% endif %}</dd>
         <dt>Window Lag</dt><dd>{% if ds.watermark_lag_s or ds.wallclock_lag_s %}{{ ds.watermark_lag_s|default:0 }} s below tip{% if ds.wallclock_lag_s %} / {{ ds.wallclock_lag_s }} s absolute{% endif %}{% else %}off{% endif %}</dd>
         <dt>Watermark Fact Expr</dt><dd class="mono">{{ ds.watermark_fact_expr|default:'— (partition column)' }}</dd>
       </dl>
@@ -503,6 +504,19 @@
           <span class="cmd-result" id="result-preflight"></span>
         </div>
         <div id="preflightOut" style="margin-top:12px"></div>
+      </div>
+    </div>
+
+    <!-- Card: Housekeeping -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">&#129529; Housekeeping</span></div>
+      <div class="card-body">
+        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">The periodic maintenance the forever loop runs every <code>housekeeping_interval_s</code>: targeted <code>ANALYZE</code> of the partitions being written, BRIN range summarisation, dimension fill levels and partition sizes. Safe alongside a running load. This runs it now &mdash; unlike Preflight it is not a dry run.</p>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-primary btn-sm" id="hkBtn">Run now</button>
+          <span class="cmd-result" id="result-housekeeping"></span>
+        </div>
+        <div id="hkOut" style="margin-top:12px"></div>
       </div>
     </div>
 
@@ -1842,6 +1856,68 @@ function preflightRender(report) {
     }).catch(function(e) {
       showCmdResult(resultEl, false, '\u2717 ' + e);
     }).finally(function() { btn.disabled = false; });
+  });
+})();
+
+
+// --- Housekeeping ------------------------------------------------------
+// Same report core/housekeeping.py writes into starcubes_meta.housekeeping_run.
+// Only the parts that had work to do are worth showing: an already-summarised
+// BRIN index reports 0 ranges every time, for every partition ever created.
+function hkBytes(n) {
+  var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i ? n.toFixed(1) : n) + ' ' + u[i];
+}
+
+function hkRender(r) {
+  var box = document.getElementById('hkOut');
+  var ranges = (r.brin || []).reduce(function(a, b) { return a + b.ranges; }, 0);
+  var rows = [
+    ['ANALYZE', (r.analyzed || []).map(function(a) {
+      return a.partition + ' (' + a.ms + ' ms)'; }).join(', ') || 'nothing to analyze'],
+    ['BRIN', ranges + ' new range(s) across ' + (r.brin || []).length
+             + ' of ' + (r.brin_indices_checked || 0) + ' index(es)'],
+    ['Storage', (r.partitions || []).length + ' partition(s), '
+                + hkBytes(r.total_bytes || 0)],
+  ];
+  var dims = (r.dimensions || []).slice().sort(function(a, b) {
+    return b.pct_full - a.pct_full; });
+  if (dims.length) {
+    rows.push(['Fullest dimension', dims[0].table + ' &mdash; max index '
+               + dims[0].max_index + ' of 32767 (' + dims[0].pct_full + '%)']);
+  }
+  var html = '<table class="data-table"><tbody>';
+  rows.forEach(function(kv) {
+    html += '<tr><td style="width:1%;white-space:nowrap"><strong>' + kv[0]
+         +  '</strong></td><td>' + kv[1] + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  (r.warnings || []).forEach(function(w) {
+    html += '<p style="margin:8px 0 0;color:var(--warn);font-size:13px">&#9888; '
+         +  esc(w.message) + '</p>';
+  });
+  box.innerHTML = html;
+}
+
+(function() {
+  var btn = document.getElementById('hkBtn');
+  if (!btn) return;
+  btn.addEventListener('click', function() {
+    var resultEl = document.getElementById('result-housekeeping');
+    var box = document.getElementById('hkOut');
+    var label = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Running\u2026';
+    resultEl.textContent = '';
+    box.innerHTML = '';
+    postJSON('/sources/' + DS_PK + '/etl/housekeeping/', {}).then(function(d) {
+      if (!d.ok) { showCmdResult(resultEl, false, '\u2717 ' + d.error); return; }
+      hkRender(d.report);
+      showCmdResult(resultEl, true, '\u2713 Done in ' + d.report.runtime_ms + ' ms');
+    }).catch(function(e) {
+      showCmdResult(resultEl, false, '\u2717 ' + e);
+    }).finally(function() { btn.disabled = false; btn.textContent = label; });
   });
 })();
 

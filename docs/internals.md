@@ -117,6 +117,7 @@ migrations/
 sources/                      Django app: datasource CRUD + ETL monitor GUI
   management/commands/
     etl_run.py               manage.py etl_run — incremental ETL, forever mode, maintenance actions
+    etl_housekeeping.py      manage.py etl_housekeeping — targeted ANALYZE + BRIN summarisation, dim fill, partition sizes
     seed_example.py           manage.py seed_example — seed example Oracle payment-transaction datasource
     query_multibar.py        manage.py query_multibar — multibar JSON for offline testing
     create_indices.py         manage.py create_indices — build FKs + indices

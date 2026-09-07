@@ -45,6 +45,7 @@ silent version of a bug first.
 | Schema objects, source projection, index coverage, metadata version checked before a load | ✅ `core/preflight.py`, called at the top of `import_fact`'s `try:` block. Report in `etl_run.stats.preflight`; dry run on a button (`etl/preflight/`). U2, U5b, U10, N16. |
 | Single occupancy per datasource | ✅ `preflight.datasource_lock` — a Postgres advisory lock on its own NullPool connection, held for the whole run and taken briefly by the four destructive maintenance gestures. N11. |
 | The watermark after a delete | ✅ `delete_fact_from` rewinds it and arms `datasource.dedupe_from`; the partition gestures write `datasource.retention_floor` instead. All four bump the cache epoch. U1, N15. |
+| Statistics, BRIN summarisation, dimension fill, disk trend | ✅ `manage.py etl_housekeeping` / `core/housekeeping.py`, triggered by the forever loop every `datasource.housekeeping_interval_s` (default 6 h). One row per run in `starcubes_meta.housekeeping_run`. U6, N13, N14. |
 
 ## Evaluation
 
@@ -63,15 +64,15 @@ column plus GUI field).
 | U4 | Dimensions populated | ✅ — arguably too eager: a full lookup scan against the source on *every* iteration | low (inverted) | S | config | throttling delays new dim values (absorbed by auto-dims and the `__unknown__` sentinel) |
 | U5a | Warehouse schema drift | `sync_schema` produces a dry-run diff (`core/schema.py:340`) but is only ever called by hand | high | M | preflight (diagnosis only) | its execute phase is `drop_indices` → ALTER → `create_indices` — hours on a billion rows. Applying automatically is **not** acceptable |
 | U5b | Source schema drift | ✅ **done** — `preflight._check_source_projection`, one `WHERE 1=0` round trip; a rejected query blocks, an unreachable source only warns | high | S | preflight | almost nothing: one `WHERE 1=0` round trip |
-| U6 | VACUUM / ANALYZE | manual only (`core/schema.py:900`); insert-only load barely triggers autovacuum, so **BRIN ranges stay unsummarised** and statistics go stale | high | S | housekeeping | ANALYZE on the partitioned parent samples across every partition — target the newest partition instead |
+| U6 | VACUUM / ANALYZE | ✅ **done** — `housekeeping` ANALYZEs the partitions actually holding the newest rows and calls `brin_summarize_new_values` on every fact-partition BRIN index. Full `VACUUM ANALYZE` stays manual | high | S | housekeeping | ANALYZE on the partitioned parent samples across every partition — target the newest partition instead |
 | U7 | Wedged forever ETL | `progress_at` correctly stops advancing, but the stale sweep only runs **when somebody opens a GUI page** (`sources/views.py:842`, `:1261`); no timeout on the source connection | **critical** | M | preflight + a process decision | a watchdog inside the watched process is not a watchdog; a runtime cap must not shoot down a legitimate first load |
 | U8 | Alarm phase too slow | steps 1+2 ✅ **done** — `fact_max` is read once per datasource in `run_alarm_cycle` and passed down; both fact-side queries carry `STARCUBES_ALARM_TIMEOUT_MS`. Steps 3 (phase budget) and 4 (outbox) still open, and step 4 waits on U7 | high | S → M | ETL hook | an outbox needs a deliverer — the same process problem as U7 |
 | U9 | Source reachable, data stopped | invisible: alarms cannot see it by construction (`docs/alarm.md`), the ETL logs `rows=0` and carries on | **critical** | M | pipeline alarm | false alarms during legitimate quiet periods; time-of-day profiles are a bottomless pit |
 | U10 | Indices never created | ✅ **done** — `preflight._check_indices` diffs `pg_index`/`pg_constraint` against what `create_indices` would build; time-aware (`STARCUBES_INDEX_WARN_ROWS`/`_HOURS`), report only | medium-high | S | preflight (report only) | building them automatically is out: no `CONCURRENTLY` anywhere in the repo, ACCESS EXCLUSIVE, blocks COPY for hours |
 | N11 | Two ETL processes at once | ✅ **done** — `pg_try_advisory_lock` on a dedicated NullPool connection, held for the run, taken briefly by the destructive maintenance gestures. Backfill serialises on the same key | high | S | preflight | an advisory lock is session-scoped — it needs a connection held for the whole run; backfill needs an explicit rule |
 | N12 | Source clock skew | the clamp and its warning exist; the measured skew is computed per run but never stored | medium | S | falls out of U9 | none worth naming |
-| N13 | A dimension fills up | `smallserial`, hard stop at 32767; a mis-configured auto-dim explodes mid-run | medium | S | housekeeping | none |
-| N14 | Disk growth | unobserved; unlogged, no retention | medium | S | housekeeping | none |
+| N13 | A dimension fills up | ✅ **done** — fill measured as `max(index)` against the 32767 ceiling, warning past `STARCUBES_DIM_FULL_WARN_PCT` (80) | medium | S | housekeeping | none |
+| N14 | Disk growth | ✅ **done** — `pg_total_relation_size` *and* `pg_relation_size` per partition, recorded per run so the series exists | medium | S | housekeeping | none |
 | N15 | Cache after a retroactive change | ✅ **done** for the four delete paths — all bump the epoch now; U3b's retention loop must remember to as well | medium | S | same functions | easy to forget — which is the reason to write it down |
 | N16 | Migrations not applied | ✅ **done** — `preflight._check_meta_migrations` probes `information_schema` for the newest expected columns and blocks with `run manage.py bootstrap` | low | S | preflight | none |
 | N17 | Unbounded first load | an empty fact table makes `_resume_state` ignore the HWM and load "from the beginning" — potentially days, blocking the forever loop | medium | M | config | chunking changes the window semantics the audit and the cache assume |
@@ -301,7 +302,24 @@ source; if it matters, gate it behind the same interval mechanism as U4.
 
 ## U6 — VACUUM, ANALYZE and BRIN summarisation
 
-**Today.** `vacuum_analyze_fact` (`core/schema.py:900`) exists and is reachable
+**Built.** `core/housekeeping.py`, run by `manage.py etl_housekeeping` and
+by the forever loop on `datasource.housekeeping_interval_s`. Two things the
+plan below got wrong, both found by running it against real data:
+
+* **"ANALYZE the newest partition" is wrong**, because `ensure_partitions_for`
+  keeps a period of runway ahead (`forward=1`) — the newest partition is
+  normally a future, empty one. "The partition covering *now*" is wrong too:
+  the first real datasource it ran against had every one of its 3.9M rows in
+  a partition four months back, because the source had stopped producing.
+  The targets are now the newest partitions that actually hold rows, chosen
+  from the sizes N14 measures anyway.
+* **Partition size cannot tell you that**, if you measure the wrong thing.
+  `pg_total_relation_size` counts index pages, and once `create_indices` has
+  run every partition carries some — so every empty future partition looks
+  populated. `pg_relation_size` (heap only) is the signal; the total is kept
+  as well, because that is the number N14 wants.
+
+**Before.** `vacuum_analyze_fact` (`core/schema.py:900`) exists and is reachable
 from `--vacuum-analyze` and a GUI button. Nothing calls it on a schedule.
 
 The interesting part is *why* relying on autovacuum is not enough here, and it
@@ -559,6 +577,11 @@ trend rather than a log line nobody read — the exact diagnosis
 
 ## N13 — A dimension filling up
 
+**Built.** Measured as `max(index)`, not `count(*)`: the ceiling is on the
+`smallserial` *sequence*, and deleting a dim row does not give the value
+back, so the row count would understate how close the next INSERT is to
+failing.
+
 Dim tables are keyed `smallserial`: 32767 values, hard. An auto-dimension
 pointed at something high-cardinality (an id column mistaken for a category)
 climbs towards that ceiling and then fails inside `_resolve_auto_dim_chunk`,
@@ -567,6 +590,10 @@ warns past ~80%. One `count(*)` per dim table, on tables of at most 32767
 rows.
 
 ## N14 — Disk growth
+
+**Built.** Recorded per housekeeping run in
+`starcubes_meta.housekeeping_run.report`. The Storage tab already shows the
+current sizes, so the single measurement was never the point — the series is.
 
 Fact partitions are UNLOGGED and unbounded. `pg_total_relation_size` per
 partition, recorded by housekeeping over time, turns "the disk filled up
@@ -653,13 +680,39 @@ The report goes into `etl_run.stats` — already `jsonb`, already surfaced by
 the GUI — so no new table is needed to display it. `POST
 .../etl/preflight/` runs the same function as a dry run.
 
-### `manage.py etl_housekeeping`
+### `manage.py etl_housekeeping` — built
 
 Everything too expensive for the load path: targeted ANALYZE plus BRIN
-summarisation (U6), dim fill levels (N13), partition sizes (N14), optional
-retention (U3b). Triggered by the forever loop on a long interval
-(`datasource.housekeeping_interval_s`, hours) and runnable by hand. It takes
-the same advisory lock discipline as the ETL where it touches partitions.
+summarisation (U6), dim fill levels (N13), partition sizes (N14). Retention
+(U3b) is the one item from the original list still missing. Triggered by the
+forever loop on `datasource.housekeeping_interval_s` (default 6 h) and
+runnable by hand or from the ETL Commands tab; one row per run in
+`starcubes_meta.housekeeping_run`.
+
+**It takes no advisory lock, and that is deliberate.** The original sketch
+said "the same lock discipline as the ETL where it touches partitions" — the
+operative clause turned out to be *where it touches partitions*, and nothing
+in it does. ANALYZE takes SHARE UPDATE EXCLUSIVE, which does not conflict
+with COPY; `brin_summarize_new_values` takes a row-level lock; the rest is
+catalogue reads and `count(*)` over tables of at most 32767 rows. Taking the
+datasource lock would refuse a hand-run housekeeping during forever mode for
+no reason at all. Retention will be the first thing in here that genuinely
+touches partitions, and it will need the lock.
+
+**The interval defaults to on (6 h)**, which breaks this schema's usual
+habit — `late_arrival_overlap_s`, `watermark_lag_s` and `wallclock_lag_s` all
+default to the old behaviour because the right value is deployment-specific
+and must be measured. The difference is that those trade one real property
+for another, whereas this one fixes rot that is identical everywhere and
+invisible by construction: an operator cannot measure a BRIN index quietly
+not covering the newest data. Off by default would have shipped a command
+nobody runs, which is the same outcome as not writing it.
+
+`housekeeping_interval_s` is deliberately **not** carried in a source
+profile. A profile describes how to read a source; how often to ANALYZE the
+warehouse is a property of the deployment's hardware and load. (There is also
+a mechanical reason: the profile writer omits falsy values, so `0` — meaning
+"off" — could not survive the round trip.)
 
 ### Pipeline alarms
 
@@ -691,10 +744,13 @@ reasoning behind the sequence stays readable.
    was waiting on came out as `datasource.dedupe_from`: the rewind arms the
    existing `_overlap_pks` filter for the span it reloads, and the run that
    honours it clears the flag.
-4. **U6 + N13 + N14** — the housekeeping command, small and self-contained.
-   Next.
+4. ~~**U6 + N13 + N14** — the housekeeping command~~ — ✅ small and
+   self-contained, as predicted; what was not predicted is that both of its
+   "obvious" heuristics were wrong on real data (see U6).
 5. **U9 + N12** (`max_wm`/`src_now` columns + threshold) and **U7 half one**
-   (statement timeout, runtime cap).
+   (statement timeout, runtime cap). Next — and the housekeeping work made
+   the case for U9 concrete: the one production datasource here has been
+   loading `rows=0` since April without a single thing raising its voice.
 6. **Pipeline alarms**, and with them the process decision from U7.
 7. **U3b** (retention) and **N17** (first-load chunking) last — both change
    assumptions other subsystems hold. U3b is now the *only* thing standing

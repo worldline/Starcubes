@@ -35,6 +35,7 @@ from core.cache import bump_cache_epoch, clear_cache
 from core.etl import (truncate_last_partition, truncate_partition,
                       drop_partition, delete_fact_from,
                       clear_etl_history, set_highwatermark)
+from core.housekeeping import run_housekeeping
 from core.preflight import run_preflight
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user, history_list_user
@@ -562,6 +563,7 @@ def source_edit(request, pk: int):
                     watermark_lag_s    = :watermark_lag_s,
                     wallclock_lag_s    = :wallclock_lag_s,
                     pagerduty_routing_key = NULLIF(:pdrk, ''),
+                    housekeeping_interval_s = :hk_interval,
                     updated_at         = now()
                 WHERE id = :id
             """), {
@@ -587,6 +589,8 @@ def source_edit(request, pk: int):
                 "watermark_lag_s":    lag_wm,
                 "wallclock_lag_s":    lag_now,
                 "pdrk":               p.get("pagerduty_routing_key", ""),
+                "hk_interval":        max(0, int(
+                    p.get("housekeeping_interval_s") or 0)),
             })
         return redirect("sources:manage", pk=pk)
     ds = _load_datasource(pk)
@@ -1350,6 +1354,24 @@ def etl_preflight(request, pk: int):
             src_engine = None
         report = run_preflight(source, meta, source.dest_engine(),
                                source_engine=src_engine, repair=False)
+        return JsonResponse({"ok": True, "report": report})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_admin_required_json
+def etl_housekeeping(request, pk: int):
+    """Run the periodic maintenance now instead of waiting for the interval.
+
+    Unlike the preflight button this is not a dry run — it is the same work
+    the forever loop does, and doing it is the point. Nothing in it takes the
+    datasource lock: ANALYZE and BRIN summarisation are safe alongside a
+    running load, so the button works during forever mode too.
+    """
+    try:
+        source, meta = _load_source(pk)
+        report = run_housekeeping(source, meta, source.dest_engine())
         return JsonResponse({"ok": True, "report": report})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
