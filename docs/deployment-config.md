@@ -295,6 +295,31 @@ STARCUBES_SMTP_USER=bot@example.com STARCUBES_SMTP_PASSWORD=… \
 STARCUBES_SMTP_FROM=bot@example.com
 ```
 
+## Processes in the container
+
+`docker/entrypoint.sh` runs `bootstrap`, then `etl_resume_forever`, then
+starts **three** long-lived things: `pipeline_watch &`, `nginx &` and
+`exec uwsgi`. The third of those was the whole architecture until pipeline
+alarms landed.
+
+`manage.py pipeline_watch` evaluates pipeline alarms and dispatches their
+notifications on an interval (`STARCUBES_PIPELINE_ALARM_INTERVAL_S`, default
+60 s). It exists because of a boundary rather than a preference: a wedged
+ETL loop cannot report that it is wedged, and a datasource whose ETL has
+stopped produces no loads for an in-loop evaluator to ride on. See U7 in
+[`etl-automation.md`](etl-automation.md), which sets out the two honest
+options and their prices.
+
+**Nothing supervises it.** If it dies, nothing restarts it and nothing says
+so — exactly as for the `nginx &` on the next line. That is stated here and
+in the entrypoint rather than left to be discovered. Two mitigations exist
+without adding a supervisor: `PipelineAlarmMiddleware` evaluates the same
+rules from the request path, and the ETL loop evaluates them after every
+load, so the container losing this process degrades rather than goes blind.
+It touches `starcubes_meta` only — no source connection — so it keeps
+working for a datasource whose source database is down, which is one of the
+states it exists to report.
+
 ## Build / dependencies
 
 - **Always build the container image via `docker/build.sh`, never

@@ -107,10 +107,11 @@ episode seen by a single load has span 0.
   breach living entirely between two loads is never seen.
 - Same philosophy as the audit: rows arriving late into a window the HWM has
   already slid past are never re-evaluated.
-- A total data standstill is invisible: the HWM stops, the window stops
-  sliding, and `count(*) < 1` never comes true. Watching the pipeline itself
-  (`etl_run` status, `watermark_lag`) is the ETL monitor's job, not an
-  alarm's.
+- A total data standstill is invisible *to a threshold alarm*: the HWM
+  stops, the window stops sliding, and `count(*) < 1` never comes true.
+  That is structural and cannot be fixed here — but it is no longer
+  unwatched. **Pipeline alarms** (below) evaluate over ETL state instead of
+  fact rows and see exactly this case.
 
 ## Who evaluates
 
@@ -161,6 +162,116 @@ a second, independently timed evaluator would race the ETL for the same
 episodes and re-ask questions whose data had not moved. `alarm_run --forever`,
 `alarm_resume_forever` and the `alarm_forever` session table are all gone
 (`0029_alarm_hwm_semantics.sql`).
+
+
+## Pipeline alarms — the second kind
+
+A threshold alarm asks a question about *data*. A pipeline alarm asks one
+about the *ETL*: has the source stopped producing, are runs failing, is any
+run completing at all, is the preflight unhappy, is a dimension filling up.
+Everything else it shares — `alarm_firing` and its episode semantics, the
+notification path, the recipients, the severity, the Firings view.
+
+It is deliberately not a new subsystem. The alarm machinery already owned
+everything hard about not being seen, and a pipeline condition has the same
+shape as a threshold breach: it starts, it persists, it ends.
+
+### The rows
+
+`alarm.rule_kind` is `'threshold'` or `'pipeline'`; `alarm.condition` names
+the condition for the latter and is NULL for the former, both enforced by
+CHECK constraints (migration 0036). A pipeline row uses `cond_op` and
+`threshold` exactly as a threshold row does, and ignores `measure`,
+`window_s` and `context_filter`, which keep their defaults.
+
+**The column is `rule_kind` and not `kind` for a reason worth remembering.**
+The transition dicts handed to `sources/alarm_notify.py` already carry a key
+called `kind`, whose values are `opened` and `closed`, and the stamp loop
+copies alarm columns onto those dicts wholesale. An alarm column named
+`kind` would have overwritten it and turned every notification into a
+resolution — a bug you find by reading a mail, not by reading a test.
+
+### The five conditions
+
+Each answers with a *number*, which is what let `cond_op`, `threshold` and
+the whole episode machine be reused rather than reimplemented.
+
+| condition | value | reads |
+|---|---|---|
+| `data_stale` | seconds of `src_now − max_wm` | newest `etl_run` with both (U9) |
+| `run_failed` | failed runs since the last `ok` | `etl_run` |
+| `no_recent_run` | seconds since the last `ok` finished | `etl_run` (U7) |
+| `preflight_warn` | findings at warn or block | newest `etl_run.stats.preflight` |
+| `dim_full_pct` | fullest dimension, % of 32767 | newest `housekeeping_run.report` (N13) |
+
+`None` means *not answerable yet* — no run has happened, no housekeeping
+report exists — and is treated as "no breach we can assert". It deliberately
+does **not** close a standing episode: silence is not recovery.
+
+All five read `starcubes_meta` only. No `Source.load`, no source connection,
+no fact query — which is the property that lets an evaluator outside the ETL
+judge a datasource whose source database is down, one of the states it
+exists to report.
+
+### The clock, and why there is no cursor
+
+Threshold episodes are stamped with the fact HWM. Pipeline episodes are
+stamped with the **wall clock**, and that is not a compromise: a threshold
+alarm asks about data and must answer in the data's own time, while "how
+long has nothing arrived" has no answer in data time at all.
+
+For the same reason the `eval_end` skip — "the HWM did not move, so the
+verdict would be identical" — does not apply: a pipeline condition changes
+without any new data. `eval_end` is still written, informationally. No
+replay cursor is needed either, because the episode machine is idempotent
+(a second evaluation extends rather than re-opens) and `ux_alarm_firing_open`
+allows one open episode per rule.
+
+### Who evaluates, and the boundary behind it
+
+Three evaluators, and they are layers rather than alternatives:
+
+1. **The ETL loop**, after every load — `run_alarm_cycle` covers both kinds.
+   Catches everything a run produces.
+2. **The request path** — `starcubes/middleware.py:PipelineAlarmMiddleware`,
+   throttled by a process-local timestamp and then by the advisory lock, with
+   the work on a daemon thread so a dispatch (up to a minute per transition)
+   never holds a page open.
+3. **A process of its own** — `manage.py pipeline_watch`, started by
+   `docker/entrypoint.sh`.
+
+Two and three exist because of a boundary, not an oversight: **a wedged loop
+cannot report that it is wedged**, and a datasource whose ETL stopped
+produces no loads for an in-loop evaluator to ride on. `docs/etl-automation.md`
+(U7) sets out the trade-off; both options were taken, and the price of the
+third is written into the entrypoint — nothing supervises it, exactly as
+nothing supervises nginx there.
+
+A non-blocking advisory lock (`core.pipeline_alarm.pipeline_eval_lock`) keeps
+the three from racing to open one episode and counting the loser's
+`IntegrityError` as an error.
+
+### Notification: unchanged
+
+`sources/alarm_notify.py` needed no change to carry a second kind of alarm.
+It subscripts `measure` to render the condition, so the pipeline evaluator
+puts a readable label with its unit in that key:
+
+```
+[starcubes] OPENED: payments / no data — source data lag (s) > 3600 (value 14,400)
+```
+
+The PagerDuty dedup key stays `starcubes-alarm-<alarm_id>#<episode_id>` and
+cannot collide, because both kinds live in one table with one id sequence.
+
+### Defaults
+
+A new datasource is created with two pipeline alarms — `run_failed >= 1` and
+`no_recent_run > 3600` — enabled and **without channels**, from
+`sources/profile_store.py:insert_default_pipeline_alarms`, shared by the CLI
+seed and the GUI create form. They open and close episodes in the Firings
+tab from the first load, and send nothing until somebody picks recipients.
+
 
 ## Manual driving
 

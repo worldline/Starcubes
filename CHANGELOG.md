@@ -25,6 +25,22 @@ runs through further pre-release tags — see
   reported, never built — an unattended index build on a large fact table
   would block every load for hours. A renamed source column now refuses the
   run with the column named, instead of failing mid-extract.
+- **Alarms can now watch the ETL itself, not just the data in it.** A second
+  kind of alarm rule — set up in the Alarms tab, in its own table below the
+  threshold rules — fires on the things that were previously only ever
+  detected and written to a log: the source has stopped producing, runs are
+  failing, no run is completing at all, the preflight is reporting problems,
+  a dimension is filling up. They use the same e-mail, XMPP and PagerDuty
+  channels, the same recipients and severities, and appear in the same
+  Firings view as threshold alarms.
+  Crucially they are also evaluated **from outside the ETL**, by a small
+  process of its own in the container and by the web application itself: a
+  hung ETL cannot report that it is hung, and "no data has loaded since
+  Friday" is exactly the message that must not depend on the thing that
+  stopped. Every new datasource is created with two of these rules already
+  in place — "runs are failing" and "no run is completing" — active but
+  without recipients, so they record episodes from day one and start sending
+  the moment somebody picks a channel.
 - **Periodic maintenance now happens without anyone remembering it.** A new
   `manage.py etl_housekeeping` — also a **Housekeeping** card in the ETL
   Commands tab, and run automatically by a forever session every six hours —
@@ -63,6 +79,12 @@ runs through further pre-release tags — see
 
 ### Fixed
 
+- **E-mail and XMPP alarm notifications could never have been delivered.**
+  The dispatcher looked its recipients up with a query the database driver
+  refused to accept, so every notification with a recipient failed inside
+  that lookup and was recorded as an error — taking PagerDuty down with it,
+  since the same failure discarded the routing keys. Anyone who had
+  configured a transport would have seen alarms fire and nothing arrive.
 - **Deleting fact rows no longer leaves the high watermark lying.** Delete
   From rewinds the watermark to the delete boundary, so the window is
   actually loaded again — previously the deleted rows were never requested
@@ -73,6 +95,8 @@ runs through further pre-release tags — see
   are different columns, the reload is de-duplicated by primary key so the
   repair cannot introduce duplicates. All four also invalidate the plot
   cache, which they previously did only from the GUI.
+- **Large numbers in alert subjects were unreadable.** A count of 8729883
+  arrived as "8.72988e+06"; it now reads 8,729,883.
 - **The alarm phase no longer scales with the number of alarms.** The fact
   table's clock was read once per alarm; it is read once per load now.
   Both alarm queries also carry a statement timeout, so a pathological filter

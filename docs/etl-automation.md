@@ -48,6 +48,7 @@ silent version of a bug first.
 | Statistics, BRIN summarisation, dimension fill, disk trend | ✅ `manage.py etl_housekeeping` / `core/housekeeping.py`, triggered by the forever loop every `datasource.housekeeping_interval_s` (default 6 h). One row per run in `starcubes_meta.housekeeping_run`. U6, N13, N14. |
 | A source that is up and has stopped producing | ✅ `etl_run.max_wm` / `src_now` persisted per run, compared against `datasource.max_data_lag_s` by the preflight; the difference is a column in the ETL History table. U9, N12. |
 | A run bounding its own time | ✅ `datasource.max_run_s` — `EtlAborted` past the budget, and the same value as the per-dialect source statement timeout. Never applied to a backfill, a `--start/--end` window or the initial load. U7 first half. |
+| Any of it reaching a person | ✅ **pipeline alarms** — a second `alarm.rule_kind` over ETL state, sharing `alarm_firing`, the notification path and the Firings view. Evaluated after every load, in the request path, and by `manage.py pipeline_watch` in the container. U7 second half, U9 delivery, U10/N13 delivery. |
 
 ## Evaluation
 
@@ -67,9 +68,9 @@ column plus GUI field).
 | U5a | Warehouse schema drift | `sync_schema` produces a dry-run diff (`core/schema.py:340`) but is only ever called by hand | high | M | preflight (diagnosis only) | its execute phase is `drop_indices` → ALTER → `create_indices` — hours on a billion rows. Applying automatically is **not** acceptable |
 | U5b | Source schema drift | ✅ **done** — `preflight._check_source_projection`, one `WHERE 1=0` round trip; a rejected query blocks, an unreachable source only warns | high | S | preflight | almost nothing: one `WHERE 1=0` round trip |
 | U6 | VACUUM / ANALYZE | ✅ **done** — `housekeeping` ANALYZEs the partitions actually holding the newest rows and calls `brin_summarize_new_values` on every fact-partition BRIN index. Full `VACUUM ANALYZE` stays manual | high | S | housekeeping | ANALYZE on the partitioned parent samples across every partition — target the newest partition instead |
-| U7 | Wedged forever ETL | first half ✅ **done** — `max_run_s` bounds the run and every source statement in it (per dialect). The second half, supervising the loop from outside, is still the open process decision below | **critical** | M | preflight + a process decision | a watchdog inside the watched process is not a watchdog; a runtime cap must not shoot down a legitimate first load |
+| U7 | Wedged forever ETL | ✅ **done** — `max_run_s` bounds the run and its source statements; the second half is answered by evaluating pipeline alarms from the request path *and* from `manage.py pipeline_watch`, a process of its own in the container. Both options taken, both prices named | **critical** | M | preflight + a process decision | a watchdog inside the watched process is not a watchdog; a runtime cap must not shoot down a legitimate first load |
 | U8 | Alarm phase too slow | steps 1+2 ✅ **done** — `fact_max` is read once per datasource in `run_alarm_cycle` and passed down; both fact-side queries carry `STARCUBES_ALARM_TIMEOUT_MS`. Steps 3 (phase budget) and 4 (outbox) still open, and step 4 waits on U7 | high | S → M | ETL hook | an outbox needs a deliverer — the same process problem as U7 |
-| U9 | Source reachable, data stopped | ✅ **detected** — `src_now - max_wm` per run against `max_data_lag_s`, reported by the preflight and shown per run in ETL History. *Delivering* it to somebody still needs the pipeline alarms | **critical** | M | pipeline alarm | false alarms during legitimate quiet periods; time-of-day profiles are a bottomless pit |
+| U9 | Source reachable, data stopped | ✅ **done** — detected as `src_now - max_wm` and *delivered* by the `data_stale` pipeline alarm through the existing channels | **critical** | M | pipeline alarm | false alarms during legitimate quiet periods; time-of-day profiles are a bottomless pit |
 | U10 | Indices never created | ✅ **done** — `preflight._check_indices` diffs `pg_index`/`pg_constraint` against what `create_indices` would build; time-aware (`STARCUBES_INDEX_WARN_ROWS`/`_HOURS`), report only | medium-high | S | preflight (report only) | building them automatically is out: no `CONCURRENTLY` anywhere in the repo, ACCESS EXCLUSIVE, blocks COPY for hours |
 | N11 | Two ETL processes at once | ✅ **done** — `pg_try_advisory_lock` on a dedicated NullPool connection, held for the run, taken briefly by the destructive maintenance gestures. Backfill serialises on the same key | high | S | preflight | an advisory lock is session-scoped — it needs a connection held for the whole run; backfill needs an explicit rule |
 | N12 | Source clock skew | ✅ **done** — stored per run and rendered as a column, so a skew parked near a whole-hour offset is a trend rather than a log line; a *negative* lag gets named as what it is (the watermark column not holding UTC) | medium | S | falls out of U9 | none worth naming |
@@ -431,6 +432,16 @@ first because it is nearly free and strictly better than today, with option 1
 as the follow-up once pipeline alarms exist and there is something worth
 delivering promptly.
 
+**Decided: both, at once.** Option 2 is
+`starcubes/middleware.py:PipelineAlarmMiddleware`, throttled and running its
+work on a daemon thread so a dispatch cannot hold a page open. Option 1 is
+`manage.py pipeline_watch`, started by `docker/entrypoint.sh`. The follow-up
+was not deferred because the weakness of option 2 alone is not academic —
+"notification depends on somebody using the app" fails precisely on the
+unattended weekend. The price of option 1 is written into the entrypoint
+rather than left to be discovered: nothing supervises that process, and if
+it dies nothing says so, exactly as for the `nginx &` two lines below it.
+
 **What it costs you.** A runtime cap that is too tight kills healthy long
 runs, and because the loop retries, it does so repeatedly. Default it to off
 and let operators set it from observed run durations — the same discipline
@@ -759,7 +770,43 @@ warehouse is a property of the deployment's hardware and load. (There is also
 a mechanical reason: the profile writer omits falsy values, so `0` — meaning
 "off" — could not survive the round trip.)
 
-### Pipeline alarms
+### Pipeline alarms — built
+
+`core/pipeline_alarm.py`, `alarm.rule_kind`/`alarm.condition` (migration
+0036), and three evaluators. Five conditions: `data_stale`, `run_failed`,
+`no_recent_run`, `preflight_warn`, `dim_full_pct`. `docs/alarm.md` carries
+the full description; what belongs here is what the design note below got
+right and what it left out.
+
+Right: the shape. It really is a second kind of row rather than a second
+subsystem, and the episode machine came out of `evaluate_alarm` unchanged.
+
+Left out, and load-bearing:
+
+- **The column cannot be called `kind`.** The transition dicts already carry
+  a `kind` meaning opened/closed, and the stamp loop copies alarm columns
+  onto them wholesale — an alarm column of that name turns every
+  notification into a resolution. It is `rule_kind`.
+- **Making every condition answer with a number** is what let `cond_op`,
+  `threshold` and the whole episode machine be reused rather than grown a
+  second time. A boolean condition would have needed its own everything.
+- **The notification path needed no change at all**, because the evaluator
+  puts a readable condition label in the `measure` key the dispatcher
+  subscripts. That was worth more than it sounds: `render_message` and
+  `send_pagerduty` index four keys unconditionally, so the alternative was
+  branching a shared formatter on alarm kind.
+- **A `None` value must not close an episode.** "No run has happened yet"
+  and "the condition cleared" are different answers; treating the first as
+  the second reports a recovery that did not occur.
+
+Two things found while building it, both pre-existing and both fixed here
+because a delivery mechanism that cannot deliver makes the rest pointless:
+`counts["breaches"]` had never been incremented, and `_resolve_lookups`
+passed a Python `set` to `= ANY(:ids)`, which psycopg2 refuses — so **every**
+dispatch with a recipient failed in the lookup and was reported as an error.
+E-mail and XMPP had never actually been delivered.
+
+The original note follows.
 
 The largest piece, and the one that makes U7, U9, U10, N12, N13 and N14
 *deliverable* rather than merely detected. The alarm subsystem already owns
@@ -798,9 +845,10 @@ reasoning behind the sequence stays readable.
    construction. Note the case that motivated it was not hypothetical: the
    one production datasource here has been loading `rows=0` since April
    without anything raising its voice.
-6. **Pipeline alarms**, and with them the process decision from U7. Next —
-   and it is now the *only* thing standing between the checks that already
-   run and somebody hearing about them.
+6. ~~**Pipeline alarms**, and with them the process decision from U7~~ — ✅
+   both U7 options taken rather than one: the request path *and* a
+   supervisor process, because the request path alone fails on exactly the
+   unattended weekend it would be needed. The checks now reach a person.
 7. **U3b** (retention) and **N17** (first-load chunking) last — both change
    assumptions other subsystems hold. U3b is now the *only* thing standing
    between `retention_floor` and an actual retention policy: the floor, the
