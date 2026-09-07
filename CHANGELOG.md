@@ -7,6 +7,13 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+What 2.1.x will contain is not decided; candidates live in
+[`docs/backlog.md`](docs/backlog.md), and nothing there is committed to a
+release until it is listed here. The road to a final 2.0.0 runs through
+further pre-release tags — see [`docs/releases.md`](docs/releases.md).
+
+## [2.0.0-alpha.3] — 2026-09-07
+
 ### Added
 
 - **Alarms can notify by e-mail, XMPP and PagerDuty.** Each alarm picks
@@ -16,6 +23,15 @@ Notable changes per release. Format follows
   edit page) and closes its incidents when an episode resolves. Transport
   configuration is env-var based — see `docs/deployment-config.md`. Purely
   additive schema, self-applying at container start (minor release).
+- **The PagerDuty severity is per alarm.** An alarm sets one of
+  critical/error/warning/info; unset means the global
+  `STARCUBES_PAGERDUTY_SEVERITY` applies at dispatch. Settable on both alarm
+  forms and inline in the Alarms tab, which shows it in its own column.
+- **Receiving alarm messages is the user's decision.** Accounts opt in to
+  e-mail and XMPP per channel on My Profile — **default off**, so being
+  listed on an alarm alone no longer delivers anything; dispatch drops
+  accounts that never opted in (logged as WARNING). Existing alarms fall
+  silent for users who do not opt in — deliberate.
 - **The notification configuration is reachable in the GUI.** A global
   configuration tab (in the tab strip and both hamburger menus) shows the
   transport status, the per-datasource routing keys masked, and a
@@ -30,19 +46,40 @@ Notable changes per release. Format follows
   tab is now called **Transports** (was "PagerDuty") and edits SMTP, XMPP,
   the PagerDuty endpoint and the SSO trio in place; transports apply
   live, SSO on/off on restart.
+- My Profile appears as the last tab of the global tab strip, after Users,
+  and carries the notification opt-in.
 - The About dialog's **timeseries.js** row now links to the project on
   GitHub.
 
+### Changed
+
+- **The `log` channel is no longer selectable** — the firing-episode table
+  and the evaluator's log line are always on, so the checkbox would have
+  been dead weight. Legacy alarms that still store `log` keep working; the
+  value is dropped silently on their next edit. Nothing to migrate.
+- The Alarms list names the active channels as a plain comma-separated
+  list; the recipient names moved into the edit view (which also flags
+  recipients who have not opted in).
+- Both hamburger menus are rendered from one shared template
+  (`sources/_nav_menu.html`) — the same rows appear in the chart and in
+  the sources app by construction, not by keeping two copies in sync.
+
 ### Fixed
 
+- The channel checkboxes in the Alarms list were always visible; they now
+  appear only while a row is being edited, and the alarm table fits
+  again (abbreviated "Thresh." header, red blinking dot at the start of
+  open firing rows next to the amber "open" badge, which also shows on
+  the Alarms list and refreshes every 20 s).
 - **The Users page's "Edit user" form persisted nothing** — a duplicated
   `update_user` branch shadowed the real one (regression of the alarm
   notification change; e-mail, XMPP JID and flags were silently dropped).
-
-What 2.1.x will contain is not decided; candidates live in
-[`docs/backlog.md`](docs/backlog.md), and nothing there is committed to a
-release until it is listed here. The road to a final 2.0.0 runs through
-further pre-release tags — see [`docs/releases.md`](docs/releases.md).
+- A duplicated validation block in the alarm save path refused a
+  channels-only inline edit with "no recipient chosen".
+- The chart page no longer grows a horizontal scrollbar.
+- `manage.py check_migration_mirror` machine-checks the mirror contract
+  between the per-step migrations and the consolidated
+  `migrations/starcubes_meta.sql`.
 
 ## [2.0.0-alpha.2] — 2026-09-07
 
