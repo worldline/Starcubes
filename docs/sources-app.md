@@ -29,6 +29,41 @@ Create-new-source and Manage used to be menu rows; they live on their
 pages now (`+ New Datasource` on the list, the Manage link in the detail
 header).
 
+## Shared panels and scripts
+
+`manage.html` and `detail.html` render the same Group Dims and Measures tabs.
+They used to hold two verbatim copies of that markup and its JavaScript — 919
+identical lines, kept in step by a rule in `sources/CLAUDE.md` rather than by a
+mechanism, which is exactly how the Measures help text and the `fmtRate` /
+`fmtLocal` pairs drifted apart. Four shared files replace the rule:
+
+| File | What it holds |
+|------|---------------|
+| `sources/templates/sources/_group_dims_panel.html` | The Group Dims tab panel. No parameters; a caller needing a permission gate wraps the include. |
+| `sources/templates/sources/_measures_panel.html` | The Measures tab panel. Optional `measures_help_short` (truthy = the short help line, default = the long one naming every ladder style), the same `{% if %}` / `\|default:` convention `_nav_menu.html` uses. |
+| `sources/static/sources/group_dims.js` | The group-dimension editor, ~660 lines. Needs `DS_PK` and `csrfToken()`; defines `GROUP_PALETTE` itself. |
+| `sources/static/sources/inline_edit.js` | `startEdit` / `cancelEdit` / `saveRow` / `deleteRow`. Needs `csrfToken()`, `postJSON()` and the page's `esc()`. |
+
+**The one non-obvious constraint is load order.** `group_dims.js` binds its
+event handlers at top level, not on `DOMContentLoaded`, so it must come after
+the panel markup. At the same time both pages call `grpLoadList()` from inline
+scripts, and an inline script runs while the document is parsed — earlier than
+any deferred file. So both tags are plain synchronous `<script src>`, placed
+after the markup and before the page's own inline script; adding `defer` would
+raise `grpLoadList is not defined`. `manage.html` puts them in
+`{% block extra_js %}` after `{{ block.super }}`, `detail.html` just above its
+inline script in the content block.
+
+The pages still differ where they should: `manage.html` loads the
+group-dimension list lazily on first tab click (it has 12 tabs),
+`detail.html` eagerly on load (it has 5), and `manage.html` wraps `startEdit`
+afterwards to re-sync the dimension source fields — which works because
+`inline_edit.js` leaves it a global function declaration.
+
+`esc()` stays per-page rather than shared, but `saveRow` calls it, so the two
+definitions must remain the identical null-safe variant. It only runs on click,
+which is why it need not exist when `inline_edit.js` loads.
+
 ## Pages at a glance
 
 The `/sources/` UI splits along three axes:
@@ -558,5 +593,6 @@ Each sub-entity `<tr>` has two modes toggled by the `.editing` class:
 
 - `.row-display` spans visible in display mode, hidden in edit mode
 - `.row-edit` inputs visible in edit mode
-- JS functions: `startEdit(tr)` / `cancelEdit(tr)` / `saveRow(tr, url)` / `deleteRow(tr, url)`
+- JS functions: `startEdit(tr)` / `cancelEdit(tr)` / `saveRow(tr, url)` / `deleteRow(tr, url)`,
+  shared by both pages from `sources/static/sources/inline_edit.js`
 - All mutations via `fetch()` POST → JSON response → in-place DOM update

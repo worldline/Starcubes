@@ -1,0 +1,105 @@
+{% comment %}
+  The Group Dimensions tab panel, shared by sources/manage.html and
+  sources/detail.html so the two cannot drift apart.
+
+  Takes no parameters. The behaviour lives in
+  sources/static/sources/group_dims.js, which wires itself to the ids below at
+  top level — include that file with a plain <script src> AFTER this panel
+  (never `defer`; see the file's header for why).
+
+  Callers that need a permission gate wrap the include; the panel itself makes
+  no assumption about who may see it.
+{% endcomment %}
+<div class="tab-panel" id="tab-group-dims">
+  <div class="card">
+    <div class="card-header"><span class="card-title">Group Dimensions</span></div>
+    <div class="card-body">
+      <div class="group-dim-layout">
+        <div class="group-dim-list">
+          <button id="grpNewBtn" class="btn btn-secondary btn-sm group-dim-new">+ New group dimension</button>
+          <ul id="grpList" class="group-dim-items"></ul>
+          <p id="grpListEmpty" class="text-muted group-dim-empty">No group dimensions yet.</p>
+        </div>
+
+        <div class="group-dim-editor">
+          <p id="grpEditorPrompt" class="text-muted">Pick a group dimension on the left, or create a new one.</p>
+
+          <div id="grpDimContent" style="display:none">
+            <div class="group-dim-head">
+              <div>
+                <label class="form-label" for="grpNameInput">Name</label>
+                <input id="grpNameInput" class="form-control" style="max-width:340px"
+                       placeholder="e.g. Status buckets">
+              </div>
+              <div>
+                <label class="form-label" for="grpDimSelect">Dimension</label>
+                <select id="grpDimSelect" class="form-control group-dim-select" style="max-width:340px">
+                  {% for d in dimensions %}
+                  {% if d.dim_table %}
+                  <option value="{{ d.id }}" data-dim-table="{{ d.dim_table }}" data-fact-column="{{ d.fact_column }}">{{ d.fact_column }} → {{ d.dim_table }}</option>
+                  {% endif %}
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="group-dim-head-actions">
+                <button id="grpDeleteBtn" class="btn btn-danger btn-sm">Delete</button>
+              </div>
+            </div>
+
+            <div class="group-quick-assign" id="grpQuickAssign">
+              <div class="group-quick-assign-header">Bulk add to group</div>
+              <div class="group-quick-assign-body">
+                <div class="group-assign-target">
+                  <label class="form-label">Target group</label>
+                  <select id="grpSearchTarget" class="form-control" style="max-width:300px"></select>
+                </div>
+                <div class="group-assign">
+                  <div class="group-assign-panel">
+                    <label class="group-panel-label">Add by filter</label>
+                    <div class="group-filter-row">
+                      <select id="grpFilterOp" class="form-control">
+                        <option value="starts_with">starts with</option>
+                        <option value="contains">contains</option>
+                      </select>
+                      <input id="grpFilterText" class="form-control" placeholder="filter text…">
+                      <button id="grpFilterBtn" class="btn btn-secondary btn-sm">Apply</button>
+                    </div>
+                  </div>
+                  <div class="group-assign-panel">
+                    <label class="group-panel-label">Search &amp; add</label>
+                    <div class="group-filter-row">
+                      <div class="group-search-wrap" style="flex:1">
+                        <input id="grpSearchInput" class="form-control" placeholder="search values…">
+                        <div id="grpSearchResults" class="group-search-results"></div>
+                      </div>
+                      <button id="grpSearchAddBtn" class="btn btn-secondary btn-sm">Add selected</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="group-overview-header">
+              <span class="group-overview-title">Groups</span>
+              <button id="grpAddGroupBtn" class="btn btn-secondary btn-sm">+ Add Group</button>
+            </div>
+            <div id="grpZones"></div>
+
+            <div class="leftover-zone leftover-collapsed" id="grpLeftover">
+              <button type="button" class="leftover-toggle" id="grpLeftoverToggle" aria-expanded="false">
+                <span class="leftover-label" id="grpLeftoverLabel">Unassigned</span>
+                <span class="leftover-toggle-chevron" aria-hidden="true">show</span>
+              </button>
+              <div class="group-chips leftover-chips" id="grpLeftoverChips"></div>
+            </div>
+
+            <div style="margin-top:16px">
+              <button id="grpSaveBtn" class="btn btn-primary">Save</button>
+              <span id="grpSaveResult" class="action-result" style="margin-left:8px"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
