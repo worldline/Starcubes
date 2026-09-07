@@ -32,7 +32,7 @@
       <td>
         <span class="badge badge-{{ s.run_status|default:'none' }}" id="badge-{{ s.id }}">
           {% if s.run_status == 'running' %}<span class="dot">●</span> Running
-          {% elif s.run_status == 'ok' %}✓ <span data-ts="{{ s.run_finished_at|default:'' }}">{{ s.run_finished_at|default:'' }}</span>
+          {% elif s.run_status == 'ok' %}✓ <span data-ts="{{ s.run_finished_at|date:'c' }}">{{ s.run_finished_at|default:'' }}</span>
           {% elif s.run_status == 'failed' %}✗ Failed
           {% else %}<span class="text-muted">—</span>{% endif %}
         </span>
@@ -59,34 +59,28 @@
 {% block extra_js %}
 {{ block.super }}
 <script>
+var IS_ADMIN = {{ user.is_superuser|yesno:"true,false" }};
 (function() {
-  function fmtLocal(iso) {
-    if (!iso) return '';
-    var d = new Date(iso);
-    return isNaN(d.getTime()) ? iso : d.toLocaleString();
-  }
+  localiseTimestamps();
 
-  // Convert server-rendered timestamps to local time
-  document.querySelectorAll('[data-ts]').forEach(function(el) {
-    var ts = el.getAttribute('data-ts');
-    if (ts) el.textContent = fmtLocal(ts);
-  });
-
-  // Auto-check connection status for each datasource — admin only.
-  // Polling every row's connection probe on a public list page leaks which
-  // sources are reachable and is overkill for non-admins. We use the
-  // presence of the "+ New Datasource" link as the superuser marker.
-  var adminOnly = !!document.querySelector('a[href$="/sources/new/"]');
-  if (adminOnly) {
+  // Auto-check connection status for each datasource — admin only. Polling
+  // every row's probe on a list page leaks which sources are reachable and is
+  // overkill for non-admins. The gate is server-rendered rather than sniffed
+  // from the "+ New Datasource" link: that link is a layout detail, and moving
+  // it would have switched the probe off without a word.
+  if (IS_ADMIN) {
     document.querySelectorAll('[id^="conn-"]').forEach(function(el) {
       var pk = el.id.replace('conn-', '');
+      var origText = el.textContent.trim();
+      el.textContent = origText + ' …';
       getJSON('/sources/' + pk + '/connection-status/', {signal: AbortSignal.timeout(15000)}).then(function(d) {
         el.className = 'badge ' + (d.ok ? 'badge-conn-ok' : 'badge-conn-fail');
-        el.textContent = el.textContent.replace(' …', '').trim();
+        el.textContent = origText;
         if (!d.ok) el.title = d.error || 'Connection failed';
-      }).catch(function() {
+      }).catch(function(e) {
         el.className = 'badge badge-conn-fail';
-        el.textContent = el.textContent.replace(' …', '').trim();
+        el.textContent = origText;
+        el.title = String(e) || 'Connection failed';
       });
     });
 

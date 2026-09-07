@@ -698,10 +698,10 @@
         <tr>
           <td>{{ r.id }}</td>
           <td><span class="badge badge-{{ r.status }}">{{ r.status }}</span></td>
-          <td class="text-mono text-muted" data-ts="{{ r.started_at|default:'' }}">{{ r.started_at|default:'—' }}</td>
-          <td class="text-mono text-muted" data-ts="{{ r.finished_at|default:'' }}">{{ r.finished_at|default:'—' }}</td>
-          <td class="text-mono text-muted" data-ts="{{ r.first_end_time|default:'' }}">{{ r.first_end_time|default:'—' }}</td>
-          <td class="text-mono text-muted" data-ts="{{ r.last_end_time|default:'' }}">{{ r.last_end_time|default:'—' }}</td>
+          <td class="text-mono text-muted" data-ts="{{ r.started_at|date:'c' }}">{{ r.started_at|default:'—' }}</td>
+          <td class="text-mono text-muted" data-ts="{{ r.finished_at|date:'c' }}">{{ r.finished_at|default:'—' }}</td>
+          <td class="text-mono text-muted" data-ts="{{ r.first_end_time|date:'c' }}">{{ r.first_end_time|default:'—' }}</td>
+          <td class="text-mono text-muted" data-ts="{{ r.last_end_time|date:'c' }}">{{ r.last_end_time|default:'—' }}</td>
           <td>{{ r.rows|default:'—' }}</td>
           <td>{{ r.runtime_ms|default:'—' }}</td>
           <td class="text-mono" data-rate="{{ r.rows_per_s|default:'' }}">—</td>
@@ -878,14 +878,6 @@ document.querySelectorAll('#tabNav .tab-btn').forEach(function(btn) {
   });
 });
 
-// --- Local time formatting ---
-function fmtLocal(iso) {
-  if (!iso) return '—';
-  var d = new Date(iso);
-  if (isNaN(d.getTime())) return iso;
-  return d.toLocaleString();
-}
-
 function formatDuration(s) {
   if (s < 60) return s + 's';
   if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
@@ -909,11 +901,7 @@ function fmtCount(n) {
   return String(n);
 }
 
-// Convert server-rendered timestamps to local time
-document.querySelectorAll('[data-ts]').forEach(function(el) {
-  var ts = el.getAttribute('data-ts');
-  if (ts) el.textContent = fmtLocal(ts);
-});
+localiseTimestamps();
 
 // Convert server-rendered throughput data attributes to formatted text
 document.querySelectorAll('[data-rate]').forEach(function(el) {

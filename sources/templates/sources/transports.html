@@ -16,16 +16,16 @@
 </p>
 
 {% if cfg_error %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">
+<div class="action-result err banner">
   Could not read the stored configuration: {{ cfg_error }} — showing
   environment/default values only.
 </div>
 {% endif %}
 {% if msg %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
+<div class="action-result ok banner">{{ msg }}</div>
 {% endif %}
 {% if err %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">{{ err }}</div>
+<div class="action-result err banner">{{ err }}</div>
 {% endif %}
 
 {% for s in sections %}
@@ -138,10 +138,7 @@
 
 <script>
 (function() {
-  function csrfToken() {
-    var m = document.cookie.match(/csrftoken=([^;]+)/);
-    return m ? m[1] : '';
-  }
+  // csrfToken()/postJSON() come from base.html — see the comment there.
   function msgFor(id) {
     return document.querySelector('.pd-test-result[data-for="' + id + '"]');
   }
@@ -150,11 +147,7 @@
       var id = b.getAttribute('data-pd-test');
       var el = msgFor(id);
       el.textContent = 'sending…';
-      fetch("{% url 'sources:transports_test' %}", {
-        method: 'POST',
-        headers: {'X-CSRFToken': csrfToken()},
-        body: new URLSearchParams({datasource_id: id}),
-      }).then(function(r) { return r.json(); }).then(function(d) {
+      postJSON("{% url 'sources:transports_test' %}", {datasource_id: id}).then(function(d) {
         if (d.ok) {
           el.textContent = '✓ trigger+resolve sent';
         } else {

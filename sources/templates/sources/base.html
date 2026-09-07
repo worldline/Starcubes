@@ -453,6 +453,10 @@ tr.editing .row-edit { display: flex; }
 }
 .action-result.ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); display: block; }
 .action-result.err { background: var(--badge-failed-bg); color: var(--badge-failed-fg); display: block; }
+/* Server-rendered page banner: the .action-result colours, but shown
+   unconditionally (the template already decided) and spaced for the top of a
+   page rather than for sitting under a form. */
+.action-result.banner { display: block; margin: 12px 0; }
 
 /* Persistent bottom status bar — always visible, mirrors the canvas page
    #info bar. Left region = ETL status segment (#etlStrip), right region =
@@ -779,6 +783,25 @@ function postJSON(url, formOrData) {
     headers: {'X-CSRFToken': csrfToken()},
     body: body,
   }).then(function(r){ return r.json(); });
+}
+
+// Server-rendered timestamps carry the raw value in data-ts and a formatted
+// fallback as their text, so a page without JS still reads. fmtLocal turns one
+// into local time; localiseTimestamps walks a subtree and rewrites them.
+// `root` matters: sources/_firings.html is included mid-content and must only
+// claim its own table's cells, never another page's.
+function fmtLocal(iso) {
+  if (!iso) return '—';
+  var d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+function localiseTimestamps(root) {
+  (root || document).querySelectorAll('[data-ts]').forEach(function(el) {
+    var ts = el.getAttribute('data-ts');
+    if (ts) el.textContent = fmtLocal(ts);
+  });
 }
 
 // GET counterpart to postJSON, so a read does not have to spell out the

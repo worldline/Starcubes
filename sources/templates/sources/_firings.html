@@ -75,9 +75,9 @@ activated client-side without touching it.
         <span class="text-muted">closed</span>
         {% endif %}
       </td>
-      <td class="text-mono text-muted" data-ts="{{ e.first_breach_at|default:'' }}">{{ e.first_breach_at|default:'—' }}</td>
-      <td class="text-mono text-muted" data-ts="{{ e.last_breach_at|default:'' }}">{{ e.last_breach_at|default:'—' }}</td>
-      <td class="text-mono text-muted" data-ts="{{ e.closed_at|default:'' }}">{{ e.closed_at|default:'—' }}</td>
+      <td class="text-mono text-muted" data-ts="{{ e.first_breach_at|date:'c' }}">{{ e.first_breach_at|default:'—' }}</td>
+      <td class="text-mono text-muted" data-ts="{{ e.last_breach_at|date:'c' }}">{{ e.last_breach_at|default:'—' }}</td>
+      <td class="text-mono text-muted" data-ts="{{ e.closed_at|date:'c' }}">{{ e.closed_at|default:'—' }}</td>
       <td style="text-align:right" title="first &rarr; last breach">{{ e.duration }}</td>
       <td style="text-align:right" class="text-mono">
         {{ e.first_value|floatformat:-1|default:'∅' }} &rarr; {{ e.last_value|floatformat:-1|default:'∅' }}
@@ -94,12 +94,7 @@ version is included mid-content, and the script only touches the rows
 above it. Scoped to #firingsTable so it can never claim another page's
 [data-ts] cells.
 {% endcomment %}
-document.querySelectorAll('#firingsTable [data-ts]').forEach(function(el) {
-  var ts = el.getAttribute('data-ts');
-  if (!ts) { el.textContent = '—'; return; }
-  var d = new Date(ts);
-  el.textContent = isNaN(d.getTime()) ? ts : d.toLocaleString();
-});
+localiseTimestamps(document.getElementById('firingsTable'));
 </script>
 {% else %}
 <div class="card"><div class="card-body text-muted" style="padding:16px;text-align:center">

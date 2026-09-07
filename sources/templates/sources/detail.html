@@ -279,14 +279,8 @@
 // Status-bar polling — ETL run state for this datasource.
 // ==========================================================================
 (function() {
-  // Kept identical to manage.html's pair: both pages show the same etl_run
-  // figures, and two formulas for one number is what made them disagree.
-  function fmtLocal(iso) {
-    if (!iso) return '—';
-    var d = new Date(iso);
-    if (isNaN(d.getTime())) return iso;
-    return d.toLocaleString();
-  }
+  // fmtLocal comes from base.html; fmtRate stays here because only the two
+  // datasource pages show throughput.
   function fmtRate(n) {
     n = parseFloat(n);
     if (!n && n !== 0) return '?';
@@ -492,12 +486,6 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     return renderNodes(root);
   }
 
-  function fmtDate(iso) {
-    if (!iso) return '—';
-    var d = new Date(iso);
-    return isNaN(d) ? iso : d.toLocaleString();
-  }
-
   // Field-by-field old→new diff of two alarm snapshots.
   var SNAP_FIELDS = ['name', 'context_filter', 'comment', 'measure', 'cond_op',
                      'threshold', 'window_s', 'severity', 'notify_channels',
@@ -544,7 +532,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
         hist.forEach(function(h) {
           html += '<div style="margin-bottom:6px"><span class="text-mono">'
             + esc(h.kind) + '</span> · ' + esc(h.username) + ' · '
-            + esc(fmtDate(h.changed_at))
+            + esc(fmtLocal(h.changed_at))
             + (h.kind === 'updated' && snapDiff(h.old_row, h.new_row)
                ? '<br><span class="text-muted" style="font-size:11px">'
                  + snapDiff(h.old_row, h.new_row) + '</span>' : '')
@@ -558,9 +546,9 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
         fire.forEach(function(f) {
           html += '<div style="margin-bottom:2px">'
             + (f.open
-               ? '<strong>open</strong> since ' + esc(fmtDate(f.first_breach_at))
-               : esc(fmtDate(f.first_breach_at)) + ' – ' + esc(fmtDate(f.last_breach_at))
-                 + ' (closed ' + esc(fmtDate(f.closed_at)) + ')')
+               ? '<strong>open</strong> since ' + esc(fmtLocal(f.first_breach_at))
+               : esc(fmtLocal(f.first_breach_at)) + ' – ' + esc(fmtLocal(f.last_breach_at))
+                 + ' (closed ' + esc(fmtLocal(f.closed_at)) + ')')
             + ' · value ' + (f.last_value === null ? '∅' : f.last_value)
             + '</div>';
         });

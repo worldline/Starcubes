@@ -10,10 +10,10 @@
 </p>
 
 {% if msg %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
+<div class="action-result ok banner">{{ msg }}</div>
 {% endif %}
 {% if err %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">{{ err }}</div>
+<div class="action-result err banner">{{ err }}</div>
 {% endif %}
 
 <div class="card">
@@ -123,21 +123,8 @@
 
 <script>
 (function() {
-  function csrfToken() {
-    var m = document.cookie.match(/csrftoken=([^;]+)/);
-    return m ? m[1] : '';
-  }
-  function postJSON(url, body) {
-    var fd = body instanceof FormData ? body : new FormData();
-    if (!(body instanceof FormData)) {
-      for (var k in body) fd.append(k, body[k]);
-    }
-    return fetch(url, {
-      method: 'POST',
-      headers: {'X-CSRFToken': csrfToken()},
-      body: fd,
-    }).then(function(r){ return r.json(); });
-  }
+  // csrfToken() and postJSON() come from base.html, which defines them before
+  // <main> precisely so a content-block script can use them.
   function msg(text, ok) {
     var el = document.getElementById('uploadMsg');
     el.style.display = 'block';

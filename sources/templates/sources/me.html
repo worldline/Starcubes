@@ -8,10 +8,10 @@
 </div>
 
 {% if msg %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
+<div class="action-result ok banner">{{ msg }}</div>
 {% endif %}
 {% if err %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">{{ err }}</div>
+<div class="action-result err banner">{{ err }}</div>
 {% endif %}
 
 <div class="card">

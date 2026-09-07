@@ -5,10 +5,10 @@
 {% include "sources/_global_tabs.html" %}
 
 {% if msg %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
+<div class="action-result ok banner">{{ msg }}</div>
 {% endif %}
 {% if err %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">{{ err }}</div>
+<div class="action-result err banner">{{ err }}</div>
 {% endif %}
 
 <!-- Users tab -->
@@ -54,8 +54,8 @@
             </td>
             <td style="color:var(--muted);font-size:12px">{{ u.date_joined|date:"Y-m-d" }}</td>
             <td style="text-align:right;white-space:nowrap">
-              <button class="btn-icon" onclick="togglePwForm(this)" title="Set password">🔑</button>
-              <button class="btn-icon" onclick="startUserEdit(this)" title="Edit user">✏</button>
+              <button class="btn-icon" data-pw-toggle="{{ u.pk }}" title="Set password">🔑</button>
+              <button class="btn-icon" data-user-edit="{{ u.pk }}" title="Edit user">✏</button>
               {% if u.pk != request.user.pk %}
               <form method="post" style="display:inline"
                     onsubmit="return confirm('Delete user \'{{ u.username }}\'?')">
@@ -78,8 +78,7 @@
                 <input class="form-control" type="password" name="new_password"
                        placeholder="New password" required style="width:220px">
                 <button type="submit" class="btn btn-primary btn-sm">Set Password</button>
-                <button type="button" class="btn btn-secondary btn-sm"
-                        onclick="togglePwForm(this.closest('tr').previousElementSibling.querySelector('.btn-icon'))">Cancel</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-pw-toggle="{{ u.pk }}">Cancel</button>
               </form>
             </td>
           </tr>
@@ -109,8 +108,7 @@
                 <label style="font-size:12px"><input type="hidden" name="is_staff" value=""><input type="checkbox" name="is_staff" {% if u.is_staff %}checked{% endif %}> Staff</label>
                 <label style="font-size:12px"><input type="hidden" name="is_active" value=""><input type="checkbox" name="is_active" {% if u.is_active %}checked{% endif %}> Active</label>
                 <button type="submit" class="btn btn-primary btn-sm">Save</button>
-                <button type="button" class="btn btn-secondary btn-sm"
-                        onclick="startUserEdit(this.closest('tr').previousElementSibling.previousElementSibling.querySelector('.btn-icon[title=\"Edit user\"]'))">Cancel</button>
+                <button type="button" class="btn btn-secondary btn-sm" data-user-edit="{{ u.pk }}">Cancel</button>
               </form>
             </td>
           </tr>
@@ -154,21 +152,29 @@
 </div>
 
 <script>
-function togglePwForm(btn) {
-  var row = btn.closest('tr');
-  var pwRow = document.getElementById('pw-row-' + row.dataset.uid);
+// Both toggles take the user id straight from the button. They used to take
+// the button and walk to the row, which forced the Cancel buttons inside the
+// expanded rows to climb back up through previousElementSibling — a chain that
+// a single extra <tr> would have broken silently.
+function togglePwForm(uid) {
+  var pwRow = document.getElementById('pw-row-' + uid);
   var hidden = pwRow.style.display === 'none';
   pwRow.style.display = hidden ? '' : 'none';
   if (hidden) pwRow.querySelector('input[type=password]').focus();
 }
-function startUserEdit(btn) {
-  var row = btn.closest('tr');
-  var editRow = document.getElementById('user-edit-' + row.dataset.uid);
+function startUserEdit(uid) {
+  var editRow = document.getElementById('user-edit-' + uid);
   // Close any other open edit row first.
   document.querySelectorAll('.user-edit-row').forEach(function(r) {
     if (r !== editRow) r.style.display = 'none';
   });
   editRow.style.display = editRow.style.display === 'none' ? '' : 'none';
 }
+document.querySelectorAll('[data-pw-toggle]').forEach(function(b) {
+  b.addEventListener('click', function() { togglePwForm(b.dataset.pwToggle); });
+});
+document.querySelectorAll('[data-user-edit]').forEach(function(b) {
+  b.addEventListener('click', function() { startUserEdit(b.dataset.userEdit); });
+});
 </script>
 {% endblock %}
