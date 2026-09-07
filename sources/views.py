@@ -35,6 +35,7 @@ from core.cache import bump_cache_epoch, clear_cache
 from core.etl import (truncate_last_partition, truncate_partition,
                       drop_partition, delete_fact_from,
                       clear_etl_history, set_highwatermark)
+from core.preflight import run_preflight
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user, history_list_user
 from core.audit import audit_id_details, audit_ids, audit_window
@@ -1325,6 +1326,31 @@ def etl_drop_partition(request, pk: int):
         drop_partition(source, source.dest_engine(), partition,
                        meta_engine=meta)
         return JsonResponse({"ok": True, "partition": partition})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_admin_required_json
+def etl_preflight(request, pk: int):
+    """Run the pre-load checks without loading anything.
+
+    A dry run: `repair=False`, so it reports a missing fact or dim table
+    instead of creating it. Self-repair belongs to the load, where the
+    creation is recorded on the run row; a button that quietly performs DDL
+    is not what an operator pressing "check" is asking for.
+    """
+    try:
+        source, meta = _load_source(pk)
+        try:
+            src_engine = source.source_engine()
+        except Exception:
+            # No driver, unparseable DSN: the projection probe reports the
+            # skip itself rather than failing the whole report.
+            src_engine = None
+        report = run_preflight(source, meta, source.dest_engine(),
+                               source_engine=src_engine, repair=False)
+        return JsonResponse({"ok": True, "report": report})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
 

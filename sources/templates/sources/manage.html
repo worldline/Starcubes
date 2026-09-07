@@ -493,6 +493,19 @@
       </div>
     </div>
 
+    <!-- Card: Preflight -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">&#128269; Preflight</span></div>
+      <div class="card-body">
+        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">The checks every ETL run makes before it loads anything: schema objects, metadata version, index coverage, the source projection, and the watermark against the newest fact row. This is a dry run &mdash; it reports what a load would repair, and changes nothing.</p>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-primary btn-sm" id="preflightBtn">Run checks</button>
+          <span class="cmd-result" id="result-preflight"></span>
+        </div>
+        <div id="preflightOut" style="margin-top:12px"></div>
+      </div>
+    </div>
+
     <!-- Card 2: Data Cleanup -->
     <div class="card card-danger-hint">
       <div class="card-header"><span class="card-title">&#128465; Data Cleanup</span></div>
@@ -1779,6 +1792,58 @@ cmdButton('etlCmdVacuumBtn', '/etl/vacuum-analyze/', 'result-vacuum');
 cmdButton('etlCmdHwmBtn', '/etl/set-highwatermark/', 'result-set-hwm', {
   ok: function(d) { return '✓ HWM set to ' + (d.highwatermark || ''); },
 });
+
+
+// --- Preflight ---------------------------------------------------------
+// The same report core/preflight.py writes into etl_run.stats, only asked
+// for on its own. Rendered as one line per check so a warn does not hide
+// between the ok's.
+var PREFLIGHT_MARK = {ok: '\u2713', warn: '\u26a0', block: '\u2717'};
+
+function preflightRender(report) {
+  var box = document.getElementById('preflightOut');
+  var html = '<table class="data-table"><tbody>';
+  (report.checks || []).forEach(function(c) {
+    var colour = c.level === 'block' ? 'var(--danger)'
+               : c.level === 'warn' ? 'var(--warn)' : '';
+    html += '<tr>'
+         +  '<td style="width:1%;white-space:nowrap;color:' + colour + '">'
+         +  PREFLIGHT_MARK[c.level] + '</td>'
+         +  '<td style="width:1%;white-space:nowrap"><code>' + esc(c.code) + '</code></td>'
+         +  '<td style="color:' + colour + '">' + esc(c.message) + '</td>'
+         +  '</tr>';
+  });
+  html += '</tbody></table>';
+  if ((report.repairs || []).length) {
+    html += '<p style="margin:8px 0 0;color:var(--warn);font-size:13px">Repaired: '
+         +  esc(report.repairs.join(', ')) + '</p>';
+  }
+  box.innerHTML = html;
+}
+
+(function() {
+  var btn = document.getElementById('preflightBtn');
+  if (!btn) return;
+  btn.addEventListener('click', function() {
+    var resultEl = document.getElementById('result-preflight');
+    var box = document.getElementById('preflightOut');
+    btn.disabled = true;
+    resultEl.textContent = '';
+    box.innerHTML = '';
+    postJSON('/sources/' + DS_PK + '/etl/preflight/', {}).then(function(d) {
+      if (!d.ok) { showCmdResult(resultEl, false, '\u2717 ' + d.error); return; }
+      preflightRender(d.report);
+      var blocked = d.report.blocked;
+      var warns = (d.report.checks || []).filter(function(c) { return c.level === 'warn'; }).length;
+      showCmdResult(resultEl, !blocked,
+        blocked ? '\u2717 A load would be blocked'
+                : (warns ? '\u2713 No blockers, ' + warns + ' warning(s)'
+                         : '\u2713 All checks pass'));
+    }).catch(function(e) {
+      showCmdResult(resultEl, false, '\u2717 ' + e);
+    }).finally(function() { btn.disabled = false; });
+  });
+})();
 
 // --- Gap Audit ---------------------------------------------------------
 // Source-vs-fact row counts per bucket. Bucket edges come back as ISO

@@ -232,8 +232,11 @@ def _check_source_projection(source: Source, source_engine) -> dict:
     workers are up — into a refusal with a column name in it.
     """
     if source_engine is None:
+        # Either the caller did not want a source round trip, or it could
+        # not even build the engine (a missing driver, an unparseable DSN).
+        # Both are "not checked", and neither is this check's finding.
         return _check("source_projection", CHECK_OK,
-                      "skipped — no source connection requested")
+                      "skipped — no source connection available")
     probe = f"SELECT * FROM ({source.import_query}) q WHERE 1=0"
     try:
         with source_engine.begin() as src:
