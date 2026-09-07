@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import logging
 import operator
+import os
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -100,6 +101,26 @@ from .query import (
 from .source import Source
 
 logger = logging.getLogger(__name__)
+
+# The alarm phase runs synchronously inside the ETL loop, so a pathological
+# filter must not be able to block it without bound. The chart's equivalent
+# query has had a timeout all along; this is the same instrument for the
+# evaluator, which builds the same SQL through the same _build_where.
+# Env rather than a Django setting: core/ must stay importable without
+# Django (the spawned etl_run and the standalone alarm_run both land here).
+ALARM_TIMEOUT_MS = int(os.environ.get("STARCUBES_ALARM_TIMEOUT_MS", 30_000))
+
+# Distinguishes "the caller did not pass a fact_max" from "the fact table is
+# empty", which is what a None fact_max means everywhere else in here.
+_UNSET = object()
+
+
+def _set_timeout(conn) -> None:
+    """Bound one statement. `SET LOCAL` needs a transaction and cannot take
+    a bind parameter under the extended protocol, hence set_config() — the
+    same form core/audit.py uses for its fact-side aggregates."""
+    conn.execute(text("SELECT set_config('statement_timeout', :ms, true)"),
+                 {"ms": str(int(ALARM_TIMEOUT_MS))})
 
 _COND_OPS = {
     ">": operator.gt,
@@ -314,8 +335,15 @@ def fact_max_time(source: Source) -> Optional[datetime]:
     watermark lag, and the evaluator must not advance into windows that
     have no data yet. `watermark_fact_sql()` falls back to
     `partition_column` when no expression is configured.
+
+    Called **once per datasource per cycle** by `run_alarm_cycle`, which
+    hands the result to every alarm on that datasource. It used to run per
+    alarm: twenty alarms meant twenty identical max() scans per load, and
+    with a derived watermark expression there is neither a BRIN nor
+    partition pruning to make them cheap.
     """
-    with source.dest_engine().connect() as conn:
+    with source.dest_engine().begin() as conn:
+        _set_timeout(conn)
         return conn.execute(text(
             f"SELECT max({source.watermark_fact_sql()}) "
             f"FROM {source.schema_name}.fact"
@@ -335,7 +363,8 @@ def _evaluate_window(
     """
     win_start = fact_max - timedelta(seconds=alarm["window_s"])
     sql, params = alarm_aggregate_sql(source, alarm, win_start, fact_max)
-    with source.dest_engine().connect() as conn:
+    with source.dest_engine().begin() as conn:
+        _set_timeout(conn)
         raw = conn.execute(text(sql), params).scalar()
     value = None if raw is None else float(raw)
     breach = value is not None and _COND_OPS[alarm["cond_op"]](
@@ -343,7 +372,8 @@ def _evaluate_window(
     return value, breach
 
 
-def evaluate_alarm(source: Source, meta_engine, alarm: dict) -> dict:
+def evaluate_alarm(source: Source, meta_engine, alarm: dict, *,
+                   fact_max=_UNSET) -> dict:
     """Evaluate one alarm at the current HWM and run its episode machine.
 
     Called once per ETL load. Every episode timestamp written here is the
@@ -355,12 +385,17 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict) -> dict:
     mid-alarm leaves no half-applied episode. The `eval_end` update
     deliberately does not touch `updated_at` — runtime progress must never
     masquerade as a user configuration change in `alarm_history`.
+
+    `fact_max` is the datasource's fact clock. `run_alarm_cycle` reads it
+    once and passes it in for every alarm on that datasource; a caller that
+    omits it gets the old behaviour of reading it here.
     """
     counts = {"windows": 0, "breaches": 0,
               "episodes_opened": 0, "episodes_extended": 0,
               "episodes_closed": 0, "transitions": []}
 
-    fact_max = fact_max_time(source)
+    if fact_max is _UNSET:
+        fact_max = fact_max_time(source)
     if fact_max is None:
         # Empty fact table (fresh datasource before the first ETL run):
         # nothing to evaluate, and no cursor to set.
@@ -513,9 +548,25 @@ def run_alarm_cycle(meta_engine, dest_dsn: str, *,
                                  len(ds_alarms))
                 counts["errors"] += len(ds_alarms)
                 continue
+        # One fact clock per datasource, not one per alarm: every alarm here
+        # evaluates against the same HWM, and the max() behind it is the
+        # expensive part of the whole phase.
+        try:
+            ds_fact_max = fact_max_time(ds_source)
+        except Exception:
+            logger.exception("alarm cycle: reading the fact clock of "
+                             "datasource %s failed, skipping its %d alarms",
+                             ds_id, len(ds_alarms))
+            counts["errors"] += len(ds_alarms)
+            continue
+        if ds_fact_max is None:
+            # Empty fact table: nothing to evaluate and no cursor to set,
+            # exactly what evaluate_alarm would conclude per alarm.
+            continue
         for alarm in ds_alarms:
             try:
-                res = evaluate_alarm(ds_source, meta_engine, alarm)
+                res = evaluate_alarm(ds_source, meta_engine, alarm,
+                                     fact_max=ds_fact_max)
             except Exception:
                 logger.exception("alarm cycle: evaluating alarm %s (%s) "
                                  "failed, skipping it", alarm["name"],
