@@ -69,12 +69,74 @@ It does not reimplement `git describe` in shell. One definition of what a
 version is, and that module is stdlib-only and Django-free precisely so this
 call works with nothing installed and no DSN set.
 
+That `python3` is the build host's, not the image's. A build host is old — ours
+runs 3.6 — so `version.py` is held to **Python 3.6 syntax and API**: no
+`from __future__ import annotations` (3.7), no builtin generics in an
+annotation that gets evaluated, no `subprocess.run(capture_output=…, text=…)`
+(3.7). It is the only file in the tree under that constraint; everything else
+runs under the image's 3.12. To check it after an edit:
+
+```
+podman run --rm -v "$PWD":/w:z -w /w python:3.6-slim \
+    python -c 'from starcubes.version import build_info; print(build_info())'
+```
+
+**A build that passes no version is refused.** The Dockerfile checks
+`STARCUBES_VERSION` and stops if it is empty, because an image that cannot
+name its own version is the one failure this whole design exists to prevent —
+and a bare `podman build` used to produce exactly that, quietly. Empty means
+"you forgot"; building deliberately without git is a matter of saying so:
+
+```
+podman build --build-arg STARCUBES_VERSION=unknown ...
+```
+
+The check lives at the very end of the Dockerfile, and that placement is
+deliberate. A `RUN` that reads an ARG takes its value into its cache key, and
+the version changes with every commit — in front of `npm ci` or
+`pip install`, the guard would rebuild the world each time. Behind them it
+sits in front of nothing but `LABEL`, `EXPOSE` and `ENTRYPOINT`. The cost is
+that the build fails late rather than early, which is a fair trade for a
+failure that only occurs when someone bypasses `build.sh`.
+
 **Container tags may not contain `+`,** which every version off a non-tagged
 commit has. `build.sh` swaps it for `_` in the image tag only
 (`starcubes:2.0.0-alpha.1_3.g1ae985c`); the OCI label keeps the real version,
 `+` and all. It also tags `starcubes:latest`: with no registry in play,
 `:latest` simply means "the one I built last", which is what the README
 quickstart runs.
+
+## How the version reaches a source archive
+
+`git archive --format=zip HEAD -o starcubes.zip` hands a test environment the
+source with no `.git` in it, and unlike a container build nothing passes a
+version in. Left alone the About dialog there says `unknown`.
+
+`.gitattributes` closes that:
+
+```
+starcubes/version.py export-subst
+```
+
+`git archive` rewrites two placeholder constants in that file as it packs,
+filling in `git describe` and the short commit. The command above needs no
+flag and no wrapper — it is already correct, and that is the point: a
+handover path you have to remember is one that gets forgotten.
+
+In a checkout the placeholders keep their own literal text. `version.py`
+recognises that (no substituted value starts with `$`) and ignores them, so
+the environment → git order above is untouched.
+
+Two things an archive cannot report:
+
+- **No build date.** Nothing built it. The dialog leaves the row empty rather
+  than passing the commit's date off as a build time.
+- **No `dirty`.** An archive is packed from a commit, so uncommitted edits in
+  the tree it came from never travel with it.
+
+And if no `v*` tag is reachable from the packed commit — a shallow clone, or
+a commit older than the first tag — the version is `unknown` again. That is
+the honest answer rather than a failure: there is no tag to name.
 
 ## What the number promises
 

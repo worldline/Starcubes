@@ -1,0 +1,5 @@
+# `git archive` substitutes the placeholders in version.py at pack time, so a
+# source archive can name its version without carrying .git. See
+# docs/releases.md — nothing else in the tree wants export-subst, and no
+# export-ignore here on purpose: the archive stays what it is today.
+starcubes/version.py export-subst

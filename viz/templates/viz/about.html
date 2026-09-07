@@ -69,11 +69,13 @@
     padding: 4px 0; border-top: 1px solid var(--border); font-weight: 400;
   }
   .about-facts th { color: var(--muted); width: 42%; }
+  .about-facts a { color: var(--accent); text-decoration: none; }
+  .about-facts a:hover { text-decoration: underline; }
   .about-facts td { font-variant-numeric: tabular-nums; }
   .about-footer {
     margin-top: 16px; padding-top: 12px;
     border-top: 1px solid var(--border);
-    color: var(--muted); font-size: 11.5px;
+    color: var(--muted); font-size: 11.5px; line-height: 1.65;
   }
 </style>
 
@@ -104,12 +106,34 @@
       {% endif %}
       <tr><th>Python</th><td>{{ about.python_version }}</td></tr>
       <tr><th>Django</th><td>{{ about.django_version }}</td></tr>
+      {% comment %}
+        The project URL is hard-coded because it cannot be discovered at
+        runtime: it lives in the dependency's own package.json under
+        node_modules/, which never reaches the image — .dockerignore drops
+        node_modules, and the jsbuilder stage copies out only the bundle.
+        package-lock.json carries the resolved npm tarball, not the repo.
+        Same URL the README and docs/internals.md already cite.
+      {% endcomment %}
       {% if about.timeseries_version %}
-        <tr><th>timeseries.js</th><td>{{ about.timeseries_version }}</td></tr>
+        <tr>
+          <th><a href="https://github.com/hgruber/timeseries.js"
+                 target="_blank" rel="noopener">timeseries.js</a></th>
+          <td>{{ about.timeseries_version }}</td>
+        </tr>
       {% endif %}
     </table>
 
-    <div class="about-footer">MIT License &middot; &copy; 2026 Holger Gruber</div>
+    {% comment %}
+      Both notices belong here, not just ours: timeseries.js is MIT, and MIT
+      requires its copyright notice to be shipped with the software. The
+      bundle is minified and carries no banner, so this dialog and the
+      LICENSE the jsbuilder stage copies next to it are where an operator
+      can actually see it. Full text in THIRD-PARTY-NOTICES.
+    {% endcomment %}
+    <div class="about-footer">
+      starcubes &middot; MIT License &middot; &copy; 2026 Worldline<br>
+      timeseries.js &middot; MIT License &middot; &copy; 2022&ndash;2026 Holger Gruber
+    </div>
   </div>
 </div>
 

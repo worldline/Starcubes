@@ -8,9 +8,15 @@ FROM node:20-slim AS jsbuilder
 WORKDIR /js
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
+# The bundle and its licence together: timeseries.js is MIT, which requires
+# its copyright notice to ship with the code, and the published bundle is
+# minified with no banner of its own. Both land in viz/static/timeseries/
+# via the single COPY --from=jsbuilder below. See THIRD-PARTY-NOTICES.
 RUN mkdir -p /js/vendor/timeseries && \
     cp node_modules/@hgruber/timeseries.js/dist/timeseries.min.js \
-       /js/vendor/timeseries/timeseries.js
+       /js/vendor/timeseries/timeseries.js && \
+    cp node_modules/@hgruber/timeseries.js/LICENSE \
+       /js/vendor/timeseries/LICENSE
 
 # ── Stage 2: Python build ─────────────────────────────────────────────────────
 # slim + gcc instead of the full bookworm image: every requirements.txt wheel
@@ -129,15 +135,35 @@ ENV STARCUBES_OIDC_ISSUER="" \
 # starcubes/version.py reads them back out of the environment, where they
 # take precedence over the git lookup it would do in a checkout.
 #
-# Empty defaults are deliberate: a bare `podman build -f Dockerfile .` that
-# bypasses build.sh still produces a working image, one that reports its
-# version as "unknown" rather than claiming a wrong one.
+# A build that bypasses build.sh and passes nothing is refused below rather
+# than quietly producing an image that has lost its identity — that is how a
+# container ended up reporting its version as "unknown". Empty means "you
+# forgot"; an explicit --build-arg STARCUBES_VERSION=unknown means "I know,
+# I am building without git" and is let through. Only the version is
+# required: the commit and the build time are additions to it.
 #
-# Last in the file so that a new commit — which changes only these three
-# values — invalidates no layer above them.
+# Last in the file for two reasons. A new commit changes only these three
+# values, so nothing above them is invalidated — and the guard's RUN takes
+# the version into its cache key, which past `npm ci` and `pip install`
+# would rebuild the world on every commit. Here it sits in front of nothing
+# but LABEL, EXPOSE and ENTRYPOINT, so it costs nothing.
 ARG STARCUBES_VERSION=""
 ARG STARCUBES_BUILD_REF=""
 ARG STARCUBES_BUILD_DATE=""
+
+RUN test -n "$STARCUBES_VERSION" || { \
+      echo "" >&2; \
+      echo "STARCUBES_VERSION is empty — this image could not name its own version." >&2; \
+      echo "" >&2; \
+      echo "  Build with ./docker/build.sh, which resolves it from the git tag." >&2; \
+      echo "  To build without a version on purpose, say so:" >&2; \
+      echo "      podman build --build-arg STARCUBES_VERSION=unknown ..." >&2; \
+      echo "" >&2; \
+      echo "  See docs/releases.md." >&2; \
+      echo "" >&2; \
+      exit 1; \
+    }
+
 ENV STARCUBES_VERSION=$STARCUBES_VERSION \
     STARCUBES_BUILD_REF=$STARCUBES_BUILD_REF \
     STARCUBES_BUILD_DATE=$STARCUBES_BUILD_DATE

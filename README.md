@@ -194,4 +194,9 @@ lifecycle, schema decisions — is in [`docs/internals.md`](docs/internals.md).
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — Copyright © 2026 Worldline. See [`LICENSE`](LICENSE).
+
+starcubes ships one third-party component, `@hgruber/timeseries.js`, which is
+MIT — Copyright © 2022–2026 Holger Gruber. Its notice travels with the code:
+[`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) reproduces it in full, and the
+container image carries the package's own `LICENSE` next to the bundle.

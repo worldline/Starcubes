@@ -7,10 +7,42 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
-Nothing yet. What 2.1.x will contain is not decided; candidates live in
+### Added
+
+- The About dialog's **timeseries.js** row now links to the project on
+  GitHub.
+
+What 2.1.x will contain is not decided; candidates live in
 [`docs/backlog.md`](docs/backlog.md), and nothing there is committed to a
 release until it is listed here. The road to a final 2.0.0 runs through
 further pre-release tags — see [`docs/releases.md`](docs/releases.md).
+
+## [2.0.0-alpha.2] — 2026-09-07
+
+### Fixed
+
+- **A build that bypasses `docker/build.sh` is now refused** instead of
+  quietly producing an image that reports its version as `unknown`. The
+  version cannot be discovered from inside the image — `.dockerignore` keeps
+  `.git` out of the build context — so a bare `podman build` left it empty
+  and the About dialog had nothing to name. Building without git on purpose
+  still works, it just has to say so:
+  `--build-arg STARCUBES_VERSION=unknown`.
+- **Builds on a host with Python 3.6 work again.** `docker/build.sh` reads
+  the version by running `starcubes/version.py` with the build machine's
+  `python3`, and that module opened with a 3.7-only `__future__` import, so
+  the build died on a `SyntaxError` before reaching podman. The module is
+  now held to Python 3.6 — it is the only file in the tree that is.
+- **A source archive names its version too.** Code handed over as a
+  `git archive` zip carries no `.git` and gets no build argument, so the
+  About dialog there reported `unknown`. `git archive` now fills the version
+  and the commit in as it packs — the same command as before, no extra flag.
+- **The copyright notices are right, and complete.** starcubes is
+  Copyright © 2026 Worldline. The vendored `@hgruber/timeseries.js` is MIT,
+  Copyright © 2022–2026 Holger Gruber, and its notice now actually ships:
+  the published bundle is minified with no banner, so the image carries the
+  package's own `LICENSE` next to it, the About dialog names both, and
+  `THIRD-PARTY-NOTICES` reproduces the text in full.
 
 ## [2.0.0-alpha.1] — 2026-09-07
 
