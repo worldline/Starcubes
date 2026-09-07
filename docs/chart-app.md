@@ -25,8 +25,11 @@ a manifest static-files storage (`starcubes/settings.py`), so an external
   apart. `.chip` is the same metrics in text form, and `.chip-group` welds a
   row of them into one segmented control.
 - **`[data-tip]`** — a CSS tooltip, `::after` for the bubble and `::before`
-  for the arrow, `data-tip-pos="above"` to flip it. It exists because `title`
-  waits ~700 ms, cannot be themed, cannot wrap and never appears on keyboard
+  for the arrow, `data-tip-pos="above"` to flip it, `data-tip-align="end"`
+  for triggers at the viewport's right edge (a centred tooltip there would
+  create a horizontal scrollbar; those anchor to the trigger's trailing edge
+  instead). It exists because `title` waits ~700 ms, cannot be themed, cannot
+  wrap and never appears on keyboard
   focus. **`data-tip` is not a label**: every icon button also carries an
   `aria-label` with the same string.
 - **`makePopover(btn, panel, opts)`** — anchored dropdowns: toggle, outside
@@ -41,7 +44,9 @@ a manifest static-files storage (`starcubes/settings.py`), so an external
 
 Single `#nav-tabs` flex row: `[Source1] [Source2] … [spacer] [☰]`. Source tabs
 are injected before `#nav-spacer` by `loadSources()`; clicking one calls
-`setActiveSource(name)`.
+`setActiveSource(name)`. The row clips (`overflow: hidden`) rather than
+scrolling: tabs shrink with ellipsis (`.source-tab-label`, full name on
+`btn.title`) and the brand and `#nav-menu-toggle` never give up space.
 
 Everything else collapsed into `#nav-menu`, a `makePopover` dropdown behind
 `#nav-menu-toggle`: username header (display only), Datasources

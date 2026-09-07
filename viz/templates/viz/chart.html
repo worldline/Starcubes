@@ -259,7 +259,12 @@
   html, body { margin: 0; padding: 0; height: 100%;
                font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI",
                      sans-serif; }
-  body      { display: flex; flex-direction: column; background: var(--body-bg); color: var(--body-color); }
+  /* Guard, not the fix: this is a 100%-height app shell that must never
+     scroll horizontally, and one hovering tooltip must not put a scrollbar
+     on the whole window. x-only so legitimate vertical overflow (a tall
+     filter panel, a wrapped #ctrl) still scrolls. */
+  body      { display: flex; flex-direction: column; overflow-x: hidden;
+              background: var(--body-bg); color: var(--body-color); }
   form#ctrl { padding: 6px 12px; background: var(--ctrl-bg);
               border-bottom: 1px solid var(--ctrl-border); display: flex; flex-wrap: wrap;
               gap: 12px 16px; align-items: flex-end; }
@@ -397,6 +402,16 @@
     top: auto; bottom: calc(100% + 2px);
     border-width: 5px 5px 0; border-top-color: var(--tip-bg);
     border-bottom-color: transparent;
+  }
+  /* Right-edge triggers would push a centred tooltip past the viewport's
+     right edge — and absolutely positioned overflow inside in-flow ancestors
+     is scrollable overflow, i.e. a horizontal scrollbar. Anchor those to the
+     trigger's trailing edge instead, caret with them. */
+  [data-tip][data-tip-align="end"]::after {
+    left: auto; right: 0; transform: none;
+  }
+  [data-tip][data-tip-align="end"]::before {
+    left: auto; right: 10px; transform: none;
   }
   [data-tip]:hover::after, [data-tip]:hover::before,
   [data-tip]:focus-visible::after, [data-tip]:focus-visible::before { opacity: 1; }
@@ -545,7 +560,8 @@
                        padding: 2px 4px; border: 1px solid var(--filter-text-input-border);
                        border-radius: 3px; box-sizing: border-box;
                        background: var(--filter-text-input-bg); color: inherit; }
-  .filter-dropdown { position: absolute; top: 100%; left: 0; min-width: 100%;
+  .filter-dropdown { position: absolute; top: 100%; right: 0; left: auto;
+                     min-width: 100%; max-width: 320px;
                      max-height: 200px; overflow-y: auto;
                      background: var(--filter-dropdown-bg);
                      border: 1px solid var(--filter-dropdown-border);
@@ -553,7 +569,7 @@
                      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
                      z-index: 100; }
   .filter-dropdown-item { padding: 4px 8px; cursor: pointer;
-                          font-size: 12px; }
+                          font-size: 12px; overflow-wrap: break-word; }
   .filter-dropdown-item:hover { background: var(--filter-dropdown-hover); }
 
   .filter-row-remove { background: none; border: none; font-size: 16px;
@@ -1100,9 +1116,13 @@
     display: flex; align-items: center;
     background: var(--bg2); border-bottom: 1px solid var(--border);
     padding: 0 16px; flex-shrink: 0; height: 44px;
+    /* The row clips rather than scrolls: tabs shrink and ellipsisize instead
+       of pushing the document wide (a scrollbar inside a 44 px bar would eat
+       its height and cover the active tab's underline). */
+    overflow: hidden;
   }
   .nav-brand {
-    display: flex; align-items: center;
+    display: flex; align-items: center; flex: 0 0 auto;
     margin-right: 12px; text-decoration: none;
   }
   .nav-brand-logo { height: 36px; width: auto; }
@@ -1114,7 +1134,10 @@
     border-bottom: 2px solid transparent;
     cursor: pointer; font: inherit; font-size: 13px; font-weight: 500;
     color: var(--label-color); display: flex; align-items: center;
-    height: 44px;
+    /* border-box: the tab is 44 px tall including its 2 px underline —
+       content-box would make it 46 px and the underline would fall outside
+       the row's new clip box. min-width: 0 lets the flex item shrink at all. */
+    box-sizing: border-box; min-width: 0; height: 44px;
     border-radius: 5px 5px 0 0;
     transition: background 0.12s, color 0.12s;
   }
@@ -1125,11 +1148,16 @@
     border-bottom-color: var(--btn-bg);
   }
   .source-tab.active:hover { background: var(--tab-active-bg); }
+  /* Ellipsis needs a block container; the button is display:flex, so the
+     text lives in a span for text-overflow to apply (see loadSources). */
+  .source-tab-label { min-width: 0; overflow: hidden;
+                      text-overflow: ellipsis; white-space: nowrap; }
   .nav-spacer { flex: 1; }
   /* The one control left in the bar: everything that used to sit here as a
      sixth equal-weight text link now lives in #nav-menu. Slightly larger than
      a toolbar .ibtn — it is the only target in a 44 px bar. */
-  #nav-menu-toggle { --ibtn-size: 32px; font-size: 17px; margin-left: 4px; }
+  #nav-menu-toggle { --ibtn-size: 32px; font-size: 17px; margin-left: 4px;
+                     flex: 0 0 auto; }
 </style>
 </head>
 <body>
@@ -1150,7 +1178,7 @@
   <form id="logout-form" method="post" action="{% url 'logout' %}" hidden>{% csrf_token %}</form>
   {% endif %}
   <button class="ibtn ibtn--plain" id="nav-menu-toggle" type="button"
-          aria-label="Main menu" data-tip="Menu">
+          aria-label="Main menu" data-tip="Menu" data-tip-align="end">
     <svg class="ic" aria-hidden="true"><use href="#ic-menu"></use></svg>
   </button>
 </div>
@@ -1260,7 +1288,7 @@
       <input type="text" name="dtp_from" id="dtp-from" autocomplete="off"
              placeholder="YYYY-MM-DD HH:MM">
       <button type="button" class="dtp-open" id="dtp-from-open"
-              aria-label="Pick a start date" data-tip="Pick a start date">
+              aria-label="Pick a start date" data-tip="Pick a start date" data-tip-align="end">
         <svg class="ic" aria-hidden="true"><use href="#ic-calendar"></use></svg>
       </button>
     </span>
@@ -1271,7 +1299,7 @@
       <input type="text" name="dtp_to" id="dtp-to" autocomplete="off"
              placeholder="YYYY-MM-DD HH:MM">
       <button type="button" class="dtp-open" id="dtp-to-open"
-              aria-label="Pick an end date" data-tip="Pick an end date">
+              aria-label="Pick an end date" data-tip="Pick an end date" data-tip-align="end">
         <svg class="ic" aria-hidden="true"><use href="#ic-calendar"></use></svg>
       </button>
     </span>
@@ -1287,22 +1315,22 @@
   <span class="ctrl-sep" aria-hidden="true"></span>
   <div class="ctrl-actions">
     <button id="legend-toggle" class="ibtn" type="button"
-            aria-label="Legend" data-tip="Legend">
+            aria-label="Legend" data-tip="Legend" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
     </button>
     <button id="follow-toggle" class="ibtn" type="button"
-            aria-label="Follow mode" data-tip="Follow mode&#10;(seismograph)">
+            aria-label="Follow mode" data-tip="Follow mode&#10;(seismograph)" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
       <span id="follow-dot"></span>
     </button>
     {% if user.is_authenticated %}
     <button id="query-toggle" class="ibtn" type="button"
-            aria-label="Query console" data-tip="Query console">
+            aria-label="Query console" data-tip="Query console" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-terminal"></use></svg>
     </button>
     {% endif %}
     <button id="keys-toggle" class="ibtn" type="button"
-            aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts&#10;(?)">
+            aria-label="Keyboard shortcuts" data-tip="Keyboard shortcuts&#10;(?)" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-keyboard"></use></svg>
     </button>
     {% if user.is_authenticated %}
@@ -1314,17 +1342,17 @@
     {% endcomment %}
     <a id="source-groupdims-link" class="ibtn" hidden
        aria-label="Group dimensions for this datasource"
-       data-tip="Group dimensions&#10;for this datasource">
+       data-tip="Group dimensions&#10;for this datasource" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>
     </a>
     <a id="source-measures-link" class="ibtn" hidden
        aria-label="Measures for this datasource"
-       data-tip="Measures&#10;for this datasource">
+       data-tip="Measures&#10;for this datasource" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-bar-chart"></use></svg>
     </a>
     <a id="alarms-link" class="ibtn" hidden
        aria-label="Alarms for this datasource"
-       data-tip="Alarms&#10;for this datasource">
+       data-tip="Alarms&#10;for this datasource" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
     </a>
     {% endif %}
@@ -4431,6 +4459,16 @@ class DateTimePicker {
     this._hIn.value = this._pad(this._pendingH);
     this._mIn.value = this._pad(this._pendingM);
     this._popup.classList.add('open');
+    // Anchored to the field's left edge, which a narrow window can leave past
+    // the viewport's right edge — same clamp the popovers' place() applies:
+    // flip to the field's right edge when the popup would cross it.
+    this._popup.style.left = '';
+    this._popup.style.right = '';
+    const r = this._popup.getBoundingClientRect();
+    if (r.right > window.innerWidth - 8) {
+      this._popup.style.left = 'auto';
+      this._popup.style.right = '0';
+    }
   }
 
   close(revert) {
@@ -4573,7 +4611,11 @@ async function loadSources() {
     btn.type = 'button';
     btn.className = 'source-tab';
     btn.dataset.name = s.name;
-    btn.textContent = s.name;
+    const label = document.createElement('span');
+    label.className = 'source-tab-label';
+    label.textContent = s.name;
+    btn.appendChild(label);
+    btn.title = s.name;
     btn.addEventListener('click', () => setActiveSource(s.name));
     navTabs.insertBefore(btn, spacer);
   }
