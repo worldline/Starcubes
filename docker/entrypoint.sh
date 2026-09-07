@@ -7,6 +7,19 @@ python3 /app/manage.py bootstrap
 # ── Resume any forever ETL sessions left active by the previous container ────
 python3 /app/manage.py etl_resume_forever
 
+# ── Watch the pipeline from outside the process being watched ───────────────
+# A wedged ETL loop cannot report that it is wedged, and a datasource whose
+# ETL stopped entirely produces no loads for an in-loop evaluator to ride on.
+# So pipeline alarms get a supervisor of their own -- the only thing here
+# that keeps working when nobody is using the app.
+#
+# Started the same way nginx is, and with the same honest caveat: nothing
+# supervises it. If it dies, nothing restarts it and nothing says so. That is
+# the price named in docs/etl-automation.md (U7); the request-path middleware
+# in starcubes/middleware.py is the second layer underneath it, and the ETL
+# loop evaluates them too after every load.
+python3 /app/manage.py pipeline_watch &
+
 # ── Trust (or not) the proxy's forwarded scheme ──────────────────────────────
 # uwsgi honours X-Forwarded-Proto / X-Forwarded-Ssl by itself when setting
 # wsgi.url_scheme, which is what Django's request.is_secure() reads. That is

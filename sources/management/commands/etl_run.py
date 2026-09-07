@@ -343,12 +343,20 @@ class Command(BaseCommand):
                     log.exception("%s: ETL run failed, continuing loop", source.name)
                     rows = 0
 
-                # Alarms are evaluated here and nowhere else: a load is
-                # the only thing that moves the data high watermark, and the
-                # HWM is what an alarm window slides with. Runs after a
-                # caught ETL failure too — evaluate_alarm skips itself when
-                # the HWM did not move, so a failed or backfill run costs
-                # one cheap max() per alarm and changes nothing.
+                # Threshold alarms are evaluated here and nowhere else: a
+                # load is the only thing that moves the data high watermark,
+                # and the HWM is what an alarm window slides with. Runs
+                # after a caught ETL failure too — evaluate_alarm skips
+                # itself when the HWM did not move, so a failed or backfill
+                # run costs one cheap max() per datasource and changes
+                # nothing.
+                #
+                # Pipeline alarms ride along (run_alarm_cycle evaluates both
+                # kinds by default) because a load is also the moment most
+                # pipeline state changes. They are *not* only evaluated
+                # here, and cannot be: the condition that matters most is
+                # "no run is completing", which this process cannot report
+                # about itself. See the middleware and pipeline_watch.
                 try:
                     alarm_counts = run_alarm_cycle(
                         meta, dsn, datasource_id=source.id, source=source)

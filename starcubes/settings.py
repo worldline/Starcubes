@@ -85,6 +85,7 @@ MIDDLEWARE = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.gzip.GZipMiddleware",
     "starcubes.middleware.RequireLoginMiddleware",
+    "starcubes.middleware.PipelineAlarmMiddleware",
 ]
 
 ROOT_URLCONF     = "starcubes.urls"
