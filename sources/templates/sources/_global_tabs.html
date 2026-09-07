@@ -1,21 +1,27 @@
 {% comment %}
-Shared tab bar for the datasource-independent pages (list, firings,
-profiles, settings). Link-based tabs — each page keeps its own URL; the
-active tab is derived from resolver_match, not client-side toggling.
-Same order as the two hamburger menus: the every-user pages first
-(Datasources, Firings), then the superuser configuration (Profiles,
-Users) — permission-mirrors the views. No #tabNav/data-tab — those
-belong to the JS-toggled in-page bars in detail/manage.
+Shared tab bar for the datasource-independent pages (list, profiles,
+firings, pagerduty, settings). Link-based tabs — each page keeps its own
+URL; the active tab is derived from resolver_match, not client-side
+toggling. Same order as the two hamburger menus — Datasources, Profiles,
+Firings, PagerDuty, Users — kept in sync by hand; the pages themselves
+permission-gate (profiles/pagerduty/settings are superuser-only), so the
+strip mirrors that with one {% if user.is_superuser %} around the three
+configuration tabs. No #tabNav/data-tab — those belong to the JS-toggled
+in-page bars in detail/manage.
 {% endcomment %}
 <div class="subtabs-bar">
   <div class="tabs">
     <a class="tab-btn{% if request.resolver_match.url_name == 'list' %} active{% endif %}"
        href="{% url 'sources:list' %}">Datasources</a>
-    <a class="tab-btn{% if request.resolver_match.url_name == 'alarm_firings' %} active{% endif %}"
-       href="{% url 'sources:alarm_firings' %}">Firings</a>
     {% if user.is_superuser %}
     <a class="tab-btn{% if request.resolver_match.url_name == 'profiles' %} active{% endif %}"
        href="{% url 'sources:profiles' %}">Profiles</a>
+    {% endif %}
+    <a class="tab-btn{% if request.resolver_match.url_name == 'alarm_firings' %} active{% endif %}"
+       href="{% url 'sources:alarm_firings' %}">Firings</a>
+    {% if user.is_superuser %}
+    <a class="tab-btn{% if request.resolver_match.url_name == 'pagerduty' %} active{% endif %}"
+       href="{% url 'sources:pagerduty' %}">PagerDuty</a>
     <a class="tab-btn{% if request.resolver_match.url_name == 'settings' %} active{% endif %}"
        href="{% url 'sources:settings' %}">Users</a>
     {% endif %}

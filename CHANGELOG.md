@@ -16,8 +16,20 @@ Notable changes per release. Format follows
   edit page) and closes its incidents when an episode resolves. Transport
   configuration is env-var based — see `docs/deployment-config.md`. Purely
   additive schema, self-applying at container start (minor release).
+- **The notification configuration is reachable in the GUI.** A global
+  "PagerDuty" tab (Datasources · Profiles · Firings · PagerDuty · Users, in
+  the tab strip and both hamburger menus) shows the transport status, the
+  per-datasource routing keys masked, and a test-send button per source;
+  the per-source routing key moved under "Basics" on the edit page; the own
+  profile page shows and edits the account's XMPP JID.
 - The About dialog's **timeseries.js** row now links to the project on
   GitHub.
+
+### Fixed
+
+- **The Users page's "Edit user" form persisted nothing** — a duplicated
+  `update_user` branch shadowed the real one (regression of the alarm
+  notification change; e-mail, XMPP JID and flags were silently dropped).
 
 What 2.1.x will contain is not decided; candidates live in
 [`docs/backlog.md`](docs/backlog.md), and nothing there is committed to a

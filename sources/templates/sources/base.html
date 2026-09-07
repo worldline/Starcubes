@@ -740,14 +740,20 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
       <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
       <span class="menu-label">Datasources</span>
     </a>
+    {% if user.is_superuser %}
+      <a class="menu-item" role="menuitem" href="{% url 'sources:profiles' %}">
+        <svg class="ic" aria-hidden="true"><use href="#ic-book-open"></use></svg>
+        <span class="menu-label">Profiles</span>
+      </a>
+    {% endif %}
     <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
       <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
       <span class="menu-label">Firings</span>
     </a>
     {% if user.is_superuser %}
-      <a class="menu-item" role="menuitem" href="{% url 'sources:profiles' %}">
-        <svg class="ic" aria-hidden="true"><use href="#ic-book-open"></use></svg>
-        <span class="menu-label">Profiles</span>
+      <a class="menu-item" role="menuitem" href="{% url 'sources:pagerduty' %}">
+        <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
+        <span class="menu-label">PagerDuty</span>
       </a>
       <a class="menu-item" role="menuitem" href="{% url 'sources:settings' %}">
         <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>

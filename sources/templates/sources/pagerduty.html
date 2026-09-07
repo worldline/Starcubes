@@ -1,0 +1,141 @@
+{% extends "sources/base.html" %}
+{% block title %}PagerDuty — starcubes{% endblock %}
+
+{% block content %}
+{% include "sources/_global_tabs.html" %}
+
+<p class="text-muted" style="margin:0 0 12px;font-size:12px">
+  Global notification-transport configuration — env-var based, read-only
+  here (see docs/deployment-config.md). Per-source PagerDuty routing keys
+  are maintained on each source's edit page; the test button sends a
+  synthetic trigger+resolve pair through the real transport.
+</p>
+
+{% if msg %}
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
+{% endif %}
+{% if err %}
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:14px">{{ err }}</div>
+{% endif %}
+
+<div class="card">
+  <div class="card-header"><span class="card-title">Transports</span></div>
+  {# Status of the env-var-configured transports — read-only. #}
+  <div class="card-body" style="padding:0">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Channel</th>
+          <th>Status</th>
+          <th>Configuration</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for name, t in transports.items %}
+        <tr>
+          <td><strong>{{ name }}</strong></td>
+          <td>
+            {% if t.enabled %}<span class="badge">on</span>{% else %}<span class="badge">off</span>{% endif %}
+          </td>
+          <td class="text-muted" style="font-size:12px">
+            {% for label, value in t.rows %}
+              <div>{{ label }}: <span class="text-mono">{{ value }}</span></div>
+            {% endfor %}
+          </td>
+        </tr>
+        {% endfor %}
+        <tr>
+          <td><strong>log</strong></td>
+          <td><span class="badge">always on</span></td>
+          <td>The episode table plus the evaluator's log line.</td>
+        </tr>
+        <tr>
+          <td><strong>slack</strong></td>
+          <td><span class="badge">reserved</span></td>
+          <td>Vocabulary only — no transport.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
+    <p class="text-muted" style="margin:0;font-size:12px">
+      Recipients are the login users (e-mail from the account, XMPP via the
+      JID on their profile / the Users page). A channel selected on an alarm
+      whose transport is off is skipped with a warning and never fails the
+      ETL.
+    </p>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header"><span class="card-title">Routing keys</span>
+    <span style="margin-left:auto;font-size:12px;color:var(--muted)">
+      One PagerDuty service per source — every alarm on a source triggers
+      into the same key, maintained on the source's edit page.
+    </span>
+  </div>
+  <div class="card-body" style="padding:0">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Datasource</th>
+          <th>Routing key</th>
+          <th style="text-align:right">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in datasources %}
+        <tr>
+          <td><strong>{{ d.name }}</strong></td>
+          <td class="text-mono text-muted">
+            {% if d.has_key %}{{ d.key_masked }}{% else %}<em>not set</em>{% endif %}
+          </td>
+          <td style="text-align:right;white-space:nowrap">
+            <a class="btn btn-secondary btn-sm"
+               href="{% url 'sources:edit' d.id %}">Edit</a>
+            <button type="button" class="btn btn-primary btn-sm"
+                    data-pd-test="{{ d.id }}" {% if not d.has_key %}disabled{% endif %}>Send test</button>
+            <span class="pd-test-result" data-for="{{ d.id }}"
+                  style="margin-left:8px;font-size:12px"></span>
+          </td>
+        </tr>
+        {% empty %}
+        <tr><td colspan="3" style="color:var(--muted);text-align:center;padding:16px">No datasources yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+(function() {
+  function csrfToken() {
+    var m = document.cookie.match(/csrftoken=([^;]+)/);
+    return m ? m[1] : '';
+  }
+  function msgFor(id) {
+    return document.querySelector('.pd-test-result[data-for="' + id + '"]');
+  }
+  document.querySelectorAll('[data-pd-test]').forEach(function(b) {
+    b.addEventListener('click', function() {
+      var id = b.getAttribute('data-pd-test');
+      var el = msgFor(id);
+      el.textContent = 'sending…';
+      fetch("{% url 'sources:pagerduty_test' %}", {
+        method: 'POST',
+        headers: {'X-CSRFToken': csrfToken()},
+        body: new URLSearchParams({datasource_id: id}),
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d.ok) {
+          el.textContent = '✓ trigger+resolve sent';
+        } else {
+          el.textContent = '✗ ' + (d.error || 'test failed');
+        }
+      }).catch(function(e) {
+        el.textContent = '✗ ' + String(e);
+      });
+    });
+  });
+})();
+</script>
+{% endblock %}

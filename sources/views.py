@@ -53,6 +53,7 @@ from sources.profile_store import (delete_profile_children,
 from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
                                spawn_etl_subprocess as _spawn_etl_subprocess,
                                log_dir as _log_dir, slugify_ds as _slugify_ds)
+from sources.alarm_notify import send_pagerduty_test
 
 
 def _add_inline_display(dim: dict) -> dict:
@@ -3371,17 +3372,6 @@ def settings_page(request):
             email = request.POST.get("email")
             if email is not None:
                 target.email = email.strip()
-        elif action == "update_user":
-            user_id = request.POST.get("user_id", "")
-            try:
-                target = User.objects.get(pk=int(user_id))
-            except (User.DoesNotExist, ValueError):
-                return redirect(f"{request.path}?err=User+not+found.")
-            # Email — only write when the field was actually submitted; a
-            # missing field means "leave it alone". An empty string clears it.
-            email = request.POST.get("email")
-            if email is not None:
-                target.email = email.strip()
             # XMPP JID — same submitted-field semantics as email above: a
             # missing field means "leave it alone", an empty string clears
             # it. Raw SQL because the Django model does not know the column.
@@ -3516,12 +3506,29 @@ def my_profile(request):
                 # the very next request, right after being told it worked.
                 update_session_auth_hash(request, request.user)
                 return redirect("/sources/me/?msg=Password+updated.")
+        elif action == "update_jid":
+            # Self-service: every user edits only their own JID — no
+            # user_id parameter, `_set_xmpp_jid` targets request.user.pk.
+            _set_xmpp_jid(request.user.pk,
+                          (request.POST.get("xmpp_jid") or "").strip())
+            return redirect("/sources/me/?msg=XMPP+JID+updated.")
         return redirect(f"{request.path}?err={err}" if err else f"{request.path}?msg=Updated.")
 
     history = history_list_user(_meta_engine(), user_id=request.user.pk, limit=200)
+    # xmpp_jid lives outside the Django model (migration 0030); read it in
+    # one raw pass like settings_page does for the user listing.
+    try:
+        with _meta_engine().begin() as conn:
+            xmpp_jid = conn.execute(text(
+                "SELECT xmpp_jid FROM starcubes_meta.auth_user "
+                " WHERE id = :id"
+            ), {"id": request.user.pk}).scalar()
+    except Exception:
+        xmpp_jid = None
     return render(request, "sources/me.html", {
         "me": request.user,
         "history": history,
+        "xmpp_jid": xmpp_jid,
         "msg": msg,
         "err": err,
     })
@@ -3664,6 +3671,110 @@ def profiles_page(request):
         "msg": msg,
         "err": err,
     })
+
+
+def _mask_secret(value: str | None) -> str:
+    """•••• + last four characters, or '' for a missing value — enough for an
+    admin to recognise the credential, never enough to leak it."""
+    if not value:
+        return ""
+    return "••••" + value[-4:]
+
+
+@_admin_required_page
+def pagerduty_page(request):
+    """The global notification-config page (global tab "PagerDuty").
+
+    Read-only status of the env-var-configured transports (e-mail, XMPP,
+    PagerDuty endpoint/severity — nothing here is editable in-app, the
+    global config is STARCUBES_* env vars per docs/deployment-config.md),
+    plus the per-datasource routing keys with a test-send button each.
+    Credentials render masked via `_mask_secret` — enough to recognise,
+    never enough to leak.
+    """
+    msg = request.GET.get("msg", "")
+    err = request.GET.get("err", "")
+
+    transports = {
+        "email": {
+            "enabled": settings.STARCUBES_ALARM_EMAIL_ENABLED,
+            "rows": [
+                ("SMTP host", settings.STARCUBES_SMTP_HOST or "not set"),
+                ("SMTP port", settings.STARCUBES_SMTP_PORT),
+                ("Envelope From", settings.STARCUBES_SMTP_FROM or "not set"),
+                ("TLS mode", settings.STARCUBES_SMTP_TLS),
+                ("Subject prefix", settings.STARCUBES_SMTP_SUBJECT_PREFIX or "(empty)"),
+            ],
+        },
+        "xmpp": {
+            "enabled": settings.STARCUBES_ALARM_XMPP_ENABLED,
+            "rows": [
+                ("Bot JID", settings.STARCUBES_XMPP_JID or "not set"),
+                ("Host override", settings.STARCUBES_XMPP_HOST or "—"),
+                ("Port", settings.STARCUBES_XMPP_PORT),
+            ],
+        },
+        "pagerduty": {
+            "enabled": True,   # global endpoint always configured; per-source key decides
+            "rows": [
+                ("Events URL", settings.STARCUBES_PAGERDUTY_EVENTS_URL),
+                ("Severity", settings.STARCUBES_PAGERDUTY_SEVERITY),
+            ],
+        },
+    }
+
+    with _meta_engine().begin() as conn:
+        ds_rows = [dict(r) for r in conn.execute(text(
+            "SELECT id, name, pagerduty_routing_key "
+            "  FROM starcubes_meta.datasource ORDER BY name"
+        )).mappings().all()]
+    datasources = [{
+        "id": r["id"], "name": r["name"],
+        "has_key": bool(r["pagerduty_routing_key"]),
+        "key_masked": _mask_secret(r["pagerduty_routing_key"]),
+    } for r in ds_rows]
+
+    return render(request, "sources/pagerduty.html", {
+        "transports": transports,
+        "datasources": datasources,
+        "msg": msg,
+        "err": err,
+    })
+
+
+@require_POST
+@_admin_required_json
+def pagerduty_test(request):
+    """Send a synthetic PagerDuty trigger+resolve for one datasource
+    (the admin page's test button). Fails with a friendly 400 when the
+    datasource has no routing key; reports the send error otherwise."""
+    ds_id = request.POST.get("datasource_id", "")
+    try:
+        ds_id = int(ds_id)
+    except (TypeError, ValueError):
+        return JsonResponse({"ok": False, "error": "datasource_id required"},
+                            status=400)
+    try:
+        with _meta_engine().begin() as conn:
+            row = conn.execute(text(
+                "SELECT name, pagerduty_routing_key "
+                "  FROM starcubes_meta.datasource WHERE id = :id"
+            ), {"id": ds_id}).mappings().one_or_none()
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+    if row is None:
+        return JsonResponse({"ok": False, "error": f"datasource {ds_id} not found"},
+                            status=404)
+    if not row["pagerduty_routing_key"]:
+        return JsonResponse({"ok": False, "error":
+            "this datasource has no PagerDuty routing key — set it on the "
+            "source edit page"}, status=400)
+    try:
+        send_pagerduty_test(row["pagerduty_routing_key"], row["name"], ds_id)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error":
+            f"PagerDuty send failed: {exc}"})
+    return JsonResponse({"ok": True})
 
 
 @_admin_required_json

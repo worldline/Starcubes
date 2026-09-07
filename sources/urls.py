@@ -19,6 +19,11 @@ urlpatterns = [
     # Profiles admin page — must precede the <str:slug> routes so the
     # "profiles" literal does not collide with the slug converter.
     path("profiles/",                                  views.profiles_page,     name="profiles"),
+    # Global notification-config page (global tab "PagerDuty") and its
+    # per-datasource test-send endpoint. Literal paths, like
+    # alarms/firings/ and recipients/, so the <int:pk>/ routes stay clear.
+    path("pagerduty/",                                 views.pagerduty_page,    name="pagerduty"),
+    path("pagerduty/test/",                            views.pagerduty_test,    name="pagerduty_test"),
     path("new/",                                       views.source_new,     name="new"),
     path("<int:pk>/",                                  views.source_detail,  name="detail"),
     path("<int:pk>/manage/",                           views.source_manage,  name="manage"),

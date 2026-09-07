@@ -215,6 +215,26 @@ def _post_pagerduty(payload: dict) -> None:
         resp.read()
 
 
+def send_pagerduty_test(routing_key: str, ds_name: str, ds_id: int) -> None:
+    """Synthetic trigger+resolve pair for the PagerDuty admin page's test
+    button. Dedup key `starcubes-test-<ds_id>` is stable per datasource, so
+    a stale test incident from an earlier button press closes itself when
+    the next test runs."""
+    dedup = f"starcubes-test-{ds_id}"
+    payload = {
+        "routing_key": routing_key,
+        "dedup_key": dedup,
+        "payload": {
+            "source": f"starcubes/{ds_name}",
+            "severity": settings.STARCUBES_PAGERDUTY_SEVERITY,
+            "summary": f"starcubes PagerDuty test — {ds_name}",
+        },
+    }
+    _post_pagerduty(payload)
+    payload["event_action"] = "resolve"
+    _post_pagerduty(payload)
+
+
 def _resolve_lookups(meta_engine, transitions: list[dict]) -> tuple[dict, dict]:
     """Resolve user ids and datasource ids of every transition in two batched
     lookups (one query per table, not one per transition)."""

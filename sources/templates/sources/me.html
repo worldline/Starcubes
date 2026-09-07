@@ -19,12 +19,40 @@
     <dl class="dl-grid">
       <dt>Username</dt><dd>{{ me.username }}</dd>
       <dt>Email</dt><dd class="mono">{{ me.email|default:'—' }}</dd>
+      <dt>XMPP JID</dt><dd class="mono">{{ xmpp_jid|default:'—' }}</dd>
       <dt>Auth</dt><dd>{% if me.has_usable_password %}password{% else %}SSO only{% endif %}</dd>
       <dt>Superuser</dt><dd>{% if me.is_superuser %}✓{% else %}—{% endif %}</dd>
       <dt>Active</dt><dd>{% if me.is_active %}✓{% else %}—{% endif %}</dd>
       <dt>Last login</dt><dd>{{ me.last_login|date:"Y-m-d H:i:s"|default:'—' }}</dd>
       <dt>Date joined</dt><dd>{{ me.date_joined|date:"Y-m-d H:i:s" }}</dd>
     </dl>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <span class="card-title">XMPP JID</span>
+    <span style="margin-left:auto;font-size:12px;color:var(--muted)">
+      Your address for XMPP alarm notifications — set it to receive alarms
+      on the xmpp channel.
+    </span>
+  </div>
+  <div class="card-body">
+    <form method="post" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="update_jid">
+      <div>
+        <label class="form-label">XMPP JID</label>
+        <input class="form-control" name="xmpp_jid" value="{{ xmpp_jid|default:'' }}"
+               placeholder="you@jabber.example" style="width:280px" autocomplete="off">
+      </div>
+      <button type="submit" class="btn btn-primary">Update JID</button>
+    </form>
+    <p class="text-muted" style="margin:8px 0 0;font-size:12px">
+      Empty clears the address. The e-mail address used for e-mail alarm
+      notifications is the account's Email above (admins edit it on the
+      Users page).
+    </p>
   </div>
 </div>
 
