@@ -448,6 +448,7 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict) -> dict:
             notify_channels=alarm.get("notify_channels") or [],
             notify_email_recipients=alarm.get("notify_email_recipients") or [],
             notify_xmpp_recipients=alarm.get("notify_xmpp_recipients") or [],
+            severity=alarm.get("severity") or None,
         )
 
     return counts
@@ -484,7 +485,7 @@ def run_alarm_cycle(meta_engine, dest_dsn: str, *,
             "SELECT a.id, a.datasource_id, a.name, a.context_filter, "
             "       a.measure, a.cond_op, a.threshold, a.window_s, "
             "       a.notify_channels, a.notify_email_recipients, "
-            "       a.notify_xmpp_recipients, "
+            "       a.notify_xmpp_recipients, a.severity, "
             "       a.eval_end, d.name AS ds_name "
             "  FROM starcubes_meta.alarm a "
             "  JOIN starcubes_meta.datasource d ON d.id = a.datasource_id "

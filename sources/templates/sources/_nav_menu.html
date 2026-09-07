@@ -1,0 +1,80 @@
+{% comment %}
+The main hamburger menu, shared verbatim by both page shells
+(sources/base.html and viz/chart.html) — the two used to be kept in
+lock-step by hand, which is exactly how "My Profile" or "Transports" end
+up existing in one shell and not the other. Cross-app include is
+established practice: both shells already include viz/about.html.
+
+Parameters (all optional, via `{% include ... with ... %}`):
+- include_prefs    chart.html sets this: the Preferences row (y-axis mode
+                   is client-side, useful without an account).
+- theme_toggle_id / theme_icon_id / theme_label_id  the theme row's ids,
+                   which each shell's JS wires by id. Defaults match
+                   sources/base.html; chart.html passes its own.
+
+Kept in sync BY HAND with _global_tabs.html — the tab bar's order must
+mirror this menu's order (Datasources, Profiles*, Firings, Transports*,
+Users*, My Profile). The toggle button, the logout form and (chart only)
+#prefs-popover stay in the shells.
+{% endcomment %}
+{% if user.is_authenticated %}
+  <div class="menu-head">
+    <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
+    <span class="menu-user">{{ user.username }}</span>
+  </div>
+  <a class="menu-item" role="menuitem" href="{% url 'sources:list' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
+    <span class="menu-label">Datasources</span>
+  </a>
+  {% if user.is_superuser %}
+  <a class="menu-item" role="menuitem" href="{% url 'sources:profiles' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-book-open"></use></svg>
+    <span class="menu-label">Profiles</span>
+  </a>
+  {% endif %}
+  <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
+    <span class="menu-label">Firings</span>
+  </a>
+  {% if user.is_superuser %}
+  <a class="menu-item" role="menuitem" href="{% url 'sources:transports' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
+    <span class="menu-label">Transports</span>
+  </a>
+  <a class="menu-item" role="menuitem" href="{% url 'sources:settings' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>
+    <span class="menu-label">Users</span>
+  </a>
+  {% endif %}
+  <a class="menu-item" role="menuitem" href="{% url 'sources:me' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
+    <span class="menu-label">My Profile</span>
+  </a>
+  <div class="menu-sep"></div>
+{% endif %}
+{% if include_prefs %}
+<button class="menu-item" role="menuitem" type="button" id="prefs-toggle" data-keep-open>
+  <svg class="ic" aria-hidden="true"><use href="#ic-gear"></use></svg>
+  <span class="menu-label">Preferences</span>
+</button>
+{% endif %}
+<button class="menu-item" role="menuitem" type="button" id="{{ theme_toggle_id|default:'nav-theme-toggle' }}" data-keep-open>
+  <svg class="ic" aria-hidden="true"><use id="{{ theme_icon_id|default:'nav-theme-icon' }}" href="#ic-moon"></use></svg>
+  <span class="menu-label" id="{{ theme_label_id|default:'nav-theme-label' }}">Dark theme</span>
+</button>
+<div class="menu-sep"></div>
+<button class="menu-item" role="menuitem" type="button" id="about-open">
+  <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>
+  <span class="menu-label">About starcubes</span>
+</button>
+{% if user.is_authenticated %}
+<button class="menu-item" role="menuitem" type="submit" form="logout-form">
+  <svg class="ic" aria-hidden="true"><use href="#ic-log-out"></use></svg>
+  <span class="menu-label">Log out</span>
+</button>
+{% else %}
+<a class="menu-item" role="menuitem" href="{% url 'login' %}">
+  <svg class="ic" aria-hidden="true"><use href="#ic-log-in"></use></svg>
+  <span class="menu-label">Log in</span>
+</a>
+{% endif %}

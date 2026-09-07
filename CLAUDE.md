@@ -112,7 +112,7 @@ you are working in. What is left here belongs to no single directory:
 
 | File | Purpose |
 |------|---------|
-| `migrations/starcubes_meta.sql` | Consolidated idempotent meta-schema (0001–0031 combined — 0025 adds the per-datasource alarm table, 0026 the `enabled` flag 0025 omitted, 0028 replaces `context_dim`/`context_value` with `context_filter jsonb` + `comment` + `eval_end` and adds `alarm_history`/`alarm_firing`/`alarm_forever`, 0029 drops `alarm_forever` again and re-comments `eval_end`/`alarm_firing` for the HWM semantics, 0030 wires the notification transports: `auth_user.xmpp_jid` (guarded — see the bootstrap second pass), `alarm.notify_email_recipients`/`notify_xmpp_recipients int[]` and `datasource.pagerduty_routing_key`, 0031 adds `app_config` — the one KV table for DB-editable global config, key = env-var name, env-first resolution via `core/config.py`). Used by `core/schema.py`. Per-step migrations live in `migrations/000N_*.sql`. |
+| `migrations/starcubes_meta.sql` | Consolidated idempotent meta-schema (0001–0032 combined — 0025 adds the per-datasource alarm table, 0026 the `enabled` flag 0025 omitted, 0028 replaces `context_dim`/`context_value` with `context_filter jsonb` + `comment` + `eval_end` and adds `alarm_history`/`alarm_firing`/`alarm_forever`, 0029 drops `alarm_forever` again and re-comments `eval_end`/`alarm_firing` for the HWM semantics, 0030 wires the notification transports: `auth_user.xmpp_jid` (guarded — see the bootstrap second pass), `alarm.notify_email_recipients`/`notify_xmpp_recipients int[]` and `datasource.pagerduty_routing_key`, 0031 adds `app_config` — the one KV table for DB-editable global config, key = env-var name, env-first resolution via `core/config.py`, 0032 adds `alarm.severity` (per-alarm PagerDuty severity, CHECK-constrained, global fallback) and the guarded `auth_user.notify_email`/`notify_xmpp` opt-in, deliberate default off). Used by `core/schema.py`. Per-step migrations live in `migrations/000N_*.sql`. |
 | `examples.sql` | Reference SQL. Lines 43–62 are the template for `core/query.timeseries_multibar`. |
 | `.gitattributes` | One line, `starcubes/version.py export-subst`: `git archive` fills the version placeholders in that file as it packs, so a source zip handed to a test environment can name its version with no `.git`. No `export-ignore` on purpose. See [`docs/releases.md`](docs/releases.md). |
 | `docker/build.sh` | The only supported way to build the container image — defaults `CONTAINER_ENGINE=podman` and delegates to the build engine. The Dockerfile's `jsbuilder` stage pulls `@hgruber/timeseries.js` from npm via `npm ci`. See [`docs/deployment-config.md`](docs/deployment-config.md). |
@@ -142,8 +142,11 @@ this table as a manifest.
    Any hit is a leaking comment (rewrite it as `{% comment %}`). Rendering
    the page is the only other way to see it, since a leak neither raises
    nor breaks the layout — the prose simply appears on the page.
-3. **SQL** — `psql -f migrations/0001_starcubes_meta.sql` must be idempotent.
-   Re-running is part of the contract; verify by running twice.
+3. **SQL** — `psql -f migrations/starcubes_meta.sql` must be idempotent.
+   Re-running is part of the contract; verify by running twice. The mirror
+   contract itself — every per-step `migrations/000N_*.sql` has its marker
+   block in the consolidated file — is machine-checked:
+   `manage.py check_migration_mirror`.
 4. **Seed round-trip** — `manage.py seed_example --force --skip-initial-ddl`
    followed by `Source.load(meta, dsn, 'source')` must return a `Source`
    whose `fact_columns` / `dimensions` / `indices` match the seed tuples.

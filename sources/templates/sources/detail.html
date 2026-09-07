@@ -273,7 +273,7 @@
               style="margin-left:auto">Add alarm &#9656;</button>
     </div>
     <div class="card-body" id="alarmAddBody">
-      <form id="alarmAddForm" style="display:grid;grid-template-columns:1fr 1fr 130px 80px 110px 100px 1fr;gap:8px;align-items:end">
+      <form id="alarmAddForm" style="display:grid;grid-template-columns:1fr 1fr 130px 80px 110px 100px 1fr 150px;gap:8px;align-items:end">
         {% csrf_token %}
         <div><label class="form-label">Name</label><input class="form-control" name="name" required></div>
         <div><label class="form-label">Comment</label><input class="form-control" name="comment" placeholder="(optional)"></div>
@@ -296,8 +296,17 @@
             <label><input type="checkbox" name="notify_channels" value="email" onchange="alarmChannelsChanged()"> email</label>
             <label><input type="checkbox" name="notify_channels" value="xmpp" onchange="alarmChannelsChanged()"> xmpp</label>
             <label><input type="checkbox" name="notify_channels" value="pagerduty" onchange="alarmChannelsChanged()"> pagerduty</label>
-            <label><input type="checkbox" name="notify_channels" value="log" checked> log</label>
           </div>
+        </div>
+        <div>
+          <label class="form-label">Severity</label>
+          <select class="form-control" name="severity">
+            <option value="">— global default —</option>
+            <option value="critical">critical</option>
+            <option value="error">error</option>
+            <option value="warning">warning</option>
+            <option value="info">info</option>
+          </select>
         </div>
         <div style="grid-column:1/-1;display:flex;gap:16px;flex-wrap:wrap" id="alarmRecipientRow">
           <div>
@@ -363,15 +372,16 @@
             <th>Comment</th>
             <th>Measure</th>
             <th style="text-align:center">Cond</th>
-            <th style="text-align:right">Threshold</th>
+            <th style="text-align:right">Thresh.</th>
             <th style="text-align:right">Window (s)</th>
+            <th style="text-align:center">Sev.</th>
             <th>Channels</th>
             <th style="text-align:center;width:70px">Enabled</th>
             <th style="text-align:right;width:130px">Actions</th>
           </tr>
         </thead>
         <tbody id="alarmBody">
-          <tr id="alarm-loading"><td colspan="10" class="text-muted" style="text-align:center;padding:16px">Loading…</td></tr>
+          <tr id="alarm-loading"><td colspan="11" class="text-muted" style="text-align:center;padding:16px">Loading…</td></tr>
         </tbody>
       </table>
     </div>
@@ -1389,7 +1399,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
 
   // Field-by-field old→new diff of two alarm snapshots.
   var SNAP_FIELDS = ['name', 'context_filter', 'comment', 'measure', 'cond_op',
-                     'threshold', 'window_s', 'notify_channels',
+                     'threshold', 'window_s', 'severity', 'notify_channels',
                      'notify_email_recipients', 'notify_xmpp_recipients', 'enabled'];
   function snapDiff(oldRow, newRow) {
     if (!oldRow || !newRow) return '';
@@ -1404,7 +1414,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
 
   function detailRowHtml(id) {
     return '<tr class="alarm-detail-row" data-for="' + id + '">'
-      + '<td colspan="10" style="background:var(--bg2, rgba(127,127,127,0.06));padding:10px 14px">'
+      + '<td colspan="11" style="background:var(--bg2, rgba(127,127,127,0.06));padding:10px 14px">'
       +   '<div class="alarm-detail-body" data-id="' + id + '">'
       +     '<span class="text-muted">Loading…</span>'
       +   '</div>'
@@ -1519,27 +1529,19 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   }
   function alarmUserLabel(u, channel) {
     var addr = channel === 'email' ? u.email : u.xmpp_jid;
-    return u.username + (addr ? ' (' + addr + ')' : ' (no '
-                           + (channel === 'email' ? 'e-mail' : 'XMPP JID') + ')');
+    var label = u.username + (addr ? ' (' + addr + ')' : ' (no '
+                             + (channel === 'email' ? 'e-mail' : 'XMPP JID') + ')');
+    // Dispatch drops recipients who never opted in on My Profile — say so
+    // where the alarm author picks them.
+    var optin = channel === 'email' ? u.notify_email : u.notify_xmpp;
+    if (!optin) label += ' (not opted in)';
+    return label;
   }
   function alarmChannelsDisplay(a) {
+    // Read mode names the active channels only — recipients stay a detail
+    // of the edit view (user decision: comma-separated channel names).
     var ch = a.notify_channels || [];
-    if (!ch.length) return '—';
-    var parts = [];
-    ch.forEach(function(c) {
-      if (c === 'email' || c === 'xmpp') {
-        var ids = a[c === 'email' ? 'notify_email_recipients'
-                                  : 'notify_xmpp_recipients'] || [];
-        var names = ids.map(function(id) {
-          var u = alarmUsers && alarmUsers[id];
-          return u ? u.username : ('#' + id);
-        });
-        parts.push(c + ': ' + (names.length ? names.join(', ') : '(none)'));
-      } else {
-        parts.push(c);
-      }
-    });
-    return esc(parts.join(' · '));
+    return ch.length ? esc(ch.join(', ')) : '—';
   }
 
   // Channel checkbox change in the add form: show/hide the two recipient
@@ -1591,7 +1593,11 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       ? [a.measure].concat(MEASURE_AGGS) : MEASURE_AGGS;
     var cmt = a.comment || '';
     return '<tr data-id="' + a.id + '">'
-      + '<td><span class="row-display"><strong>' + esc(a.name) + '</strong></span>'
+      + '<td><span class="row-display"><strong>' + esc(a.name) + '</strong>'
+      +     (a.has_open_episode
+      ?       ' <span class="badge badge-running"><span class="dot">&#9679;</span> open</span>'
+      :       '')
+      +     '</span>'
       +     '<input class="row-edit cell-input" name="name" value="' + esc(a.name) + '"></td>'
       + '<td><span class="row-display text-muted" style="font-size:11px">' + ctxSummary(a.context_filter, ctxLabels) + '</span></td>'
       + '<td><span class="row-display text-muted" style="font-size:11px" title="' + esc(cmt) + '">'
@@ -1605,17 +1611,26 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       +     '<input class="row-edit cell-input" name="threshold" type="number" step="any" style="width:90px" value="' + a.threshold + '"></td>'
       + '<td style="text-align:right"><span class="row-display" title="' + a.window_s + ' s">' + fmtWindow(a.window_s) + '</span>'
       +     '<input class="row-edit cell-input" name="window_s" type="number" min="1" style="width:80px" value="' + a.window_s + '"></td>'
+      + '<td style="text-align:center"><span class="row-display text-muted"'
+      +     ' title="PagerDuty severity (global default when unset)">'
+      +     (a.severity ? esc(a.severity) : 'global') + '</span>'
+      +     '<select class="row-edit cell-input" name="severity" title="PagerDuty severity'
+      +         ' (empty = global default)">'
+      +         '<option value=""' + (a.severity ? '' : ' selected') + '>— global default —</option>'
+      +         ['critical', 'error', 'warning', 'info'].map(function(s) {
+                    return '<option value="' + s + '"'
+                      + (a.severity === s ? ' selected' : '') + '>' + s + '</option>';
+                  }).join('')
+      +       '</select></td>'
       + '<td><span class="row-display text-muted" style="font-size:11px">'
       +     alarmChannelsDisplay(a) + '</span>'
-      +     '<span class="row-edit" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px">'
+      +     '<span class="row-edit" style="gap:8px;flex-wrap:wrap;font-size:12px">'
       +       '<label><input type="checkbox" name="notify_channels" value="email"'
       +         ((a.notify_channels || []).indexOf('email') !== -1 ? ' checked' : '') + '> email</label>'
       +       '<label><input type="checkbox" name="notify_channels" value="xmpp"'
       +         ((a.notify_channels || []).indexOf('xmpp') !== -1 ? ' checked' : '') + '> xmpp</label>'
       +       '<label><input type="checkbox" name="notify_channels" value="pagerduty"'
       +         ((a.notify_channels || []).indexOf('pagerduty') !== -1 ? ' checked' : '') + '> pagerduty</label>'
-      +       '<label><input type="checkbox" name="notify_channels" value="log"'
-      +         ((a.notify_channels || []).indexOf('log') !== -1 ? ' checked' : '') + '> log</label>'
       +     '</span></td>'
       + '<td style="text-align:center"><span class="row-display">' + (a.enabled ? '✓' : '—') + '</span>'
       +     '<input class="row-edit" type="checkbox" name="enabled"' + (a.enabled ? ' checked' : '') + '></td>'
@@ -1646,7 +1661,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     alarmNames = alarms.map(function(a) { alarmsById[a.id] = a; return a.name; });
     var tbody = document.getElementById('alarmBody');
     if (!alarms.length) {
-      tbody.innerHTML = '<tr><td colspan="10" class="text-muted" '
+      tbody.innerHTML = '<tr><td colspan="11" class="text-muted" '
         + 'style="text-align:center;padding:16px">No alarms yet.</td></tr>';
       return;
     }
@@ -1659,7 +1674,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     return postJSON('{% url "sources:alarms_list" ds.id %}', {}).then(function(d) {
       if (d.ok) render(d.alarms || [], d.context_labels);
       else document.getElementById('alarmBody').innerHTML =
-        '<tr><td colspan="10" class="text-muted" style="text-align:center;padding:16px">'
+        '<tr><td colspan="11" class="text-muted" style="text-align:center;padding:16px">'
         + esc(d.error || 'Could not load alarms') + '</td></tr>';
     });
   }
@@ -2049,6 +2064,19 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     refresh();
   });
 
+  // Badge freshness: the "open" badge rides on has_open_episode, which is
+  // only as fresh as the last list fetch. Re-read the list every 20 s while
+  // the Alarms tab is the one on screen — but never under the user's hands:
+  // a rebuild wipes tbody, so every editing surface suspends the poll.
+  setInterval(function() {
+    var btn = document.querySelector('#tabNav .tab-btn[data-tab="alarms"]');
+    if (!btn || !btn.classList.contains('active')) return;       // tab not open
+    if (document.querySelector('#alarmBody tr.editing')) return; // inline edit
+    if (document.querySelector('#alarmBody .alarm-detail-row')) return; // ⓘ sub-row
+    if (addPanelOpen()) return;                                  // add form open
+    refresh().catch(function() {});
+  }, 20000);
+
   // The list is loaded first and on its own. It is what the tab is *for*, so
   // nothing in the add-form setup below may be able to hold it hostage — a
   // throw there used to leave the table on "Loading…" for good, which is
@@ -2060,7 +2088,7 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   ensureAlarmUsers().catch(function() {}).then(function() {
     return refresh().catch(function(e) {
       document.getElementById('alarmBody').innerHTML =
-        '<tr><td colspan="10" class="text-muted" style="text-align:center;'
+        '<tr><td colspan="11" class="text-muted" style="text-align:center;'
         + 'padding:16px">' + esc(String(e)) + '</td></tr>';
     });
   });

@@ -1184,69 +1184,7 @@
 </div>
 
 <div id="nav-menu" class="popover popover--menu" role="menu" aria-label="Main menu">
-  {% if user.is_authenticated %}
-  <div class="menu-head">
-    <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
-    <span class="menu-user">{{ user.username }}</span>
-  </div>
-  <a class="menu-item" role="menuitem" href="{% url 'sources:list' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
-    <span class="menu-label">Datasources</span>
-  </a>
-  {% if user.is_superuser %}
-  <a class="menu-item" role="menuitem" href="{% url 'sources:profiles' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-book-open"></use></svg>
-    <span class="menu-label">Profiles</span>
-  </a>
-  {% endif %}
-  <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
-    <span class="menu-label">Firings</span>
-  </a>
-  {% if user.is_superuser %}
-  <a class="menu-item" role="menuitem" href="{% url 'sources:transports' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
-    <span class="menu-label">Transports</span>
-  </a>
-  <a class="menu-item" role="menuitem" href="{% url 'sources:settings' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>
-    <span class="menu-label">Users</span>
-  </a>
-  {% endif %}
-  <div class="menu-sep"></div>
-  {% endif %}
-  {% comment %} The y-axis mode is client-side, so the preferences are useful without an
-     account — they stay in the menu for anonymous visitors too. {% endcomment %}
-  <button class="menu-item" role="menuitem" type="button" id="prefs-toggle" data-keep-open>
-    <svg class="ic" aria-hidden="true"><use href="#ic-gear"></use></svg>
-    <span class="menu-label">Preferences</span>
-  </button>
-  <button class="menu-item" role="menuitem" type="button" id="theme-toggle" data-keep-open>
-    <svg class="ic" aria-hidden="true"><use id="theme-toggle-icon" href="#ic-moon"></use></svg>
-    <span class="menu-label" id="theme-toggle-label">Dark theme</span>
-  </button>
-  <div class="menu-sep"></div>
-  {% if user.is_authenticated %}
-  <a class="menu-item" role="menuitem" href="{% url 'sources:me' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
-    <span class="menu-label">My Profile</span>
-  </a>
-  {% endif %}
-  <button class="menu-item" role="menuitem" type="button" id="about-open">
-    <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>
-    <span class="menu-label">About starcubes</span>
-  </button>
-  {% if user.is_authenticated %}
-  <button class="menu-item" role="menuitem" type="submit" form="logout-form">
-    <svg class="ic" aria-hidden="true"><use href="#ic-log-out"></use></svg>
-    <span class="menu-label">Log out</span>
-  </button>
-  {% else %}
-  <a class="menu-item" role="menuitem" href="{% url 'login' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-log-in"></use></svg>
-    <span class="menu-label">Log in</span>
-  </a>
-  {% endif %}
+  {% include "sources/_nav_menu.html" with include_prefs=1 theme_toggle_id="theme-toggle" theme_icon_id="theme-toggle-icon" theme_label_id="theme-toggle-label" %}
 </div>
 
 <div id="prefs-popover" class="popover popover--prefs" role="dialog" aria-label="Preferences">
@@ -4141,12 +4079,15 @@ function openAlarmView() {
     '<input class="drill-alarm-input" id="drill-alarm-threshold" type="number" placeholder="threshold" required></div></div>' +
     '<div class="drill-alarm-row"><div class="drill-alarm-label">Window</div>' +
     `<select class="drill-alarm-select" id="drill-alarm-window">${optsHtml(wopts, intervalS)}</select></div>` +
+    '<div class="drill-alarm-row"><div class="drill-alarm-label">PagerDuty severity</div>' +
+    `<select class="drill-alarm-select" id="drill-alarm-severity">${optsHtml([
+      ['', '— global default —'], ['critical', 'critical'], ['error', 'error'],
+      ['warning', 'warning'], ['info', 'info']], '')}</select></div>` +
     '<div class="drill-alarm-row"><div class="drill-alarm-label">Notify via</div>' +
     '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12px">' +
       '<label><input type="checkbox" class="drill-alarm-channel" value="email"> email</label>' +
       '<label><input type="checkbox" class="drill-alarm-channel" value="xmpp"> xmpp</label>' +
       '<label><input type="checkbox" class="drill-alarm-channel" value="pagerduty"> pagerduty</label>' +
-      '<label><input type="checkbox" class="drill-alarm-channel" value="log" checked> log</label>' +
     '</div></div>' +
     '<div class="drill-alarm-row" id="drill-alarm-email-row" style="display:none"><div class="drill-alarm-label">E-mail recipients</div>' +
     '<select id="drill-alarm-email-recipients" multiple size="4" style="width:100%" disabled></select></div>' +
@@ -4198,7 +4139,11 @@ async function populateDrillRecipients() {
     if (!d || !d.ok || !d.users) return;
     const label = (u, c) => {
       const a = c === 'email' ? u.email : u.xmpp_jid;
-      return u.username + (a ? ` (${a})` : ` (no ${c === 'email' ? 'e-mail' : 'XMPP JID'})`);
+      let s = u.username + (a ? ` (${a})` : ` (no ${c === 'email' ? 'e-mail' : 'XMPP JID'})`);
+      // Dispatch drops recipients who never opted in on My Profile — say so
+      // where the alert author picks them.
+      if (!(c === 'email' ? u.notify_email : u.notify_xmpp)) s += ' (not opted in)';
+      return s;
     };
     [['email', 'drill-alarm-email-recipients'],
      ['xmpp', 'drill-alarm-xmpp-recipients']].forEach(([c, selId]) => {
@@ -4213,7 +4158,7 @@ async function populateDrillRecipients() {
       });
     });
   } catch (err) {
-    /* advisory — a failed address book must not block saving a log alarm */
+    /* advisory — a failed address book must not block saving an alarm */
   }
 }
 
@@ -4267,6 +4212,7 @@ async function saveAlarmForm(btn) {
   fd.set('cond_op', document.getElementById('drill-alarm-cond').value);
   fd.set('threshold', document.getElementById('drill-alarm-threshold').value || 0);
   fd.set('window_s', document.getElementById('drill-alarm-window').value);
+  fd.set('severity', document.getElementById('drill-alarm-severity').value || '');
   // Channels from the checkboxes; the two recipient arrays follow their
   // channel — the server refuses a channel without recipients at save time.
   document.querySelectorAll('.drill-alarm-channel:checked').forEach(cb =>

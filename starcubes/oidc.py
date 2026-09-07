@@ -11,9 +11,9 @@ Three departures from the library's defaults, all deliberate:
 2. `create_user()` force-clears is_superuser/is_staff — belt-and-suspenders
    on top of Django's own model defaults, so SSO-provisioned accounts can
    never come back with elevated access even if a future Django release
-   changes create_user()'s defaults. `sources/views.py`'s `settings_page`
-   (the only place in the app that checks `is_superuser`) stays a
-   manually-granted local flag for both password and SSO accounts.
+   changes create_user()'s defaults. Admin stays a manually-granted local
+   flag for both password and SSO accounts; the `@_admin_required_json` /
+   `@_admin_required_page` gates in `sources/views.py` are the checks.
 
 3. `filter_users_by_claims()` keeps the library's email-based lookup as
    the PRIMARY key — an admin whose local password account shares an

@@ -305,6 +305,15 @@ a.btn-icon { display: inline-block; text-decoration: none; }
 .badge-conn-fail { background: var(--badge-failed-bg); color: var(--badge-failed-fg); font-size: 11px; padding: 1px 6px; border-radius: 4px; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 .badge-running .dot { animation: pulse 1.2s ease-in-out infinite; }
+/* Open firing episodes: a red blinking dot at the very start of the row
+   (tr.row-open on _firings.html). The amber "open" badge in the status
+   column stays; the dot is the at-a-glance signal. */
+.row-open td:first-child::before {
+  content: "\25CF";
+  color: var(--badge-failed-fg);
+  animation: pulse 1.2s ease-in-out infinite;
+  margin-right: 6px;
+}
 
 /* Forms */
 .form-group { margin-bottom: 16px; }
@@ -731,63 +740,7 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
   </button>
 </nav>
 <div id="nav-menu" class="popover popover--menu" role="menu" aria-label="Main menu">
-  {% if user.is_authenticated %}
-    <div class="menu-head">
-      <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
-      <span class="menu-user">{{ user.username }}</span>
-    </div>
-    <a class="menu-item" role="menuitem" href="{% url 'sources:list' %}">
-      <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
-      <span class="menu-label">Datasources</span>
-    </a>
-    {% if user.is_superuser %}
-      <a class="menu-item" role="menuitem" href="{% url 'sources:profiles' %}">
-        <svg class="ic" aria-hidden="true"><use href="#ic-book-open"></use></svg>
-        <span class="menu-label">Profiles</span>
-      </a>
-    {% endif %}
-    <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
-      <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
-      <span class="menu-label">Firings</span>
-    </a>
-    {% if user.is_superuser %}
-      <a class="menu-item" role="menuitem" href="{% url 'sources:transports' %}">
-        <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
-        <span class="menu-label">Transports</span>
-      </a>
-      <a class="menu-item" role="menuitem" href="{% url 'sources:settings' %}">
-        <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>
-        <span class="menu-label">Users</span>
-      </a>
-    {% endif %}
-    <div class="menu-sep"></div>
-  {% endif %}
-  <button class="menu-item" role="menuitem" type="button" id="nav-theme-toggle" data-keep-open>
-    <svg class="ic" aria-hidden="true" id="nav-theme-icon"><use href="#ic-moon"></use></svg>
-    <span class="menu-label" id="nav-theme-label">Dark theme</span>
-  </button>
-  <div class="menu-sep"></div>
-  {% if user.is_authenticated %}
-    <a class="menu-item" role="menuitem" href="{% url 'sources:me' %}">
-      <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
-      <span class="menu-label">My Profile</span>
-    </a>
-  {% endif %}
-  <button class="menu-item" role="menuitem" type="button" id="about-open">
-    <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>
-    <span class="menu-label">About starcubes</span>
-  </button>
-  {% if user.is_authenticated %}
-    <button class="menu-item" role="menuitem" type="submit" form="logout-form">
-      <svg class="ic" aria-hidden="true"><use href="#ic-log-out"></use></svg>
-      <span class="menu-label">Log out</span>
-    </button>
-  {% else %}
-    <a class="menu-item" role="menuitem" href="{% url 'login' %}">
-      <svg class="ic" aria-hidden="true"><use href="#ic-log-in"></use></svg>
-      <span class="menu-label">Log in</span>
-    </a>
-  {% endif %}
+  {% include "sources/_nav_menu.html" %}
 </div>
 {% comment %}
   The POST helpers every content block builds on, defined *before* the block
@@ -835,10 +788,16 @@ function postJSON(url, formOrData) {
   function apply(dark) {
     html.setAttribute('data-theme', dark ? 'dark' : 'light');
     try { localStorage.setItem('starcubes-theme', dark ? 'dark' : 'light'); } catch(e) {}
+    // The id sits on the inner <use> of the shared menu partial — but
+    // tolerate either placement so a future shell change cannot break it.
     var ic = document.getElementById('nav-theme-icon');
+    var use = ic && (ic.tagName === 'USE' ? ic : ic.querySelector('use'));
     var lb = document.getElementById('nav-theme-label');
-    if (ic) ic.querySelector('use').setAttribute('href', dark ? '#ic-sun' : '#ic-moon');
+    if (use) use.setAttribute('href', dark ? '#ic-sun' : '#ic-moon');
     if (lb) lb.textContent = dark ? 'Light theme' : 'Dark theme';
+    var tb = document.getElementById('nav-theme-toggle');
+    if (tb) tb.setAttribute('aria-label',
+      dark ? 'Switch to light theme' : 'Switch to dark theme');
   }
   window.starcubesTheme = { apply: apply, isDark: isDark };
 

@@ -54,10 +54,11 @@ Everything else collapsed into `#nav-menu`, a `makePopover` dropdown behind
 user, Profiles / Users (superuser-only), Preferences, Theme, My Profile
 (`sources:me`), About starcubes, Log out. Anonymously it shows Preferences,
 Theme, About and Log in — the y-axis preferences are client-side and stay
-reachable without an account. The entry list is deliberately identical to
-the sources app's `#nav-menu` in `sources/templates/sources/base.html`
-(same rows, same order; Preferences is the chart-only extra) — change both
-together.
+reachable without an account. **The rows are the shared partial**
+`sources/templates/sources/_nav_menu.html` (included with
+`include_prefs=1` and the chart's theme-row ids) — the sources app
+includes the same partial with its defaults, so the menus cannot drift;
+only Preferences is the chart-only extra.
 
 Three things that break if they are touched carelessly:
 

@@ -68,7 +68,6 @@ class Command(BaseCommand):
                 nc = dispatch_transitions(counts["transitions"], meta)
                 self.stdout.write(
                     f"notify: email={nc['email']} xmpp={nc['xmpp']} "
-                    f"pagerduty={nc['pagerduty']} log={nc['log']} "
-                    f"errors={nc['errors']}")
+                    f"pagerduty={nc['pagerduty']} errors={nc['errors']}")
             except Exception:
                 log.exception("alarm notification failed, continuing")

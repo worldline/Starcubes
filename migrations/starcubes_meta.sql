@@ -938,3 +938,65 @@ COMMENT ON COLUMN starcubes_meta.app_config.value IS
     'The setting''s value as text. Deleting a row falls back to the environment/default — there is no empty-string state.';
 COMMENT ON COLUMN starcubes_meta.app_config.updated_by IS
     'Username of the admin who last wrote the row, for the same provenance alarm_history keeps. Credentials are stored like datasource.source_dsn: plaintext here, masked in every listing, never logged.';
+
+
+-- 0032_alarm_severity_optin.sql — PagerDuty severity moves to the alarm;
+-- recipients get an opt-in for the two personal channels. Mirror block; see
+-- migrations/0032_alarm_severity_optin.sql for the semantics.
+
+ALTER TABLE starcubes_meta.alarm
+    ADD COLUMN IF NOT EXISTS severity text;
+
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conname = 'alarm_severity_check'
+                   AND conrelid = 'starcubes_meta.alarm'::regclass)
+  THEN ALTER TABLE starcubes_meta.alarm
+           ADD CONSTRAINT alarm_severity_check
+           CHECK (severity IS NULL
+                  OR severity IN ('critical', 'error', 'warning', 'info'));
+  END IF;
+END $$;
+
+COMMENT ON COLUMN starcubes_meta.alarm.severity IS
+    'PagerDuty severity of this alarm''s trigger/resolve events: critical, error, warning or info. NULL/empty = fall back to STARCUBES_PAGERDUTY_SEVERITY at dispatch time (send_pagerduty_test always uses the global value — it tests the transport, not an alarm''s routing choice).';
+
+-- The Django model does not know these columns; sources/views.py and
+-- sources/alarm_notify.py read and write them via raw SQL. Both the ALTER
+-- and the COMMENT are guarded: bootstrap runs this script BEFORE `migrate`,
+-- when auth_user does not exist yet on a fresh install — a COMMENT on a
+-- missing table is an error, not a notice, and would abort the script.
+DO $$ BEGIN
+  IF to_regclass('starcubes_meta.auth_user') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = 'starcubes_meta'
+                       AND table_name   = 'auth_user'
+                       AND column_name  = 'notify_email')
+  THEN ALTER TABLE starcubes_meta.auth_user
+           ADD COLUMN notify_email boolean NOT NULL DEFAULT false;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'starcubes_meta'
+               AND table_name   = 'auth_user'
+               AND column_name  = 'notify_email')
+  THEN
+    EXECUTE 'COMMENT ON COLUMN starcubes_meta.auth_user.notify_email IS'
+            '''Deliberate default-off opt-in: the account receives alarm e-mail only when this is true AND the alarm lists the account in notify_email_recipients. Maintained on My Profile; the Django model does not know this column.''';
+  END IF;
+  IF to_regclass('starcubes_meta.auth_user') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = 'starcubes_meta'
+                       AND table_name   = 'auth_user'
+                       AND column_name  = 'notify_xmpp')
+  THEN ALTER TABLE starcubes_meta.auth_user
+           ADD COLUMN notify_xmpp boolean NOT NULL DEFAULT false;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'starcubes_meta'
+               AND table_name   = 'auth_user'
+               AND column_name  = 'notify_xmpp')
+  THEN
+    EXECUTE 'COMMENT ON COLUMN starcubes_meta.auth_user.notify_xmpp IS'
+            '''Deliberate default-off opt-in: the account receives alarm XMPP messages only when this is true AND the alarm lists the account in notify_xmpp_recipients. Maintained on My Profile; the Django model does not know this column.''';
+  END IF;
+END $$;

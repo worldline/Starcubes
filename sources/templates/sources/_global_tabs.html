@@ -1,12 +1,14 @@
 {% comment %}
 Shared tab bar for the datasource-independent pages (list, profiles,
-firings, transports, settings). Link-based tabs — each page keeps its own
+firings, transports, settings, me). Link-based tabs — each page keeps its own
 URL; the active tab is derived from resolver_match, not client-side
-toggling. Same order as the two hamburger menus — Datasources, Profiles,
-Firings, Transports, Users — kept in sync by hand; the pages themselves
-permission-gate (profiles/transports/settings are superuser-only), so the
-strip mirrors that with one {% if user.is_superuser %} around the three
-configuration tabs. No #tabNav/data-tab — those belong to the JS-toggled
+toggling. Same order as the hamburger menu (sources/_nav_menu.html, the
+one partial both shells include) — Datasources, Profiles, Firings,
+Transports, Users, My Profile; the pages themselves permission-gate
+(profiles/transports/settings are superuser-only), so the strip mirrors
+that with one {% if user.is_superuser %} around the three configuration
+tabs. My Profile follows even where Users is hidden: every signed-in
+user owns one. No #tabNav/data-tab — those belong to the JS-toggled
 in-page bars in detail/manage.
 {% endcomment %}
 <div class="subtabs-bar">
@@ -25,5 +27,7 @@ in-page bars in detail/manage.
     <a class="tab-btn{% if request.resolver_match.url_name == 'settings' %} active{% endif %}"
        href="{% url 'sources:settings' %}">Users</a>
     {% endif %}
+    <a class="tab-btn{% if request.resolver_match.url_name == 'me' %} active{% endif %}"
+       href="{% url 'sources:me' %}">My Profile</a>
   </div>
 </div>

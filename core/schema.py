@@ -24,6 +24,7 @@ UNKNOWN_SOURCE_ID = "__unknown__"  # sentinel dim row for source values not
                                    # source NULL via nvl in import_query.
 
 _MIGRATION_SQL = Path(__file__).resolve().parent.parent / "migrations" / "starcubes_meta.sql"
+MIGRATIONS_DIR = _MIGRATION_SQL.parent
 
 # A datasource's schema name is interpolated into ~70 f-string SQL statements
 # across core/, and pandas' ``to_sql`` quotes it while those do not. An

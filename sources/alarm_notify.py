@@ -28,6 +28,8 @@ from sqlalchemy import text
 
 from core import config as core_config
 
+from . import accounts
+
 logger = logging.getLogger("sources.alarm_notify")
 
 
@@ -49,9 +51,10 @@ _XMPP_TIMEOUT_S = 30
 _PD_DEDUP_PREFIX = "starcubes-alarm"
 _PD_DEDUP_SEP = "#"
 
-# Channels with an address book (the two int[] columns). `pagerduty` needs no
-# recipient ids and `log` needs nothing at all — the episode row plus the
-# evaluator's log line IS the log channel.
+# Channels with an address book (the two int[] columns). `pagerduty` needs
+# no recipient ids. `log` is not a selectable channel any more — the episode
+# row plus the evaluator's log line are written unconditionally in
+# core/alarm.py, so the log side of an alarm needs no dispatch at all.
 _ADDRESSED = ("email", "xmpp")
 
 
@@ -196,7 +199,8 @@ def send_pagerduty(routing_key: str, t: dict) -> None:
         "event_action": "trigger" if opened else "resolve",
         "payload": {
             "source": f"starcubes/{t['ds_name']}",
-            "severity": _cfg("STARCUBES_PAGERDUTY_SEVERITY", "critical"),
+            "severity": (t.get("severity")
+                         or _cfg("STARCUBES_PAGERDUTY_SEVERITY", "critical")),
             "summary": body.splitlines()[0],
             "custom_details": {
                 "alarm_id": t["alarm_id"],
@@ -238,6 +242,8 @@ def send_pagerduty_test(routing_key: str, ds_name: str, ds_id: int) -> None:
         "dedup_key": dedup,
         "payload": {
             "source": f"starcubes/{ds_name}",
+            # Deliberately the global value: the test button exercises the
+            # transport wiring, not any alarm's routing choice.
             "severity": _cfg("STARCUBES_PAGERDUTY_SEVERITY", "critical"),
             "summary": f"starcubes PagerDuty test — {ds_name}",
         },
@@ -261,7 +267,7 @@ def _resolve_lookups(meta_engine, transitions: list[dict]) -> tuple[dict, dict]:
     with meta_engine.connect() as conn:
         if user_ids:
             rows = conn.execute(text(
-                "SELECT id, username, email, xmpp_jid "
+                f"SELECT {accounts.CONTACT_COLS} "
                 "FROM starcubes_meta.auth_user WHERE id = ANY(:ids)"
             ), {"ids": user_ids}).mappings().all()
             users = {r["id"]: dict(r) for r in rows}
@@ -279,14 +285,12 @@ def dispatch_transitions(transitions: list[dict], meta_engine) -> dict:
     public entry point — the management commands call this directly after
     `run_alarm_cycle`. Never raises: the address lookup failing (meta DB
     unreachable) counts as one error per channel it would have served."""
-    counters = {"email": 0, "xmpp": 0, "pagerduty": 0, "log": 0, "errors": 0}
+    counters = {"email": 0, "xmpp": 0, "pagerduty": 0, "errors": 0}
     if not transitions:
         return counters
 
     try:
-        needs_lookup = any(
-            set(t.get("notify_channels") or []) - {"log"}
-            for t in transitions)
+        needs_lookup = any(t.get("notify_channels") for t in transitions)
         users, routing_keys = (
             _resolve_lookups(meta_engine, transitions)
             if needs_lookup else ({}, {}))
@@ -299,9 +303,9 @@ def dispatch_transitions(transitions: list[dict], meta_engine) -> dict:
         subject, body = render_message(t)
         channels = t.get("notify_channels") or []
         for channel in channels:
-            if users is None and channel != "log":
+            if users is None:
                 # The address lookup failed — nothing addressable can be
-                # served, but `log` still counts: it needs no lookup.
+                # served (log is not dispatched, see the _ADDRESSED note).
                 counters["errors"] += 1
                 continue
             # One try/except per channel: a broken SMTP server must not
@@ -338,8 +342,6 @@ def dispatch_transitions(transitions: list[dict], meta_engine) -> dict:
                     else:
                         send_pagerduty(key, t)
                         counters["pagerduty"] += 1
-                elif channel == "log":
-                    counters["log"] += 1
             except Exception:
                 logger.exception("alarm %s: %s notification failed",
                                  t["alarm_name"], channel)
@@ -349,8 +351,10 @@ def dispatch_transitions(transitions: list[dict], meta_engine) -> dict:
 
 def _addresses(users: dict, t: dict, kind: str) -> list[str]:
     """Address list for one channel kind, dropping users whose address is
-    missing (logged as WARNING by the caller's empty-list check)."""
+    missing or who has not opted in to the channel (each drop logged as
+    WARNING by the caller's empty-list check)."""
     ids = t.get(f"notify_{kind}_recipients") or []
+    optin_col = "notify_email" if kind == "email" else "notify_xmpp"
     addrs = []
     for uid in ids:
         u = users.get(uid)
@@ -358,6 +362,11 @@ def _addresses(users: dict, t: dict, kind: str) -> list[str]:
         if u is None or not u.get(addr_col):
             logger.warning("alarm %s: user %s selected for %s channel "
                            "has no address", t["alarm_name"], uid, kind)
+            continue
+        if not u.get(optin_col):
+            logger.warning("alarm %s: user %s selected for %s channel has "
+                           "not opted in to %s notifications (My Profile)",
+                           t["alarm_name"], uid, kind, kind)
             continue
         addrs.append(u[addr_col])
     return addrs

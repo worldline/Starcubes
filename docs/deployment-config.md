@@ -265,7 +265,7 @@ immediately.
 | `STARCUBES_XMPP_PASSWORD` | `""` | |
 | `STARCUBES_XMPP_HOST` / `STARCUBES_XMPP_PORT` | `""` / `5222` | host override (skips SRV lookup of the JID domain); port only with host |
 | `STARCUBES_PAGERDUTY_EVENTS_URL` | `https://events.pagerduty.com/v2/enqueue` | point at the sandbox for a dry run |
-| `STARCUBES_PAGERDUTY_SEVERITY` | `critical` | fixed severity of trigger events |
+| `STARCUBES_PAGERDUTY_SEVERITY` | `critical` | fallback severity when an alarm sets none (`alarm.severity`) |
 | `STARCUBES_OIDC_ISSUER` | `""` | realm URL, no trailing slash — with client id + secret, SSO is on |
 | `STARCUBES_OIDC_CLIENT_ID` / `_CLIENT_SECRET` | `""` | |
 | `STARCUBES_OIDC_DISPLAY_NAME` | `Keycloak` | button text on the login page (applies live) |

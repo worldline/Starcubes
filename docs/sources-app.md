@@ -13,11 +13,13 @@ Single `#nav-tabs` flex row, same pattern as the chart page (see
 into `#nav-menu`, a `makePopover` dropdown behind the `#nav-menu-toggle`
 hamburger. Menu rows: username header (display only), Datasources
 (`sources:list`) and Firings (`sources:alarm_firings`) for any logged-in
-user, Profiles / Users (superuser-only), theme toggle, My Profile
-(`sources:me`), About (`viz:slides`, new tab), Log out. The entry list is
-deliberately identical to chart.html's `#nav-menu` (same rows, same
-order) so the two apps read as one product — change both together. The
-menu CSS/JS live in `sources/static/sources/nav.css` and
+user, Profiles / Users (superuser-only), My Profile (`sources:me`), theme
+toggle, About (`viz:slides`, new tab), Log out. **Both shells include the
+same partial** — `sources/_nav_menu.html`, with chart.html passing its
+theme-row ids and `include_prefs=1` — so the menus cannot drift; the tab
+bar `_global_tabs.html` mirrors the same order and is still hand-synced
+against the partial. The menu CSS/JS live in
+`sources/static/sources/nav.css` and
 `nav.js` — near-verbatim mirrors of the chart's inline copies, kept
 deliberately separate so the two apps don't share a static include. The
 base wiring script (theme helper + `makePopover` call) sits inside
@@ -40,7 +42,7 @@ The `/sources/` UI splits along three axes:
 | Superuser         | `/sources/<pk>/manage/`       | Full configuration (12 sub-tabs incl. ETL run / log) |
 | Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
 | Superuser         | `/sources/profiles/`          | Profile catalogue + upload (replaces the modal that used to live on `list.html`) |
-| Logged-in user    | `/sources/me/`                | Own profile, password change, query history    |
+| Logged-in user    | `/sources/me/`                | Own profile, password change, alarm-channel opt-in (email/XMPP), query history    |
 | Superuser         | `/sources/settings/`          | User admin (create / edit / password / delete)  |
 
 The split between `detail` and `manage` is about *audience*, not about
@@ -50,15 +52,16 @@ fully editable there. `manage` adds the schema, storage and ETL surface
 that only an operator has any use for, behind a superuser gate. The link
 to `manage` is rendered only for superusers.
 
-The five datasource-independent pages — the datasource list, profiles,
+The datasource-independent pages — the datasource list, profiles,
 firings, transports (notification transports + SSO, editing
-`starcubes_meta.app_config` under env-first precedence) and settings
-(Users) — share the link-based tab bar `_global_tabs.html`, included at
-the top of each page. Tab order mirrors the two hamburger menus:
-Datasources, Profiles, Firings, Transports, Users. The active tab is
-derived from `request.resolver_match.url_name`, and the bar is
-permission-filtered to mirror the views: superusers see all five tabs,
-other logged-in users Datasources and Firings.
+`starcubes_meta.app_config` under env-first precedence), settings
+(Users) and me (My Profile) — share the link-based tab bar
+`_global_tabs.html`, included at the top of each page. Tab order mirrors
+the two hamburger menus: Datasources, Profiles, Firings, Transports,
+Users, My Profile. The active tab is derived from
+`request.resolver_match.url_name`, and the bar is permission-filtered to
+mirror the views: superusers see all six tabs, other logged-in users
+Datasources, Firings and My Profile.
 
 ## Role gates
 
@@ -96,7 +99,7 @@ Notes:
 
 ### Pages
 - `GET /sources/` — list with last-run status badge per datasource
-- `GET /sources/me/` — own profile, change password, query-console history
+- `GET /sources/me/` — own profile, change password, alarm-channel opt-in, query-console history
 - `GET /sources/settings/` — user admin (superuser only)
 - `GET /sources/profiles/` — profile catalogue + upload form (superuser only)
 - `GET/POST /sources/new/` — create datasource (superuser only)
@@ -358,13 +361,15 @@ been changed.
 
 - `POST .../alarms/add/` — `name, comment, measure, cond_op, threshold,
   window_s, notify_channels` (comma-separated string, not a JSON array),
-  `enabled` (checkbox semantics: absent means "field not in this form" and
-  defaults to true; present-but-empty is unchecked) and the optional
-  `context` (JSON string, see above).
+  `severity` (optional PagerDuty override, one of critical/error/warning/info;
+  absent/empty = global default), `enabled` (checkbox semantics: absent means
+  "field not in this form" and defaults to true; present-but-empty is
+  unchecked) and the optional `context` (JSON string, see above).
 - `POST .../alarms/<alarm_id>/edit/` — same field set, except the context:
   an absent `context` field keeps the stored one (the inline editor never
   sends it — a filter expression is not inline-editable; delete +
   re-create from the chart instead), a present one replaces it wholesale.
+  `severity` follows absent-keeps/empty-clears; the UI always submits it.
 - `POST .../alarms/<alarm_id>/delete/` — idempotent; history, comments
   values and firings CASCADE away with the alarm.
 - `POST .../alarms/<alarm_id>/history/` — change history, newest first.
@@ -376,8 +381,9 @@ been changed.
 (CHECK constraint — there is no `!=`). `measure` is `count(*)`, a bare
 fact column, or `func(col)` with `func` in `sum/avg/min/max` (`quantile`
 is not comparable and is rejected). `notify_channels` is a Postgres
-`text[]`; only `log` has plumbing today (the episode row plus the loop's
-log file) — the rest is vocabulary, see backlog.
+`text[]` (email/xmpp/pagerduty — the log side is always on, not a channel;
+`slack` stays reserved vocabulary without a transport); dispatch and its
+opt-in rules live in `docs/alarm.md`.
 
 The **global episode overview** lives at `/sources/alarms/firings/`
 (`alarm_firings_page`, server-rendered, newest first, LIMIT 500,
@@ -397,7 +403,10 @@ same code twice over:
   filling it. Its one switch is `scoped`: on a datasource's own page the
   `Datasource` dropdown makes no sense, so it becomes an "All firings ↗"
   link to the global page and the `Datasource` column drops out of the
-  table. `url_all` / `url_open` come from the caller because each page
+  table. Open episodes carry a `row-open` class — a red blinking dot
+  (`::before` on the first cell, `--badge-failed-fg`, `@keyframes pulse`)
+  at the start of the row, next to the amber "open" status badge.
+  `url_all` / `url_open` come from the caller because each page
   filters inside its own URL — `?show=` globally, `?tab=firings[&show=open]`
   on the tab, which reloads the detail page and lands back on the tab
   through the existing `?tab=` deep-link.

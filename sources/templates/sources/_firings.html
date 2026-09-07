@@ -64,7 +64,7 @@ activated client-side without touching it.
   </thead>
   <tbody>
     {% for e in episodes %}
-    <tr>
+    <tr{% if e.open %} class="row-open"{% endif %}>
       <td><a href="{% url 'sources:detail' e.ds_id %}?tab=alarms"><strong>{{ e.alarm_name }}</strong></a></td>
       {% if not scoped %}<td class="text-muted">{{ e.ds_name }}</td>{% endif %}
       <td class="text-mono text-muted" style="font-size:11px">{{ e.rule }}</td>

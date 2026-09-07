@@ -170,10 +170,15 @@ channels are:
 
 | Channel | Address source | Enabled when |
 |---|---|---|
-| `log` | — | always (the episode row + the evaluator's log line) |
 | `email` | the selected accounts' `auth_user.email` | `STARCUBES_SMTP_HOST` + `STARCUBES_SMTP_FROM` set |
 | `xmpp` | the selected accounts' `auth_user.xmpp_jid` | `STARCUBES_XMPP_JID` + `STARCUBES_XMPP_PASSWORD` set |
 | `pagerduty` | the datasource's `pagerduty_routing_key` | per datasource, no global switch |
+
+The **log side is always on** and not selectable: every episode is written
+to `alarm_firing` and logged by the evaluator (`core/alarm.py`) regardless
+of `notify_channels`. It used to be a channel in its own right; legacy rows
+may still carry `log` in the stored array — `_parse_alarm_fields` drops it
+silently on the next edit.
 
 **Recipients are the login users.** Each alarm picks recipients per channel
 from the accounts; the addresses live on the accounts themselves (e-mail on
@@ -182,6 +187,14 @@ settings page). There is deliberately **no free-form recipient list** — the
 accepted limitation is that no external or distribution-list recipients are
 possible. `int[]` cannot carry a foreign key, so a deleted user's id is
 scrubbed from both arrays by `settings_page`'s delete branch.
+
+**Receiving is the user's decision (migration 0032, default off).** Being
+listed on an alarm is the alarm author's side of the contract; the account
+itself must also have opted in to the channel — `auth_user.notify_email` /
+`notify_xmpp`, maintained on **My Profile**. Dispatch drops a listed account
+that has not opted in (logged as WARNING, so a quiet alarm is diagnosable);
+PagerDuty has no user preference. Because the default is off,
+existing alarms fall silent for users who never opt in — deliberate.
 
 The save-time rules (enforced in `_validate_alarm_notify`): `email`/`xmpp`
 channel ⇒ at least one recipient of that kind chosen; `pagerduty` channel
@@ -192,8 +205,12 @@ nothing stored is refused.
 PagerDuty speaks Events API v2: **trigger** on open, **resolve** on close,
 dedup key `starcubes-alarm-<alarm_id>#<episode_id>` — per episode, so a
 re-opened episode produces a fresh incident instead of being silently
-deduplicated into the resolved one. Severity is global
-(`STARCUBES_PAGERDUTY_SEVERITY`).
+deduplicated into the resolved one. **Severity is per alarm**
+(`alarm.severity`, migration 0032): the four PagerDuty values
+critical/error/warning/info, NULL/empty falls back to the global
+`STARCUBES_PAGERDUTY_SEVERITY`. The Transports page's test button always
+sends the global value — it exercises the transport wiring, not an alarm's
+routing choice.
 
 The messages (subject/body, shared by e-mail, XMPP and the PagerDuty
 summary) are rendered by `sources/alarm_notify.py:render_message` — English,

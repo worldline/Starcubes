@@ -372,7 +372,7 @@ class Command(BaseCommand):
                         nc = notify_counts
                         self.stdout.write(
                             f"notify: email={nc['email']} xmpp={nc['xmpp']} "
-                            f"pagerduty={nc['pagerduty']} log={nc['log']} "
+                            f"pagerduty={nc['pagerduty']} "
                             f"errors={nc['errors']}")
                 self.stdout.write("recent etl_run rows (newest first):")
                 for r in last_runs:

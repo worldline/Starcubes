@@ -48,6 +48,8 @@ from core.query import (build_filter_tree, grouped_label, grouped_token,
                         MEASURE_FUNCS, slugify_group_set,
                         validate_filter_tree)
 from core.source import Source, _get_cached_engine
+
+from . import accounts
 from sources.profile_store import (delete_profile_children,
                                    insert_profile_children,
                                    update_datasource_scalars)
@@ -1941,10 +1943,17 @@ def measure_delete(request, pk: int, measure_id: int):
 _ALARM_OPS = {">", "<", "=", ">=", "<="}
 
 # Notification channels — every value `alarm.notify_channels` accepts.
-# All four addressable channels are wired (email/xmpp/pagerduty dispatch via
-# sources/alarm_notify.py, log is the episode row plus the evaluator's log);
-# `slack` stays reserved without a transport — see docs/backlog.md.
-_ALARM_CHANNELS = {"email", "xmpp", "slack", "pagerduty", "log"}
+# email/xmpp/pagerduty dispatch via sources/alarm_notify.py; `log` is no
+# longer selectable (the episode row plus the evaluator's log line are
+# always on, core/alarm.py) but is silently dropped from submitted lists
+# because legacy rows may still store it; `slack` stays reserved without a
+# transport — see docs/backlog.md.
+_ALARM_CHANNELS = {"email", "xmpp", "slack", "pagerduty"}
+
+# PagerDuty trigger severities an alarm.severity may carry (CHECK constraint
+# alarm_severity_check mirrors this set in the DB). NULL/absent = fall back
+# to STARCUBES_PAGERDUTY_SEVERITY at dispatch time.
+_ALARM_SEVERITIES = {"critical", "error", "warning", "info"}
 
 # Filter ops an alarm context row may carry — the same six the chart
 # serializes (core.query._VALID_OPS).
@@ -2075,6 +2084,9 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
     for chunk in request.POST.getlist("notify_channels"):
         channels.extend(c.strip() for c in str(chunk).split(",") if c.strip())
     channels = [c for c in channels if c]
+    # `log` is always on (not dispatched any more); drop it silently so a
+    # legacy alarm whose stored array still carries it survives an edit.
+    channels = [c for c in channels if c != "log"]
     bad = [c for c in channels if c not in _ALARM_CHANNELS]
     if bad:
         errors["notify_channels"] = (f"unknown channel(s) {bad}; allowed: "
@@ -2109,6 +2121,17 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
         if ok:
             values[field] = sorted(set(ids))
 
+    # PagerDuty severity: optional per-alarm override. Absent or empty =
+    # "fall back to the global STARCUBES_PAGERDUTY_SEVERITY at dispatch".
+    # Validated against the same four values the DB CHECK constraint
+    # (alarm_severity_check, migration 0032) accepts.
+    sev = (request.POST.get("severity") or "").strip().lower()
+    if sev and sev not in _ALARM_SEVERITIES:
+        errors["severity"] = (f"severity must be one of "
+                              f"{sorted(_ALARM_SEVERITIES)}")
+    else:
+        values["severity"] = sev or None
+
     # Checkbox semantics, but only when the field was actually submitted:
     # an absent "enabled" means "not part of this form" (the add form used
     # to omit it entirely), not "disabled". Present-but-empty is the
@@ -2141,6 +2164,7 @@ def _alarm_row_to_dict(row) -> dict:
         "notify_channels": list(row.notify_channels or []),
         "notify_email_recipients": list(row.notify_email_recipients or []),
         "notify_xmpp_recipients": list(row.notify_xmpp_recipients or []),
+        "severity": row.severity,
         "enabled": bool(row.enabled),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -2230,21 +2254,8 @@ def _validate_alarm_notify(pk: int, values: dict):
             "xmpp channel selected but no XMPP recipient chosen",
             "fields": {"notify_xmpp_recipients":
                        "choose at least one recipient"}}, status=400)
-    xmpp_ids = values.get("notify_xmpp_recipients") or []
-    channels = values["notify_channels"]
 
-    if "email" in channels and not email_ids:
-        return JsonResponse({"ok": False, "error":
-            "email channel selected but no e-mail recipient chosen",
-            "fields": {"notify_email_recipients":
-                       "choose at least one recipient"}}, status=400)
-    if "xmpp" in channels and not xmpp_ids:
-        return JsonResponse({"ok": False, "error":
-            "xmpp channel selected but no XMPP recipient chosen",
-            "fields": {"notify_xmpp_recipients":
-                       "choose at least one recipient"}}, status=400)
-
-    ids = sorted(set(email_ids) | set(xmpp_ids))
+    ids = sorted(set(email_ids or []) | set(xmpp_ids or []))
     try:
         with _meta_engine().begin() as conn:
             if ids:
@@ -2290,19 +2301,18 @@ def recipients_list(request):
     fix on the settings page. There is no other user-list JSON endpoint
     (the settings page renders its user table server-side), so this is the
     minimal new surface. Read-only, and no more than what the alarm forms
-    need per user: id, username, email, xmpp_jid.
+    need per user: id, username, email, xmpp_jid and the two channel
+    opt-in flags, so a form can annotate recipients who will be dropped at
+    dispatch because they never opted in (My Profile).
     """
     try:
-        with _meta_engine().begin() as conn:
-            rows = conn.execute(text(
-                "SELECT id, username, email, xmpp_jid "
-                "  FROM starcubes_meta.auth_user "
-                " ORDER BY username"
-            )).mappings().all()
+        users = accounts.list_contacts(_meta_engine())
         return JsonResponse({"ok": True, "users": [
-            {"id": r["id"], "username": r["username"], "email": r["email"],
-             "xmpp_jid": r["xmpp_jid"]}
-            for r in rows]})
+            {"id": u["id"], "username": u["username"], "email": u["email"],
+             "xmpp_jid": u["xmpp_jid"],
+             "notify_email": bool(u["notify_email"]),
+             "notify_xmpp": bool(u["notify_xmpp"])}
+            for u in users]})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
 
@@ -2326,15 +2336,23 @@ def alarms_list(request, pk: int):
                 return JsonResponse({"ok": False, "error":
                     f"datasource {pk} not found"}, status=404)
             rows = conn.execute(text(
-                "SELECT id, datasource_id, name, context_filter, comment, "
-                "       measure, cond_op, threshold, window_s, notify_channels, "
-                "       notify_email_recipients, notify_xmpp_recipients, "
-                "       enabled, created_at, updated_at "
-                "  FROM starcubes_meta.alarm "
-                " WHERE datasource_id = :ds "
-                " ORDER BY name"
+                "SELECT a.id, a.datasource_id, a.name, a.context_filter, a.comment, "
+                "       a.measure, a.cond_op, a.threshold, a.window_s, a.notify_channels, "
+                "       a.notify_email_recipients, a.notify_xmpp_recipients, a.severity, "
+                "       a.enabled, a.created_at, a.updated_at, "
+                "       EXISTS (SELECT 1 FROM starcubes_meta.alarm_firing f "
+                "               WHERE f.alarm_id = a.id "
+                "                 AND f.closed_at IS NULL) AS has_open_episode "
+                "  FROM starcubes_meta.alarm a "
+                " WHERE a.datasource_id = :ds "
+                " ORDER BY a.name"
             ), {"ds": pk}).mappings().all()
         alarms = [_alarm_row_to_dict(r) for r in rows]
+        # has_open_episode is the one field that is not column data — pass
+        # it through on top of the shared shape so the Alarms tab can badge
+        # rows with an open firing episode.
+        for alarm, r in zip(alarms, rows):
+            alarm["has_open_episode"] = bool(r["has_open_episode"])
         # One label map for the whole page — the ids are resolved in a single
         # pass over every context, so the cost does not grow with the list.
         return JsonResponse({"ok": True, "alarms": alarms,
@@ -2417,17 +2435,20 @@ def alarm_add(request, pk: int):
         return JsonResponse({"ok": False, "error":
             "; ".join(f"{k}: {v}" for k, v in errors.items()),
             "fields": errors}, status=400)
+    # Add semantics: absent recipient fields mean "none", not "keep stored" —
+    # normalized BEFORE the notify validator so its pairing rules see an
+    # empty list (which it refuses for a selected channel), not the None
+    # "not part of this form" sentinel the inline editor relies on.
+    if values["notify_email_recipients"] is None:
+        values["notify_email_recipients"] = []
+    if values["notify_xmpp_recipients"] is None:
+        values["notify_xmpp_recipients"] = []
     failed = _validate_alarm_context(pk, values)
     if failed is not None:
         return failed
     failed = _validate_alarm_notify(pk, values)
     if failed is not None:
         return failed
-    # Add semantics: absent recipient fields mean "none", not "keep stored".
-    if values["notify_email_recipients"] is None:
-        values["notify_email_recipients"] = []
-    if values["notify_xmpp_recipients"] is None:
-        values["notify_xmpp_recipients"] = []
     ctx_json = (_json.dumps(values["context_rows"])
                 if values["context_rows"] else None)
     try:
@@ -2443,13 +2464,13 @@ def alarm_add(request, pk: int):
                 "  (datasource_id, name, context_filter, comment, "
                 "   measure, cond_op, threshold, window_s, notify_channels, "
                 "   notify_email_recipients, notify_xmpp_recipients, "
-                "   enabled) "
+                "   severity, enabled) "
                 "VALUES (:ds, :name, CAST(:ctx AS jsonb), :cmt, "
                 "        :m, :op, :thr, :ws, CAST(:nc AS text[]), "
-                "        :ner, :nxr, :en) "
+                "        :ner, :nxr, :sev, :en) "
                 "RETURNING id, datasource_id, name, context_filter, comment, "
                 "          measure, cond_op, threshold, window_s, notify_channels, "
-                "          notify_email_recipients, notify_xmpp_recipients, "
+                "          notify_email_recipients, notify_xmpp_recipients, severity, "
                 "          enabled, created_at, updated_at"
             ), {"ds": pk, "name": values["name"], "ctx": ctx_json,
                 "cmt": values["comment"],
@@ -2458,6 +2479,7 @@ def alarm_add(request, pk: int):
                 "nc": list(values["notify_channels"]),
                 "ner": values["notify_email_recipients"] or [],
                 "nxr": values["notify_xmpp_recipients"] or [],
+                "sev": values["severity"],
                 "en": values["enabled"]}).mappings().one()
             conn.execute(text(
                 "INSERT INTO starcubes_meta.alarm_history "
@@ -2509,6 +2531,10 @@ def alarm_edit(request, pk: int, alarm_id: int):
     # context's "absent = keep" semantics.
     set_email = values["notify_email_recipients"] is not None
     set_xmpp = values["notify_xmpp_recipients"] is not None
+    # Severity: absent = keep stored (the inline editor always submits the
+    # field, so only non-UI callers hit the keep path); empty = clear to
+    # NULL, i.e. back to the global default.
+    set_severity = "severity" in request.POST
     sets = ["name = :name", "comment = :cmt", "measure = :m", "cond_op = :op",
             "threshold = :thr", "window_s = :ws",
             "notify_channels = CAST(:nc AS text[])", "enabled = :en"]
@@ -2521,6 +2547,9 @@ def alarm_edit(request, pk: int, alarm_id: int):
     if set_context:
         sets.append("context_filter = CAST(:ctx AS jsonb)")
         params["ctx"] = ctx_json
+    if set_severity:
+        sets.append("severity = :sev")
+        params["sev"] = values["severity"]
     if set_email:
         sets.append("notify_email_recipients = :ner")
         params["ner"] = values["notify_email_recipients"] or []
@@ -2533,7 +2562,7 @@ def alarm_edit(request, pk: int, alarm_id: int):
             old = conn.execute(text(
                 "SELECT id, datasource_id, name, context_filter, comment, "
                 "       measure, cond_op, threshold, window_s, notify_channels, "
-                "       notify_email_recipients, notify_xmpp_recipients, "
+                "       notify_email_recipients, notify_xmpp_recipients, severity, "
                 "       enabled, created_at, updated_at "
                 "  FROM starcubes_meta.alarm "
                 " WHERE id = :id AND datasource_id = :ds"
@@ -2565,7 +2594,7 @@ def alarm_edit(request, pk: int, alarm_id: int):
                 " WHERE id = :id AND datasource_id = :ds "
                 "RETURNING id, datasource_id, name, context_filter, comment, "
                 "          measure, cond_op, threshold, window_s, notify_channels, "
-                "          notify_email_recipients, notify_xmpp_recipients, "
+                "          notify_email_recipients, notify_xmpp_recipients, severity, "
                 "          enabled, created_at, updated_at"
             ), params).mappings().one()
             conn.execute(text(
@@ -3333,11 +3362,7 @@ def _set_xmpp_jid(user_id: int, jid: str) -> None:
     """Write the account's XMPP JID — raw SQL because the Django model does
     not know the column (migration 0030 added it directly on auth_user).
     Empty string clears it (NULL), mirroring the email field's semantics."""
-    with _meta_engine().begin() as conn:
-        conn.execute(text(
-            "UPDATE starcubes_meta.auth_user SET xmpp_jid = NULLIF(:j, '') "
-            " WHERE id = :id"
-        ), {"j": jid, "id": user_id})
+    accounts.set_xmpp_jid(_meta_engine(), user_id, jid)
 
 
 def settings_page(request):
@@ -3476,11 +3501,13 @@ def my_profile(request):
     no user_id in the URL and no admin-only data on it. Anyone signed in
     can see their own email, their last-login history (via the query
     console's ``query_history`` table — useful for picking up where they
-    left off) and a form to change their own password.
+    left off), a form to change their own password and the alarm-channel
+    opt-in (email/XMPP, migration 0032, deliberate default off).
 
-    Password change is the only mutation; it deliberately lives outside
-    the admin ``settings_page`` because a non-admin can still change
-    their own password (and only their own).
+    Mutations are self-service only and deliberately live outside the
+    admin ``settings_page`` because a non-admin can still change
+    their own password (and only their own), and only their own
+    notification opt-in.
     """
     if not request.user.is_authenticated:
         return redirect("/login/?next=/sources/me/")
@@ -3508,29 +3535,35 @@ def my_profile(request):
                 # the very next request, right after being told it worked.
                 update_session_auth_hash(request, request.user)
                 return redirect("/sources/me/?msg=Password+updated.")
-        elif action == "update_jid":
-            # Self-service: every user edits only their own JID — no
-            # user_id parameter, `_set_xmpp_jid` targets request.user.pk.
-            _set_xmpp_jid(request.user.pk,
-                          (request.POST.get("xmpp_jid") or "").strip())
-            return redirect("/sources/me/?msg=XMPP+JID+updated.")
+        elif action == "update_notify":
+            # Self-service channel opt-in (migration 0032, default off):
+            # email/XMPP dispatch requires BOTH the alarm listing the
+            # account and this flag. PagerDuty/log have no user preference.
+            notify_email = request.POST.get("notify_email") in ("on", "true", "1")
+            notify_xmpp = request.POST.get("notify_xmpp") in ("on", "true", "1")
+            accounts.set_notify_optin(_meta_engine(), request.user.pk,
+                                      notify_email, notify_xmpp)
+            return redirect(f"{request.path}?msg=Notification+settings+updated.")
         return redirect(f"{request.path}?err={err}" if err else f"{request.path}?msg=Updated.")
 
     history = history_list_user(_meta_engine(), user_id=request.user.pk, limit=200)
-    # xmpp_jid lives outside the Django model (migration 0030); read it in
-    # one raw pass like settings_page does for the user listing.
+    # xmpp_jid and the two opt-in flags live outside the Django model
+    # (migration 0030/0032); accounts.py owns the raw SQL for them.
     try:
-        with _meta_engine().begin() as conn:
-            xmpp_jid = conn.execute(text(
-                "SELECT xmpp_jid FROM starcubes_meta.auth_user "
-                " WHERE id = :id"
-            ), {"id": request.user.pk}).scalar()
+        me_row = accounts.user_contacts(_meta_engine(), request.user.pk)
+        xmpp_jid = me_row["xmpp_jid"] if me_row else None
+        notify_email = bool(me_row["notify_email"]) if me_row else False
+        notify_xmpp = bool(me_row["notify_xmpp"]) if me_row else False
     except Exception:
         xmpp_jid = None
+        notify_email = False
+        notify_xmpp = False
     return render(request, "sources/me.html", {
         "me": request.user,
         "history": history,
         "xmpp_jid": xmpp_jid,
+        "notify_email": notify_email,
+        "notify_xmpp": notify_xmpp,
         "msg": msg,
         "err": err,
     })
