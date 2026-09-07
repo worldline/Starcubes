@@ -1,6 +1,6 @@
 -- starcubes metadata schema: consolidated initial creation script.
 --
--- Combines all previous migrations (0001–0019) into one idempotent script.
+-- Combines all previous migrations (0001–0031) into one idempotent script.
 -- Safe to re-run: all CREATEs use IF NOT EXISTS, all ALTERs are guarded.
 --
 -- Per-datasource warehouse tables (fact + dim_*) live in their own schema
@@ -913,3 +913,28 @@ ALTER TABLE starcubes_meta.datasource
 
 COMMENT ON COLUMN starcubes_meta.datasource.pagerduty_routing_key IS
     'PagerDuty Events API v2 routing key (integration token) of the PagerDuty service that carries this datasource''s alarms. One service per source: every alarm on the datasource triggers into the same key. NULL = PagerDuty disabled for this source. Credential — maintained on the password-type field on the source edit page, never exported in a profile.';
+
+
+-- 0031_app_config.sql — one key-value table for global app configuration
+-- the operator edits in the GUI instead of passing env vars: notification
+-- transports and SSO/OIDC. Key = the env-var name it shadows; resolution
+-- is env-first (`core/config.py`), an absent row means "not configured
+-- here". Secrets plaintext like datasource.source_dsn. See
+-- migrations/0031_app_config.sql for the semantics. Mirror block.
+
+CREATE TABLE IF NOT EXISTS starcubes_meta.app_config (
+    key        text PRIMARY KEY,
+    value      text NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    updated_by text NOT NULL
+);
+
+COMMENT ON TABLE starcubes_meta.app_config IS
+    'Global app configuration as key-value rows, one table for every setting an operator may edit in the GUI instead of passing an environment variable: notification transports (STARCUBES_SMTP_*, STARCUBES_XMPP_*, STARCUBES_PAGERDUTY_*) and SSO/OIDC (STARCUBES_OIDC_*). The key is the env-var name it shadows.';
+
+COMMENT ON COLUMN starcubes_meta.app_config.key IS
+    'The STARCUBES_* environment variable name this row shadows. Only the 17 transport/SSO keys are read; writing any other key has no effect. Resolution is env-first: a set env var beats the row, the row beats the hardcoded default.';
+COMMENT ON COLUMN starcubes_meta.app_config.value IS
+    'The setting''s value as text. Deleting a row falls back to the environment/default — there is no empty-string state.';
+COMMENT ON COLUMN starcubes_meta.app_config.updated_by IS
+    'Username of the admin who last wrote the row, for the same provenance alarm_history keeps. Credentials are stored like datasource.source_dsn: plaintext here, masked in every listing, never logged.';

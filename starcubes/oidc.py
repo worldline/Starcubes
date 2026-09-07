@@ -54,11 +54,74 @@ login lands. Success and failure were literally indistinguishable. See
 from __future__ import annotations
 
 import logging
+import os
 
 from mozilla_django_oidc.auth import OIDCAuthenticationBackend
 from mozilla_django_oidc.views import OIDCAuthenticationCallbackView
 
 LOGGER = logging.getLogger(__name__)
+
+
+def apply_db_overrides() -> None:
+    """Apply DB-stored SSO configuration (starcubes_meta.app_config) onto
+    django.conf.settings — the DB half of the env-first resolution.
+
+    Runs once per process from `SourcesConfig.ready()`, which fires before
+    the URLconf is imported in every entry path, so `/oidc/` route mounting
+    and the authentication backend list pick the DB values up at boot.
+    Exception-safe: any error logs a WARNING and leaves the env-derived
+    settings untouched (the bootstrap process calls this before `migrate`,
+    when app_config may not exist yet).
+
+    SSO enable/disable through the GUI therefore applies on restart; the
+    per-request reads inside mozilla_django_oidc (client secret, token/
+    userinfo endpoints via get_settings) would even apply live, but the
+    honest contract is the restart.
+    """
+    from django.conf import settings as s
+
+    from core.config import effective_oidc
+
+    try:
+        cfg = effective_oidc()
+    except Exception:
+        LOGGER.warning("could not read app_config — SSO settings stay "
+                       "environment-only")
+        return
+
+    def _db(key):
+        # env wins; a set env var shadows the DB row by design.
+        return os.environ.get(key) or cfg.get(key)
+
+    issuer = _db("STARCUBES_OIDC_ISSUER")
+    client_id = _db("STARCUBES_OIDC_CLIENT_ID")
+    client_secret = _db("STARCUBES_OIDC_CLIENT_SECRET")
+    display_name = _db("STARCUBES_OIDC_DISPLAY_NAME")
+
+    if display_name:
+        s.STARCUBES_OIDC_DISPLAY_NAME = display_name
+    if not (issuer and client_id and client_secret):
+        return
+    if getattr(s, "OIDC_ENABLED", False):
+        return      # env already enabled SSO — settings.py did this block
+    # The same derived block settings.py builds from the env trio, only
+    # when the DB completes a trio the env did not.
+    issuer = issuer.rstrip("/")
+    s.OIDC_ENABLED = True
+    s.AUTHENTICATION_BACKENDS = [
+        "starcubes.oidc.KeycloakOIDCBackend",
+        "django.contrib.auth.backends.ModelBackend",
+    ]
+    s.OIDC_RP_CLIENT_ID = client_id
+    s.OIDC_RP_CLIENT_SECRET = client_secret
+    s.OIDC_RP_SIGN_ALGO = "RS256"
+    s.OIDC_RP_SCOPES = "openid email profile"
+    s.OIDC_OP_AUTHORIZATION_ENDPOINT = f"{issuer}/protocol/openid-connect/auth"
+    s.OIDC_OP_TOKEN_ENDPOINT = f"{issuer}/protocol/openid-connect/token"
+    s.OIDC_OP_USER_ENDPOINT = f"{issuer}/protocol/openid-connect/userinfo"
+    s.OIDC_OP_JWKS_ENDPOINT = f"{issuer}/protocol/openid-connect/certs"
+    s.LOGIN_REDIRECT_URL_FAILURE = "/login/?sso=failed"
+    s.OIDC_CALLBACK_CLASS = "starcubes.oidc.LoggingOIDCCallbackView"
 
 
 class LoggingOIDCCallbackView(OIDCAuthenticationCallbackView):

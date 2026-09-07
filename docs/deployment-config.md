@@ -120,21 +120,17 @@ anything that is not in the user directory.
 
 ## SSO / OIDC
 
-- **Keycloak/OIDC SSO configuration lives in `STARCUBES_OIDC_*` env vars,
-  not a `starcubes_meta` table, even though every other piece of
-  GUI-editable config in the app is DB-backed.** Two reasons, not one:
-  first, there is no existing global/singleton config table anywhere in
-  `starcubes_meta.sql` — every table is either per-datasource (FK'd to
-  `datasource_id`) or per-user history (`query_history`), so a DB-backed
-  version would introduce a wholly new kind of table for one feature.
-  Second, and more binding: `mozilla-django-oidc` reads
+- **Keycloak/OIDC SSO configuration is env-first with a DB fallback**
+  (`starcubes_meta.app_config`, see "Global configuration" above — the
+  GUI's Transports tab edits those rows). Historically the OIDC settings
+  were env-only, because `mozilla-django-oidc` reads
   `OIDC_RP_CLIENT_ID`/`OIDC_OP_*_ENDPOINT`/etc. from `django.conf.settings`
-  once at process start, not per-request from a DB — making it
-  DB-configurable would mean abandoning the library for a hand-rolled OIDC
-  client, which is exactly the kind of "engine must not import Django, and
-  don't hand-roll what a library already does correctly" tradeoff this
-  file elsewhere argues against paying without a forcing reason. Presence
-  of all three required vars (`STARCUBES_OIDC_ISSUER`,
+  once at process start, not per-request from a DB. The compromise now:
+  `SourcesConfig.ready()` applies the DB trio onto the settings before the
+  URLconf mounts `/oidc/`, so DB-configured SSO works — but **enabling or
+  disabling it through the GUI applies on restart**, the one honest limit
+  of reading a library that freezes its route mount at process start.
+  Presence of all three required vars (`STARCUBES_OIDC_ISSUER`,
   `STARCUBES_OIDC_CLIENT_ID`, `STARCUBES_OIDC_CLIENT_SECRET`) *is* the
   on/off switch — no separate boolean — the same shape as
   `STARCUBES_CSRF_TRUSTED_ORIGINS` above being empty meaning "not
@@ -233,11 +229,29 @@ anything that is not in the user directory.
   breakage; what it did break was uwsgi's PCRE/routing support and
   `django/test/` (see "Build / dependencies").
 
-## Alarm notification transports
+## Global configuration: DB-first, environment overrides
 
-Global transport configuration, same `STARCUBES_*` env-var pattern as OIDC
-(presence-as-switch, an empty variable means "not configured" and the
-transport is off). Semantics in [`docs/alarm.md`](alarm.md).
+The global settings an operator may want to edit without redeploying — the
+notification transports and the SSO/OIDC login — live in **one** table,
+`starcubes_meta.app_config` (migration 0031). One row per setting, and the
+row's `key` **is** the env-var name it shadows. Resolution is env-first
+everywhere (`core/config.py`):
+
+1. env var set → the env value wins;
+2. otherwise the `app_config` row;
+3. otherwise the hardcoded default.
+
+The env vars below are therefore still the "how to configure at first
+boot" path — the GUI (global tab **Transports**, superuser-only) edits the
+DB rows for exactly these keys. Env-set keys render disabled on that page
+(a GUI edit would be invisible); secrets are stored like
+`datasource.source_dsn` — plaintext in the meta schema, masked in every
+listing, never logged. Transports apply live (consumers resolve through a
+30 s-TTL cache; `etl_run`/`alarm_run` resolve the same way, since the DB is
+the shared state). SSO enable/disable applies on **restart** (the `/oidc/`
+route mount and the backend list are fixed at process start); the client
+secret and endpoints re-read per request, so a corrected secret works
+immediately.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -252,13 +266,24 @@ transport is off). Semantics in [`docs/alarm.md`](alarm.md).
 | `STARCUBES_XMPP_HOST` / `STARCUBES_XMPP_PORT` | `""` / `5222` | host override (skips SRV lookup of the JID domain); port only with host |
 | `STARCUBES_PAGERDUTY_EVENTS_URL` | `https://events.pagerduty.com/v2/enqueue` | point at the sandbox for a dry run |
 | `STARCUBES_PAGERDUTY_SEVERITY` | `critical` | fixed severity of trigger events |
+| `STARCUBES_OIDC_ISSUER` | `""` | realm URL, no trailing slash — with client id + secret, SSO is on |
+| `STARCUBES_OIDC_CLIENT_ID` / `_CLIENT_SECRET` | `""` | |
+| `STARCUBES_OIDC_DISPLAY_NAME` | `Keycloak` | button text on the login page (applies live) |
+
+Everything else stays **env-only**: `STARCUBES_POSTGRES_DSN`,
+`STARCUBES_SECRET_KEY`, `STARCUBES_ALLOWED_HOSTS`, `STARCUBES_DEBUG`,
+`STARCUBES_CSRF_TRUSTED_ORIGINS`, `STARCUBES_TRUST_PROXY_SSL`, the
+`STARCUBES_LOG_*`/`STARCUBES_ETL_LOG_*` family, `STARCUBES_QUERY_*`,
+`STARCUBES_STATIC_ROOT` and the build identity — the infrastructure an
+instance cannot ask its own database about.
 
 PagerDuty has **no global on/off**: it is enabled per datasource by its
 `pagerduty_routing_key` (the Events API v2 integration token, maintained on
 the source edit page — a credential, so it is a password-type field and is
 never exported in a profile).
 
-Worked examples:
+Worked examples (env at first boot, or rows in `app_config` afterwards —
+the GUI writes the same keys):
 
 ```
 # Internal relay, no auth, STARTTLS on the plain submission port:

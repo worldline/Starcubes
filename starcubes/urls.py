@@ -4,12 +4,34 @@ from django.contrib import admin
 from django.contrib.auth.views import LoginView, LogoutView
 from django.urls import include, path
 
+
+class LoginViewWithDbConfig(LoginView):
+    """The login page's SSO button follows the DB-stored configuration
+    (starcubes_meta.app_config) at request time: `extra_context` frozen
+    into as_view() would bake the env-derived values at URLconf import.
+    `oidc_enabled` (the button) reads the boot-resolved OIDC_ENABLED —
+    which the boot override (starcubes/oidc.py:apply_db_overrides) has
+    already refreshed from the DB — while the display name comes live
+    from the resolver."""
+
+    def get_context_data(self, **kwargs):
+        ctx = super().get_context_data(**kwargs)
+        try:
+            from core.config import effective_oidc
+            ctx["oidc_display_name"] = (
+                effective_oidc().get("STARCUBES_OIDC_DISPLAY_NAME")
+                or settings.STARCUBES_OIDC_DISPLAY_NAME)
+        except Exception:
+            pass
+        return ctx
+
+
 urlpatterns = [
     path("", include("viz.urls")),
     path("sources/", include("sources.urls")),
     path(
         "login/",
-        LoginView.as_view(
+        LoginViewWithDbConfig.as_view(
             template_name="registration/login.html",
             extra_context={
                 "oidc_enabled": settings.OIDC_ENABLED,

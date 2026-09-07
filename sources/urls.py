@@ -22,8 +22,8 @@ urlpatterns = [
     # Global notification-config page (global tab "PagerDuty") and its
     # per-datasource test-send endpoint. Literal paths, like
     # alarms/firings/ and recipients/, so the <int:pk>/ routes stay clear.
-    path("pagerduty/",                                 views.pagerduty_page,    name="pagerduty"),
-    path("pagerduty/test/",                            views.pagerduty_test,    name="pagerduty_test"),
+    path("transports/",                                views.transports_page,   name="transports"),
+    path("transports/test/",                           views.transports_test,   name="transports_test"),
     path("new/",                                       views.source_new,     name="new"),
     path("<int:pk>/",                                  views.source_detail,  name="detail"),
     path("<int:pk>/manage/",                           views.source_manage,  name="manage"),

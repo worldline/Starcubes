@@ -26,9 +26,18 @@ from email.utils import formatdate
 
 from sqlalchemy import text
 
-from django.conf import settings
+from core import config as core_config
 
 logger = logging.getLogger("sources.alarm_notify")
+
+
+def _cfg(key: str, default=None):
+    """Resolved setting — env var first, DB row, else the default. Replaces
+    the direct `settings.STARCUBES_*` reads so the transports see GUI-edited
+    values (and so spawned etl_run / standalone alarm_run resolve the same
+    way, without Django settings)."""
+    v = core_config.get(key)
+    return default if v is None else v
 
 # Bound every network send so a dead transport cannot stall the ETL loop.
 _TIMEOUT_S = 10
@@ -79,7 +88,7 @@ def render_message(t: dict) -> tuple[str, str]:
     opened = t.get("kind") == "opened"
     word = "OPENED" if opened else "RESOLVED"
     subject = (
-        f"{settings.STARCUBES_SMTP_SUBJECT_PREFIX} {word}: "
+        f"{_cfg('STARCUBES_SMTP_SUBJECT_PREFIX', '[starcubes]')} {word}: "
         f"{t['ds_name']} / {t['alarm_name']} — "
         f"{t['measure']} {t['cond_op']} {_fmt(t['threshold'])} "
         f"(value {_fmt(t['value'])})"
@@ -101,31 +110,32 @@ def render_message(t: dict) -> tuple[str, str]:
 
 def send_email(to_addrs: list[str], subject: str, body: str) -> None:
     """One e-mail to every recipient over one SMTP connection."""
-    if not settings.STARCUBES_ALARM_EMAIL_ENABLED:
+    host = _cfg("STARCUBES_SMTP_HOST")
+    from_ = _cfg("STARCUBES_SMTP_FROM")
+    if not (host and from_):
         raise RuntimeError("e-mail transport not configured (STARCUBES_SMTP_HOST/_FROM)")
     if not to_addrs:
         return
     msg = EmailMessage()
-    msg["From"] = settings.STARCUBES_SMTP_FROM
+    msg["From"] = from_
     msg["To"] = ", ".join(to_addrs)
     msg["Subject"] = subject
     msg["Date"] = formatdate()
     msg.set_content(body)
 
-    tls = settings.STARCUBES_SMTP_TLS
+    tls = _cfg("STARCUBES_SMTP_TLS", "starttls")
+    port = int(_cfg("STARCUBES_SMTP_PORT", "25"))
     if tls == "ssl":
-        smtp = smtplib.SMTP_SSL(settings.STARCUBES_SMTP_HOST,
-                                settings.STARCUBES_SMTP_PORT,
-                                timeout=_TIMEOUT_S)
+        smtp = smtplib.SMTP_SSL(host, port, timeout=_TIMEOUT_S)
     else:
-        smtp = smtplib.SMTP(settings.STARCUBES_SMTP_HOST,
-                            settings.STARCUBES_SMTP_PORT,
-                            timeout=_TIMEOUT_S)
+        smtp = smtplib.SMTP(host, port, timeout=_TIMEOUT_S)
     with smtp:
         if tls == "starttls":
             smtp.starttls()
-        if settings.STARCUBES_SMTP_USER and settings.STARCUBES_SMTP_PASSWORD:
-            smtp.login(settings.STARCUBES_SMTP_USER, settings.STARCUBES_SMTP_PASSWORD)
+        user, password = (_cfg("STARCUBES_SMTP_USER"),
+                          _cfg("STARCUBES_SMTP_PASSWORD"))
+        if user and password:
+            smtp.login(user, password)
         smtp.send_message(msg)
 
 
@@ -134,7 +144,8 @@ async def _xmpp_run(jids: list[str], text_msg: str) -> None:
     `asyncio.run` and is itself bounded by `asyncio.wait_for`."""
     from slixmpp import ClientXMPP
 
-    jid, password = settings.STARCUBES_XMPP_JID, settings.STARCUBES_XMPP_PASSWORD
+    jid = _cfg("STARCUBES_XMPP_JID")
+    password = _cfg("STARCUBES_XMPP_PASSWORD")
     if not (jid and password):
         raise RuntimeError("XMPP transport not configured (STARCUBES_XMPP_JID/_PASSWORD)")
 
@@ -153,9 +164,9 @@ async def _xmpp_run(jids: list[str], text_msg: str) -> None:
     client.add_event_handler("session_start", _on_session)
 
     kwargs = {}
-    if settings.STARCUBES_XMPP_HOST:
-        kwargs = {"host": settings.STARCUBES_XMPP_HOST,
-                  "port": settings.STARCUBES_XMPP_PORT}
+    if _cfg("STARCUBES_XMPP_HOST"):
+        kwargs = {"host": _cfg("STARCUBES_XMPP_HOST"),
+                  "port": int(_cfg("STARCUBES_XMPP_PORT", "5222"))}
     await client.connect(**kwargs)
     try:
         await asyncio.wait_for(done.wait(), timeout=_XMPP_TIMEOUT_S)
@@ -185,7 +196,7 @@ def send_pagerduty(routing_key: str, t: dict) -> None:
         "event_action": "trigger" if opened else "resolve",
         "payload": {
             "source": f"starcubes/{t['ds_name']}",
-            "severity": settings.STARCUBES_PAGERDUTY_SEVERITY,
+            "severity": _cfg("STARCUBES_PAGERDUTY_SEVERITY", "critical"),
             "summary": body.splitlines()[0],
             "custom_details": {
                 "alarm_id": t["alarm_id"],
@@ -206,7 +217,8 @@ def send_pagerduty(routing_key: str, t: dict) -> None:
 
 def _post_pagerduty(payload: dict) -> None:
     req = urllib.request.Request(
-        settings.STARCUBES_PAGERDUTY_EVENTS_URL,
+        _cfg("STARCUBES_PAGERDUTY_EVENTS_URL",
+             "https://events.pagerduty.com/v2/enqueue"),
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -226,7 +238,7 @@ def send_pagerduty_test(routing_key: str, ds_name: str, ds_id: int) -> None:
         "dedup_key": dedup,
         "payload": {
             "source": f"starcubes/{ds_name}",
-            "severity": settings.STARCUBES_PAGERDUTY_SEVERITY,
+            "severity": _cfg("STARCUBES_PAGERDUTY_SEVERITY", "critical"),
             "summary": f"starcubes PagerDuty test — {ds_name}",
         },
     }

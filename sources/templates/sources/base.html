@@ -751,9 +751,9 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
       <span class="menu-label">Firings</span>
     </a>
     {% if user.is_superuser %}
-      <a class="menu-item" role="menuitem" href="{% url 'sources:pagerduty' %}">
+      <a class="menu-item" role="menuitem" href="{% url 'sources:transports' %}">
         <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
-        <span class="menu-label">PagerDuty</span>
+        <span class="menu-label">Transports</span>
       </a>
       <a class="menu-item" role="menuitem" href="{% url 'sources:settings' %}">
         <svg class="ic" aria-hidden="true"><use href="#ic-users"></use></svg>

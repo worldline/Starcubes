@@ -1,58 +1,87 @@
 {% extends "sources/base.html" %}
-{% block title %}PagerDuty — starcubes{% endblock %}
+{% block title %}Transports — starcubes{% endblock %}
 
 {% block content %}
 {% include "sources/_global_tabs.html" %}
 
 <p class="text-muted" style="margin:0 0 12px;font-size:12px">
-  Global notification-transport configuration — env-var based, read-only
-  here (see docs/deployment-config.md). Per-source PagerDuty routing keys
-  are maintained on each source's edit page; the test button sends a
-  synthetic trigger+resolve pair through the real transport.
+  Global transport and SSO configuration. Resolution is <strong>environment
+  first, then the values stored here</strong> (one key per row in
+  <code>starcubes_meta.app_config</code>, key = the env-var name). Keys that
+  are set via environment are shown but disabled — the GUI edit would be
+  invisible. Transports apply live; SSO on/off applies on restart.
+  Per-source PagerDuty routing keys are maintained on each source's edit
+  page; the test button sends a synthetic trigger+resolve pair through the
+  real transport.
 </p>
 
+{% if cfg_error %}
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">
+  Could not read the stored configuration: {{ cfg_error }} — showing
+  environment/default values only.
+</div>
+{% endif %}
 {% if msg %}
 <div style="margin:12px 0;padding:10px 14px;background:var(--badge-ok-bg);color:var(--badge-ok-fg);border-radius:6px;font-size:13px">{{ msg }}</div>
 {% endif %}
 {% if err %}
-<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:14px">{{ err }}</div>
+<div style="margin:12px 0;padding:10px 14px;background:var(--badge-failed-bg);color:var(--badge-failed-fg);border-radius:6px;font-size:13px">{{ err }}</div>
 {% endif %}
 
+{% for s in sections %}
 <div class="card">
-  <div class="card-header"><span class="card-title">Transports</span></div>
-  {# Status of the env-var-configured transports — read-only. #}
+  <div class="card-header">
+    <span class="card-title">{{ s.title }}</span>
+    <span style="margin-left:auto;font-size:12px;color:var(--muted)">{{ s.note }}</span>
+  </div>
+  <div class="card-body">
+    <form method="post" style="display:grid;grid-template-columns:1fr 1fr;gap:10px 24px;align-items:end">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="{{ s.action }}">
+      {% for f in s.fields %}
+      <div>
+        <label class="form-label">{{ f.label }}</label>
+        <input class="form-control mono" name="{{ f.key }}"
+               type="{% if f.kind == 'secret' %}password{% else %}text{% endif %}"
+               value="{{ f.value }}" autocomplete="off"
+               {% if f.env_set %}disabled{% endif %}
+               placeholder="{% if f.env_set %}set via environment{% elif f.kind == 'secret' %}(stored — leave blank to keep){% else %}(empty = not set){% endif %}">
+        <div class="form-hint">
+          {% if f.env_set %}
+            set via environment — GUI edits are ignored
+          {% elif f.db_set %}
+            stored here{% if f.kind != 'secret' %}: <span class="text-mono">{{ f.value }}</span>{% endif %} · clearing the field removes the row
+          {% else %}
+            not set
+          {% endif %}
+          {% if not f.env_set %}
+            · effective: <span class="text-mono">{{ f.resolved }}</span>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+      <div style="grid-column:1/-1">
+        <button type="submit" class="btn btn-primary btn-sm">Save</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endfor %}
+
+<div class="card">
+  <div class="card-header"><span class="card-title">Channels</span></div>
   <div class="card-body" style="padding:0">
     <table class="data-table">
-      <thead>
-        <tr>
-          <th>Channel</th>
-          <th>Status</th>
-          <th>Configuration</th>
-        </tr>
-      </thead>
       <tbody>
-        {% for name, t in transports.items %}
-        <tr>
-          <td><strong>{{ name }}</strong></td>
-          <td>
-            {% if t.enabled %}<span class="badge">on</span>{% else %}<span class="badge">off</span>{% endif %}
-          </td>
-          <td class="text-muted" style="font-size:12px">
-            {% for label, value in t.rows %}
-              <div>{{ label }}: <span class="text-mono">{{ value }}</span></div>
-            {% endfor %}
-          </td>
-        </tr>
-        {% endfor %}
         <tr>
           <td><strong>log</strong></td>
           <td><span class="badge">always on</span></td>
-          <td>The episode table plus the evaluator's log line.</td>
+          <td class="text-muted" style="font-size:12px">The episode table plus the evaluator's log line.</td>
         </tr>
         <tr>
           <td><strong>slack</strong></td>
           <td><span class="badge">reserved</span></td>
-          <td>Vocabulary only — no transport.</td>
+          <td class="text-muted" style="font-size:12px">Vocabulary only — no transport.</td>
         </tr>
       </tbody>
     </table>
@@ -121,7 +150,7 @@
       var id = b.getAttribute('data-pd-test');
       var el = msgFor(id);
       el.textContent = 'sending…';
-      fetch("{% url 'sources:pagerduty_test' %}", {
+      fetch("{% url 'sources:transports_test' %}", {
         method: 'POST',
         headers: {'X-CSRFToken': csrfToken()},
         body: new URLSearchParams({datasource_id: id}),

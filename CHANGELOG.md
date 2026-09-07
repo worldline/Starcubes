@@ -17,11 +17,19 @@ Notable changes per release. Format follows
   configuration is env-var based — see `docs/deployment-config.md`. Purely
   additive schema, self-applying at container start (minor release).
 - **The notification configuration is reachable in the GUI.** A global
-  "PagerDuty" tab (Datasources · Profiles · Firings · PagerDuty · Users, in
-  the tab strip and both hamburger menus) shows the transport status, the
-  per-datasource routing keys masked, and a test-send button per source;
-  the per-source routing key moved under "Basics" on the edit page; the own
-  profile page shows and edits the account's XMPP JID.
+  configuration tab (in the tab strip and both hamburger menus) shows the
+  transport status, the per-datasource routing keys masked, and a
+  test-send button per source; the per-source routing key sits under
+  "Basics" on the edit page; the own profile page shows and edits the
+  account's XMPP JID.
+- **Global configuration is DB-editable.** One key-value table
+  (`starcubes_meta.app_config`, key = the env-var name) backs the
+  notification transports and the SSO/OIDC login; resolution is
+  environment-first everywhere (`core/config.py`), so env vars still win
+  and the GUI edits only what the environment does not set. The global
+  tab is now called **Transports** (was "PagerDuty") and edits SMTP, XMPP,
+  the PagerDuty endpoint and the SSO trio in place; transports apply
+  live, SSO on/off on restart.
 - The About dialog's **timeseries.js** row now links to the project on
   GitHub.
 

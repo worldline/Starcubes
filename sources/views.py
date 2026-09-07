@@ -12,6 +12,7 @@ from functools import wraps
 from pathlib import Path
 import re
 import signal
+from urllib.parse import quote as _urlquote
 
 import sqlalchemy
 from django.conf import settings
@@ -54,6 +55,7 @@ from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
                                spawn_etl_subprocess as _spawn_etl_subprocess,
                                log_dir as _log_dir, slugify_ds as _slugify_ds)
 from sources.alarm_notify import send_pagerduty_test
+from core import config as core_config
 
 
 def _add_inline_display(dim: dict) -> dict:
@@ -3681,47 +3683,141 @@ def _mask_secret(value: str | None) -> str:
     return "••••" + value[-4:]
 
 
-@_admin_required_page
-def pagerduty_page(request):
-    """The global notification-config page (global tab "PagerDuty").
+# The sections the Transports page edits, one `action` each. (key, label,
+# kind) — kind drives the input type and the write rule: secrets use
+# submitted-field semantics (absent = keep, empty = clear) and are never
+# pre-filled; ports are int-parsed; tls is a choice field.
+_TRANSPORT_SECTIONS = [
+    ("smtp", "E-mail (SMTP)", [
+        ("STARCUBES_SMTP_HOST", "SMTP host", "text"),
+        ("STARCUBES_SMTP_PORT", "SMTP port", "int"),
+        ("STARCUBES_SMTP_USER", "SMTP user (optional)", "text"),
+        ("STARCUBES_SMTP_PASSWORD", "SMTP password", "secret"),
+        ("STARCUBES_SMTP_FROM", "Envelope From", "text"),
+        ("STARCUBES_SMTP_TLS", "TLS mode (starttls / ssl / none)", "tls"),
+        ("STARCUBES_SMTP_SUBJECT_PREFIX", "Subject prefix", "text"),
+    ], "On when host and envelope-from are set."),
+    ("xmpp", "XMPP", [
+        ("STARCUBES_XMPP_JID", "Bot JID", "text"),
+        ("STARCUBES_XMPP_PASSWORD", "Bot password", "secret"),
+        ("STARCUBES_XMPP_HOST", "Host override (optional)", "text"),
+        ("STARCUBES_XMPP_PORT", "Port", "int"),
+    ], "On when bot JID and password are set."),
+    ("pagerduty", "PagerDuty (global)", [
+        ("STARCUBES_PAGERDUTY_EVENTS_URL", "Events URL", "text"),
+        ("STARCUBES_PAGERDUTY_SEVERITY", "Severity", "text"),
+    ], "No global switch — per datasource via its routing key below."),
+    ("sso", "SSO / OIDC (applies on restart)", [
+        ("STARCUBES_OIDC_ISSUER", "Realm issuer URL", "text"),
+        ("STARCUBES_OIDC_CLIENT_ID", "Client ID", "text"),
+        ("STARCUBES_OIDC_CLIENT_SECRET", "Client secret", "secret"),
+        ("STARCUBES_OIDC_DISPLAY_NAME", "Display name on the login page", "text"),
+    ], "Enabled when issuer, client id and client secret are all set "
+       "(environment or here)."),
+]
 
-    Read-only status of the env-var-configured transports (e-mail, XMPP,
-    PagerDuty endpoint/severity — nothing here is editable in-app, the
-    global config is STARCUBES_* env vars per docs/deployment-config.md),
-    plus the per-datasource routing keys with a test-send button each.
-    Credentials render masked via `_mask_secret` — enough to recognise,
-    never enough to leak.
+_SECRET_KEYS = {"STARCUBES_SMTP_PASSWORD", "STARCUBES_XMPP_PASSWORD",
+                "STARCUBES_OIDC_CLIENT_SECRET"}
+
+
+def _upsert_config(conn, key: str, value: str, username: str) -> None:
+    conn.execute(text(
+        "INSERT INTO starcubes_meta.app_config (key, value, updated_by) "
+        "VALUES (:k, :v, :u) "
+        "ON CONFLICT (key) DO UPDATE SET value = :v, updated_at = now(), "
+        "  updated_by = :u"
+    ), {"k": key, "v": value, "u": username})
+
+
+def _unset_config(conn, key: str) -> None:
+    conn.execute(text(
+        "DELETE FROM starcubes_meta.app_config WHERE key = :k"), {"k": key})
+
+
+@_admin_required_page
+def transports_page(request):
+    """The global notification-config page (global tab "Transports").
+
+    Editable where the key is not shadowed by an env var: the resolution
+    (core.config) is env-first, so a GUI edit of an env-set key would be
+    invisible — such keys render disabled ("set via environment") and the
+    write path refuses them instead of storing a dead row. Secrets use
+    submitted-field semantics (absent = keep, empty = clear) and are never
+    pre-filled. SSO applies on restart (the /oidc/ route mount and the
+    backend list are fixed at process start); everything else live.
     """
     msg = request.GET.get("msg", "")
     err = request.GET.get("err", "")
 
-    transports = {
-        "email": {
-            "enabled": settings.STARCUBES_ALARM_EMAIL_ENABLED,
-            "rows": [
-                ("SMTP host", settings.STARCUBES_SMTP_HOST or "not set"),
-                ("SMTP port", settings.STARCUBES_SMTP_PORT),
-                ("Envelope From", settings.STARCUBES_SMTP_FROM or "not set"),
-                ("TLS mode", settings.STARCUBES_SMTP_TLS),
-                ("Subject prefix", settings.STARCUBES_SMTP_SUBJECT_PREFIX or "(empty)"),
-            ],
-        },
-        "xmpp": {
-            "enabled": settings.STARCUBES_ALARM_XMPP_ENABLED,
-            "rows": [
-                ("Bot JID", settings.STARCUBES_XMPP_JID or "not set"),
-                ("Host override", settings.STARCUBES_XMPP_HOST or "—"),
-                ("Port", settings.STARCUBES_XMPP_PORT),
-            ],
-        },
-        "pagerduty": {
-            "enabled": True,   # global endpoint always configured; per-source key decides
-            "rows": [
-                ("Events URL", settings.STARCUBES_PAGERDUTY_EVENTS_URL),
-                ("Severity", settings.STARCUBES_PAGERDUTY_SEVERITY),
-            ],
-        },
-    }
+    if request.method == "POST":
+        action = request.POST.get("action", "")
+        section = next((s for s in _TRANSPORT_SECTIONS if s[0] == action), None)
+        if section is None:
+            return redirect(f"{request.path}?err=Unknown+action.")
+        try:
+            with _meta_engine().begin() as conn:
+                for key, label, kind in section[2]:
+                    env_set = bool(os.environ.get(key))
+                    if env_set:
+                        continue        # env shadows the key — never write
+                    if key in _SECRET_KEYS:
+                        raw = request.POST.get(key)   # absent = keep
+                        if raw is None:
+                            continue
+                        if raw == "":
+                            _unset_config(conn, key)
+                            continue
+                        _upsert_config(conn, key, raw.strip(),
+                                       request.user.get_username())
+                        continue
+                    raw = request.POST.get(key)
+                    if raw is None:
+                        continue
+                    raw = raw.strip()
+                    if kind == "int":
+                        if raw:
+                            int(raw)   # raise -> caught below
+                    elif kind == "tls" and raw:
+                        if raw not in ("starttls", "ssl", "none"):
+                            return redirect(f"{request.path}?err=TLS+mode+must+be+starttls%2C+ssl+or+none.")
+                    if raw == "":
+                        _unset_config(conn, key)
+                        continue
+                    _upsert_config(conn, key, raw,
+                                   request.user.get_username())
+        except ValueError:
+            core_config.invalidate()
+            return redirect(f"{request.path}?err=Ports+must+be+numbers.")
+        except Exception as exc:
+            core_config.invalidate()
+            return redirect(f"{request.path}?err={_urlquote(str(exc))}")
+        core_config.invalidate()
+        return redirect(f"{request.path}?msg={section[1]}+saved.")
+
+    try:
+        env_vals, db_vals = core_config.state()
+        cfg_error = None
+    except Exception as exc:
+        env_vals, db_vals = {}, {}
+        cfg_error = str(exc)
+    eff = core_config.effective()
+
+    def _field(key, label, kind):
+        env_set = bool(env_vals.get(key))
+        return {
+            "key": key, "label": label, "kind": kind,
+            "env_set": env_set,
+            "db_set": key in db_vals,
+            "value": "" if (env_set or key in _SECRET_KEYS)
+                     else (db_vals.get(key) or ""),
+            "resolved": _mask_secret(eff.get(key))
+                        if key in _SECRET_KEYS else (eff.get(key) or "not set"),
+        }
+
+    sections = [{
+        "action": action, "title": title, "note": note,
+        "fields": [_field(k, l, kind) for k, l, kind in fields],
+    } for action, title, fields, note in _TRANSPORT_SECTIONS]
 
     with _meta_engine().begin() as conn:
         ds_rows = [dict(r) for r in conn.execute(text(
@@ -3734,9 +3830,10 @@ def pagerduty_page(request):
         "key_masked": _mask_secret(r["pagerduty_routing_key"]),
     } for r in ds_rows]
 
-    return render(request, "sources/pagerduty.html", {
-        "transports": transports,
+    return render(request, "sources/transports.html", {
+        "sections": sections,
         "datasources": datasources,
+        "cfg_error": cfg_error,
         "msg": msg,
         "err": err,
     })
@@ -3744,9 +3841,9 @@ def pagerduty_page(request):
 
 @require_POST
 @_admin_required_json
-def pagerduty_test(request):
+def transports_test(request):
     """Send a synthetic PagerDuty trigger+resolve for one datasource
-    (the admin page's test button). Fails with a friendly 400 when the
+    (the Transports page's test button). Fails with a friendly 400 when the
     datasource has no routing key; reports the send error otherwise."""
     ds_id = request.POST.get("datasource_id", "")
     try:
