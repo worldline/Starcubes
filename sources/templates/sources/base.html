@@ -16,6 +16,7 @@
 (function(){var t=localStorage.getItem('starcubes-theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');})();
 </script>
 <link rel="stylesheet" href="{% static 'sources/nav.css' %}">
+<link rel="stylesheet" href="{% static 'sources/datetimepicker.css' %}">
 <style>
 :root {
   --bg: #fff;
@@ -42,26 +43,6 @@
   --input-bg: #fff;
   --input-border: #ccc;
   --shadow: rgba(0,0,0,0.08);
-  --dtp-bg: #fff;
-  --dtp-border: #ccc;
-  --dtp-shadow: rgba(0,0,0,0.15);
-  --dtp-header-bg: #f5f5f5;
-  --dtp-header-color: #333;
-  --dtp-arrow-color: #555;
-  --dtp-arrow-hover: #2c5282;
-  --dtp-day-color: #333;
-  --dtp-day-hover-bg: #e8e8e8;
-  --dtp-day-selected-bg: #2c5282;
-  --dtp-day-selected-text: #fff;
-  --dtp-day-today-bg: #e3f2fd;
-  --dtp-day-other-color: #bbb;
-  --dtp-dow-color: #888;
-  --dtp-time-bg: #fff;
-  --dtp-time-border: #ccc;
-  --dtp-time-color: #333;
-  --dtp-btn-bg: #2c5282;
-  --dtp-btn-color: #fff;
-  --dtp-btn-hover: #2a4365;
   /* Active-tab tint — soft accent wash behind the open tab (both tiers). */
   --tab-active-bg: #e8f0fb;
   --tab-active-fg: #1f4068;
@@ -104,26 +85,6 @@
   --input-bg: #1a1d27;
   --input-border: #444;
   --shadow: rgba(0,0,0,0.4);
-  --dtp-bg: #2a2a2a;
-  --dtp-border: #555;
-  --dtp-shadow: rgba(0,0,0,0.4);
-  --dtp-header-bg: #333;
-  --dtp-header-color: #ddd;
-  --dtp-arrow-color: #aaa;
-  --dtp-arrow-hover: #5a9bd5;
-  --dtp-day-color: #ddd;
-  --dtp-day-hover-bg: #444;
-  --dtp-day-selected-bg: #2c5282;
-  --dtp-day-selected-text: #fff;
-  --dtp-day-today-bg: #1e3a5f;
-  --dtp-day-other-color: #666;
-  --dtp-dow-color: #888;
-  --dtp-time-bg: #333;
-  --dtp-time-border: #555;
-  --dtp-time-color: #ddd;
-  --dtp-btn-bg: #2c5282;
-  --dtp-btn-color: #fff;
-  --dtp-btn-hover: #3a6ba8;
   /* Active-tab tint — soft accent wash behind the open tab (both tiers). */
   --tab-active-bg: #1d2f4a;
   --tab-active-fg: #aecbf0;
@@ -672,52 +633,6 @@ tr.editing .row-edit { display: flex; }
   font-family: inherit;
 }
 .dtp-label input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(74,127,212,0.2); }
-.dtp-popup {
-  position: absolute; top: 100%; left: 0; margin-top: 2px;
-  background: var(--dtp-bg); border: 1px solid var(--dtp-border);
-  border-radius: 4px; box-shadow: 0 3px 10px var(--dtp-shadow);
-  z-index: 200; padding: 8px; font-size: 12px;
-  user-select: none; display: none; min-width: 220px;
-}
-.dtp-popup.open { display: block; }
-.dtp-header {
-  display: flex; justify-content: space-between; align-items: center;
-  margin-bottom: 6px; padding: 2px 0;
-}
-.dtp-header span { font-weight: 600; color: var(--dtp-header-color); }
-.dtp-arrow {
-  background: none; border: 1px solid var(--dtp-border); border-radius: 3px;
-  padding: 2px 8px; cursor: pointer; color: var(--dtp-arrow-color);
-  font: inherit; font-size: 12px; line-height: 1;
-}
-.dtp-arrow:hover { color: var(--dtp-arrow-hover); border-color: var(--dtp-arrow-hover); }
-.dtp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; text-align: center; }
-.dtp-dow { font-size: 10px; font-weight: 600; color: var(--dtp-dow-color); padding: 2px 0; }
-.dtp-day { padding: 3px 0; cursor: pointer; border-radius: 3px; color: var(--dtp-day-color); }
-.dtp-day:hover { background: var(--dtp-day-hover-bg); }
-.dtp-day.other-month { color: var(--dtp-day-other-color); cursor: default; }
-.dtp-day.today { background: var(--dtp-day-today-bg); font-weight: 600; }
-.dtp-day.selected { background: var(--dtp-day-selected-bg); color: var(--dtp-day-selected-text); font-weight: 600; }
-.dtp-day.today.selected { background: var(--dtp-day-selected-bg); color: var(--dtp-day-selected-text); }
-.dtp-time-row {
-  display: flex; align-items: center; gap: 4px;
-  margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--dtp-border);
-}
-.dtp-time-row label {
-  display: flex; flex-direction: row; align-items: center; gap: 4px;
-  font-size: 12px; color: var(--dtp-day-color);
-}
-.dtp-time-input {
-  width: 2.4em; text-align: center; font: inherit; font-size: 12px;
-  padding: 2px 3px; border: 1px solid var(--dtp-time-border); border-radius: 3px;
-  background: var(--dtp-time-bg); color: var(--dtp-time-color);
-}
-.dtp-apply-row { margin-top: 6px; display: flex; justify-content: flex-end; }
-.dtp-apply {
-  padding: 3px 12px; background: var(--dtp-btn-bg); color: var(--dtp-btn-color);
-  border: 0; border-radius: 3px; cursor: pointer; font: inherit; font-size: 12px;
-}
-.dtp-apply:hover { background: var(--dtp-btn-hover); }
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { text-decoration: underline; }
 .sort-indicator { font-size: 10px; margin-left: 2px; }
@@ -816,6 +731,9 @@ function getJSON(url, opts) {
 </main>
 {% block extra_js %}
 <script src="{% static 'sources/nav.js' %}"></script>
+{# Shared with viz/chart.html. Plain and synchronous: manage.html constructs #}
+{# pickers in its own inline script, which runs while the document parses. #}
+<script src="{% static 'sources/datetimepicker.js' %}"></script>
 <script>
 (function(){
   // Theme helper — kept in sync with the inline pre-paint script at the
@@ -866,223 +784,6 @@ function getJSON(url, opts) {
   if (back && brand) brand.href = '/?' + back;
 })();
 
-var _openPicker = null;
-
-class DateTimePicker {
-  constructor(input, { onChange, nextFocus }) {
-    this.input = input;
-    this.onChange = onChange;
-    this._nextFocus = nextFocus || null;
-    this._value = null;
-    this._pending = null;
-    this._pendingH = 0;
-    this._pendingM = 0;
-    this._viewY = 0;
-    this._viewM = 0;
-    this._isOpen = false;
-    this._popup = document.createElement('div');
-    this._popup.className = 'dtp-popup';
-    this._popup.innerHTML = this._html();
-    this._wire();
-    input.parentElement.style.position = 'relative';
-    input.parentElement.appendChild(this._popup);
-    input.addEventListener('focus', () => this.open());
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { this.close(true); e.preventDefault(); }
-      if (e.key === 'Enter') {
-        this._commitInput();
-        if (this._nextFocus) this._nextFocus.focus();
-        e.preventDefault();
-      }
-    });
-    input.addEventListener('blur', () => {
-      setTimeout(() => { if (!this._isOpen) this._commitInput(); }, 100);
-    });
-    document.addEventListener('mousedown', e => {
-      if (this._isOpen && !this._popup.contains(e.target) && e.target !== this.input) {
-        this.close(true);
-        this._commitInput();
-      }
-    });
-  }
-
-  _commitInput() {
-    var s = this.input.value.trim();
-    if (!s) return;
-    var d = this._parseUserInput(s);
-    if (!d) return;
-    var ms = d.getTime();
-    if (this._value && this._value.getTime() === ms) return;
-    this._value = d;
-    this.onChange(ms);
-  }
-
-  _parseUserInput(s) {
-    var m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}))?$/);
-    if (!m) return null;
-    var y = +m[1], mo = +m[2] - 1, dy = +m[3], h = m[4] != null ? +m[4] : 0, mi = m[5] != null ? +m[5] : 0;
-    if (mo < 0 || mo > 11 || dy < 1 || dy > 31 || h < 0 || h > 23 || mi < 0 || mi > 59) return null;
-    var d = new Date(y, mo, dy, h, mi, 0, 0);
-    if (d.getMonth() !== mo || d.getDate() !== dy) return null;
-    return d;
-  }
-
-  _html() {
-    return '<div class="dtp-header">'
-      + '<button type="button" class="dtp-arrow" data-dir="-1">&larr;</button>'
-      + '<span class="dtp-month-year"></span>'
-      + '<button type="button" class="dtp-arrow" data-dir="1">&rarr;</button>'
-      + '</div>'
-      + '<div class="dtp-grid"><span class="dtp-dow">Mo</span><span class="dtp-dow">Tu</span>'
-      + '<span class="dtp-dow">We</span><span class="dtp-dow">Th</span>'
-      + '<span class="dtp-dow">Fr</span><span class="dtp-dow">Sa</span>'
-      + '<span class="dtp-dow">Su</span></div>'
-      + '<div class="dtp-grid dtp-days"></div>'
-      + '<div class="dtp-time-row"><label>Time '
-      + '<input type="number" class="dtp-time-input" data-f="h" min="0" max="23">'
-      + ' : <input type="number" class="dtp-time-input" data-f="m" min="0" max="59">'
-      + '</label></div>'
-      + '<div class="dtp-apply-row"><button type="button" class="dtp-apply">OK</button></div>';
-  }
-
-  _wire() {
-    var prev = this._popup.querySelector('.dtp-arrow[data-dir="-1"]');
-    var next = this._popup.querySelector('.dtp-arrow[data-dir="1"]');
-    prev.addEventListener('click', () => this._nav(-1));
-    next.addEventListener('click', () => this._nav(1));
-    this._myEl = this._popup.querySelector('.dtp-month-year');
-    this._daysEl = this._popup.querySelector('.dtp-days');
-    this._hIn = this._popup.querySelector('[data-f="h"]');
-    this._mIn = this._popup.querySelector('[data-f="m"]');
-    this._hIn.addEventListener('change', () => {
-      this._pendingH = this._clamp(this._hIn.value, 0, 23);
-      this._hIn.value = this._pad(this._pendingH);
-    });
-    this._mIn.addEventListener('change', () => {
-      this._pendingM = this._clamp(this._mIn.value, 0, 59);
-      this._mIn.value = this._pad(this._pendingM);
-    });
-    this._popup.querySelector('.dtp-apply').addEventListener('click', () => this.close(false));
-  }
-
-  _clamp(v, lo, hi) {
-    var n = parseInt(v, 10);
-    return isNaN(n) ? lo : Math.max(lo, Math.min(hi, n));
-  }
-
-  _pad(n) { return String(n).padStart(2, '0'); }
-
-  _nav(dir) {
-    this._viewM += dir;
-    if (this._viewM < 0) { this._viewM = 11; this._viewY--; }
-    if (this._viewM > 11) { this._viewM = 0; this._viewY++; }
-    this._render();
-  }
-
-  _render() {
-    var M = ['January','February','March','April','May','June',
-             'July','August','September','October','November','December'];
-    this._myEl.textContent = M[this._viewM] + ' ' + this._viewY;
-    var y = this._viewY, m = this._viewM;
-    var off = (new Date(y, m, 1).getDay() + 6) % 7;
-    var dim = new Date(y, m + 1, 0).getDate();
-    var pdim = new Date(y, m, 0).getDate();
-    var now = new Date();
-    var tk = now.getFullYear() * 1e4 + now.getMonth() * 100 + now.getDate();
-    var sk = this._pending
-      ? this._pending.getFullYear() * 1e4 + this._pending.getMonth() * 100 + this._pending.getDate()
-      : -1;
-    this._daysEl.innerHTML = '';
-    for (var i = off - 1; i >= 0; i--) this._cell(pdim - i, true, -1);
-    for (var d = 1; d <= dim; d++) {
-      var k = y * 1e4 + m * 100 + d;
-      this._cell(d, false, k, k === tk, k === sk);
-    }
-    var n = this._daysEl.children.length;
-    for (var d = 1, r = (7 - n % 7) % 7; d <= r; d++) this._cell(d, true, -1);
-  }
-
-  _cell(day, other, _key, today, sel) {
-    var el = document.createElement('span');
-    el.className = 'dtp-day';
-    if (other) el.classList.add('other-month');
-    if (today) el.classList.add('today');
-    if (sel) el.classList.add('selected');
-    el.textContent = day;
-    if (!other) el.addEventListener('click', () => {
-      this._pending = new Date(this._viewY, this._viewM, day);
-      this._render();
-    });
-    this._daysEl.appendChild(el);
-  }
-
-  open() {
-    if (this._isOpen) return;
-    if (_openPicker && _openPicker !== this) _openPicker.close(true);
-    _openPicker = this;
-    this._isOpen = true;
-    var src = this._value || new Date();
-    this._pending = this._value ? new Date(this._value) : null;
-    this._pendingH = src.getHours();
-    this._pendingM = src.getMinutes();
-    this._viewY = src.getFullYear();
-    this._viewM = src.getMonth();
-    this._render();
-    this._hIn.value = this._pad(this._pendingH);
-    this._mIn.value = this._pad(this._pendingM);
-    this._popup.classList.add('open');
-  }
-
-  close(revert) {
-    if (!this._isOpen) return;
-    this._isOpen = false;
-    _openPicker = null;
-    this._popup.classList.remove('open');
-    if (revert) return;
-    var d = this._pending ? new Date(this._pending) : new Date();
-    d.setHours(this._pendingH, this._pendingM, 0, 0);
-    var prev = this._value ? this._value.getTime() : null;
-    this._value = d;
-    this.input.value = this._fmt(d);
-    if (prev !== d.getTime()) this.onChange(d.getTime());
-  }
-
-  setValue(ms) {
-    if (ms == null) return;
-    var d = new Date(ms);
-    this._value = d;
-    this.input.value = this._fmt(d);
-  }
-
-  getValue() { return this._value ? this._value.getTime() : null; }
-
-  // The picked instant as an ISO UTC string, or null.
-  //
-  // Everything the user sees is local time -- the picker formats local parts,
-  // _parseUserInput builds a local Date, and the tables render with
-  // toLocaleString(). But the server's _parse_dt reads a naive string as UTC,
-  // so sending the raw field text made every ETL dialog off by the UTC
-  // offset: type 15:00, get 15:00 UTC. Send the actual instant instead and
-  // input finally agrees with display.
-  //
-  // _commitInput() first as a belt-and-braces: the document mousedown handler
-  // already commits synchronously before a button's click fires, but the blur
-  // path runs behind a setTimeout(.., 100) and would not be in time on its
-  // own. Calling it twice is harmless -- it returns early when nothing moved.
-  //
-  // Milliseconds are sliced off because the picker always zeroes them, and
-  // the shorter form reads better in logs and as a CLI argument. _parse_dt
-  // handles the Z suffix explicitly.
-  getUTCISO() {
-    this._commitInput();
-    return this._value ? this._value.toISOString().slice(0, 19) + 'Z' : null;
-  }
-
-  _fmt(d) {
-    return d.getFullYear() + '-' + this._pad(d.getMonth() + 1) + '-' + this._pad(d.getDate())
-      + ' ' + this._pad(d.getHours()) + ':' + this._pad(d.getMinutes());
-  }
-}
 </script>
 <div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center">
   <div id="modal-box" style="background:var(--bg);border-radius:8px;padding:24px;max-width:440px;width:90%;box-shadow:0 4px 24px rgba(0,0,0,.3)"></div>

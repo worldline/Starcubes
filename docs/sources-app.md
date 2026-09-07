@@ -19,12 +19,13 @@ same partial** — `sources/_nav_menu.html`, with chart.html passing its
 theme-row ids and `include_prefs=1` — so the menus cannot drift; the tab
 bar `_global_tabs.html` mirrors the same order and is still hand-synced
 against the partial. The menu CSS/JS live in
-`sources/static/sources/nav.css` and
-`nav.js` — near-verbatim mirrors of the chart's inline copies, kept
-deliberately separate so the two apps don't share a static include. The
-base wiring script (theme helper + `makePopover` call) sits inside
-`{% block extra_js %}` of `base.html`; templates that override the block
-must start with `{{ block.super }}` (list/manage/new/firings do).
+`sources/static/sources/nav.css` and `nav.js`, and **`chart.html` now loads
+those same two files** instead of carrying its own copies — they used to be
+near-verbatim mirrors of each other. `nav.js` exports `makePopover` and
+`closeTopPopover`; the chart's Escape handler uses the latter. The base wiring
+script (theme helper + `makePopover` call) sits inside `{% block extra_js %}`
+of `base.html`; templates that override the block must start with
+`{{ block.super }}` (list/manage/new/firings do).
 Create-new-source and Manage used to be menu rows; they live on their
 pages now (`+ New Datasource` on the list, the Manage link in the detail
 header).
@@ -42,7 +43,24 @@ mechanism, which is exactly how the Measures help text and the `fmtRate` /
 | `sources/templates/sources/_group_dims_panel.html` | The Group Dims tab panel. No parameters; a caller needing a permission gate wraps the include. |
 | `sources/templates/sources/_measures_panel.html` | The Measures tab panel. Optional `measures_help_short` (truthy = the short help line, default = the long one naming every ladder style), the same `{% if %}` / `\|default:` convention `_nav_menu.html` uses. |
 | `sources/static/sources/group_dims.js` | The group-dimension editor, ~660 lines. Needs `DS_PK` and `csrfToken()`; defines `GROUP_PALETTE` itself. |
-| `sources/static/sources/inline_edit.js` | `startEdit` / `cancelEdit` / `saveRow` / `deleteRow`. Needs `csrfToken()`, `postJSON()` and the page's `esc()`. |
+| `sources/static/sources/inline_edit.js` | `startEdit` / `cancelEdit` / `saveRow` / `deleteRow`, plus `ROW_SPECS` — each table's display columns described once, read both by `saveRow` and by manage.html's row builders. Needs `csrfToken()`, `postJSON()` and the page's `esc()`. |
+| `sources/templates/sources/_cmd_action.html` | One ETL/schema command block (label, description, button, result span). Parameters `title`, `desc`, `btn_id`, `btn_label`, `result_id`, plus optional `btn_class` and `last`. |
+
+Three more files are shared with the **chart app** (`viz/`), which loads them
+with `{% static 'sources/…' %}` — Django's AppDirs finder resolves that across
+apps, and the repo already includes across the boundary in both directions
+(`base.html` includes `viz/about.html`, `chart.html` includes
+`sources/_nav_menu.html`):
+
+| File | What it holds |
+|------|---------------|
+| `sources/static/sources/nav.css` / `nav.js` | The anchored-dropdown mechanic and its styling. `nav.js` exports `makePopover` and `closeTopPopover`. |
+| `sources/static/sources/datetimepicker.js` / `.css` | The date/time picker and its popup styling. The two apps had grown separate features — the chart's copy knew a `trigger` button and clamped the popup inside the viewport, the shell's had `getUTCISO()`; the shared file is the union. Field chrome stays per app (`.dtp-label` in the shell, `.dtp-field` in the chart). |
+
+**The colour palettes stay per app.** The two do not agree on `--muted`,
+`--accent` or `--bg2`, and the shared files use `var(--…)` throughout, so each
+page resolves them against its own tokens. Reconciling the palettes would be a
+visible design change, not a refactor.
 
 **The one non-obvious constraint is load order.** `group_dims.js` binds its
 event handlers at top level, not on `DOMContentLoaded`, so it must come after

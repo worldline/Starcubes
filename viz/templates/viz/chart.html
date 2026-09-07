@@ -14,6 +14,10 @@
 <script>/* Apply saved theme before paint to prevent flash */
 (function(){var t=localStorage.getItem('starcubes-theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');})();
 </script>
+<!-- Shared with the sources app. Loaded before this page's own <style> so
+     the chart's .ic rule and --focus-ring keep overriding nav.css's. -->
+<link rel="stylesheet" href="{% static 'sources/nav.css' %}">
+<link rel="stylesheet" href="{% static 'sources/datetimepicker.css' %}">
 <style>
   :root {
     --filter-tag-in-bg: #d4edda;
@@ -55,26 +59,6 @@
     --filter-add-btn-bg: #2c5282;
     --filter-add-btn-border: #2c5282;
     --filter-add-btn-color: #fff;
-    --dtp-bg: #fff;
-    --dtp-border: #ccc;
-    --dtp-shadow: rgba(0,0,0,0.15);
-    --dtp-header-bg: #f5f5f5;
-    --dtp-header-color: #333;
-    --dtp-arrow-color: #555;
-    --dtp-arrow-hover: #2c5282;
-    --dtp-day-color: #333;
-    --dtp-day-hover-bg: #e8e8e8;
-    --dtp-day-selected-bg: #2c5282;
-    --dtp-day-selected-text: #fff;
-    --dtp-day-today-bg: #e3f2fd;
-    --dtp-day-other-color: #bbb;
-    --dtp-dow-color: #888;
-    --dtp-time-bg: #fff;
-    --dtp-time-border: #ccc;
-    --dtp-time-color: #333;
-    --dtp-btn-bg: #2c5282;
-    --dtp-btn-color: #fff;
-    --dtp-btn-hover: #2a4365;
     --body-bg: #fff;
     --body-color: #222;
     --bg2: #f5f5f5;
@@ -179,26 +163,6 @@
     --filter-add-btn-bg: #2c5282;
     --filter-add-btn-border: #2c5282;
     --filter-add-btn-color: #fff;
-    --dtp-bg: #2a2a2a;
-    --dtp-border: #555;
-    --dtp-shadow: rgba(0,0,0,0.4);
-    --dtp-header-bg: #333;
-    --dtp-header-color: #ddd;
-    --dtp-arrow-color: #aaa;
-    --dtp-arrow-hover: #5a9bd5;
-    --dtp-day-color: #ddd;
-    --dtp-day-hover-bg: #444;
-    --dtp-day-selected-bg: #2c5282;
-    --dtp-day-selected-text: #fff;
-    --dtp-day-today-bg: #1e3a5f;
-    --dtp-day-other-color: #666;
-    --dtp-dow-color: #888;
-    --dtp-time-bg: #333;
-    --dtp-time-border: #555;
-    --dtp-time-color: #ddd;
-    --dtp-btn-bg: #2c5282;
-    --dtp-btn-color: #fff;
-    --dtp-btn-hover: #3a6ba8;
     --body-bg: #1a1a1a;
     --body-color: #ddd;
     --bg2: #1e2028;
@@ -423,15 +387,8 @@
      Deliberately NOT a .fpanel: dropdowns are anchored to their trigger,
      never dragged or resized, and close on an outside click. See
      makePopover() in the JS for the behaviour half. */
-  .popover {
-    position: fixed; z-index: 3000; display: none;
-    background: var(--bg2); color: var(--body-color);
-    border: 1px solid var(--border); border-radius: 8px;
-    box-shadow: 0 10px 30px var(--shadow);
-    font-size: 13px;
-  }
-  .popover.pop-open { display: block; }
-  .popover--menu { padding: 5px; min-width: 216px; }
+  /* .popover / .menu-* live in sources/static/sources/nav.css, loaded above.
+     Only the chart-specific width override stays here. */
   /* Fixed-position elements shrink-to-fit their content, so without a
      definite width the long explanation lines would stretch this panel to
      the full unwrapped sentence. Give it one instead of a min-width. */
@@ -440,35 +397,6 @@
     width: 264px; max-width: calc(100vw - 16px);
   }
 
-  .menu-head {
-    display: flex; align-items: center; gap: 9px;
-    padding: 7px 12px 9px 9px; margin-bottom: 4px;
-    border-bottom: 1px solid var(--border);
-    color: var(--muted);
-  }
-  .menu-head .ic { font-size: 15px; }
-  .menu-user {
-    font-size: 12px; font-weight: 600; color: var(--body-color);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .menu-item {
-    display: flex; align-items: center; gap: 9px;
-    box-sizing: border-box; width: 100%;
-    padding: 7px 12px 7px 9px; margin: 0;
-    background: none; border: 0; border-radius: 5px;
-    font: inherit; font-size: 13px; line-height: 1.2;
-    color: var(--body-color); text-align: left; text-decoration: none;
-    white-space: nowrap; cursor: pointer;
-  }
-  .menu-item .ic { font-size: 15px; color: var(--muted); }
-  .menu-item:hover, .menu-item:focus-visible {
-    background: var(--tab-active-hover-bg); color: var(--body-color);
-    text-decoration: none;
-  }
-  .menu-item:hover .ic, .menu-item:focus-visible .ic { color: var(--accent); }
-  .menu-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
-  .menu-label { flex: 1 1 auto; }
-  .menu-sep { height: 1px; background: var(--border); margin: 5px 0; }
 
   @media (prefers-reduced-motion: reduce) {
     .ibtn, .chip, [data-tip]::after, [data-tip]::before { transition: none; }
@@ -1064,52 +992,7 @@
   @media (prefers-reduced-motion: reduce) { .dtp-field { transition: none; } }
 
   /* ── DateTime picker ──────────────────────────────────────────────────── */
-  .dtp-popup {
-    position: absolute; top: 100%; left: 0; margin-top: 2px;
-    background: var(--dtp-bg); border: 1px solid var(--dtp-border);
-    border-radius: 4px; box-shadow: 0 3px 10px var(--dtp-shadow);
-    z-index: 200; padding: 8px; font-size: 12px;
-    user-select: none; display: none; min-width: 220px;
-  }
-  .dtp-popup.open { display: block; }
-  .dtp-header {
-    display: flex; justify-content: space-between; align-items: center;
-    margin-bottom: 6px; padding: 2px 0;
-  }
-  .dtp-header span { font-weight: 600; color: var(--dtp-header-color); }
-  .dtp-arrow {
-    background: none; border: 1px solid var(--dtp-border); border-radius: 3px;
-    padding: 2px 8px; cursor: pointer; color: var(--dtp-arrow-color);
-    font: inherit; font-size: 12px; line-height: 1;
-  }
-  .dtp-arrow:hover { color: var(--dtp-arrow-hover); border-color: var(--dtp-arrow-hover); }
-  .dtp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; text-align: center; }
-  .dtp-dow { font-size: 10px; font-weight: 600; color: var(--dtp-dow-color); padding: 2px 0; }
-  .dtp-day { padding: 3px 0; cursor: pointer; border-radius: 3px; color: var(--dtp-day-color); }
-  .dtp-day:hover { background: var(--dtp-day-hover-bg); }
-  .dtp-day.other-month { color: var(--dtp-day-other-color); cursor: default; }
-  .dtp-day.today { background: var(--dtp-day-today-bg); font-weight: 600; }
-  .dtp-day.selected { background: var(--dtp-day-selected-bg); color: var(--dtp-day-selected-text); font-weight: 600; }
-  .dtp-day.today.selected { background: var(--dtp-day-selected-bg); color: var(--dtp-day-selected-text); }
-  .dtp-time-row {
-    display: flex; align-items: center; gap: 4px;
-    margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--dtp-border);
-  }
-  .dtp-time-row label {
-    display: flex; flex-direction: row; align-items: center; gap: 4px;
-    font-size: 12px; color: var(--dtp-day-color);
-  }
-  .dtp-time-input {
-    width: 2.4em; text-align: center; font: inherit; font-size: 12px;
-    padding: 2px 3px; border: 1px solid var(--dtp-time-border); border-radius: 3px;
-    background: var(--dtp-time-bg); color: var(--dtp-time-color);
-  }
-  .dtp-apply-row { margin-top: 6px; display: flex; justify-content: flex-end; }
-  .dtp-apply {
-    padding: 3px 12px; background: var(--dtp-btn-bg); color: var(--dtp-btn-color);
-    border: 0; border-radius: 3px; cursor: pointer; font: inherit; font-size: 12px;
-  }
-  .dtp-apply:hover { background: var(--dtp-btn-hover); }
+  /* .dtp-popup and friends: sources/static/sources/datetimepicker.css */
 
   /* ── Navigation + source tabs (single combined row) ─────────────── */
   #nav-tabs {
@@ -1461,6 +1344,11 @@
 {% endif %}
 
 <script src="{% static 'timeseries/timeseries.js' %}"></script>
+<!-- Shared with the sources app. Plain and synchronous: the inline script
+     below calls makePopover() and constructs DateTimePickers while the
+     document parses, so a deferred file would arrive too late. -->
+<script src="{% static 'sources/nav.js' %}"></script>
+<script src="{% static 'sources/datetimepicker.js' %}"></script>
 <script>
 const PLOT_URL    = "{% url 'viz:plot_json' %}";
 const DRILL_URL   = "{% url 'viz:drill_json' %}";
@@ -2837,146 +2725,9 @@ function initTs() {
 }
 
 // ── Popovers (dropdowns) ─────────────────────────────────────────────────
-// One mechanic for every anchored dropdown on the page: open/close, outside
-// click, Escape, keyboard roving, positioning under the trigger and the
-// aria-expanded bookkeeping. The preferences popover and the top-bar menu
-// both run on it.
-//
-// Deliberately NOT a `.fpanel`. A dropdown is anchored to its button, is
-// never dragged or resized and is not part of the click-order stack; giving
-// it the panel contract would hand every future menu a drag handle it must
-// not have. The two mechanics stay separate on purpose.
-const _popovers = [];
-
-// opts.anchor       element to position under (default: the trigger itself)
-// opts.align        'right' (default) or 'left' edge, aligned with the anchor
-// opts.menu         true → role=menuitem roving focus with the arrow keys
-// opts.closeOnClick a click on a link/button inside closes it (default: menu);
-//                   an element carrying [data-keep-open] is exempt
-// opts.returnFocus  element focused when Escape closes it (default: trigger)
-// opts.onOpen / opts.onClose   hooks
-function makePopover(btn, panel, opts) {
-  opts = opts || {};
-  const align = opts.align || 'right';
-  // The preferences trigger lives inside the menu that opening it closes, so
-  // by close time it is display:none and cannot take focus back.
-  const returnFocus = opts.returnFocus || btn;
-  const closeOnClick = opts.closeOnClick === undefined ? !!opts.menu : opts.closeOnClick;
-  btn.setAttribute('aria-expanded', 'false');
-  btn.setAttribute('aria-haspopup', opts.menu ? 'menu' : 'dialog');
-  if (panel.id) btn.setAttribute('aria-controls', panel.id);
-
-  // Recomputed on every open: entries can be hidden per login state.
-  function items() {
-    return [...panel.querySelectorAll('[role="menuitem"]')]
-      .filter(el => !el.disabled && el.offsetParent !== null);
-  }
-
-  // Anchored below, flipped above when the viewport has no room, and clamped
-  // to 8 px from either edge. Called while the panel is visible so
-  // offsetWidth/offsetHeight are real.
-  function place() {
-    const r = (opts.anchor || btn).getBoundingClientRect();
-    const w = panel.offsetWidth, h = panel.offsetHeight;
-    const GAP = 6, EDGE = 8;
-    let left = align === 'left' ? r.left : r.right - w;
-    left = Math.max(EDGE, Math.min(window.innerWidth - w - EDGE, left));
-    let top = r.bottom + GAP;
-    if (top + h > window.innerHeight - EDGE && r.top - GAP - h > EDGE) top = r.top - GAP - h;
-    panel.style.left   = left + 'px';
-    panel.style.top    = Math.max(EDGE, top) + 'px';
-    panel.style.right  = 'auto';
-    panel.style.bottom = 'auto';
-  }
-
-  const api = {
-    btn, panel,
-    isOpen() { return panel.classList.contains('pop-open'); },
-    // `focusFirst` is passed only when the keyboard opened it. A mouse click
-    // that lands a focus ring on the first entry looks like a selection the
-    // user did not make; arrow keys still enter the menu from the trigger.
-    open(focusFirst) {
-      if (api.isOpen()) return;
-      // Only ever one dropdown at a time — two anchored boxes overlapping is
-      // never what the user asked for.
-      for (const other of _popovers) if (other !== api) other.close();
-      panel.classList.add('pop-open');
-      btn.setAttribute('aria-expanded', 'true');
-      if (opts.onOpen) opts.onOpen();
-      place();
-      if (opts.menu && focusFirst) { const it = items(); if (it.length) it[0].focus(); }
-    },
-    close(refocus) {
-      if (!api.isOpen()) return;
-      panel.classList.remove('pop-open');
-      btn.setAttribute('aria-expanded', 'false');
-      if (opts.onClose) opts.onClose();
-      if (refocus) returnFocus.focus();
-    },
-    toggle(focusFirst) { if (api.isOpen()) api.close(); else api.open(focusFirst); },
-  };
-
-  // detail === 0 marks a click the browser synthesized from Enter or Space on
-  // the button, i.e. a keyboard activation.
-  btn.addEventListener('click', e => {
-    e.preventDefault(); e.stopPropagation(); api.toggle(e.detail === 0);
-  });
-
-  // pointerdown, not click: a press that starts outside already dismisses,
-  // which is the rule the date picker follows too.
-  document.addEventListener('pointerdown', e => {
-    if (!api.isOpen()) return;
-    if (panel.contains(e.target) || btn.contains(e.target)) return;
-    api.close();
-  });
-
-  if (closeOnClick) panel.addEventListener('click', e => {
-    if (e.target.closest('[data-keep-open]')) return;
-    if (e.target.closest('a, button')) api.close();
-  });
-
-  panel.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      // Stops here: the document-level Escape handler would otherwise close
-      // the top-most floating panel with the same key press.
-      e.preventDefault(); e.stopPropagation(); api.close(true); return;
-    }
-    if (!opts.menu) return;
-    const it = items();
-    if (!it.length) return;
-    const i = it.indexOf(document.activeElement);
-    if (e.key === 'ArrowDown')    { e.preventDefault(); it[i < 0 ? 0 : (i + 1) % it.length].focus(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); it[i < 0 ? it.length - 1 : (i - 1 + it.length) % it.length].focus(); }
-    else if (e.key === 'Home')    { e.preventDefault(); it[0].focus(); }
-    else if (e.key === 'End')     { e.preventDefault(); it[it.length - 1].focus(); }
-    else if (e.key === 'Tab')     { api.close(); }   // let focus leave normally
-  });
-
-  btn.addEventListener('keydown', e => {
-    if (opts.menu && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
-      e.preventDefault();
-      if (!api.isOpen()) api.open(true);
-      else { const it = items(); if (it.length) it[e.key === 'ArrowDown' ? 0 : it.length - 1].focus(); }
-    } else if (e.key === 'Escape' && api.isOpen()) {
-      e.preventDefault(); e.stopPropagation(); api.close(true);
-    }
-  });
-
-  window.addEventListener('resize', () => { if (api.isOpen()) place(); });
-
-  _popovers.push(api);
-  return api;
-}
-
-// Closes the front-most open dropdown, if any. The shared Escape handler
-// calls this before it reaches for the floating panels: a dropdown is drawn
-// over them, so it is what "the top-most thing" means to the user.
-function closeTopPopover() {
-  for (let i = _popovers.length - 1; i >= 0; i--) {
-    if (_popovers[i].isOpen()) { _popovers[i].close(true); return true; }
-  }
-  return false;
-}
+// makePopover() and closeTopPopover() are shared with the sources shell:
+// sources/static/sources/nav.js, loaded above. Deliberately NOT a `.fpanel`
+// — see that file for why.
 
 // ── Floating panels ───────────────────────────────────────────────────────
 // Drag, stacking order and open/close for every `.fpanel` floating over the
@@ -4301,228 +4052,9 @@ function renderDrillBody(data) {
 }
 
 // ── DateTime picker ──────────────────────────────────────────────────────
-
-let _openPicker = null;
-
-class DateTimePicker {
-  // `trigger` is the calendar button drawn inside the field. It is not part
-  // of the picker's own DOM, so it has to be excluded from the outside-click
-  // dismiss below — otherwise pressing it would close and immediately reopen.
-  constructor(input, { onChange, nextFocus, trigger }) {
-    this.input = input;
-    this.onChange = onChange;
-    this._nextFocus = nextFocus || null;
-    this._trigger = trigger || null;
-    this._value = null;
-    this._pending = null;
-    this._pendingH = 0;
-    this._pendingM = 0;
-    this._viewY = 0;
-    this._viewM = 0;
-    this._isOpen = false;
-    this._popup = document.createElement('div');
-    this._popup.className = 'dtp-popup';
-    this._popup.innerHTML = this._html();
-    this._wire();
-    input.parentElement.style.position = 'relative';
-    input.parentElement.appendChild(this._popup);
-    input.addEventListener('focus', () => this.open());
-    input.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { this.close(true); e.preventDefault(); }
-      if (e.key === 'Enter') {
-        this._commitInput();
-        if (this._nextFocus) this._nextFocus.focus();
-        e.preventDefault();
-      }
-    });
-    input.addEventListener('blur', () => {
-      // Give popup clicks time to fire before closing on blur
-      setTimeout(() => { if (!this._isOpen) this._commitInput(); }, 100);
-    });
-    document.addEventListener('mousedown', e => {
-      if (this._isOpen && !this._popup.contains(e.target) && e.target !== this.input
-          && !(this._trigger && this._trigger.contains(e.target))) {
-        this.close(true);
-        this._commitInput();
-      }
-    });
-    if (this._trigger) {
-      // Keep the caret where it is: the button must not steal focus from the
-      // input, or every click would blur-commit a half-typed date.
-      this._trigger.addEventListener('mousedown', e => e.preventDefault());
-      this._trigger.addEventListener('click', () => {
-        if (this._isOpen) { this.close(true); this._commitInput(); }
-        else { this.input.focus(); this.open(); }
-      });
-    }
-  }
-
-  _commitInput() {
-    const s = this.input.value.trim();
-    if (!s) return;
-    const d = this._parseUserInput(s);
-    if (!d) return;
-    const ms = d.getTime();
-    // Skip if the popup just set this exact value (avoids double-fire)
-    if (this._value && this._value.getTime() === ms) return;
-    this._value = d;
-    this.onChange(ms);
-  }
-
-  _parseUserInput(s) {
-    // Accept "YYYY-MM-DD HH:MM" or "YYYY-MM-DD"
-    const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2}):(\d{1,2}))?$/);
-    if (!m) return null;
-    const y = +m[1], mo = +m[2] - 1, dy = +m[3], h = m[4] != null ? +m[4] : 0, mi = m[5] != null ? +m[5] : 0;
-    if (mo < 0 || mo > 11 || dy < 1 || dy > 31 || h < 0 || h > 23 || mi < 0 || mi > 59) return null;
-    const d = new Date(y, mo, dy, h, mi, 0, 0);
-    if (d.getMonth() !== mo || d.getDate() !== dy) return null; // rejects e.g. Feb 30
-    return d;
-  }
-
-  _html() {
-    return '<div class="dtp-header">'
-      + '<button type="button" class="dtp-arrow" data-dir="-1">&larr;</button>'
-      + '<span class="dtp-month-year"></span>'
-      + '<button type="button" class="dtp-arrow" data-dir="1">&rarr;</button>'
-      + '</div>'
-      + '<div class="dtp-grid"><span class="dtp-dow">Mo</span><span class="dtp-dow">Tu</span>'
-      + '<span class="dtp-dow">We</span><span class="dtp-dow">Th</span>'
-      + '<span class="dtp-dow">Fr</span><span class="dtp-dow">Sa</span>'
-      + '<span class="dtp-dow">Su</span></div>'
-      + '<div class="dtp-grid dtp-days"></div>'
-      + '<div class="dtp-time-row"><label>Time '
-      + '<input type="number" class="dtp-time-input" data-f="h" min="0" max="23">'
-      + ' : <input type="number" class="dtp-time-input" data-f="m" min="0" max="59">'
-      + '</label></div>'
-      + '<div class="dtp-apply-row"><button type="button" class="dtp-apply">OK</button></div>';
-  }
-
-  _wire() {
-    const [prev, next] = this._popup.querySelectorAll('.dtp-arrow');
-    prev.addEventListener('click', () => this._nav(-1));
-    next.addEventListener('click', () => this._nav(1));
-    this._myEl = this._popup.querySelector('.dtp-month-year');
-    this._daysEl = this._popup.querySelector('.dtp-days');
-    this._hIn = this._popup.querySelector('[data-f="h"]');
-    this._mIn = this._popup.querySelector('[data-f="m"]');
-    this._hIn.addEventListener('change', () => {
-      this._pendingH = this._clamp(this._hIn.value, 0, 23);
-      this._hIn.value = this._pad(this._pendingH);
-    });
-    this._mIn.addEventListener('change', () => {
-      this._pendingM = this._clamp(this._mIn.value, 0, 59);
-      this._mIn.value = this._pad(this._pendingM);
-    });
-    this._popup.querySelector('.dtp-apply').addEventListener('click', () => this.close(false));
-  }
-
-  _clamp(v, lo, hi) {
-    const n = parseInt(v, 10);
-    return isNaN(n) ? lo : Math.max(lo, Math.min(hi, n));
-  }
-
-  _pad(n) { return String(n).padStart(2, '0'); }
-
-  _nav(dir) {
-    this._viewM += dir;
-    if (this._viewM < 0) { this._viewM = 11; this._viewY--; }
-    if (this._viewM > 11) { this._viewM = 0; this._viewY++; }
-    this._render();
-  }
-
-  _render() {
-    const M = ['January','February','March','April','May','June',
-               'July','August','September','October','November','December'];
-    this._myEl.textContent = M[this._viewM] + ' ' + this._viewY;
-    const y = this._viewY, m = this._viewM;
-    const off = (new Date(y, m, 1).getDay() + 6) % 7; // Mon=0
-    const dim = new Date(y, m + 1, 0).getDate();
-    const pdim = new Date(y, m, 0).getDate();
-    const now = new Date();
-    const tk = now.getFullYear() * 1e4 + now.getMonth() * 100 + now.getDate();
-    const sk = this._pending
-      ? this._pending.getFullYear() * 1e4 + this._pending.getMonth() * 100 + this._pending.getDate()
-      : -1;
-    this._daysEl.innerHTML = '';
-    for (let i = off - 1; i >= 0; i--) this._cell(pdim - i, true, -1);
-    for (let d = 1; d <= dim; d++) {
-      const k = y * 1e4 + m * 100 + d;
-      this._cell(d, false, k, k === tk, k === sk);
-    }
-    const n = this._daysEl.children.length;
-    for (let d = 1, r = (7 - n % 7) % 7; d <= r; d++) this._cell(d, true, -1);
-  }
-
-  _cell(day, other, _key, today, sel) {
-    const el = document.createElement('span');
-    el.className = 'dtp-day';
-    if (other) el.classList.add('other-month');
-    if (today) el.classList.add('today');
-    if (sel) el.classList.add('selected');
-    el.textContent = day;
-    if (!other) el.addEventListener('click', () => {
-      this._pending = new Date(this._viewY, this._viewM, day);
-      this._render();
-    });
-    this._daysEl.appendChild(el);
-  }
-
-  open() {
-    if (this._isOpen) return;
-    if (_openPicker && _openPicker !== this) _openPicker.close(true);
-    _openPicker = this;
-    this._isOpen = true;
-    const src = this._value || new Date();
-    this._pending = this._value ? new Date(this._value) : null;
-    this._pendingH = src.getHours();
-    this._pendingM = src.getMinutes();
-    this._viewY = src.getFullYear();
-    this._viewM = src.getMonth();
-    this._render();
-    this._hIn.value = this._pad(this._pendingH);
-    this._mIn.value = this._pad(this._pendingM);
-    this._popup.classList.add('open');
-    // Anchored to the field's left edge, which a narrow window can leave past
-    // the viewport's right edge — same clamp the popovers' place() applies:
-    // flip to the field's right edge when the popup would cross it.
-    this._popup.style.left = '';
-    this._popup.style.right = '';
-    const r = this._popup.getBoundingClientRect();
-    if (r.right > window.innerWidth - 8) {
-      this._popup.style.left = 'auto';
-      this._popup.style.right = '0';
-    }
-  }
-
-  close(revert) {
-    if (!this._isOpen) return;
-    this._isOpen = false;
-    _openPicker = null;
-    this._popup.classList.remove('open');
-    if (revert) return;
-    const d = this._pending ? new Date(this._pending) : new Date();
-    d.setHours(this._pendingH, this._pendingM, 0, 0);
-    const prev = this._value ? this._value.getTime() : null;
-    this._value = d;
-    this.input.value = this._fmt(d);
-    if (prev !== d.getTime()) this.onChange(d.getTime());
-  }
-
-  setValue(ms) {
-    if (ms == null) return;
-    const d = new Date(ms);
-    this._value = d;
-    this.input.value = this._fmt(d);
-  }
-
-  getValue() { return this._value ? this._value.getTime() : null; }
-
-  _fmt(d) {
-    return d.getFullYear() + '-' + this._pad(d.getMonth() + 1) + '-' + this._pad(d.getDate())
-      + ' ' + this._pad(d.getHours()) + ':' + this._pad(d.getMinutes());
-  }
-}
+// Shared with the sources shell: sources/static/sources/datetimepicker.js.
+// The field chrome (.dtp-field and its calendar button) stays local; only the
+// popup and its behaviour are common.
 
 const dtpFrom = new DateTimePicker(document.getElementById('dtp-from'), {
   nextFocus: document.getElementById('dtp-to'),

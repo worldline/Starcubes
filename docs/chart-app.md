@@ -32,7 +32,10 @@ a manifest static-files storage (`starcubes/settings.py`), so an external
   wrap and never appears on keyboard
   focus. **`data-tip` is not a label**: every icon button also carries an
   `aria-label` with the same string.
-- **`makePopover(btn, panel, opts)`** — anchored dropdowns: toggle, outside
+- **`makePopover(btn, panel, opts)`** — from
+  `sources/static/sources/nav.js`, shared with the sources shell (the page
+  used to carry its own copy). `closeTopPopover()` comes from there too.
+  Anchored dropdowns: toggle, outside
   click, Escape, placement (flipping above the anchor when the viewport is
   tight), `aria-expanded`, and `menu: true` for arrow-key roving over
   `[role=menuitem]`. Used by `#nav-menu` and `#prefs-popover`. Deliberately
@@ -82,7 +85,10 @@ rather than inside one:
 [group by ▾] [Filters] [measure ▾] │ [from 🗓] [to 🗓] [Today][Yesterday][Week][Month] │ [≡][~][>_][⌨][⚙]
 ```
 
-- **from / to** are the same `DateTimePicker` they always were — the class was
+- **from / to** are the same `DateTimePicker` they always were — the class now
+  lives in `sources/static/sources/datetimepicker.js`, shared with the sources
+  shell and carrying both sides' features (this page's `trigger` option and
+  viewport clamping, the shell's `getUTCISO()`). It was
   fully built and simply invisible. Input and calendar button now share one
   `.dtp-field` frame, so the field looks like the picker it is while keyboard
   entry keeps working. The button is passed to the picker as `trigger`, which
