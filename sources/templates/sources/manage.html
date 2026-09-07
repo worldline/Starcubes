@@ -2570,7 +2570,7 @@ function sortTable(th) {
   function section(title, d) {
     if (!d.n_added && !d.n_removed && !d.n_changed) return '';
     var parts = [];
-    if (d.n_added) parts.push('<span style="color:var(--ok,green)">+' + d.n_added + '</span>');
+    if (d.n_added) parts.push('<span style="color:var(--success)">+' + d.n_added + '</span>');
     if (d.n_removed) parts.push('<span style="color:var(--danger)">−' + d.n_removed + '</span>');
     if (d.n_changed) parts.push('~' + d.n_changed);
     var detail = [];

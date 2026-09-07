@@ -70,7 +70,7 @@
             </td>
           </tr>
           <tr class="pw-form-row" id="pw-row-{{ u.pk }}" style="display:none">
-            <td colspan="9" style="padding:8px 12px;background:var(--card-bg)">
+            <td colspan="9" style="padding:8px 12px;background:var(--bg2)">
               <form method="post" style="display:flex;gap:8px;align-items:center">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="set_password">
@@ -84,7 +84,7 @@
             </td>
           </tr>
           <tr class="user-edit-row" id="user-edit-{{ u.pk }}" style="display:none">
-            <td colspan="9" style="padding:8px 12px;background:var(--card-bg)">
+            <td colspan="9" style="padding:8px 12px;background:var(--bg2)">
               <form method="post" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
                 {% csrf_token %}
                 <input type="hidden" name="action" value="update_user">

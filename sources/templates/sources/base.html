@@ -295,6 +295,10 @@ a.btn-icon { display: inline-block; text-decoration: none; }
   border-radius: 99px;
   font-size: 11px;
   font-weight: 600;
+  /* Neutral fill so a modifier-less .badge is not an unfilled pill. The
+     modifiers below come later in the sheet and still win. */
+  background: var(--badge-none-bg);
+  color: var(--badge-none-fg);
 }
 .badge-running { background: var(--badge-running-bg); color: var(--badge-running-fg); }
 .badge-ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); }
@@ -498,6 +502,10 @@ tr.editing .row-edit { display: flex; }
 /* misc */
 .empty-state { text-align: center; padding: 32px; color: var(--muted); font-size: 13px; }
 .text-muted { color: var(--muted); }
+/* Bare .mono sets only the family, so it works on a .form-control (which
+   forces font-family:inherit) without overriding the field font size.
+   .dl-grid .mono below is more specific and keeps its own size. */
+.mono { font-family: ui-monospace, monospace; }
 .text-mono { font-family: ui-monospace, monospace; font-size: 12px; }
 .ms-auto { margin-left: auto; }
 .preview-table { overflow-x: auto; margin-top: 10px; }
@@ -1047,7 +1055,7 @@ class DateTimePicker {
 }
 </script>
 <div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center">
-  <div id="modal-box" style="background:var(--card-bg,white);border-radius:8px;padding:24px;max-width:440px;width:90%;box-shadow:0 4px 24px rgba(0,0,0,.3)"></div>
+  <div id="modal-box" style="background:var(--bg);border-radius:8px;padding:24px;max-width:440px;width:90%;box-shadow:0 4px 24px rgba(0,0,0,.3)"></div>
 </div>
 <script>
 function showModal(html) {
