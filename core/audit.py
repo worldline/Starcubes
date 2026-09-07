@@ -96,6 +96,32 @@ def _as_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _clamp_to_floor(source: Source, start: datetime,
+                    end: datetime) -> datetime:
+    """Raise `start` to the datasource's retention floor.
+
+    Below the floor the fact table is empty on purpose (a dropped or
+    truncated partition), so comparing it against the source would report
+    100% loss over a window in which nothing was lost. Retention is not a
+    drop loop — it is a floor concept, and this is the audit learning
+    about it.
+    """
+    floor = getattr(source, "retention_floor", None)
+    if floor is None:
+        return start
+    floor = _as_utc(floor)
+    if end <= floor:
+        raise ValueError(
+            f"the whole window lies below the retention floor {floor} — "
+            f"those rows were disposed of on purpose, so there is nothing "
+            f"to reconcile")
+    if start < floor:
+        logger.info("%s: audit window starts below the retention floor "
+                    "%s — clamping", source.name, floor)
+        return floor
+    return start
+
+
 def audit_window(source: Source, dest_engine, *,
                  start: datetime, end: datetime, buckets: int = 24,
                  timeout_ms: int = DEFAULT_TIMEOUT_MS) -> list[dict]:
@@ -111,6 +137,7 @@ def audit_window(source: Source, dest_engine, *,
     end = _as_utc(end)
     if end <= start:
         raise ValueError("audit window end must be after start")
+    start = _clamp_to_floor(source, start, end)
 
     buckets = max(1, min(int(buckets), MAX_BUCKETS))
     span_s = (end - start).total_seconds()
@@ -328,6 +355,7 @@ def audit_ids(source: Source, dest_engine, *, start: datetime, end: datetime,
     end = _as_utc(end)
     if end <= start:
         raise ValueError("audit window end must be after start")
+    start = _clamp_to_floor(source, start, end)
 
     pk = source.pk_column()
     pk_sql = _source_pk_sql(source)

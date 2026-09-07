@@ -701,9 +701,17 @@ def _overlap_pks(source: Source, dest_engine, since: datetime,
     return set(pks[pk])
 
 
-def _resume_state(source: Source, dest_engine, meta_engine) -> tuple[
+def _resume_state(source: Source, dest_engine, meta_engine,
+                  dedupe_from: Optional[datetime] = None) -> tuple[
         Optional[datetime], Optional[datetime], set]:
     """Figure out where to resume from.
+
+    `dedupe_from` is a pending high-watermark rewind (see
+    `rewind_highwatermark`): the window has to reach back to it *and* carry
+    the PK filter, even with `late_arrival_overlap_s` at 0, or the reload
+    duplicates the rows the delete left behind. The caller reads it fresh
+    from the metadata rather than off the Source, because a forever session
+    holds one Source for its whole life.
 
     Returns (last_end_time, extract_from, existing_pks):
       - last_end_time: the high watermark. None if fact is empty (first
@@ -740,9 +748,12 @@ def _resume_state(source: Source, dest_engine, meta_engine) -> tuple[
 
     if last_end is not None:
         last_end = _ceil_second(_as_utc(last_end))
-        if overlap <= 0:
+        if overlap <= 0 and dedupe_from is None:
             return last_end, last_end, set()
-        extract_from = last_end - timedelta(seconds=overlap)
+        extract_from = (last_end - timedelta(seconds=overlap)
+                        if overlap > 0 else last_end)
+        if dedupe_from is not None:
+            extract_from = min(extract_from, _as_utc(dedupe_from))
         return last_end, extract_from, _overlap_pks(
             source, dest_engine, extract_from)
 
@@ -856,6 +867,9 @@ def import_fact(source: Source, meta_engine, *,
     # Set by the preflight below; merged into the stats jsonb in the finally
     # so a blocked run still leaves its findings behind.
     preflight_report: Optional[dict] = None
+    # A high-watermark rewind waiting to be honoured, cleared once this run
+    # has actually loaded the span it covers.
+    dedupe_pending: Optional[datetime] = None
     # Upper-bound inputs; only set on the non-override path (see below).
     max_wm: Optional[datetime] = None
     src_now: Optional[datetime] = None
@@ -1046,8 +1060,15 @@ def import_fact(source: Source, meta_engine, *,
             existing_pks = _overlap_pks(
                 source, dest_engine, extract_from, end_time)
         else:
+            # Read fresh, not off the Source: a forever session loads its
+            # Source once, before the loop, so a rewind armed from the GUI
+            # mid-session would be invisible to it otherwise.
+            with meta_engine.begin() as meta:
+                dedupe_pending = meta.execute(text(
+                    "SELECT dedupe_from FROM starcubes_meta.datasource "
+                    " WHERE id = :ds"), {"ds": source.id}).scalar()
             last_end_time, extract_from, existing_pks = _resume_state(
-                source, dest_engine, meta_engine)
+                source, dest_engine, meta_engine, dedupe_pending)
 
             if start_time is not None:
                 if start_time.tzinfo is None:
@@ -1055,6 +1076,9 @@ def import_fact(source: Source, meta_engine, *,
                 # Explicit user-chosen window: no overlap, no de-dupe.
                 last_end_time = extract_from = _ceil_second(start_time)
                 existing_pks = set()
+                # The user owns this window, so it is not the run that
+                # honours the pending rewind — leave the flag standing.
+                dedupe_pending = None
 
         if (not backfill and last_end_time is not None
                 and end_time < last_end_time):
@@ -1495,6 +1519,15 @@ def import_fact(source: Source, meta_engine, *,
                     for (fact_col, value), (dim_table, total)
                     in unmapped_agg.items()])
 
+            if status == "ok" and dedupe_pending is not None:
+                # Matched on the value, not just the id: a rewind written
+                # while this run was in flight is a different, still
+                # unhonoured one and must survive.
+                meta.execute(text(
+                    "UPDATE starcubes_meta.datasource SET dedupe_from = NULL "
+                    " WHERE id = :ds AND dedupe_from = :val"
+                ), {"ds": source.id, "val": dedupe_pending})
+
         release_datasource_lock(lock_handle)
 
     summary_level = logging.DEBUG if quiet else logging.INFO
@@ -1544,13 +1577,179 @@ def import_fact(source: Source, meta_engine, *,
     return rows_total
 
 
-def truncate_last_partition(source: Source, dest_engine, *,
-                             quiet: bool = False) -> str:
+def _partition_upper_bound(source: Source, partition_name: str) -> datetime:
+    """The exclusive upper bound of a partition, from its name.
+
+    Partition boundaries are written as naive *local* times (see
+    `_to_naive_local` in core/schema.py), so the aware form is the same
+    conversion read backwards.
+    """
+    from .schema import _next_period, _parse_partition_name
+    start = _parse_partition_name(source.partition_period, partition_name)
+    return _next_period(start, source.partition_period).astimezone()
+
+
+def _read_retention_floor(meta_engine, datasource_id: int) -> Optional[datetime]:
+    """The floor as it stands right now.
+
+    Read fresh rather than off the Source: `etl_run.py` loads the Source once
+    before the forever loop, so a floor written by a GUI gesture mid-session
+    would otherwise stay invisible until the session is restarted.
+    """
+    with meta_engine.begin() as meta:
+        v = meta.execute(text(
+            "SELECT retention_floor FROM starcubes_meta.datasource "
+            " WHERE id = :ds"), {"ds": datasource_id}).scalar()
+    return _as_utc(v) if v is not None else None
+
+
+def _raise_retention_floor(source: Source, meta_engine,
+                           floor: datetime, *, quiet: bool = False) -> None:
+    """Record that rows below `floor` are gone on purpose.
+
+    Never lowers an existing floor — disposal only ever moves forward.
+    """
+    with meta_engine.begin() as meta:
+        meta.execute(text(
+            "UPDATE starcubes_meta.datasource "
+            "   SET retention_floor = greatest("
+            "         coalesce(retention_floor, :f), :f) "
+            " WHERE id = :ds"), {"ds": source.id, "f": floor})
+    if not quiet:
+        logger.info("%s: retention floor now %s", source.name, floor)
+
+
+def _retire_partition(source: Source, dest_engine, meta_engine,
+                      partition_name: str, *, quiet: bool = False) -> None:
+    """Move the retention floor for a partition that just went away.
+
+    Only when it was the *oldest* one. A partition removed out of the middle
+    leaves a hole that a single floor cannot express, and pretending
+    otherwise would tell the audit that everything below it is gone. Say so
+    and leave the floor where it is instead.
+    """
+    from .schema import list_fact_partitions
+    remaining = list_fact_partitions(source, dest_engine)
+    if remaining and remaining[0] < partition_name:
+        logger.warning(
+            "%s: %s was not the oldest partition — the retention floor is "
+            "left alone, because a hole in the middle of the fact table "
+            "cannot be expressed as a lower bound. The audit will report "
+            "that window as a gap.", source.name, partition_name)
+        return
+    _raise_retention_floor(source, meta_engine,
+                           _partition_upper_bound(source, partition_name),
+                           quiet=quiet)
+
+
+def rewind_highwatermark(source: Source, meta_engine, target: datetime, *,
+                         reason: str, quiet: bool = False) -> Optional[datetime]:
+    """Move the high watermark back to `target`, so the window is reloaded.
+
+    This is the repair half of "deleting means two opposite things": rows
+    were wrong, they were thrown away, and the ETL has to fetch them again.
+    Disposal (`drop_partition` and friends) wants the exact opposite and
+    writes a retention floor instead — hence the guard below, which refuses
+    a rewind under the floor. Without it, retention routed through
+    `delete_fact_from` would have the ETL reload everything the operator
+    just disposed of, on the next iteration, at full throughput.
+
+    Written as a **new** etl_run row rather than an UPDATE of an old one:
+    the run history stays truthful, and `_resume_state` orders by
+    `finished_at DESC`, so a fresh row wins even with a *lower*
+    `last_end_time`. Returns the new watermark, or None if there was none
+    to move.
+    """
+    target = _as_utc(target).replace(microsecond=0)
+    floor = _read_retention_floor(meta_engine, source.id)
+    if floor is not None and target < floor:
+        raise ValueError(
+            f"{source.name}: refusing to rewind the high watermark to "
+            f"{target}, below the retention floor {floor}. Rows down there "
+            f"were disposed of on purpose; a rewind would reload them.")
+
+    now = datetime.now(timezone.utc)
+    with meta_engine.begin() as meta:
+        prev = meta.execute(text(
+            "SELECT last_end_time FROM starcubes_meta.etl_run "
+            " WHERE datasource_id = :ds AND status = 'ok' "
+            "   AND kind = 'incremental' "
+            " ORDER BY finished_at DESC LIMIT 1"
+        ), {"ds": source.id}).scalar()
+        if prev is None:
+            if not quiet:
+                logger.info("%s: no high watermark to rewind", source.name)
+            return None
+        prev = _as_utc(prev)
+        if prev <= target:
+            if not quiet:
+                logger.info("%s: high watermark %s is already at or below "
+                            "%s — not rewinding", source.name, prev, target)
+            return prev
+        stats = _json.dumps({"rewind": {"from": prev.isoformat(),
+                                        "to": target.isoformat(),
+                                        "reason": reason}})
+        meta.execute(text(
+            "INSERT INTO starcubes_meta.etl_run "
+            "  (datasource_id, started_at, finished_at, "
+            "   first_end_time, last_end_time, "
+            "   rows, runtime_ms, status, kind, stats) "
+            "VALUES (:ds, :t, :t, :first, :last, 0, 0, 'ok', 'incremental', "
+            "        CAST(:stats AS jsonb))"
+        ), {"ds": source.id, "t": now, "first": prev, "last": target,
+            "stats": stats})
+    logger.warning("%s: high watermark rewound from %s to %s (%s)",
+                   source.name, prev, target, reason)
+    return target
+
+
+def _arm_dedupe(source: Source, meta_engine, from_time: datetime, *,
+                quiet: bool = False) -> bool:
+    """Tell the next incremental run to filter re-loaded rows by PK.
+
+    A rewind reloads a window and there is no unique index on `fact` to
+    absorb it. Three cases, and only the middle one needs arming:
+
+    * ``partition_column == watermark_fact_sql()`` — the delete removed
+      exactly what will be re-inserted, so the reload is clean.
+    * they differ — rows below the delete boundary on the partition clock
+      but above it on the watermark clock survived the delete and *will*
+      come back. `_overlap_pks` already knows how to drop them; this is
+      what arms it.
+    * they differ and there is no ``role='pk'`` fact column — nothing can
+      match the rows, so say so rather than silently duplicating them.
+    """
+    if source.watermark_fact_sql() == source.partition_column:
+        return False
+    if source.pk_column() is None:
+        logger.warning(
+            "%s: the watermark (%s) and the partition column (%s) differ and "
+            "no fact column has role='pk', so the reload after this delete "
+            "cannot be de-duplicated — it may insert duplicate rows. Set the "
+            "pk role to close this.",
+            source.name, source.watermark_fact_sql(), source.partition_column)
+        return False
+    with meta_engine.begin() as meta:
+        meta.execute(text(
+            "UPDATE starcubes_meta.datasource "
+            "   SET dedupe_from = least(coalesce(dedupe_from, :f), :f) "
+            " WHERE id = :ds"), {"ds": source.id, "f": from_time})
+    if not quiet:
+        logger.info("%s: armed PK de-duplication from %s for the reload",
+                    source.name, from_time)
+    return True
+
+
+def truncate_last_partition(source: Source, dest_engine, *, meta_engine,
+                            quiet: bool = False) -> str:
     """TRUNCATE the oldest fact partition.  Returns the partition name.
 
     Warns if only one partition exists (TRUNCATE would empty the
     entire fact table). Takes the datasource lock: removing rows under a
     running load is exactly the hand-run gesture that corrupts data.
+
+    A disposal gesture — it raises the retention floor and leaves the high
+    watermark alone.
     """
     from .schema import list_fact_partitions
     with datasource_lock(source.dest_dsn, source.id, holder="maintenance"):
@@ -1562,14 +1761,22 @@ def truncate_last_partition(source: Source, dest_engine, *,
             logger.warning("%s is the only partition — TRUNCATE empties the entire fact table", name)
         with dest_engine.begin() as conn:
             conn.execute(text(f"TRUNCATE {source.schema_name}.{name}"))
+        _raise_retention_floor(source, meta_engine,
+                               _partition_upper_bound(source, name),
+                               quiet=quiet)
+    bump_cache_epoch(meta_engine, source.id)
     if not quiet:
         logger.info("%s: truncated partition %s", source.name, name)
     return name
 
 
 def truncate_partition(source: Source, dest_engine, partition_name: str,
-                       *, quiet: bool = False) -> None:
-    """TRUNCATE a named fact partition. Validates it belongs to the schema."""
+                       *, meta_engine, quiet: bool = False) -> None:
+    """TRUNCATE a named fact partition. Validates it belongs to the schema.
+
+    A disposal gesture: the retention floor moves, the high watermark does
+    not. See `_retire_partition` for why only the oldest partition moves it.
+    """
     schema = source.schema_name
     with datasource_lock(source.dest_dsn, source.id, holder="maintenance"):
         with dest_engine.connect() as conn:
@@ -1578,13 +1785,20 @@ def truncate_partition(source: Source, dest_engine, partition_name: str,
             raise RuntimeError(f"Partition {schema}.{partition_name} not found")
         with dest_engine.begin() as conn:
             conn.execute(text(f"TRUNCATE {schema}.{partition_name}"))
+        _retire_partition(source, dest_engine, meta_engine, partition_name,
+                          quiet=quiet)
+    bump_cache_epoch(meta_engine, source.id)
     if not quiet:
         logger.info("%s: truncated partition %s", source.name, partition_name)
 
 
 def drop_partition(source: Source, dest_engine, partition_name: str,
-                   *, quiet: bool = False) -> None:
-    """DETACH and DROP a named fact partition."""
+                   *, meta_engine, quiet: bool = False) -> None:
+    """DETACH and DROP a named fact partition.
+
+    A disposal gesture: the retention floor moves, the high watermark does
+    not. See `_retire_partition` for why only the oldest partition moves it.
+    """
     schema = source.schema_name
     with datasource_lock(source.dest_dsn, source.id, holder="maintenance"):
         with dest_engine.connect() as conn:
@@ -1595,16 +1809,27 @@ def drop_partition(source: Source, dest_engine, partition_name: str,
             conn.execute(text(
                 f"ALTER TABLE {schema}.fact DETACH PARTITION {schema}.{partition_name}"))
             conn.execute(text(f"DROP TABLE {schema}.{partition_name}"))
+        _retire_partition(source, dest_engine, meta_engine, partition_name,
+                          quiet=quiet)
+    bump_cache_epoch(meta_engine, source.id)
     if not quiet:
         logger.info("%s: dropped partition %s", source.name, partition_name)
 
 
 def delete_fact_from(source: Source, dest_engine, from_time: datetime, *,
-                     quiet: bool = False) -> int:
+                     meta_engine, quiet: bool = False) -> int:
     """Delete all fact rows with ``partition_column >= from_time``.
 
     Returns the number of rows deleted. Refuses while an ETL holds the
     datasource lock.
+
+    This is the *repair* gesture: the data is wrong, throw it away, load it
+    again. So it also rewinds the high watermark to `from_time` — without
+    that, the next window would start above the hole and the deleted rows
+    would never be requested again — arms PK de-duplication for the reload
+    where the two clocks make it necessary, and bumps the cache epoch,
+    since the rows it removed sit behind the watermark and the plot cache
+    considers that range final.
     """
     if from_time.tzinfo is None:
         from_time = from_time.replace(tzinfo=timezone.utc)
@@ -1614,6 +1839,12 @@ def delete_fact_from(source: Source, dest_engine, from_time: datetime, *,
                 f"DELETE FROM {source.schema_name}.fact "
                 f" WHERE {source.partition_column} >= :from_time"
             ), {"from_time": from_time}).rowcount
+        # Arm before rewinding: the run that picks up the rewound watermark
+        # has to find the flag already set.
+        _arm_dedupe(source, meta_engine, from_time, quiet=quiet)
+        rewind_highwatermark(source, meta_engine, from_time,
+                             reason="delete_fact_from", quiet=quiet)
+    bump_cache_epoch(meta_engine, source.id)
     if not quiet:
         logger.info("%s: deleted %d rows from %s", source.name, n, from_time)
     return n

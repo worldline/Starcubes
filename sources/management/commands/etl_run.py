@@ -177,14 +177,16 @@ class Command(BaseCommand):
 
         if options["truncate_last"]:
             with self._refuse_if_locked():
-                part = truncate_last_partition(source, source.dest_engine())
+                part = truncate_last_partition(source, source.dest_engine(),
+                                               meta_engine=meta)
             self.stdout.write(f"{source.name}: truncated partition {part}")
             return
 
         if options["delete_from"]:
             from_time = _parse_dt(options["delete_from"])
             with self._refuse_if_locked():
-                n = delete_fact_from(source, source.dest_engine(), from_time)
+                n = delete_fact_from(source, source.dest_engine(), from_time,
+                                     meta_engine=meta)
             self.stdout.write(f"{source.name}: deleted {n} rows from {from_time}")
             return
 

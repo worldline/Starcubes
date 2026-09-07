@@ -8,6 +8,7 @@ without a Django or Postgres dependency (hand-construct a Source in tests).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 import os
@@ -232,6 +233,8 @@ class Source:
     watermark_fact_expr: Optional[str] = None  # fact-side SQL reproducing watermark_column
     watermark_lag_s: int = 0          # seconds the window's upper bound stays below max(watermark)
     wallclock_lag_s: int = 0          # absolute visibility deadline in source wall-clock seconds
+    retention_floor: Optional[datetime] = None  # rows below this were disposed
+                                      # of on purpose; core/audit.py clamps to it
 
     @classmethod
     def load(cls, meta_engine, dest_dsn: str, name_or_id) -> "Source":
@@ -248,6 +251,7 @@ class Source:
                 f"       interval_ladder, bar_pixel_target, pk_format, "
                 f"       late_arrival_overlap_s, watermark_fact_expr, "
                 f"       watermark_lag_s, wallclock_lag_s, "
+                f"       retention_floor, "
                 f"       is_default "
                 f"  FROM starcubes_meta.datasource WHERE {key_sql}"
             ), {"k": name_or_id}).mappings().first()

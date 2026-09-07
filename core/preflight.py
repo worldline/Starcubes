@@ -47,6 +47,8 @@ CHECK_BLOCK = "block"
 # instead of an UndefinedColumn out of an unrelated query (N16).
 _REQUIRED_META_COLUMNS: tuple[tuple[str, str], ...] = (
     ("alarm", "severity"),
+    ("datasource", "retention_floor"),
+    ("datasource", "dedupe_from"),
 )
 
 # The index check is time-aware on purpose: the first load deliberately runs
@@ -235,12 +237,25 @@ def _check_source_projection(source: Source, source_engine) -> dict:
     probe = f"SELECT * FROM ({source.import_query}) q WHERE 1=0"
     try:
         with source_engine.begin() as src:
-            got = [str(c) for c in src.execute(text(probe)).keys()]
+            # Two different failures live here and they need opposite
+            # answers. A source that cannot be reached at all is the
+            # extract's own problem and it reports it better than we can, so
+            # that only warns. A query the source *rejects* is the drift this
+            # check exists for — a renamed or dropped column raises exactly
+            # like a connection error, and warning about it would let the run
+            # proceed and die mid-extract, which is what we are here to stop.
+            # Opening the connection separates the two.
+            try:
+                got = [str(c) for c in src.execute(text(probe)).keys()]
+            except Exception as exc:
+                return _check("source_projection", CHECK_BLOCK,
+                              f"the source rejected the import query — "
+                              f"check base_table / source_expr against the "
+                              f"source schema: {exc}",
+                              error=str(exc))
     except Exception as exc:
-        # A source that cannot be reached at all is the extract's problem and
-        # it reports it better than we can; do not turn it into a block here.
         return _check("source_projection", CHECK_WARN,
-                      f"source projection probe failed: {exc}",
+                      f"source not reachable for the projection probe: {exc}",
                       error=str(exc))
 
     have = {c.lower() for c in got}

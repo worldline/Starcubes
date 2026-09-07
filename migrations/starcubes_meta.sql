@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.datasource (
     watermark_fact_expr  text,
     watermark_lag_s      int NOT NULL DEFAULT 0,
     wallclock_lag_s      int NOT NULL DEFAULT 0,
+    retention_floor      timestamptz,
+    dedupe_from          timestamptz,
     created_at           timestamptz NOT NULL DEFAULT now(),
     updated_at           timestamptz NOT NULL DEFAULT now()
 );
@@ -1000,3 +1002,20 @@ DO $$ BEGIN
             '''Deliberate default-off opt-in: the account receives alarm XMPP messages only when this is true AND the alarm lists the account in notify_xmpp_recipients. Maintained on My Profile; the Django model does not know this column.''';
   END IF;
 END $$;
+
+
+-- 0033_retention_floor_dedupe.sql — what the watermark does when fact rows
+-- disappear. Deleting means two opposite things: delete_fact_from is a
+-- repair (rewind the watermark, reload the window), drop/truncate-partition
+-- is disposal (keep the watermark, record a floor). retention_floor is that
+-- floor, dedupe_from arms the existing _overlap_pks filter for the span a
+-- rewind reloads. Mirror block; see migrations/0033_retention_floor_dedupe.sql
+-- for the semantics.
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS retention_floor timestamptz,
+    ADD COLUMN IF NOT EXISTS dedupe_from     timestamptz;
+
+COMMENT ON COLUMN starcubes_meta.datasource.retention_floor IS
+  'Rows with partition_column below this instant were disposed of on purpose (a dropped or truncated partition), not lost. core/audit.py clamps its windows up to it so a retired window is not reported as a gap. Only advanced when the oldest partition goes -- a hole in the middle cannot be expressed as a floor. NULL means nothing has been retired.';
+COMMENT ON COLUMN starcubes_meta.datasource.dedupe_from IS
+  'Set by a high-watermark rewind (delete_fact_from): the next incremental run must load with the _overlap_pks PK filter armed from this instant, even when late_arrival_overlap_s is 0, or the reload duplicates the rows the delete did not remove. Cleared by the run that honoured it. NULL means no rewind is pending.';

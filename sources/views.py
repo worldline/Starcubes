@@ -1280,8 +1280,8 @@ def etl_delete_from(request, pk: int):
     try:
         from_time = _parse_dt(request.POST["from_time"])
         source, meta = _load_source(pk)
-        n = delete_fact_from(source, source.dest_engine(), from_time)
-        bump_cache_epoch(meta, source.id)
+        n = delete_fact_from(source, source.dest_engine(), from_time,
+                             meta_engine=meta)
         return JsonResponse({"ok": True, "deleted": n})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
@@ -1292,8 +1292,8 @@ def etl_delete_from(request, pk: int):
 def etl_truncate_last(request, pk: int):
     try:
         source, meta = _load_source(pk)
-        name = truncate_last_partition(source, source.dest_engine())
-        bump_cache_epoch(meta, source.id)
+        name = truncate_last_partition(source, source.dest_engine(),
+                                       meta_engine=meta)
         return JsonResponse({"ok": True, "partition": name})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
@@ -1307,8 +1307,8 @@ def etl_truncate_partition(request, pk: int):
         if not partition:
             return JsonResponse({"ok": False, "error": "partition name required"})
         source, meta = _load_source(pk)
-        truncate_partition(source, source.dest_engine(), partition)
-        bump_cache_epoch(meta, source.id)
+        truncate_partition(source, source.dest_engine(), partition,
+                           meta_engine=meta)
         return JsonResponse({"ok": True, "partition": partition})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
@@ -1322,8 +1322,8 @@ def etl_drop_partition(request, pk: int):
         if not partition:
             return JsonResponse({"ok": False, "error": "partition name required"})
         source, meta = _load_source(pk)
-        drop_partition(source, source.dest_engine(), partition)
-        bump_cache_epoch(meta, source.id)
+        drop_partition(source, source.dest_engine(), partition,
+                       meta_engine=meta)
         return JsonResponse({"ok": True, "partition": partition})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
