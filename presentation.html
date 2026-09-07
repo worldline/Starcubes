@@ -867,7 +867,10 @@ body {
           <div class="node">
             <div class="tag">stage 2</div>
             <div class="name">Transform</div>
-            <div class="desc">new dimension values keyed as they appear</div>
+            <div class="desc">new dimension values keyed as they appear — one
+            vectorized <code>Series.where</code> per chunk replaces every dim key
+            in a single numpy pass; super-fast, and it scales across
+            <em>N</em> worker processes</div>
           </div>
         </div>
         <div class="unit fragment fade-up">
