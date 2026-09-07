@@ -25,10 +25,13 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
+import sqlalchemy
 from sqlalchemy import text
+from sqlalchemy.pool import NullPool
 
 from .schema import create_dim_tables, create_fact
 from .source import Source
@@ -358,3 +361,103 @@ def blocking_message(report: dict) -> Optional[str]:
         return None
     return "preflight blocked the run: " + "; ".join(
         f"{c['code']}: {c['message']}" for c in blocked)
+
+
+# ---------------------------------------------------------------------------
+# Single occupancy per datasource
+# ---------------------------------------------------------------------------
+
+# Advisory-lock class id, shared by every starcubes process. Any int32 does;
+# this one spells "STAR" so it is recognisable in pg_locks.
+_LOCK_CLASS = 0x53544152
+
+
+class DatasourceLocked(RuntimeError):
+    """Raised when somebody else already holds this datasource.
+
+    Forever mode has been protected by `ux_etl_forever_active` and the GUI
+    by its 409 all along, but a plain `manage.py etl_run --name x` from a
+    shell had no interlock whatsoever and would happily run alongside a live
+    forever session. That is not theoretical: auto-dimension resolution
+    states single occupancy as a precondition (two parents inserting into
+    one dim table race on the smallserial), and with no unique index on
+    `fact` two overlapping windows silently duplicate rows.
+    """
+
+
+class _LockHandle:
+    def __init__(self, engine, conn, datasource_id: int):
+        self.engine = engine
+        self.conn = conn
+        self.datasource_id = datasource_id
+
+
+def acquire_datasource_lock(dsn: str, datasource_id: int, *,
+                            holder: str = "etl") -> _LockHandle:
+    """Take the datasource's advisory lock, or raise `DatasourceLocked`.
+
+    A Postgres advisory lock is cross-process, cross-host and released the
+    moment the connection dies — no PID file, no stale state to reap.
+
+    **It is session-scoped, and that dictates the connection.** Nothing in
+    the ETL holds a connection across a run: every DB touch is a short
+    `engine.begin()` block, and the extract loop even disposes the source
+    pool on purpose. Taking the lock on a pooled connection would be
+    silently worthless — `_install_fork_safety` invalidates records across
+    pids, `pool_recycle` drops the session after 30 minutes, and a
+    `pool_pre_ping` reconnect would carry on without the lock and without a
+    word. So this opens its own NullPool connection and keeps exactly that
+    one.
+
+    The acquiring transaction is committed straight away: a session lock
+    survives the commit, whereas leaving the transaction open would pin the
+    snapshot for the whole run.
+    """
+    engine = sqlalchemy.create_engine(dsn, poolclass=NullPool)
+    conn = engine.connect()
+    try:
+        got = conn.execute(text("SELECT pg_try_advisory_lock(:c, :d)"),
+                           {"c": _LOCK_CLASS,
+                            "d": int(datasource_id)}).scalar()
+        conn.commit()
+    except Exception:
+        conn.close()
+        engine.dispose()
+        raise
+    if not got:
+        conn.close()
+        engine.dispose()
+        raise DatasourceLocked(
+            f"datasource {datasource_id} is already held by another "
+            f"starcubes process — refusing to run a second {holder} on it. "
+            f"Stop the running ETL first.")
+    return _LockHandle(engine, conn, int(datasource_id))
+
+
+def release_datasource_lock(handle: Optional[_LockHandle]) -> None:
+    """Give the lock back. Closing the connection would do it too; the
+    explicit unlock keeps pg_locks tidy while the process is still alive."""
+    if handle is None:
+        return
+    try:
+        handle.conn.execute(text("SELECT pg_advisory_unlock(:c, :d)"),
+                            {"c": _LOCK_CLASS, "d": handle.datasource_id})
+        handle.conn.commit()
+    except Exception:
+        logger.debug("advisory unlock failed; closing the connection "
+                     "releases it anyway", exc_info=True)
+    finally:
+        try:
+            handle.conn.close()
+        finally:
+            handle.engine.dispose()
+
+
+@contextmanager
+def datasource_lock(dsn: str, datasource_id: int, *, holder: str = "etl"):
+    """Scoped form of acquire/release, for the short maintenance gestures."""
+    handle = acquire_datasource_lock(dsn, datasource_id, holder=holder)
+    try:
+        yield handle
+    finally:
+        release_datasource_lock(handle)

@@ -16,11 +16,14 @@ from datetime import datetime, timezone
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
+from contextlib import contextmanager
+
 from sqlalchemy import text
 
 from core.alarm import run_alarm_cycle
 from core.etl import import_fact, truncate_last_partition, delete_fact_from, \
                       clear_etl_history, set_highwatermark, EtlAborted
+from core.preflight import DatasourceLocked
 from core.schema import import_dimensions, refresh_dim_counts, \
                         create_future_partitions, vacuum_analyze_fact
 from core.source import Source, _get_cached_engine
@@ -101,6 +104,21 @@ class Command(BaseCommand):
                             metavar="N",
                             help="create N future range partitions (sized by datasource.partition_period) and exit")
 
+    @contextmanager
+    def _refuse_if_locked(self):
+        """Turn a lost race for the datasource into one sentence.
+
+        The destructive maintenance gestures take the same advisory lock the
+        load holds, so running one against a live ETL refuses instead of
+        deleting rows out from under it.
+        """
+        try:
+            yield
+        except DatasourceLocked as exc:
+            self.stderr.write(f"\n{exc}\n")
+            self.stderr.flush()
+            raise SystemExit(1)
+
     def handle(self, *args, **options):
         log = configure_etl_logging()
         log_path = os.environ.get("STARCUBES_ETL_LOG_PATH")
@@ -158,13 +176,15 @@ class Command(BaseCommand):
             return
 
         if options["truncate_last"]:
-            part = truncate_last_partition(source, source.dest_engine())
+            with self._refuse_if_locked():
+                part = truncate_last_partition(source, source.dest_engine())
             self.stdout.write(f"{source.name}: truncated partition {part}")
             return
 
         if options["delete_from"]:
             from_time = _parse_dt(options["delete_from"])
-            n = delete_fact_from(source, source.dest_engine(), from_time)
+            with self._refuse_if_locked():
+                n = delete_fact_from(source, source.dest_engine(), from_time)
             self.stdout.write(f"{source.name}: deleted {n} rows from {from_time}")
             return
 
@@ -298,6 +318,13 @@ class Command(BaseCommand):
                                        row_limit=options["limit"],
                                        backfill=options["backfill"],
                                        log_path=log_path)
+                except DatasourceLocked as exc:
+                    # Another starcubes process owns this datasource. No
+                    # etl_run row was written, and looping would only repeat
+                    # the refusal — say so once and stop.
+                    self.stderr.write(f"\n{exc}\n")
+                    self.stderr.flush()
+                    raise SystemExit(1)
                 except EtlAborted as exc:
                     # import_fact's finally already reaped the workers and
                     # wrote the etl_run row as 'failed'. Exit quietly —

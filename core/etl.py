@@ -35,7 +35,9 @@ from sqlalchemy.dialects.postgresql import JSONB
 from tqdm import tqdm
 
 from .cache import bump_cache_epoch
-from .preflight import blocking_message, relation_exists, run_preflight
+from .preflight import (acquire_datasource_lock, blocking_message,
+                        datasource_lock, relation_exists,
+                        release_datasource_lock, run_preflight)
 from .schema import (UNKNOWN_SOURCE_ID, ensure_partitions_for, import_dimensions,
                      read_dimensions, refresh_dim_counts)
 from .source import Source
@@ -822,6 +824,13 @@ def import_fact(source: Source, meta_engine, *,
     started = datetime.now(timezone.utc)
     parent_pid = os.getpid()
 
+    # One ETL per datasource, enforced for every entry point rather than
+    # only for the two the GUI knows about. Taken *before* the etl_run row
+    # is written: a refusal is not a run, and in forever mode a failed row
+    # per iteration would be noise nobody can read past. Released in the
+    # finally, after the terminal UPDATE.
+    lock_handle = acquire_datasource_lock(source.dest_dsn, source.id)
+
     # Record the run before any source DB operations so connection
     # failures are always captured in etl_run.
     with meta_engine.begin() as meta:
@@ -1486,6 +1495,8 @@ def import_fact(source: Source, meta_engine, *,
                     for (fact_col, value), (dim_table, total)
                     in unmapped_agg.items()])
 
+        release_datasource_lock(lock_handle)
+
     summary_level = logging.DEBUG if quiet else logging.INFO
     extra = f" ({duplicates} duplicates filtered)" if duplicates else ""
     # Reload the just-written rates so the CLI summary mirrors the
@@ -1538,17 +1549,19 @@ def truncate_last_partition(source: Source, dest_engine, *,
     """TRUNCATE the oldest fact partition.  Returns the partition name.
 
     Warns if only one partition exists (TRUNCATE would empty the
-    entire fact table).
+    entire fact table). Takes the datasource lock: removing rows under a
+    running load is exactly the hand-run gesture that corrupts data.
     """
     from .schema import list_fact_partitions
-    parts = list_fact_partitions(source, dest_engine)
-    if not parts:
-        raise RuntimeError(f"{source.schema_name}.fact has no partitions")
-    name = parts[0]
-    if len(parts) == 1 and not quiet:
-        logger.warning("%s is the only partition — TRUNCATE empties the entire fact table", name)
-    with dest_engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {source.schema_name}.{name}"))
+    with datasource_lock(source.dest_dsn, source.id, holder="maintenance"):
+        parts = list_fact_partitions(source, dest_engine)
+        if not parts:
+            raise RuntimeError(f"{source.schema_name}.fact has no partitions")
+        name = parts[0]
+        if len(parts) == 1 and not quiet:
+            logger.warning("%s is the only partition — TRUNCATE empties the entire fact table", name)
+        with dest_engine.begin() as conn:
+            conn.execute(text(f"TRUNCATE {source.schema_name}.{name}"))
     if not quiet:
         logger.info("%s: truncated partition %s", source.name, name)
     return name
@@ -1558,12 +1571,13 @@ def truncate_partition(source: Source, dest_engine, partition_name: str,
                        *, quiet: bool = False) -> None:
     """TRUNCATE a named fact partition. Validates it belongs to the schema."""
     schema = source.schema_name
-    with dest_engine.connect() as conn:
-        exists = relation_exists(conn, schema, partition_name)
-    if not exists:
-        raise RuntimeError(f"Partition {schema}.{partition_name} not found")
-    with dest_engine.begin() as conn:
-        conn.execute(text(f"TRUNCATE {schema}.{partition_name}"))
+    with datasource_lock(source.dest_dsn, source.id, holder="maintenance"):
+        with dest_engine.connect() as conn:
+            exists = relation_exists(conn, schema, partition_name)
+        if not exists:
+            raise RuntimeError(f"Partition {schema}.{partition_name} not found")
+        with dest_engine.begin() as conn:
+            conn.execute(text(f"TRUNCATE {schema}.{partition_name}"))
     if not quiet:
         logger.info("%s: truncated partition %s", source.name, partition_name)
 
@@ -1572,14 +1586,15 @@ def drop_partition(source: Source, dest_engine, partition_name: str,
                    *, quiet: bool = False) -> None:
     """DETACH and DROP a named fact partition."""
     schema = source.schema_name
-    with dest_engine.connect() as conn:
-        exists = relation_exists(conn, schema, partition_name)
-    if not exists:
-        raise RuntimeError(f"Partition {schema}.{partition_name} not found")
-    with dest_engine.begin() as conn:
-        conn.execute(text(
-            f"ALTER TABLE {schema}.fact DETACH PARTITION {schema}.{partition_name}"))
-        conn.execute(text(f"DROP TABLE {schema}.{partition_name}"))
+    with datasource_lock(source.dest_dsn, source.id, holder="maintenance"):
+        with dest_engine.connect() as conn:
+            exists = relation_exists(conn, schema, partition_name)
+        if not exists:
+            raise RuntimeError(f"Partition {schema}.{partition_name} not found")
+        with dest_engine.begin() as conn:
+            conn.execute(text(
+                f"ALTER TABLE {schema}.fact DETACH PARTITION {schema}.{partition_name}"))
+            conn.execute(text(f"DROP TABLE {schema}.{partition_name}"))
     if not quiet:
         logger.info("%s: dropped partition %s", source.name, partition_name)
 
@@ -1588,15 +1603,17 @@ def delete_fact_from(source: Source, dest_engine, from_time: datetime, *,
                      quiet: bool = False) -> int:
     """Delete all fact rows with ``partition_column >= from_time``.
 
-    Returns the number of rows deleted.
+    Returns the number of rows deleted. Refuses while an ETL holds the
+    datasource lock.
     """
     if from_time.tzinfo is None:
         from_time = from_time.replace(tzinfo=timezone.utc)
-    with dest_engine.begin() as conn:
-        n = conn.execute(text(
-            f"DELETE FROM {source.schema_name}.fact "
-            f" WHERE {source.partition_column} >= :from_time"
-        ), {"from_time": from_time}).rowcount
+    with datasource_lock(source.dest_dsn, source.id, holder="maintenance"):
+        with dest_engine.begin() as conn:
+            n = conn.execute(text(
+                f"DELETE FROM {source.schema_name}.fact "
+                f" WHERE {source.partition_column} >= :from_time"
+            ), {"from_time": from_time}).rowcount
     if not quiet:
         logger.info("%s: deleted %d rows from %s", source.name, n, from_time)
     return n
