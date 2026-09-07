@@ -177,9 +177,10 @@ export STARCUBES_SOURCE_DSN='oracle+oracledb://user:pw@oracle:1521/SID'
 
 The ETL is incremental. On first run it fills from the beginning; on every
 subsequent run it picks up from the last successful high watermark recorded
-in `starcubes_meta.etl_run`. Step 4 is one-shot — re-running it errors on the
-existing indices. Use `manage.py drop_indices --name source` if you ever need
-a clean re-bulk-load.
+in `starcubes_meta.etl_run`. Step 4 is idempotent — it probes `pg_constraint`
+for each foreign key and uses `CREATE INDEX IF NOT EXISTS`, so re-running it
+is safe and is how you check that nothing is missing. Use
+`manage.py drop_indices --name source` if you ever need a clean re-bulk-load.
 
 ### Login
 

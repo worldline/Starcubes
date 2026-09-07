@@ -46,6 +46,10 @@ branch — **`master` is the only long-lived branch.**
   `sources/management/commands/etl_run.py`.
 - **[`docs/etl-audit.md`](docs/etl-audit.md)** — read when editing
   `core/audit.py` or the Audit tab in `sources/templates/sources/manage.html`.
+- **[`docs/etl-automation.md`](docs/etl-automation.md)** — what has to be true
+  *around* a load: preconditions the engine guarantees itself vs. the ones that
+  still hang on an operator, and the evaluation of each. Read when planning
+  anything periodic, a preflight check, or a maintenance action.
 - **[`docs/star-schema.md`](docs/star-schema.md)** — domain vocabulary and the
   schema design decisions. Read when editing `core/schema.py`, `core/source.py`
   (dataclasses), or adding/removing dimensions or measures.

@@ -13,6 +13,11 @@ discussion captures.
 
 ## Open items
 
+Operational preconditions around a load — the ones that are still manual or
+unwatched — are collected and evaluated in
+[`etl-automation.md`](etl-automation.md) rather than listed one by one here.
+Three items below are cross-referenced from it.
+
 - **Multi-dialect WHERE construction.** `core/etl.py` emits Oracle
   `to_timestamp(..., 'YYYY-MM-DD HH24:MI:SS')` literals — fine for the
   example Oracle source, wrong for Postgres/MySQL. When a second non-Oracle
@@ -37,7 +42,9 @@ discussion captures.
 - **Late arrivals beyond the overlap are only found on demand.** The Audit
   tab has to be run by a human over a chosen window; nothing schedules it,
   and nothing alerts on a gap. A periodic audit of the trailing N hours
-  (with the result stored per run) would close that.
+  (with the result stored per run) would close that. See
+  [`etl-automation.md`](etl-automation.md) — the same document covers why a
+  *total* standstill is invisible to both the audit and the alarms (U9).
 - **Backfill re-scans the window even when the exact ids are known.**
   `audit_ids` names the missing rows, but `import_fact(backfill=True)` still
   re-extracts the whole window and drops what it already has. For a sparse
@@ -48,7 +55,9 @@ discussion captures.
   for Oracle.
 - **Source schema drift guard.** No pre-flight validation that upstream
   columns still match `source_expr` / `base_table` before the extract loop.
-  A dropped/renamed source column fails mid-run.
+  A dropped/renamed source column fails mid-run. A `WHERE 1=0` probe would
+  close it for one round trip — U5b in
+  [`etl-automation.md`](etl-automation.md).
 - **`datasource.schema_name` quoting — resolved by validation, not by
   quoting.** The name is still interpolated raw into ~70 `f"{schema}.fact"`
   sites across `core/` and `sources/`, while pandas' `to_sql` quotes it.
@@ -70,7 +79,10 @@ discussion captures.
   exist before the worker pool") — the manual `create_future_partitions`
   CLI flag / GUI button is now redundant for the common case. Old partitions
   are still not auto-dropped or archived; that stays manual
-  (`etl/drop-partition/`, `etl/truncate-partition/`).
+  (`etl/drop-partition/`, `etl/truncate-partition/`). Retirement is not just a
+  drop loop — the audit, the plot cache and long alarm windows all assume fact
+  covers everything since the beginning of time; see U3b in
+  [`etl-automation.md`](etl-automation.md).
 - **Authentication on JSON endpoints.** All `viz/` JSON endpoints
   (`plot_json`, `drill_json`, `txn_json`, `api_sources`, `api_source_meta`)
   are public. The chart's user-tunable settings (Y-axis mode, bar pixel
