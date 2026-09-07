@@ -7,10 +7,46 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
-What 2.1.x will contain is not decided; candidates live in
-[`docs/backlog.md`](docs/backlog.md), and nothing there is committed to a
-release until it is listed here. The road to a final 2.0.0 runs through
-further pre-release tags — see [`docs/releases.md`](docs/releases.md).
+Candidates live in [`docs/backlog.md`](docs/backlog.md), and nothing there is
+committed to a release until it is listed here. The road to a final 2.0.0
+runs through further pre-release tags — see
+[`docs/releases.md`](docs/releases.md).
+
+### Added
+
+- **Every ETL run checks its assumptions before acting on them.** A new
+  preflight runs at the start of each load: the fact and dimension tables
+  exist (and are created, loudly, if not), `starcubes_meta` is as new as the
+  code, the indices and foreign keys are in place, the source still projects
+  every configured column, and the stored high watermark has not been left
+  standing above a fact table that shrank underneath it. Findings land in the
+  run's `stats`, and a **Preflight** card in the ETL Commands tab asks the
+  same questions as a dry run without starting a load. Missing indices are
+  reported, never built — an unattended index build on a large fact table
+  would block every load for hours. A renamed source column now refuses the
+  run with the column named, instead of failing mid-extract.
+- **A datasource can only be loaded by one process at a time.** A hand-run
+  `manage.py etl_run` used to run happily alongside a live forever session,
+  which can duplicate rows and race the dimension tables. It refuses now, and
+  so do Delete From, Truncate Partition and Drop Partition while a load is
+  running.
+
+### Fixed
+
+- **Deleting fact rows no longer leaves the high watermark lying.** Delete
+  From rewinds the watermark to the delete boundary, so the window is
+  actually loaded again — previously the deleted rows were never requested
+  again, silently. Dropping or truncating a partition does the opposite, as
+  it should: the watermark stays put and the datasource records how far back
+  its data still goes, which the Audit tab now respects instead of reporting
+  a retired window as a total loss. Where the watermark and the partition key
+  are different columns, the reload is de-duplicated by primary key so the
+  repair cannot introduce duplicates. All four also invalidate the plot
+  cache, which they previously did only from the GUI.
+- **The alarm phase no longer scales with the number of alarms.** The fact
+  table's clock was read once per alarm; it is read once per load now.
+  Both alarm queries also carry a statement timeout, so a pathological filter
+  can no longer hold up the ETL loop indefinitely.
 
 ## [2.0.0-alpha.3] — 2026-09-07
 

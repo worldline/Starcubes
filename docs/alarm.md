@@ -119,7 +119,31 @@ calls `run_alarm_cycle(meta, dsn, datasource_id=source.id, source=source)`
 after every `import_fact`, inside its own `try/except` so an alarm problem
 can never colour the ETL's outcome. It runs after a caught ETL failure and
 under `--backfill` too — the HWM skip decides what actually gets evaluated,
-and the cost of a skipped evaluation is one `max()` per alarm.
+and the cost of a skipped evaluation is now one `max()` per *cycle*.
+
+Two things keep that cost from leaning on the ETL loop, both from U8 in
+[`etl-automation.md`](etl-automation.md):
+
+- **The fact clock is read once per datasource, not once per alarm.**
+  `run_alarm_cycle` already groups the alarms by datasource; `fact_max_time`
+  runs there and the value is passed into every `evaluate_alarm` on that
+  datasource. Twenty alarms used to mean twenty identical
+  `max(watermark_fact_sql)` scans per load, and with a derived watermark
+  expression there is neither a BRIN nor partition pruning behind that max.
+  `evaluate_alarm` still reads it itself when no caller passes one — hence
+  the `_UNSET` sentinel, since `None` already means "the fact table is
+  empty".
+- **Both fact-side queries carry a `statement_timeout`**
+  (`STARCUBES_ALARM_TIMEOUT_MS`, default 30 s), through the same
+  `SELECT set_config('statement_timeout', :ms, true)` form `core/audit.py`
+  uses. The chart's equivalent query — same SQL, same `_build_where` — has
+  had one all along. Unbounded here does not merely stall an answer: the
+  alarm phase is synchronous inside the forever loop, so it holds back the
+  next load, which stops the HWM, which starves the evaluation that would
+  have noticed.
+
+An alarm *phase* budget (U8 step 3) and a notification outbox (step 4) are
+still open; the outbox waits on the process decision in U7.
 
 There is deliberately **no forever loop**. A load is the only thing that
 moves the HWM, so it is the only moment an alarm's answer can have changed;

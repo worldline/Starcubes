@@ -42,6 +42,9 @@ silent version of a bug first.
 | `create_indices` re-runnable | ✅ Idempotent: FK existence is probed against `pg_constraint` (`core/schema.py:293`) and every index is `CREATE INDEX IF NOT EXISTS`. `docs/internals.md` claimed the opposite ("Step 4 is one-shot") until this document was written. |
 | A killed run lands as `failed` | ✅ `EtlAborted` / `EtlStageFailed`, see [`etl-engine.md`](etl-engine.md). |
 | Partition coverage for a backfill window | ✅ same `ensure_partitions_for` call, gap-filling backwards too. |
+| Schema objects, source projection, index coverage, metadata version checked before a load | ✅ `core/preflight.py`, called at the top of `import_fact`'s `try:` block. Report in `etl_run.stats.preflight`; dry run on a button (`etl/preflight/`). U2, U5b, U10, N16. |
+| Single occupancy per datasource | ✅ `preflight.datasource_lock` — a Postgres advisory lock on its own NullPool connection, held for the whole run and taken briefly by the four destructive maintenance gestures. N11. |
+| The watermark after a delete | ✅ `delete_fact_from` rewinds it and arms `datasource.dedupe_from`; the partition gestures write `datasource.retention_floor` instead. All four bump the cache epoch. U1, N15. |
 
 ## Evaluation
 
@@ -53,24 +56,24 @@ column plus GUI field).
 
 | # | Scenario | Today | Necessity | Effort | Where | What the fix costs you |
 |---|---|---|---|---|---|---|
-| U1 | HWM wrong after a delete | `delete_fact_from` (`core/etl.py:1572`), `truncate_partition` (`:1534`), `drop_partition` (`:1552`), `truncate_last_partition` (`:1513`) never touch `etl_run.last_end_time` | **critical** | M | delete path + preflight | a reload without dedupe duplicates rows (no unique index on `fact`); a retention delete would be undone immediately |
-| U2 | Schema objects missing | `create_fact`/`create_dim_tables` are idempotent but only called at creation time; a missing partition raises in `ensure_partitions_for` | medium | S | preflight | an ETL that runs DDL turns a typo in `schema_name` into a second empty schema instead of an error |
+| U1 | HWM wrong after a delete | ✅ **done** — the repair gesture rewinds (`rewind_highwatermark`) and arms `dedupe_from`; the disposal gestures write `retention_floor`, which `core/audit.py` clamps to. Preflight's `watermark_tip` catches what bypassed the GUI | **critical** | M | delete path + preflight | a reload without dedupe duplicates rows (no unique index on `fact`); a retention delete would be undone immediately |
+| U2 | Schema objects missing | ✅ **done** — `preflight._check_schema_objects` probes and calls the idempotent creators, WARNING per creation, recorded in `stats.preflight.repairs` | medium | S | preflight | an ETL that runs DDL turns a typo in `schema_name` into a second empty schema instead of an error |
 | U3 | Partitions created | ✅ solved | — | — | — | — |
 | U3b | Partitions retired | missing entirely (backlog: "Partition retirement") | medium | M | housekeeping | irreversible; the Audit tab reports retired windows as gaps; the plot cache serves frozen emptiness |
 | U4 | Dimensions populated | ✅ — arguably too eager: a full lookup scan against the source on *every* iteration | low (inverted) | S | config | throttling delays new dim values (absorbed by auto-dims and the `__unknown__` sentinel) |
 | U5a | Warehouse schema drift | `sync_schema` produces a dry-run diff (`core/schema.py:340`) but is only ever called by hand | high | M | preflight (diagnosis only) | its execute phase is `drop_indices` → ALTER → `create_indices` — hours on a billion rows. Applying automatically is **not** acceptable |
-| U5b | Source schema drift | unchecked (backlog); a renamed column fails mid-run | high | S | preflight | almost nothing: one `WHERE 1=0` round trip |
+| U5b | Source schema drift | ✅ **done** — `preflight._check_source_projection`, one `WHERE 1=0` round trip; a rejected query blocks, an unreachable source only warns | high | S | preflight | almost nothing: one `WHERE 1=0` round trip |
 | U6 | VACUUM / ANALYZE | manual only (`core/schema.py:900`); insert-only load barely triggers autovacuum, so **BRIN ranges stay unsummarised** and statistics go stale | high | S | housekeeping | ANALYZE on the partitioned parent samples across every partition — target the newest partition instead |
 | U7 | Wedged forever ETL | `progress_at` correctly stops advancing, but the stale sweep only runs **when somebody opens a GUI page** (`sources/views.py:842`, `:1261`); no timeout on the source connection | **critical** | M | preflight + a process decision | a watchdog inside the watched process is not a watchdog; a runtime cap must not shoot down a legitimate first load |
-| U8 | Alarm phase too slow | real: `fact_max_time` runs **per alarm**, not per datasource (`core/alarm.py:363`); no `statement_timeout`; notification is synchronous at up to 10s SMTP + 40s XMPP + 10s PagerDuty **per transition** | high | S → M | ETL hook | an outbox needs a deliverer — the same process problem as U7 |
+| U8 | Alarm phase too slow | steps 1+2 ✅ **done** — `fact_max` is read once per datasource in `run_alarm_cycle` and passed down; both fact-side queries carry `STARCUBES_ALARM_TIMEOUT_MS`. Steps 3 (phase budget) and 4 (outbox) still open, and step 4 waits on U7 | high | S → M | ETL hook | an outbox needs a deliverer — the same process problem as U7 |
 | U9 | Source reachable, data stopped | invisible: alarms cannot see it by construction (`docs/alarm.md`), the ETL logs `rows=0` and carries on | **critical** | M | pipeline alarm | false alarms during legitimate quiet periods; time-of-day profiles are a bottomless pit |
-| U10 | Indices never created | nothing checks; the target list is right there in `source.indices` | medium-high | S | preflight (report only) | building them automatically is out: no `CONCURRENTLY` anywhere in the repo, ACCESS EXCLUSIVE, blocks COPY for hours |
-| N11 | Two ETL processes at once | a CLI single run has **no** interlock; only the GUI (409) and forever mode (`ux_etl_forever_active`) are protected. Auto-dim resolution assumes single occupancy | high | S | preflight | an advisory lock is session-scoped — it needs a connection held for the whole run; backfill needs an explicit rule |
+| U10 | Indices never created | ✅ **done** — `preflight._check_indices` diffs `pg_index`/`pg_constraint` against what `create_indices` would build; time-aware (`STARCUBES_INDEX_WARN_ROWS`/`_HOURS`), report only | medium-high | S | preflight (report only) | building them automatically is out: no `CONCURRENTLY` anywhere in the repo, ACCESS EXCLUSIVE, blocks COPY for hours |
+| N11 | Two ETL processes at once | ✅ **done** — `pg_try_advisory_lock` on a dedicated NullPool connection, held for the run, taken briefly by the destructive maintenance gestures. Backfill serialises on the same key | high | S | preflight | an advisory lock is session-scoped — it needs a connection held for the whole run; backfill needs an explicit rule |
 | N12 | Source clock skew | the clamp and its warning exist; the measured skew is computed per run but never stored | medium | S | falls out of U9 | none worth naming |
 | N13 | A dimension fills up | `smallserial`, hard stop at 32767; a mis-configured auto-dim explodes mid-run | medium | S | housekeeping | none |
 | N14 | Disk growth | unobserved; unlogged, no retention | medium | S | housekeeping | none |
-| N15 | Cache after a retroactive change | backfill calls `bump_cache_epoch` (`core/etl.py:1504`); an HWM rewind (U1) and a retention drop (U3b) must too | medium | S | same functions | easy to forget — which is the reason to write it down |
-| N16 | Migrations not applied | `bootstrap` only runs at container start | low | S | preflight | none |
+| N15 | Cache after a retroactive change | ✅ **done** for the four delete paths — all bump the epoch now; U3b's retention loop must remember to as well | medium | S | same functions | easy to forget — which is the reason to write it down |
+| N16 | Migrations not applied | ✅ **done** — `preflight._check_meta_migrations` probes `information_schema` for the newest expected columns and blocks with `run manage.py bootstrap` | low | S | preflight | none |
 | N17 | Unbounded first load | an empty fact table makes `_resume_state` ignore the HWM and load "from the beginning" — potentially days, blocking the forever loop | medium | M | config | chunking changes the window semantics the audit and the cache assume |
 
 ## Three principles the rest of this document follows
@@ -109,7 +112,16 @@ deliberately out.
 
 ## U1 — The high watermark after a delete
 
-**Today.** Four operations remove fact rows, and not one of them tells the
+**Built.** `delete_fact_from` rewinds via `rewind_highwatermark` and arms
+`datasource.dedupe_from`; the three partition gestures write
+`datasource.retention_floor`; all four bump the cache epoch;
+`core/audit.py` clamps to the floor; `preflight._check_watermark_tip`
+reports a fact tip that fell away under the watermark. The floor only moves
+when the *oldest* partition goes — a hole in the middle cannot be expressed
+as a lower bound, and that case warns instead of lying. What remains of this
+entry is the reasoning; read it before touching any of the four.
+
+**Before.** Four operations remove fact rows, and not one of them tells the
 watermark:
 
 | Operation | Effect | HWM |
@@ -172,7 +184,10 @@ gesture a retention floor.
 
 ## U2 — Schema objects missing
 
-**Today.** `create_fact` and `create_dim_tables` are fully idempotent
+**Built.** `preflight._check_schema_objects`, with `repair=True` on the load
+path and `repair=False` behind the GUI button.
+
+**Before.** `create_fact` and `create_dim_tables` are fully idempotent
 (`CREATE … IF NOT EXISTS` throughout) but are only invoked when a datasource
 is created or edited. `import_fact` assumes they ran. The nearest thing to a
 check is `ensure_partitions_for`, which raises `"{schema}.fact has no
@@ -264,7 +279,11 @@ does not touch indices; until then, preflight reports and stops.
 
 ### U5b — Source side
 
-**Today.** Nothing validates that the upstream columns behind `source_expr` /
+**Built.** `preflight._check_source_projection`. One subtlety the plan did
+not anticipate: a rejected query and an unreachable source raise the same
+exception, and they need opposite answers — see the building-blocks section.
+
+**Before.** Nothing validates that the upstream columns behind `source_expr` /
 `base_table` still exist. A renamed column fails in the middle of the extract
 loop, after the run row is written and the workers are up. This is an open
 backlog item.
@@ -379,7 +398,13 @@ and let operators set it from observed run durations — the same discipline
 
 ## U8 — Can the alarm phase delay the ETL? Yes.
 
-**Today.** `run_alarm_cycle` runs synchronously after every `import_fact`
+**Built: steps 1 and 2.** `fact_max` is read once per datasource in
+`run_alarm_cycle` and handed to every alarm on it; both fact-side queries
+carry `STARCUBES_ALARM_TIMEOUT_MS` (default 30 s) through the same
+`set_config` form `core/audit.py` uses. Steps 3 and 4 are untouched, and
+step 4 still waits on the U7 process decision.
+
+**Before.** `run_alarm_cycle` runs synchronously after every `import_fact`
 (`sources/management/commands/etl_run.py:323`), inside its own try/except so
 it cannot colour the run's outcome. Three measurable costs:
 
@@ -459,7 +484,13 @@ has a problem, tell somebody" — which is what the next section is for.
 
 ## U10 — Indices never created
 
-**Today.** The first load deliberately runs without indices (fastest COPY),
+**Built.** `preflight._check_indices`. The time-awareness earned its keep
+immediately: the first real datasource it ran against had 3.9M rows loaded
+over 100 days with no indices and no foreign keys, and a ten-million-row
+threshold said nothing. It is a million now
+(`STARCUBES_INDEX_WARN_ROWS`/`STARCUBES_INDEX_WARN_HOURS`).
+
+**Before.** The first load deliberately runs without indices (fastest COPY),
 and the operator is supposed to run `create_indices` afterwards. Nothing
 checks that they did. The symptom is not an error: charts are slow, the audit
 is slow, and because it was always like that, nobody connects it to a
@@ -487,7 +518,13 @@ U7.
 
 ## N11 — Two ETL processes on one datasource
 
-**Today.** Forever mode is protected by `ux_etl_forever_active` (one active
+**Built.** `preflight.datasource_lock` / `acquire_datasource_lock`. The
+connection discipline in the "what it costs you" note below is the whole
+implementation: a dedicated `NullPool` connection, committed straight after
+acquisition so a session lock does not also pin a snapshot for the length of
+a run.
+
+**Before.** Forever mode is protected by `ux_etl_forever_active` (one active
 session per datasource) and the GUI refuses a second run with a 409
 (`_etl_busy_response`). A plain `manage.py etl_run --name x` from a shell has
 **no interlock at all** and will happily run alongside a live forever session.
@@ -547,6 +584,9 @@ either one finds it.
 
 ## N16 — Migrations not applied
 
+**Built.** `preflight._check_meta_migrations`, probing
+`information_schema.columns` for the newest expected columns.
+
 `ensure_starcubes_meta` is idempotent and runs from `bootstrap` at container
 start. A code update without a restart, or a deployment that skips bootstrap,
 leaves the metadata schema behind the code — surfacing as an
@@ -571,21 +611,47 @@ with those two in mind, not as part of the preflight work.
 
 ## The three building blocks
 
-### `core/preflight.py`
+### `core/preflight.py` — built
 
 Django-free (like everything in `core/`), returning a structured report rather
 than raising: one entry per check with `ok` / `warn` / `block`, a message, and
-a machine-readable code. Called from `import_fact` before
-`ensure_partitions_for`; a `block` aborts the run before the worker pool
-starts, exactly where the existing overlap guards abort.
+a machine-readable code. Called at the top of `import_fact`'s `try:` block —
+before `import_dimensions`, which already assumes the dim tables exist, and
+therefore well before `ensure_partitions_for`. The `etl_run` row is written
+by then, so a `block` lands as `status='failed'` with the reason in `error`
+through the same `except`/`finally` as any other startup failure.
 
-Checks, in cost order: schema objects (U2), migration probe (N16), advisory
-lock (N11), index/FK coverage (U10), warehouse drift dry-run (U5a), source
-projection probe (U5b), watermark-vs-fact-tip sanity (U1), data staleness
-(U9). Every one is a catalogue query or a single round trip.
+Five checks today, in cost order: schema objects (U2), migration probe (N16),
+index/FK coverage (U10), source projection probe (U5b),
+watermark-vs-fact-tip (U1's detection half). Every one is a catalogue query
+or a single round trip. Still to come: warehouse drift dry-run (U5a) and data
+staleness (U9).
+
+Two design points that turned out to matter in practice:
+
+- **`repair` is a parameter, not a policy.** The load runs with
+  `repair=True`, so a missing fact or dim table is created by the existing
+  idempotent creators, logged at WARNING and recorded in
+  `stats.preflight.repairs`. The GUI button runs with `repair=False`, which
+  reports the same finding as a block and touches nothing.
+- **The source probe has to separate two failures.** A source that cannot be
+  reached only warns — the extract reports that better a moment later. A
+  source that *rejects* the import query blocks, because that is the drift
+  the check exists for. Both raise the same way, so the connection is opened
+  first and the query executed inside it. Getting this wrong made the first
+  version warn about a renamed column and then die mid-extract anyway, which
+  is precisely the failure it was written to prevent.
+
+The advisory lock (N11) also lives in this module — `datasource_lock` — but
+it is not a check: it is a context manager over a dedicated `NullPool`
+connection, because a session-scoped lock on a pooled connection is silently
+worthless (fork-safety invalidation, `pool_recycle`, `pool_pre_ping`
+reconnects). `import_fact` takes it before writing the run row; the
+destructive maintenance gestures take it briefly.
 
 The report goes into `etl_run.stats` — already `jsonb`, already surfaced by
-the GUI — so no new table is needed to display it.
+the GUI — so no new table is needed to display it. `POST
+.../etl/preflight/` runs the same function as a dry run.
 
 ### `manage.py etl_housekeeping`
 
@@ -614,20 +680,27 @@ this turns the signal into a message.
 
 ## Recommended order
 
-1. **Free wins, no new concepts** — U8 step 1 (`fact_max` once per
-   datasource), U8 step 2 (`statement_timeout`), U5b (source projection
-   probe), U10 (index detection), U2 (schema preflight), N16. Together this is
-   `core/preflight.py` plus a two-line change in `core/alarm.py`.
-2. **N11** (advisory lock) — small, and it removes a way to corrupt data by
-   hand.
-3. **U1** (HWM rewind + retention floor) — the highest-necessity item, but it
-   needs the dedupe-arming decision made first, so it follows the groundwork.
+Steps 1–3 are done; what follows keeps the original numbering so the
+reasoning behind the sequence stays readable.
+
+1. ~~**Free wins, no new concepts**~~ — ✅ `core/preflight.py` (U2, U5b, U10,
+   N16) plus U8 steps 1 and 2 in `core/alarm.py`.
+2. ~~**N11** (advisory lock)~~ — ✅ and it did remove a way to corrupt data by
+   hand: the maintenance gestures refuse under a running load now.
+3. ~~**U1** (HWM rewind + retention floor)~~ — ✅ the dedupe-arming decision it
+   was waiting on came out as `datasource.dedupe_from`: the rewind arms the
+   existing `_overlap_pks` filter for the span it reloads, and the run that
+   honours it clears the flag.
 4. **U6 + N13 + N14** — the housekeeping command, small and self-contained.
+   Next.
 5. **U9 + N12** (`max_wm`/`src_now` columns + threshold) and **U7 half one**
    (statement timeout, runtime cap).
 6. **Pipeline alarms**, and with them the process decision from U7.
 7. **U3b** (retention) and **N17** (first-load chunking) last — both change
-   assumptions other subsystems hold.
+   assumptions other subsystems hold. U3b is now the *only* thing standing
+   between `retention_floor` and an actual retention policy: the floor, the
+   audit clamp and the cache bump all exist, the drop loop and the
+   `retention_periods` column do not.
 
 ## Deliberately not
 

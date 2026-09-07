@@ -214,6 +214,13 @@ crashed/orphaned sessions are revived.
 - `POST .../etl/truncate-partition/` — truncate a named partition
 - `POST .../etl/drop-partition/` — drop a named partition
 - `POST .../etl/vacuum-analyze/` — VACUUM ANALYZE fact table
+- `POST .../etl/preflight/` — run the pre-load checks without loading
+  anything. Returns `{report: {checks: [{code, level, message, detail}],
+  repairs, blocked, ran_at}}`, the same structure every run writes into
+  `etl_run.stats.preflight`. A **dry run**: `repair=False`, so a missing
+  fact or dim table is reported rather than created — self-repair belongs to
+  the load, where the creation lands on the run row. See
+  [`etl-automation.md`](etl-automation.md)
 - `POST .../etl/set-highwatermark/` — set HWM from max fact timestamp
 - `POST .../etl/clear-history/` — delete `etl_run` rows for datasource
 - `POST .../etl/create-partitions/` — create N future partitions

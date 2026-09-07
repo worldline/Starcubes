@@ -53,10 +53,12 @@ Three items below are cross-referenced from it.
   spawned subprocess — a CLI argument will not hold it, so it needs a temp
   file or a `starcubes_meta` staging row — plus chunking the IN-list at 1000
   for Oracle.
-- **Source schema drift guard.** No pre-flight validation that upstream
-  columns still match `source_expr` / `base_table` before the extract loop.
-  A dropped/renamed source column fails mid-run. A `WHERE 1=0` probe would
-  close it for one round trip — U5b in
+- **Source schema drift guard** — closed by `core/preflight.py`. The
+  `WHERE 1=0` probe runs before the worker pool starts and blocks the run
+  with the offending column named, instead of failing mid-extract. What is
+  worth remembering from it: a rejected query and an unreachable source
+  raise identically and need opposite answers (block vs. warn), so the
+  connection is opened before the query is executed. U5b in
   [`etl-automation.md`](etl-automation.md).
 - **`datasource.schema_name` quoting — resolved by validation, not by
   quoting.** The name is still interpolated raw into ~70 `f"{schema}.fact"`
@@ -73,7 +75,17 @@ Three items below are cross-referenced from it.
   editable. Remaining gap: nothing repairs a datasource already holding a
   folded name — its metadata and disk still disagree until someone edits the
   field to the folded spelling.
-- **Partition retirement.** `import_fact` now ensures partitions forward of
+- **Partition retirement** — half-closed. `datasource.retention_floor` now
+  exists and is written by `drop_partition` / `truncate_partition` /
+  `truncate_last_partition`, `core/audit.py` clamps its windows to it, and
+  the gestures bump the cache epoch. What is still missing is the policy
+  side: a `retention_periods` column and a loop that applies it (that is U3b,
+  and it belongs in the housekeeping command). Note the floor's honest limit
+  — it only advances when the *oldest* partition goes, because a hole in the
+  middle cannot be expressed as a lower bound. Long alarm windows still know
+  nothing about the floor.
+
+  `import_fact` also ensures partitions forward of
   the load window exist on every run (`core/schema.py:ensure_partitions_for`,
   see [`docs/etl-engine.md`](etl-engine.md) "Importing ensures partitions
   exist before the worker pool") — the manual `create_future_partitions`

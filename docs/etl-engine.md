@@ -57,6 +57,65 @@ production incidents.
   `max_overflow=10`, `pool_pre_ping=True`, `pool_recycle=1800`,
   `pool_timeout=30`.
 
+## Before the load — preflight and the datasource lock
+
+- **`import_fact` checks its assumptions before acting on them.** The first
+  thing inside the `try:` block is `core/preflight.py:run_preflight` — schema
+  objects, metadata version, index/FK coverage, the source projection, and
+  the stored watermark against the newest fact row. It runs *before*
+  `import_dimensions`, which already assumes the dim tables exist, and
+  therefore well before `ensure_partitions_for`. The `etl_run` row is already
+  written at that point, so a blocking finding lands as `status='failed'`
+  with the reason in `error` through the existing `except`/`finally` — no new
+  failure path. The whole report is merged into `etl_run.stats` under
+  `preflight`, including for a run that never started a worker.
+  `docs/etl-automation.md` has the per-check reasoning and the rule the
+  module follows: **detect and block; repair only what is idempotent and
+  finishes in milliseconds.** Missing tables are created (loudly), missing
+  indices never are.
+
+- **One process at a time owns a datasource, and the lock needs its own
+  connection.** `acquire_datasource_lock` takes `pg_try_advisory_lock` keyed
+  on the datasource id, before the `etl_run` INSERT, and releases it in the
+  `finally` after the terminal UPDATE. A refusal raises `DatasourceLocked`
+  and writes **no** run row — a refusal is not a run, and in forever mode a
+  failed row per iteration would bury the history.
+
+  The connection is the point. Nothing else in `import_fact` holds one across
+  the run: every touch is a short `engine.begin()` and the extract loop
+  disposes the source pool outright. A session-scoped lock taken on a pooled
+  connection would be silently worthless — `_install_fork_safety` invalidates
+  records across pids, `pool_recycle=1800` drops the session after thirty
+  minutes, and a `pool_pre_ping` reconnect would carry on lockless without a
+  word. So the lock opens a dedicated `NullPool` connection and keeps exactly
+  that one, committing straight after acquisition (a session lock survives
+  the commit; an open transaction would pin the snapshot for hours).
+
+  Backfill serialises on the same key rather than getting its own — both
+  paths write the same dim tables, and auto-dim resolution assumes single
+  occupancy. `delete_fact_from`, `truncate_partition`, `drop_partition` and
+  `truncate_last_partition` take the same lock briefly, which is what closes
+  the hole `_etl_busy_response` never covered: no maintenance view has ever
+  called it.
+
+- **A delete now tells the watermark, and which thing it tells depends on
+  what kind of delete it was.** `delete_fact_from` is a *repair*: it rewinds
+  the high watermark to the delete boundary by inserting a new `etl_run` row
+  (never updating an old one — `_resume_state` orders by `finished_at DESC`,
+  so a fresh row wins even carrying a lower `last_end_time`). The partition
+  gestures are *disposal*: they leave the watermark alone and raise
+  `datasource.retention_floor`, which `core/audit.py` clamps its windows to.
+  A rewind below the floor is refused. All four bump the cache epoch.
+
+  A rewind reloads a window and there is no unique index on `fact`. While
+  `partition_column` and `watermark_fact_sql()` are the same column that is
+  harmless — the delete removed exactly what comes back. When they differ,
+  `datasource.dedupe_from` arms `_overlap_pks` for the reloaded span even
+  with `late_arrival_overlap_s` at 0, and the run that honours it clears the
+  flag. `import_fact` reads that column fresh from the metadata rather than
+  off the `Source`, because a forever session loads its `Source` once, before
+  the loop.
+
 ## Window bound — the late-arrival defence
 
 The load window's lower *and* upper bound are non-trivial. The two
