@@ -150,6 +150,12 @@
         <input class="form-control mono" name="watermark_fact_expr" value="{{ ds.watermark_fact_expr|default:'' }}">
         <div class="form-hint">Fact-side SQL reproducing the watermark column, used to find already-loaded rows in the overlap window and by the Audit tab. Leave blank to use the partition column. Example: <code>create_time + total * interval &#39;1 millisecond&#39;</code></div>
       </div>
+      <div class="form-group">
+        <label class="form-label">PagerDuty Routing Key</label>
+        <input class="form-control mono" type="password" name="pagerduty_routing_key"
+               value="{{ ds.pagerduty_routing_key|default:'' }}" autocomplete="off">
+        <div class="form-hint">PagerDuty Events API v2 integration token (routing key) of the PagerDuty service that carries this source's alarms — one service per source, every alarm on it triggers into the same key. Leave empty to keep PagerDuty disabled for this source. Alarms must still select the pagerduty channel. <strong>Credential</strong> — treat logs and profiles accordingly; it is never exported in a profile.</div>
+      </div>
     </div>
   </div>
 

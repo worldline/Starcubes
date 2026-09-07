@@ -233,6 +233,43 @@ anything that is not in the user directory.
   breakage; what it did break was uwsgi's PCRE/routing support and
   `django/test/` (see "Build / dependencies").
 
+## Alarm notification transports
+
+Global transport configuration, same `STARCUBES_*` env-var pattern as OIDC
+(presence-as-switch, an empty variable means "not configured" and the
+transport is off). Semantics in [`docs/alarm.md`](alarm.md).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `STARCUBES_SMTP_HOST` | `""` | SMTP relay; with `…_FROM` set, the e-mail transport is on |
+| `STARCUBES_SMTP_PORT` | `25` | |
+| `STARCUBES_SMTP_USER` / `STARCUBES_SMTP_PASSWORD` | `""` | both set → `AUTH LOGIN` after STARTTLS |
+| `STARCUBES_SMTP_FROM` | `""` | envelope From and the `From:` header; required for e-mail to be on |
+| `STARCUBES_SMTP_TLS` | `starttls` | `starttls` \| `ssl` (implicit TLS, port 465) \| `none` |
+| `STARCUBES_SMTP_SUBJECT_PREFIX` | `[starcubes]` | subject prefix; set it empty to remove |
+| `STARCUBES_XMPP_JID` | `""` | bot account's JID; with `…_PASSWORD` set, the XMPP transport is on |
+| `STARCUBES_XMPP_PASSWORD` | `""` | |
+| `STARCUBES_XMPP_HOST` / `STARCUBES_XMPP_PORT` | `""` / `5222` | host override (skips SRV lookup of the JID domain); port only with host |
+| `STARCUBES_PAGERDUTY_EVENTS_URL` | `https://events.pagerduty.com/v2/enqueue` | point at the sandbox for a dry run |
+| `STARCUBES_PAGERDUTY_SEVERITY` | `critical` | fixed severity of trigger events |
+
+PagerDuty has **no global on/off**: it is enabled per datasource by its
+`pagerduty_routing_key` (the Events API v2 integration token, maintained on
+the source edit page — a credential, so it is a password-type field and is
+never exported in a profile).
+
+Worked examples:
+
+```
+# Internal relay, no auth, STARTTLS on the plain submission port:
+STARCUBES_SMTP_HOST=relay.internal.example  STARCUBES_SMTP_FROM=starcubes@internal.example
+
+# Google-style submission: implicit TLS on 465 with login:
+STARCUBES_SMTP_HOST=smtp.gmail.com STARCUBES_SMTP_PORT=465 STARCUBES_SMTP_TLS=ssl \
+STARCUBES_SMTP_USER=bot@example.com STARCUBES_SMTP_PASSWORD=… \
+STARCUBES_SMTP_FROM=bot@example.com
+```
+
 ## Build / dependencies
 
 - **Always build the container image via `docker/build.sh`, never

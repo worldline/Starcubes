@@ -23,6 +23,7 @@ from django.core.management.base import BaseCommand
 
 from core.alarm import run_alarm_cycle
 from core.source import _get_cached_engine
+from sources.alarm_notify import dispatch_transitions
 from sources.etl_logging import configure_etl_logging
 
 
@@ -58,3 +59,16 @@ class Command(BaseCommand):
             f"/~{counts['episodes_extended']}"
             f"/closed {counts['episodes_closed']} "
             f"errors={counts['errors']}")
+
+        # Transports run on the Django side, next to the evaluator's own
+        # try/except: a notification failure neither re-runs an evaluation
+        # nor stops the command with a non-zero exit.
+        if counts.get("transitions"):
+            try:
+                nc = dispatch_transitions(counts["transitions"], meta)
+                self.stdout.write(
+                    f"notify: email={nc['email']} xmpp={nc['xmpp']} "
+                    f"pagerduty={nc['pagerduty']} log={nc['log']} "
+                    f"errors={nc['errors']}")
+            except Exception:
+                log.exception("alarm notification failed, continuing")

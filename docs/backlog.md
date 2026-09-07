@@ -90,13 +90,15 @@ discussion captures.
   *including the cancel requests that would clear them*. The 30 s
   `statement_timeout` bounds it; raising `threads` or a per-user guard would
   bound it better.
-- **Alarm notification transports.** The alarm evaluator is wired
-  (`core/alarm.py`, `alarm_run --forever`, episodes in
-  `starcubes_meta.alarm_firing` — see `docs/alarm.md`), but the only
-  `notify_channel` with plumbing is `log` (the episode row plus the loop's
-  log file). `email`, `slack`, `pagerduty` remain vocabulary without a
-  transport. Known accepted trade-off: rows arriving late into an
-  already-evaluated window are never re-evaluated (see `docs/alarm.md`).
+- **Alarm notification transports** — closed by migration 0030:
+  `email` (stdlib smtplib), `xmpp` (slixmpp bot account) and `pagerduty`
+  (Events API v2, per-datasource routing key) are real transports now;
+  dispatch lives in `sources/alarm_notify.py` — see `docs/alarm.md`.
+  Remaining gaps: `slack` still has no transport, and recipients are the
+  login users only (no external/distribution-list addresses — accepted
+  limitation). Known accepted trade-off on the evaluation side unchanged:
+  rows arriving late into an already-evaluated window are never
+  re-evaluated (see `docs/alarm.md`).
 - **Source-side timezone awareness.** The pipeline treats every naive source
   timestamp as UTC — `parse_dates={pc: {"utc": True}}` in the extract,
   `_as_utc` in `core/audit.py`, `_parse_dt` in `core/utils.py`, and a dozen

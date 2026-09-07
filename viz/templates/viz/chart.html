@@ -1534,6 +1534,7 @@ function sourceDetailUrl(id) { return SOURCE_DETAIL_URL.replace('987654321', Str
 // as silently.
 const ALARM_ADD_URL   = "{% url 'sources:alarm_add' 987654321 %}";
 const ALARM_MATCH_URL = "{% url 'sources:alarm_match_context' 987654321 %}";
+const RECIPIENTS_URL  = "{% url 'sources:recipients_list' %}";
 function alarmAddUrl(id)   { return ALARM_ADD_URL.replace('987654321', String(id)); }
 function alarmMatchUrl(id) { return ALARM_MATCH_URL.replace('987654321', String(id)); }
 
@@ -4135,17 +4136,79 @@ function openAlarmView() {
     '<div class="drill-alarm-row"><div class="drill-alarm-label">Window</div>' +
     `<select class="drill-alarm-select" id="drill-alarm-window">${optsHtml(wopts, intervalS)}</select></div>` +
     '<div class="drill-alarm-row"><div class="drill-alarm-label">Notify via</div>' +
-    '<select class="drill-alarm-select"><option value="log">log (episode table)</option></select></div>' +
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12px">' +
+      '<label><input type="checkbox" class="drill-alarm-channel" value="email"> email</label>' +
+      '<label><input type="checkbox" class="drill-alarm-channel" value="xmpp"> xmpp</label>' +
+      '<label><input type="checkbox" class="drill-alarm-channel" value="pagerduty"> pagerduty</label>' +
+      '<label><input type="checkbox" class="drill-alarm-channel" value="log" checked> log</label>' +
+    '</div></div>' +
+    '<div class="drill-alarm-row" id="drill-alarm-email-row" style="display:none"><div class="drill-alarm-label">E-mail recipients</div>' +
+    '<select id="drill-alarm-email-recipients" multiple size="4" style="width:100%" disabled></select></div>' +
+    '<div class="drill-alarm-row" id="drill-alarm-xmpp-row" style="display:none"><div class="drill-alarm-label">XMPP recipients</div>' +
+    '<select id="drill-alarm-xmpp-recipients" multiple size="4" style="width:100%" disabled></select></div>' +
     '<div id="drill-alarm-dup"></div>' +
     '<div class="drill-alarm-status" id="drill-alarm-status"></div>' +
     `<button class="drill-alarm-save" type="button"${blocked ? ' disabled' : ''}>Save Alert</button>` +
     '</div>';
   positionDrillModal();
 
+  // Channel checkboxes toggle the two recipient rows; the selects are
+  // populated from the address book (login users) on first open.
+  document.querySelectorAll('.drill-alarm-channel').forEach(cb => {
+    cb.addEventListener('change', updateDrillRecipientRows);
+  });
+  populateDrillRecipients();
+
   // The duplicate hint depends on the metric, so it follows the dropdown.
   const mEl = document.getElementById('drill-alarm-measure');
   if (mEl) mEl.addEventListener('change', checkAlarmDuplicates);
   checkAlarmDuplicates();
+}
+
+// Toggles the two recipient multi-select rows with the channel checkboxes
+// (a disabled select contributes nothing to FormData either way).
+function updateDrillRecipientRows() {
+  const ch = [...document.querySelectorAll('.drill-alarm-channel')]
+    .filter(cb => cb.checked).map(cb => cb.value);
+  [['email', 'drill-alarm-email-recipients', 'drill-alarm-email-row'],
+   ['xmpp', 'drill-alarm-xmpp-recipients', 'drill-alarm-xmpp-row']].forEach(([c, selId, rowId]) => {
+    const off = ch.indexOf(c) === -1;
+    const sel = document.getElementById(selId);
+    const row = document.getElementById(rowId);
+    if (sel) sel.disabled = off;
+    if (row) row.style.display = off ? 'none' : '';
+  });
+}
+
+// Populates the two drill-down recipient selects from the recipients
+// endpoint, once per modal open (cheap enough, always fresh).
+async function populateDrillRecipients() {
+  try {
+    const r = await fetch(RECIPIENTS_URL, {
+      method: 'POST',
+      headers: { 'X-CSRFToken': chartCsrfToken() },
+    });
+    const d = await r.json().catch(() => null);
+    if (!d || !d.ok || !d.users) return;
+    const label = (u, c) => {
+      const a = c === 'email' ? u.email : u.xmpp_jid;
+      return u.username + (a ? ` (${a})` : ` (no ${c === 'email' ? 'e-mail' : 'XMPP JID'})`);
+    };
+    [['email', 'drill-alarm-email-recipients'],
+     ['xmpp', 'drill-alarm-xmpp-recipients']].forEach(([c, selId]) => {
+      const sel = document.getElementById(selId);
+      if (!sel) return;
+      sel.innerHTML = '';
+      d.users.forEach(u => {
+        const opt = document.createElement('option');
+        opt.value = u.id;
+        opt.textContent = label(u, c);
+        sel.appendChild(opt);
+      });
+    });
+  } catch (err) {
+    /* advisory — a failed address book must not block saving a log alarm */
+  }
 }
 
 // Advisory only: two alarms over one slice are legitimate (a warning
@@ -4198,7 +4261,16 @@ async function saveAlarmForm(btn) {
   fd.set('cond_op', document.getElementById('drill-alarm-cond').value);
   fd.set('threshold', document.getElementById('drill-alarm-threshold').value || 0);
   fd.set('window_s', document.getElementById('drill-alarm-window').value);
-  fd.set('notify_channels', 'log');
+  // Channels from the checkboxes; the two recipient arrays follow their
+  // channel — the server refuses a channel without recipients at save time.
+  document.querySelectorAll('.drill-alarm-channel:checked').forEach(cb =>
+    fd.append('notify_channels', cb.value));
+  const emailSel = document.getElementById('drill-alarm-email-recipients');
+  const xmppSel = document.getElementById('drill-alarm-xmpp-recipients');
+  if (emailSel && !emailSel.disabled)
+    [...emailSel.selectedOptions].forEach(o => fd.append('notify_email_recipients', o.value));
+  if (xmppSel && !xmppSel.disabled)
+    [...xmppSel.selectedOptions].forEach(o => fd.append('notify_xmpp_recipients', o.value));
   fd.set('context', JSON.stringify(alarmContextRows()));
   btn.disabled = true;
   setStatus('saving…');

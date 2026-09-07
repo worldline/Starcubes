@@ -12,6 +12,10 @@ urlpatterns = [
     # collision with the <int:pk>/alarms/ routes, whose int converter only
     # matches digits.
     path("alarms/firings/",                            views.alarm_firings_page, name="alarm_firings"),
+    # The alarm-notification address book (every login user with the two
+    # addresses the alarm forms select from). Literal path, like
+    # alarms/firings/, so it cannot collide with the <int:pk>/ routes.
+    path("recipients/",                                views.recipients_list,   name="recipients_list"),
     # Profiles admin page — must precede the <str:slug> routes so the
     # "profiles" literal does not collide with the slug converter.
     path("profiles/",                                  views.profiles_page,     name="profiles"),

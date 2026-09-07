@@ -26,6 +26,7 @@ from core.schema import import_dimensions, refresh_dim_counts, \
 from core.source import Source, _get_cached_engine
 from core.utils import _parse_dt, _pid_alive
 from sources.etl_logging import configure_etl_logging
+from sources.alarm_notify import dispatch_transitions
 
 
 _stopping = False
@@ -327,6 +328,19 @@ class Command(BaseCommand):
                                   source.name)
                     alarm_counts = None
 
+                # The evaluator only announces; the transports live on the
+                # Django side (sources/alarm_notify.py). Own try/except: a
+                # notification failure must neither colour the ETL's exit
+                # status nor mask the evaluation failure above.
+                notify_counts = None
+                if alarm_counts and alarm_counts.get("transitions"):
+                    try:
+                        notify_counts = dispatch_transitions(
+                            alarm_counts["transitions"], meta)
+                    except Exception:
+                        log.exception("%s: alarm notification failed, "
+                                      "continuing", source.name)
+
                 iteration += 1
 
                 # Window overrides only apply to the first iteration.
@@ -354,6 +368,12 @@ class Command(BaseCommand):
                         f"/~{ac['episodes_extended']}"
                         f"/closed {ac['episodes_closed']} "
                         f"errors={ac['errors']}")
+                    if notify_counts is not None:
+                        nc = notify_counts
+                        self.stdout.write(
+                            f"notify: email={nc['email']} xmpp={nc['xmpp']} "
+                            f"pagerduty={nc['pagerduty']} log={nc['log']} "
+                            f"errors={nc['errors']}")
                 self.stdout.write("recent etl_run rows (newest first):")
                 for r in last_runs:
                     self.stdout.write(

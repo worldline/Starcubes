@@ -213,6 +213,49 @@ OIDC_ENABLED = bool(
     STARCUBES_OIDC_ISSUER and STARCUBES_OIDC_CLIENT_ID and STARCUBES_OIDC_CLIENT_SECRET
 )
 
+# ── Alarm notification transports (optional) ───────────────────────────────
+# Global configuration for the alarm evaluator's notification channels
+# (core/alarm.py produces the episode transitions, sources/alarm_notify.py
+# sends them). Same presence-as-switch pattern as OIDC above: an empty
+# variable means "not configured", and the transport is off.
+#
+#   E-mail  — on when STARCUBES_SMTP_HOST and STARCUBES_SMTP_FROM are set.
+#             Recipients are the accounts selected on the alarm, addressed
+#             through their auth_user.email.
+#   XMPP    — on when STARCUBES_XMPP_JID and STARCUBES_XMPP_PASSWORD are
+#             set. One bot account sends each selected account (matched via
+#             auth_user.xmpp_jid, maintained on the settings page) a chat
+#             message.
+#   PagerDuty — no global switch at all: enabled per datasource by its
+#             pagerduty_routing_key (Events API v2 integration token,
+#             maintained on the source edit page). The env vars below only
+#             supply the endpoint (point it at a sandbox for a dry run)
+#             and a fixed severity.
+#
+# Transports that are off are simply skipped by the dispatcher — a channel
+# selected on an alarm whose transport is not configured logs a WARNING and
+# counts as an error, it never fails the ETL.
+STARCUBES_SMTP_HOST = os.environ.get("STARCUBES_SMTP_HOST", "")
+STARCUBES_SMTP_PORT = int(os.environ.get("STARCUBES_SMTP_PORT", "25"))
+STARCUBES_SMTP_USER = os.environ.get("STARCUBES_SMTP_USER", "")
+STARCUBES_SMTP_PASSWORD = os.environ.get("STARCUBES_SMTP_PASSWORD", "")
+STARCUBES_SMTP_FROM = os.environ.get("STARCUBES_SMTP_FROM", "")
+STARCUBES_SMTP_TLS = os.environ.get("STARCUBES_SMTP_TLS", "starttls")
+STARCUBES_SMTP_SUBJECT_PREFIX = os.environ.get("STARCUBES_SMTP_SUBJECT_PREFIX", "[starcubes]")
+
+STARCUBES_XMPP_JID = os.environ.get("STARCUBES_XMPP_JID", "")
+STARCUBES_XMPP_PASSWORD = os.environ.get("STARCUBES_XMPP_PASSWORD", "")
+# Host override: without it slixmpp resolves the JID domain's SRV records.
+STARCUBES_XMPP_HOST = os.environ.get("STARCUBES_XMPP_HOST", "")
+STARCUBES_XMPP_PORT = int(os.environ.get("STARCUBES_XMPP_PORT", "5222"))
+
+STARCUBES_PAGERDUTY_EVENTS_URL = os.environ.get(
+    "STARCUBES_PAGERDUTY_EVENTS_URL", "https://events.pagerduty.com/v2/enqueue")
+STARCUBES_PAGERDUTY_SEVERITY = os.environ.get("STARCUBES_PAGERDUTY_SEVERITY", "critical")
+
+STARCUBES_ALARM_EMAIL_ENABLED = bool(STARCUBES_SMTP_HOST and STARCUBES_SMTP_FROM)
+STARCUBES_ALARM_XMPP_ENABLED = bool(STARCUBES_XMPP_JID and STARCUBES_XMPP_PASSWORD)
+
 # Password login must keep working regardless of OIDC_ENABLED (both
 # coexist). ModelBackend here reproduces Django's implicit default (no
 # AUTHENTICATION_BACKENDS today == ["...ModelBackend"]) so the OFF path is

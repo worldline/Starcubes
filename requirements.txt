@@ -8,3 +8,5 @@ django-htmx==1.29.0
 mozilla-django-oidc==5.0.2
 # core/profile.py reads and writes profiles/*/*.yaml — PyYAML does both.
 pyyaml==6.0.3
+# sources/alarm_notify.py sends alarm notifications as an XMPP bot account.
+slixmpp==1.17.0

@@ -546,6 +546,7 @@ def source_edit(request, pk: int):
                     watermark_fact_expr = NULLIF(:watermark_fact_expr, ''),
                     watermark_lag_s    = :watermark_lag_s,
                     wallclock_lag_s    = :wallclock_lag_s,
+                    pagerduty_routing_key = NULLIF(:pdrk, ''),
                     updated_at         = now()
                 WHERE id = :id
             """), {
@@ -570,6 +571,7 @@ def source_edit(request, pk: int):
                 "watermark_fact_expr": p.get("watermark_fact_expr", ""),
                 "watermark_lag_s":    lag_wm,
                 "wallclock_lag_s":    lag_now,
+                "pdrk":               p.get("pagerduty_routing_key", ""),
             })
         return redirect("sources:manage", pk=pk)
     ds = _load_datasource(pk)
@@ -1935,10 +1937,11 @@ def measure_delete(request, pk: int, measure_id: int):
 # 400 than a Postgres exception bubbling up through the generic except.
 _ALARM_OPS = {">", "<", "=", ">=", "<="}
 
-# Notification channels — `log` is wired (the alarm_firing episode plus
-# the evaluator's log). `email`, `slack`, `pagerduty` are reserved values
-# accepted by the form, but have no transport yet — see docs/backlog.md.
-_ALARM_CHANNELS = {"email", "slack", "pagerduty", "log"}
+# Notification channels — every value `alarm.notify_channels` accepts.
+# All four addressable channels are wired (email/xmpp/pagerduty dispatch via
+# sources/alarm_notify.py, log is the episode row plus the evaluator's log);
+# `slack` stays reserved without a transport — see docs/backlog.md.
+_ALARM_CHANNELS = {"email", "xmpp", "slack", "pagerduty", "log"}
 
 # Filter ops an alarm context row may carry — the same six the chart
 # serializes (core.query._VALID_OPS).
@@ -2000,6 +2003,8 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
         "threshold": 0.0,
         "window_s": 300,
         "notify_channels": [],
+        "notify_email_recipients": [],
+        "notify_xmpp_recipients": [],
         "enabled": True,
     }
     errors: dict = {}
@@ -2061,18 +2066,45 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
         else:
             values["context_rows"] = rows
 
-    raw_channels = request.POST.get("notify_channels", "")
-    if isinstance(raw_channels, str):
-        channels = [c.strip() for c in raw_channels.split(",") if c.strip()]
-    else:
-        # List field — defensive in case a caller sends it as an array.
-        channels = [str(c).strip() for c in raw_channels if str(c).strip()]
+    # Channels arrive as checkbox values (one entry per checked box), a CSV
+    # string, or a mix of both — getlist covers every shape at once.
+    channels = []
+    for chunk in request.POST.getlist("notify_channels"):
+        channels.extend(c.strip() for c in str(chunk).split(",") if c.strip())
+    channels = [c for c in channels if c]
     bad = [c for c in channels if c not in _ALARM_CHANNELS]
     if bad:
         errors["notify_channels"] = (f"unknown channel(s) {bad}; allowed: "
                                      f"{sorted(_ALARM_CHANNELS)}")
     else:
         values["notify_channels"] = channels
+
+    # The two recipient arrays: `getlist` (a <select multiple> contributes
+    # one entry per selected option) or a CSV string — both shapes arrive
+    # from different callers, so accept both like notify_channels does.
+    for field in ("notify_email_recipients", "notify_xmpp_recipients"):
+        if field not in request.POST:
+            # Absent = "not part of this form" — keep the stored value on
+            # edit. Only the explicit field drives a change.
+            values[field] = None
+            continue
+        ids: list[int] = []
+        ok = True
+        for chunk in request.POST.getlist(field):
+            for piece in str(chunk).split(","):
+                piece = piece.strip()
+                if not piece:
+                    continue
+                try:
+                    ids.append(int(piece))
+                except ValueError:
+                    errors[field] = f"{field} must be user ids"
+                    ok = False
+                    break
+            if not ok:
+                break
+        if ok:
+            values[field] = sorted(set(ids))
 
     # Checkbox semantics, but only when the field was actually submitted:
     # an absent "enabled" means "not part of this form" (the add form used
@@ -2104,6 +2136,8 @@ def _alarm_row_to_dict(row) -> dict:
         "threshold": float(row.threshold),
         "window_s": row.window_s,
         "notify_channels": list(row.notify_channels or []),
+        "notify_email_recipients": list(row.notify_email_recipients or []),
+        "notify_xmpp_recipients": list(row.notify_xmpp_recipients or []),
         "enabled": bool(row.enabled),
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
@@ -2160,6 +2194,116 @@ def _validate_alarm_context(pk: int, values: dict):
     return None
 
 
+def _validate_alarm_notify(pk: int, values: dict):
+    """Semantic validation of the notify fields — the counterpart to
+    `_validate_alarm_context`, called after it by alarm_add/alarm_edit.
+
+    Checks the selected user ids exist (`int[]` cannot carry a foreign key,
+    so dangling ids are refused at save time instead), and enforces the
+    channel/recipient pairing rules server-side:
+    - `email` channel ⇒ at least one recipient with an e-mail address chosen
+      (existence was just proven; the address itself may still be NULL on
+      the account — caught at dispatch time with a WARNING).
+    - `xmpp` channel ⇒ at least one XMPP recipient chosen.
+    - `pagerduty` channel ⇒ the datasource has a routing key.
+    Returns a 400 JsonResponse on failure, else None.
+    """
+    email_ids = values.get("notify_email_recipients")
+    xmpp_ids = values.get("notify_xmpp_recipients")
+    channels = values["notify_channels"]
+
+    # An absent recipient field (None) means "not part of this form" — the
+    # inline row editor sends channels only. The pairing rules then apply to
+    # the stored value, which satisfied them at its own save time; `alarm_edit`
+    # re-checks them against the effective (submitted-or-stored) value after
+    # loading the old row.
+    if "email" in channels and email_ids is not None and not email_ids:
+        return JsonResponse({"ok": False, "error":
+            "email channel selected but no e-mail recipient chosen",
+            "fields": {"notify_email_recipients":
+                       "choose at least one recipient"}}, status=400)
+    if "xmpp" in channels and xmpp_ids is not None and not xmpp_ids:
+        return JsonResponse({"ok": False, "error":
+            "xmpp channel selected but no XMPP recipient chosen",
+            "fields": {"notify_xmpp_recipients":
+                       "choose at least one recipient"}}, status=400)
+    xmpp_ids = values.get("notify_xmpp_recipients") or []
+    channels = values["notify_channels"]
+
+    if "email" in channels and not email_ids:
+        return JsonResponse({"ok": False, "error":
+            "email channel selected but no e-mail recipient chosen",
+            "fields": {"notify_email_recipients":
+                       "choose at least one recipient"}}, status=400)
+    if "xmpp" in channels and not xmpp_ids:
+        return JsonResponse({"ok": False, "error":
+            "xmpp channel selected but no XMPP recipient chosen",
+            "fields": {"notify_xmpp_recipients":
+                       "choose at least one recipient"}}, status=400)
+
+    ids = sorted(set(email_ids) | set(xmpp_ids))
+    try:
+        with _meta_engine().begin() as conn:
+            if ids:
+                found = {r[0] for r in conn.execute(text(
+                    "SELECT id FROM starcubes_meta.auth_user "
+                    " WHERE id = ANY(:ids)"
+                ), {"ids": ids}).all()}
+                missing = [i for i in ids if i not in found]
+                if missing:
+                    return JsonResponse({"ok": False, "error":
+                        f"unknown user id(s) {missing} — the recipients are "
+                        f"the login users, maintained on the settings page",
+                        "fields": {"notify_email_recipients":
+                                   "unknown user"}}, status=400)
+            if "pagerduty" in channels:
+                has_key = conn.execute(text(
+                    "SELECT 1 FROM starcubes_meta.datasource "
+                    " WHERE id = :ds AND pagerduty_routing_key IS NOT NULL"
+                ), {"ds": pk}).scalar()
+                if not has_key:
+                    return JsonResponse({"ok": False, "error":
+                        "pagerduty channel selected but this datasource has "
+                        "no PagerDuty integration key configured (set it on "
+                        "the source edit page)",
+                        "fields": {"notify_channels":
+                                   "no PagerDuty integration key on this "
+                                   "datasource"}}, status=400)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+    return None
+
+
+@require_POST
+@_login_required_json
+def recipients_list(request):
+    """The alarm-notification address book: every login user with the
+    addresses the two address-carrying channels send to.
+
+    Login-only, not admin: the Alarms tab is user-editable, so the list the
+    recipient selects are populated from must be readable by the same
+    audience. Every user is listed — including those without addresses — so
+    the UI can grey out "(no e-mail)" entries and an admin can see whom to
+    fix on the settings page. There is no other user-list JSON endpoint
+    (the settings page renders its user table server-side), so this is the
+    minimal new surface. Read-only, and no more than what the alarm forms
+    need per user: id, username, email, xmpp_jid.
+    """
+    try:
+        with _meta_engine().begin() as conn:
+            rows = conn.execute(text(
+                "SELECT id, username, email, xmpp_jid "
+                "  FROM starcubes_meta.auth_user "
+                " ORDER BY username"
+            )).mappings().all()
+        return JsonResponse({"ok": True, "users": [
+            {"id": r["id"], "username": r["username"], "email": r["email"],
+             "xmpp_jid": r["xmpp_jid"]}
+            for r in rows]})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
 @require_POST
 @_login_required_json
 def alarms_list(request, pk: int):
@@ -2181,6 +2325,7 @@ def alarms_list(request, pk: int):
             rows = conn.execute(text(
                 "SELECT id, datasource_id, name, context_filter, comment, "
                 "       measure, cond_op, threshold, window_s, notify_channels, "
+                "       notify_email_recipients, notify_xmpp_recipients, "
                 "       enabled, created_at, updated_at "
                 "  FROM starcubes_meta.alarm "
                 " WHERE datasource_id = :ds "
@@ -2272,6 +2417,14 @@ def alarm_add(request, pk: int):
     failed = _validate_alarm_context(pk, values)
     if failed is not None:
         return failed
+    failed = _validate_alarm_notify(pk, values)
+    if failed is not None:
+        return failed
+    # Add semantics: absent recipient fields mean "none", not "keep stored".
+    if values["notify_email_recipients"] is None:
+        values["notify_email_recipients"] = []
+    if values["notify_xmpp_recipients"] is None:
+        values["notify_xmpp_recipients"] = []
     ctx_json = (_json.dumps(values["context_rows"])
                 if values["context_rows"] else None)
     try:
@@ -2286,17 +2439,22 @@ def alarm_add(request, pk: int):
                 "INSERT INTO starcubes_meta.alarm "
                 "  (datasource_id, name, context_filter, comment, "
                 "   measure, cond_op, threshold, window_s, notify_channels, "
+                "   notify_email_recipients, notify_xmpp_recipients, "
                 "   enabled) "
                 "VALUES (:ds, :name, CAST(:ctx AS jsonb), :cmt, "
-                "        :m, :op, :thr, :ws, CAST(:nc AS text[]), :en) "
+                "        :m, :op, :thr, :ws, CAST(:nc AS text[]), "
+                "        :ner, :nxr, :en) "
                 "RETURNING id, datasource_id, name, context_filter, comment, "
                 "          measure, cond_op, threshold, window_s, notify_channels, "
+                "          notify_email_recipients, notify_xmpp_recipients, "
                 "          enabled, created_at, updated_at"
             ), {"ds": pk, "name": values["name"], "ctx": ctx_json,
                 "cmt": values["comment"],
                 "m": values["measure"], "op": values["cond_op"],
                 "thr": values["threshold"], "ws": values["window_s"],
                 "nc": list(values["notify_channels"]),
+                "ner": values["notify_email_recipients"] or [],
+                "nxr": values["notify_xmpp_recipients"] or [],
                 "en": values["enabled"]}).mappings().one()
             conn.execute(text(
                 "INSERT INTO starcubes_meta.alarm_history "
@@ -2336,14 +2494,43 @@ def alarm_edit(request, pk: int, alarm_id: int):
     failed = _validate_alarm_context(pk, values)
     if failed is not None:
         return failed
+    failed = _validate_alarm_notify(pk, values)
+    if failed is not None:
+        return failed
     ctx_json = (_json.dumps(values["context_rows"])
                 if values["context_rows"] else None)
     set_context = "context" in request.POST
+    # Recipients: an absent field means "not part of this form" — the inline
+    # row editor sends channels only, so it must not wipe the stored
+    # recipient arrays. Absent keeps the stored value, mirroring the
+    # context's "absent = keep" semantics.
+    set_email = values["notify_email_recipients"] is not None
+    set_xmpp = values["notify_xmpp_recipients"] is not None
+    sets = ["name = :name", "comment = :cmt", "measure = :m", "cond_op = :op",
+            "threshold = :thr", "window_s = :ws",
+            "notify_channels = CAST(:nc AS text[])", "enabled = :en"]
+    params: dict = {"ds": pk, "id": alarm_id, "name": values["name"],
+                    "cmt": values["comment"],
+                    "m": values["measure"], "op": values["cond_op"],
+                    "thr": values["threshold"], "ws": values["window_s"],
+                    "nc": list(values["notify_channels"]),
+                    "en": values["enabled"]}
+    if set_context:
+        sets.append("context_filter = CAST(:ctx AS jsonb)")
+        params["ctx"] = ctx_json
+    if set_email:
+        sets.append("notify_email_recipients = :ner")
+        params["ner"] = values["notify_email_recipients"] or []
+    if set_xmpp:
+        sets.append("notify_xmpp_recipients = :nxr")
+        params["nxr"] = values["notify_xmpp_recipients"] or []
+    row = None
     try:
         with _meta_engine().begin() as conn:
             old = conn.execute(text(
                 "SELECT id, datasource_id, name, context_filter, comment, "
                 "       measure, cond_op, threshold, window_s, notify_channels, "
+                "       notify_email_recipients, notify_xmpp_recipients, "
                 "       enabled, created_at, updated_at "
                 "  FROM starcubes_meta.alarm "
                 " WHERE id = :id AND datasource_id = :ds"
@@ -2352,41 +2539,32 @@ def alarm_edit(request, pk: int, alarm_id: int):
                 return JsonResponse({"ok": False, "error":
                     f"alarm {alarm_id} not found for datasource {pk}"},
                     status=404)
-            if set_context:
-                row = conn.execute(text(
-                    "UPDATE starcubes_meta.alarm SET "
-                    "       name = :name, context_filter = CAST(:ctx AS jsonb), "
-                    "       comment = :cmt, measure = :m, cond_op = :op, "
-                    "       threshold = :thr, window_s = :ws, "
-                    "       notify_channels = CAST(:nc AS text[]), "
-                    "       enabled = :en, updated_at = now() "
-                    " WHERE id = :id AND datasource_id = :ds "
-                    "RETURNING id, datasource_id, name, context_filter, comment, "
-                    "          measure, cond_op, threshold, window_s, notify_channels, "
-                    "          enabled, created_at, updated_at"
-                ), {"ds": pk, "id": alarm_id, "name": values["name"],
-                    "ctx": ctx_json, "cmt": values["comment"],
-                    "m": values["measure"], "op": values["cond_op"],
-                    "thr": values["threshold"], "ws": values["window_s"],
-                    "nc": list(values["notify_channels"]),
-                    "en": values["enabled"]}).mappings().one()
-            else:
-                row = conn.execute(text(
-                    "UPDATE starcubes_meta.alarm SET "
-                    "       name = :name, comment = :cmt, measure = :m, "
-                    "       cond_op = :op, threshold = :thr, window_s = :ws, "
-                    "       notify_channels = CAST(:nc AS text[]), "
-                    "       enabled = :en, updated_at = now() "
-                    " WHERE id = :id AND datasource_id = :ds "
-                    "RETURNING id, datasource_id, name, context_filter, comment, "
-                    "          measure, cond_op, threshold, window_s, notify_channels, "
-                    "          enabled, created_at, updated_at"
-                ), {"ds": pk, "id": alarm_id, "name": values["name"],
-                    "cmt": values["comment"],
-                    "m": values["measure"], "op": values["cond_op"],
-                    "thr": values["threshold"], "ws": values["window_s"],
-                    "nc": list(values["notify_channels"]),
-                    "en": values["enabled"]}).mappings().one()
+            # The inline editor sends channels but no recipient fields — a
+            # channel enabled without recipients stored (or without any
+            # submitted either) is refused here, against the effective
+            # submitted-or-stored value.
+            for ch, field, addr in (("email", "notify_email_recipients",
+                                     "e-mail"),
+                                    ("xmpp", "notify_xmpp_recipients",
+                                     "XMPP")):
+                if ch in values["notify_channels"] \
+                        and values[field] is None \
+                        and not list(old[field] or []):
+                    return JsonResponse({"ok": False, "error":
+                        f"{ch} channel selected but no {addr} recipient "
+                        f"chosen — add recipients in the full alarm form",
+                        "fields": {field: "choose at least one recipient"}},
+                        status=400)
+            row = conn.execute(text(
+                "UPDATE starcubes_meta.alarm SET "
+                + ", ".join(sets)
+                + ", updated_at = now() "
+                " WHERE id = :id AND datasource_id = :ds "
+                "RETURNING id, datasource_id, name, context_filter, comment, "
+                "          measure, cond_op, threshold, window_s, notify_channels, "
+                "          notify_email_recipients, notify_xmpp_recipients, "
+                "          enabled, created_at, updated_at"
+            ), params).mappings().one()
             conn.execute(text(
                 "INSERT INTO starcubes_meta.alarm_history "
                 "  (alarm_id, kind, username, old_row, new_row) "
@@ -3148,6 +3326,17 @@ def drop_all_indices(request, pk: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
+def _set_xmpp_jid(user_id: int, jid: str) -> None:
+    """Write the account's XMPP JID — raw SQL because the Django model does
+    not know the column (migration 0030 added it directly on auth_user).
+    Empty string clears it (NULL), mirroring the email field's semantics."""
+    with _meta_engine().begin() as conn:
+        conn.execute(text(
+            "UPDATE starcubes_meta.auth_user SET xmpp_jid = NULLIF(:j, '') "
+            " WHERE id = :id"
+        ), {"j": jid, "id": user_id})
+
+
 def settings_page(request):
     if not request.user.is_superuser:
         return HttpResponseForbidden("Superuser access required.")
@@ -3166,9 +3355,11 @@ def settings_page(request):
                 return redirect(f"{request.path}?err=Username+and+password+are+required.")
             if User.objects.filter(username=username).exists():
                 return redirect(f"{request.path}?err=Username+already+exists.")
-            User.objects.create_user(username=username, password=password, email=email)
+            target = User.objects.create_user(username=username, password=password, email=email)
+            xmpp_jid = (request.POST.get("xmpp_jid") or "").strip()
+            if xmpp_jid:
+                _set_xmpp_jid(target.pk, xmpp_jid)
             return redirect(f"{request.path}?msg=User+%27{username}%27+created.")
-
         elif action == "update_user":
             user_id = request.POST.get("user_id", "")
             try:
@@ -3180,6 +3371,23 @@ def settings_page(request):
             email = request.POST.get("email")
             if email is not None:
                 target.email = email.strip()
+        elif action == "update_user":
+            user_id = request.POST.get("user_id", "")
+            try:
+                target = User.objects.get(pk=int(user_id))
+            except (User.DoesNotExist, ValueError):
+                return redirect(f"{request.path}?err=User+not+found.")
+            # Email — only write when the field was actually submitted; a
+            # missing field means "leave it alone". An empty string clears it.
+            email = request.POST.get("email")
+            if email is not None:
+                target.email = email.strip()
+            # XMPP JID — same submitted-field semantics as email above: a
+            # missing field means "leave it alone", an empty string clears
+            # it. Raw SQL because the Django model does not know the column.
+            xmpp_jid = request.POST.get("xmpp_jid")
+            if xmpp_jid is not None:
+                _set_xmpp_jid(target.pk, xmpp_jid.strip())
             # is_active — checkbox: absent means False. Guarded the same
             # way as is_superuser below: deactivating your own account logs
             # you out and leaves nobody holding this page.
@@ -3218,6 +3426,19 @@ def settings_page(request):
                 history_delete_user(_meta_engine(), user_id=target.pk)
             except Exception:
                 pass
+            # int[] cannot carry a foreign key (migration 0030), so the
+            # alarm recipient arrays are scrubbed by hand here — same
+            # hand-rolled cleanup as query_history above.
+            with _meta_engine().begin() as conn:
+                conn.execute(text(
+                    "UPDATE starcubes_meta.alarm "
+                    "   SET notify_email_recipients = "
+                    "       array_remove(notify_email_recipients, :id), "
+                    "       notify_xmpp_recipients = "
+                    "       array_remove(notify_xmpp_recipients, :id) "
+                    " WHERE notify_email_recipients @> ARRAY[:id] "
+                    "    OR notify_xmpp_recipients @> ARRAY[:id]"
+                ), {"id": target.pk})
             target.delete()
             return redirect(f"{request.path}?msg=User+%27{name}%27+deleted.")
 
@@ -3237,6 +3458,18 @@ def settings_page(request):
         return redirect(request.path)
 
     users = User.objects.all().order_by("username")
+    # xmpp_jid lives outside the Django model (migration 0030), so it is
+    # fetched in one extra pass and attached to each user object for the
+    # template — the listing keeps its ORM path for set_password/flags.
+    try:
+        with _meta_engine().begin() as conn:
+            jids = dict(conn.execute(text(
+                "SELECT id, xmpp_jid FROM starcubes_meta.auth_user"
+            )).all())
+    except Exception:
+        jids = {}
+    for u in users:
+        u.xmpp_jid = jids.get(u.pk)
     return render(request, "sources/settings.html", {
         "users": users,
         "msg": msg,

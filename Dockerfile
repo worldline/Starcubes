@@ -127,6 +127,25 @@ ENV STARCUBES_OIDC_ISSUER="" \
     STARCUBES_OIDC_CLIENT_SECRET="" \
     STARCUBES_OIDC_DISPLAY_NAME="Keycloak"
 
+# Alarm notification transports — off by default (presence-as-switch, see
+# starcubes/settings.py). SMTP needs HOST+FROM; XMPP needs the bot JID and
+# its password; PagerDuty is enabled per datasource by its routing key, so
+# only the endpoint/severity knobs are global. Full table in
+# docs/deployment-config.md.
+ENV STARCUBES_SMTP_HOST="" \
+    STARCUBES_SMTP_PORT="25" \
+    STARCUBES_SMTP_USER="" \
+    STARCUBES_SMTP_PASSWORD="" \
+    STARCUBES_SMTP_FROM="" \
+    STARCUBES_SMTP_TLS="starttls" \
+    STARCUBES_SMTP_SUBJECT_PREFIX="[starcubes]" \
+    STARCUBES_XMPP_JID="" \
+    STARCUBES_XMPP_PASSWORD="" \
+    STARCUBES_XMPP_HOST="" \
+    STARCUBES_XMPP_PORT="5222" \
+    STARCUBES_PAGERDUTY_EVENTS_URL="https://events.pagerduty.com/v2/enqueue" \
+    STARCUBES_PAGERDUTY_SEVERITY="critical"
+
 # ── Build identity ────────────────────────────────────────────────────────────
 # The version comes from the git tag, and the tag cannot travel in the COPY
 # above: `.dockerignore` keeps `.git` out of the build context on purpose, so

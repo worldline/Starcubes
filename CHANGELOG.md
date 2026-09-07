@@ -9,6 +9,13 @@ Notable changes per release. Format follows
 
 ### Added
 
+- **Alarms can notify by e-mail, XMPP and PagerDuty.** Each alarm picks
+  recipients per channel from the login users (e-mail from the account, XMPP
+  via a new per-account JID field on the settings page); PagerDuty speaks
+  Events API v2 with a per-datasource integration key (routing key, source
+  edit page) and closes its incidents when an episode resolves. Transport
+  configuration is env-var based — see `docs/deployment-config.md`. Purely
+  additive schema, self-applying at container start (minor release).
 - The About dialog's **timeseries.js** row now links to the project on
   GitHub.
 

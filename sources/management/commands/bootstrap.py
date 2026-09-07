@@ -49,6 +49,17 @@ class Command(BaseCommand):
         self.stdout.write("Running migrations...")
         call_command("migrate", interactive=False, stdout=self.stdout)
 
+        # 1b. Apply the consolidated script a second time. Some of its
+        #     blocks guard on a Django-managed table that does not exist
+        #     yet above (migration 0030's auth_user.xmpp_jid: bootstrap
+        #     runs starcubes_meta.sql BEFORE migrate, so on a fresh
+        #     install the guarded ALTER was a no-op). Re-running the
+        #     script is its idempotency contract, so this costs one cheap
+        #     pass and closes the gap.
+        if dsn:
+            self.stdout.write("Applying starcubes_meta.sql (post-migrate pass)...")
+            ensure_starcubes_meta(_get_cached_engine(dsn), force=True)
+
         # 2. Create default admin user only on a fresh install.
         if freshly_bootstrapped:
             from django.contrib.auth import get_user_model

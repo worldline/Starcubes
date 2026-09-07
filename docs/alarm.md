@@ -153,3 +153,51 @@ The global episode overview (`/sources/alarms/firings/`,
 (one datasource). The datasource page shows the same list as its Firings
 tab (`?tab=firings`), from the same reader and the same template partial —
 see [`docs/sources-app.md`](sources-app.md).
+
+## Notification channels
+
+An episode's open/close transitions are announced by the evaluator
+(`core/alarm.py` returns transition dicts in its counts, produced in the
+same transaction that wrote the episode row) and dispatched by
+`sources/alarm_notify.py` — a Django-side module, because recipient
+resolution reads `starcubes_meta.auth_user`, a Django-managed table
+`core/` must never touch. The dispatch runs right after the cycle in
+`etl_run` / `alarm_run`, in its own try/except: a notification failure
+neither colours the ETL's exit status nor suppresses the other channels.
+
+`alarm.notify_channels` is the channel switch each alarm selects; the
+channels are:
+
+| Channel | Address source | Enabled when |
+|---|---|---|
+| `log` | — | always (the episode row + the evaluator's log line) |
+| `email` | the selected accounts' `auth_user.email` | `STARCUBES_SMTP_HOST` + `STARCUBES_SMTP_FROM` set |
+| `xmpp` | the selected accounts' `auth_user.xmpp_jid` | `STARCUBES_XMPP_JID` + `STARCUBES_XMPP_PASSWORD` set |
+| `pagerduty` | the datasource's `pagerduty_routing_key` | per datasource, no global switch |
+
+**Recipients are the login users.** Each alarm picks recipients per channel
+from the accounts; the addresses live on the accounts themselves (e-mail on
+`auth_user.email`, XMPP on the new `auth_user.xmpp_jid`, maintained on the
+settings page). There is deliberately **no free-form recipient list** — the
+accepted limitation is that no external or distribution-list recipients are
+possible. `int[]` cannot carry a foreign key, so a deleted user's id is
+scrubbed from both arrays by `settings_page`'s delete branch.
+
+The save-time rules (enforced in `_validate_alarm_notify`): `email`/`xmpp`
+channel ⇒ at least one recipient of that kind chosen; `pagerduty` channel
+⇒ the datasource has a routing key. The inline row editor sends channels
+only — recipients keep their stored value, and enabling a channel with
+nothing stored is refused.
+
+PagerDuty speaks Events API v2: **trigger** on open, **resolve** on close,
+dedup key `starcubes-alarm-<alarm_id>#<episode_id>` — per episode, so a
+re-opened episode produces a fresh incident instead of being silently
+deduplicated into the resolved one. Severity is global
+(`STARCUBES_PAGERDUTY_SEVERITY`).
+
+The messages (subject/body, shared by e-mail, XMPP and the PagerDuty
+summary) are rendered by `sources/alarm_notify.py:render_message` — English,
+like every other user-visible string. A channel selected but not configured
+(unset env vars, a user without an address, a missing routing key) is
+skipped with a WARNING and counted as an error; it never fails the ETL.
+`slack` stays reserved vocabulary without a transport.

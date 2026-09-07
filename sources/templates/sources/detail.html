@@ -290,7 +290,29 @@
         </div>
         <div><label class="form-label">Threshold</label><input class="form-control" name="threshold" type="number" step="any" required></div>
         <div><label class="form-label">Window (s)</label><input class="form-control" name="window_s" type="number" value="300" min="1" required></div>
-        <div><label class="form-label">Channels (csv)</label><input class="form-control" name="notify_channels" placeholder="log"></div>
+        <div>
+          <label class="form-label">Channels</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12px;padding:4px 0">
+            <label><input type="checkbox" name="notify_channels" value="email" onchange="alarmChannelsChanged()"> email</label>
+            <label><input type="checkbox" name="notify_channels" value="xmpp" onchange="alarmChannelsChanged()"> xmpp</label>
+            <label><input type="checkbox" name="notify_channels" value="pagerduty" onchange="alarmChannelsChanged()"> pagerduty</label>
+            <label><input type="checkbox" name="notify_channels" value="log" checked> log</label>
+          </div>
+        </div>
+        <div style="grid-column:1/-1;display:flex;gap:16px;flex-wrap:wrap" id="alarmRecipientRow">
+          <div>
+            <label class="form-label">E-mail recipients</label>
+            <select class="form-control" name="notify_email_recipients" multiple size="4" style="min-width:220px" disabled></select>
+          </div>
+          <div>
+            <label class="form-label">XMPP recipients</label>
+            <select class="form-control" name="notify_xmpp_recipients" multiple size="4" style="min-width:220px" disabled></select>
+          </div>
+          <div class="text-muted" style="font-size:11px;align-self:end;max-width:280px">
+            Recipients are the login users; addresses come from the accounts
+            (e-mail) and from the XMPP JID field on the settings page.
+          </div>
+        </div>
         {% comment %}
           The context is carried in, not typed: a filter expression is a UI
           of its own, and the chart already has it. The hidden field holds
@@ -329,7 +351,7 @@
           unfiltered one) would only compete with it.
         {% endcomment %}
         <a href="?tab=firings" style="font-size:12px">Firings &rarr;</a>
-        Threshold rules, evaluated after every ETL load over the last window of loaded data; firings land in the alarm_firing episode table &mdash; only <code>log</code> is wired today.
+        Threshold rules, evaluated after every ETL load over the last window of loaded data; firings land in the alarm_firing episode table &mdash; notify via e-mail, XMPP, PagerDuty or the episode log.
       </span>
     </div>
     <div class="card-body" style="padding:0">
@@ -1367,7 +1389,8 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
 
   // Field-by-field old→new diff of two alarm snapshots.
   var SNAP_FIELDS = ['name', 'context_filter', 'comment', 'measure', 'cond_op',
-                     'threshold', 'window_s', 'notify_channels', 'enabled'];
+                     'threshold', 'window_s', 'notify_channels',
+                     'notify_email_recipients', 'notify_xmpp_recipients', 'enabled'];
   function snapDiff(oldRow, newRow) {
     if (!oldRow || !newRow) return '';
     var parts = [];
@@ -1478,6 +1501,91 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   // Label map for the alarm list currently rendered, from the last response.
   var ctxLabels = {};
 
+  // The notification address book: every login user with the two addresses
+  // the alarm forms select from. Fetched once, before the first render, so
+  // buildRow can resolve recipient ids to names; the same cache feeds the
+  // add form's two multi-selects.
+  var alarmUsers = null;
+  var alarmUsersPromise = null;
+  function ensureAlarmUsers() {
+    if (alarmUsersPromise) return alarmUsersPromise;
+    alarmUsersPromise = postJSON('{% url "sources:recipients_list" %}', {})
+      .then(function(d) {
+        alarmUsers = {};
+        (d.users || []).forEach(function(u) { alarmUsers[u.id] = u; });
+        return alarmUsers;
+      });
+    return alarmUsersPromise;
+  }
+  function alarmUserLabel(u, channel) {
+    var addr = channel === 'email' ? u.email : u.xmpp_jid;
+    return u.username + (addr ? ' (' + addr + ')' : ' (no '
+                           + (channel === 'email' ? 'e-mail' : 'XMPP JID') + ')');
+  }
+  function alarmChannelsDisplay(a) {
+    var ch = a.notify_channels || [];
+    if (!ch.length) return '—';
+    var parts = [];
+    ch.forEach(function(c) {
+      if (c === 'email' || c === 'xmpp') {
+        var ids = a[c === 'email' ? 'notify_email_recipients'
+                                  : 'notify_xmpp_recipients'] || [];
+        var names = ids.map(function(id) {
+          var u = alarmUsers && alarmUsers[id];
+          return u ? u.username : ('#' + id);
+        });
+        parts.push(c + ': ' + (names.length ? names.join(', ') : '(none)'));
+      } else {
+        parts.push(c);
+      }
+    });
+    return esc(parts.join(' · '));
+  }
+
+  // Channel checkbox change in the add form: show/hide the two recipient
+  // multi-selects. Disabled selects contribute nothing to FormData either
+  // way — belt and braces for the server's "absent = keep stored" rule.
+  function alarmChannelsChanged() {
+    var f = document.getElementById('alarmAddForm');
+    var ch = alarmChannelsChecked(f);
+    [['email', 'notify_email_recipients'],
+     ['xmpp', 'notify_xmpp_recipients']].forEach(function(pair) {
+      var sel = f.elements[pair[1]];
+      var off = ch.indexOf(pair[0]) === -1;
+      sel.disabled = off;
+      sel.parentElement.style.display = off ? 'none' : '';
+    });
+  }
+  function alarmChannelsChecked(scope) {
+    var boxes = document.querySelectorAll(
+      (scope ? '#' + scope.id + ' ' : '') + 'input[name="notify_channels"]');
+    var out = [];
+    boxes.forEach(function(b) { if (b.checked) out.push(b.value); });
+    return out;
+  }
+
+  // Populates the two recipient multi-selects from the address-book cache.
+  function fillAlarmRecipientSelects() {
+    ensureAlarmUsers().then(function(users) {
+      var emailSel = document.querySelector(
+        '#alarmAddForm select[name="notify_email_recipients"]');
+      var xmppSel = document.querySelector(
+        '#alarmAddForm select[name="notify_xmpp_recipients"]');
+      [emailSel, xmppSel].forEach(function(sel, idx) {
+        if (!sel) return;
+        var channel = idx === 0 ? 'email' : 'xmpp';
+        sel.innerHTML = '';
+        Object.keys(users).forEach(function(id) {
+          var u = users[id];
+          var opt = document.createElement('option');
+          opt.value = u.id;
+          opt.textContent = alarmUserLabel(u, channel);
+          sel.appendChild(opt);
+        });
+      });
+    });
+  }
+
   function buildRow(a) {
     var measures = MEASURE_AGGS.indexOf(a.measure) === -1
       ? [a.measure].concat(MEASURE_AGGS) : MEASURE_AGGS;
@@ -1497,8 +1605,18 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       +     '<input class="row-edit cell-input" name="threshold" type="number" step="any" style="width:90px" value="' + a.threshold + '"></td>'
       + '<td style="text-align:right"><span class="row-display" title="' + a.window_s + ' s">' + fmtWindow(a.window_s) + '</span>'
       +     '<input class="row-edit cell-input" name="window_s" type="number" min="1" style="width:80px" value="' + a.window_s + '"></td>'
-      + '<td><span class="row-display text-muted" style="font-size:11px">' + esc((a.notify_channels || []).join(', ')) + '</span>'
-      +     '<input class="row-edit cell-input" name="notify_channels" placeholder="log" value="' + esc((a.notify_channels || []).join(',')) + '"></td>'
+      + '<td><span class="row-display text-muted" style="font-size:11px">'
+      +     alarmChannelsDisplay(a) + '</span>'
+      +     '<span class="row-edit" style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px">'
+      +       '<label><input type="checkbox" name="notify_channels" value="email"'
+      +         ((a.notify_channels || []).indexOf('email') !== -1 ? ' checked' : '') + '> email</label>'
+      +       '<label><input type="checkbox" name="notify_channels" value="xmpp"'
+      +         ((a.notify_channels || []).indexOf('xmpp') !== -1 ? ' checked' : '') + '> xmpp</label>'
+      +       '<label><input type="checkbox" name="notify_channels" value="pagerduty"'
+      +         ((a.notify_channels || []).indexOf('pagerduty') !== -1 ? ' checked' : '') + '> pagerduty</label>'
+      +       '<label><input type="checkbox" name="notify_channels" value="log"'
+      +         ((a.notify_channels || []).indexOf('log') !== -1 ? ' checked' : '') + '> log</label>'
+      +     '</span></td>'
       + '<td style="text-align:center"><span class="row-display">' + (a.enabled ? '✓' : '—') + '</span>'
       +     '<input class="row-edit" type="checkbox" name="enabled"' + (a.enabled ? ' checked' : '') + '></td>'
       + '<td class="actions" style="text-align:right">'
@@ -1549,8 +1667,20 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   function rowFields(tr) {
     var fd = new FormData();
     tr.querySelectorAll('input[name], select[name]').forEach(function(el) {
-      if (el.type === 'checkbox') fd.append(el.name, el.checked ? 'on' : '');
-      else fd.append(el.name, el.value);
+      if (el.name === 'notify_channels') {
+        // Channel checkboxes: only checked ones contribute their value (an
+        // unchecked box contributes nothing — the server reads the missing
+        // field as "no channels selected", which matches the display).
+        if (el.checked) fd.append(el.name, el.value);
+      } else if (el.type === 'checkbox') {
+        // enabled checkbox: present-but-empty is the unchecked box.
+        fd.append(el.name, el.checked ? 'on' : '');
+      } else if (el.tagName === 'SELECT' && el.multiple) {
+        for (var i = 0; i < el.selectedOptions.length; i++)
+          fd.append(el.name, el.selectedOptions[i].value);
+      } else {
+        fd.append(el.name, el.value);
+      }
     });
     return fd;
   }
@@ -1581,8 +1711,15 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     f.elements.cond_op.value = a.cond_op;
     f.elements.threshold.value = a.threshold;
     f.elements.window_s.value  = a.window_s;
-    // The list hands these back as an array; alarm_add wants the csv string.
-    f.elements.notify_channels.value = (a.notify_channels || []).join(',');
+    // The list hands the channels back as an array; the checkboxes read per
+    // value. Recipients: the selects are populated by the shared loader;
+    // the alarm's selections are marked and the visibility toggled.
+    var boxes = f.elements.notify_channels;
+    (a.notify_channels || []).forEach(function(c) {
+      for (var i = 0; i < boxes.length; i++)
+        if (boxes[i].value === c) boxes[i].checked = true;
+    });
+    setAlarmRecipients(f, a);
     f.elements.enabled.checked = !!a.enabled;
     document.getElementById('alarmAddErr').style.display = 'none';
     setAddPanelState('open');
@@ -1591,6 +1728,24 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     f.elements.name.select();
     document.getElementById('alarmAddPanel')
       .scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // Applies one alarm's recipient arrays to the add form's two multi-selects
+  // and toggles their visibility with the channel checkboxes.
+  function setAlarmRecipients(f, a) {
+    var ch = (a && a.notify_channels) || [];
+    var emailSel = f.elements.notify_email_recipients;
+    var xmppSel = f.elements.notify_xmpp_recipients;
+    function apply(sel, channel) {
+      sel.disabled = ch.indexOf(channel) === -1;
+      sel.parentElement.style.display = sel.disabled ? 'none' : '';
+      var ids = (a && a[channel === 'email' ? 'notify_email_recipients'
+                                            : 'notify_xmpp_recipients']) || [];
+      for (var i = 0; i < sel.options.length; i++)
+        sel.options[i].selected = ids.indexOf(Number(sel.options[i].value)) !== -1;
+    }
+    apply(emailSel, 'email');
+    apply(xmppSel, 'xmpp');
   }
 
   document.getElementById('alarmBody').addEventListener('click', function(ev) {
@@ -1643,6 +1798,9 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
         return;
       }
       form.reset();
+      // reset() restores the checkboxes to their defaults but fires no
+      // change event — re-apply the recipient rows' visibility by hand.
+      alarmChannelsChanged();
       // The context outlives the save: it stays named in the collapsed head,
       // so a second alarm over the same slice (a warning next to a critical
       // one) needs no trip back to the chart. reset() leaves the hidden input
@@ -1895,10 +2053,16 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   // nothing in the add-form setup below may be able to hold it hostage — a
   // throw there used to leave the table on "Loading…" for good, which is
   // exactly what the bell's ?new-alarm=1 landing looked like.
-  refresh().catch(function(e) {
-    document.getElementById('alarmBody').innerHTML =
-      '<tr><td colspan="10" class="text-muted" style="text-align:center;'
-      + 'padding:16px">' + esc(String(e)) + '</td></tr>';
+  // Address book first, then the list — buildRow resolves recipient ids to
+  // names on the first paint this way. The fetch failing must not block the
+  // list (buildRow falls back to #id), so it is not a hard await.
+  fillAlarmRecipientSelects();
+  ensureAlarmUsers().catch(function() {}).then(function() {
+    return refresh().catch(function(e) {
+      document.getElementById('alarmBody').innerHTML =
+        '<tr><td colspan="10" class="text-muted" style="text-align:center;'
+        + 'padding:16px">' + esc(String(e)) + '</td></tr>';
+    });
   });
 
   var incoming = readIncomingContext();

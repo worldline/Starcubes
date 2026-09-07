@@ -867,3 +867,49 @@ COMMENT ON COLUMN starcubes_meta.alarm_firing.last_breach_at IS
     'The data high watermark at the most recent load that still saw the threshold breached.';
 COMMENT ON COLUMN starcubes_meta.alarm_firing.closed_at IS
     'The data high watermark at the first load that saw the value back under the threshold. NULL = the episode is still open.';
+
+
+-- 0030_alarm_notify.sql — alarm notification transports: email, XMPP and
+-- PagerDuty. Recipients are the login users (auth_user.email, new
+-- auth_user.xmpp_jid); per-alarm selection is two int[] columns; the
+-- PagerDuty routing key is per datasource. See migrations/0030_alarm_notify.sql
+-- for the semantics. Mirror block.
+
+-- The guard: bootstrap runs this script BEFORE `migrate`, when auth_user
+-- does not exist yet on a fresh install; bootstrap.py runs it a second
+-- time after `migrate` to pick the column up there. Both the ALTER and the
+-- COMMENT are guarded — a COMMENT on a missing table is an error, not a
+-- notice, and would abort the script.
+DO $$ BEGIN
+  IF to_regclass('starcubes_meta.auth_user') IS NOT NULL
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                     WHERE table_schema = 'starcubes_meta'
+                       AND table_name   = 'auth_user'
+                       AND column_name  = 'xmpp_jid')
+  THEN ALTER TABLE starcubes_meta.auth_user ADD COLUMN xmpp_jid text;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = 'starcubes_meta'
+               AND table_name   = 'auth_user'
+               AND column_name  = 'xmpp_jid')
+  THEN
+    EXECUTE 'COMMENT ON COLUMN starcubes_meta.auth_user.xmpp_jid IS'
+            '''XMPP/Jabber address of this account, used as the alarm-notification target for the xmpp channel. Maintained on the settings page; the Django model does not know this column. NULL = this account cannot be reached over XMPP.''';
+  END IF;
+END $$;
+
+ALTER TABLE starcubes_meta.alarm
+    ADD COLUMN IF NOT EXISTS notify_email_recipients int[] NOT NULL DEFAULT '{}';
+ALTER TABLE starcubes_meta.alarm
+    ADD COLUMN IF NOT EXISTS notify_xmpp_recipients int[] NOT NULL DEFAULT '{}';
+
+COMMENT ON COLUMN starcubes_meta.alarm.notify_email_recipients IS
+    'auth_user ids selected as the e-mail recipients of this alarm, resolved through auth_user.email at dispatch time. Empty = no e-mail recipients (an alarm may then not select the email channel). No foreign key is possible on array elements; settings_page removes a deleted user''s id from here.';
+COMMENT ON COLUMN starcubes_meta.alarm.notify_xmpp_recipients IS
+    'auth_user ids selected as the XMPP recipients of this alarm, resolved through auth_user.xmpp_jid at dispatch time. Empty = no XMPP recipients (an alarm may then not select the xmpp channel). No foreign key is possible on array elements; settings_page removes a deleted user''s id from here.';
+
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS pagerduty_routing_key text;
+
+COMMENT ON COLUMN starcubes_meta.datasource.pagerduty_routing_key IS
+    'PagerDuty Events API v2 routing key (integration token) of the PagerDuty service that carries this datasource''s alarms. One service per source: every alarm on the datasource triggers into the same key. NULL = PagerDuty disabled for this source. Credential — maintained on the password-type field on the source edit page, never exported in a profile.';

@@ -71,8 +71,13 @@ evaluator needs no locking of its own. A SQL NULL aggregate (an empty
 genuine 0, so `count(*) < 1` is a valid "no data" alarm.
 
 The only wired action is the logging itself — the row plus
-`logging.getLogger(__name__)`. `notify_channels` keeps its vocabulary
-(email/slack/pagerduty stay reserved), see `docs/backlog.md`.
+`logging.getLogger(__name__)`. `notify_channels` selects which transports
+fire: `sources/alarm_notify.py` (Django-side) resolves the per-channel
+recipients and sends. This module's job is to *announce*: every open/close
+transition is returned to the caller as a transition dict (see
+`evaluate_alarm`), in the same transaction that wrote the episode row, so a
+caller can dispatch notifications without re-querying what happened. See
+`docs/alarm.md` and `docs/backlog.md` for the channel semantics.
 
 No Django imports — same constraint as the rest of `core/`.
 """
@@ -353,7 +358,7 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict) -> dict:
     """
     counts = {"windows": 0, "breaches": 0,
               "episodes_opened": 0, "episodes_extended": 0,
-              "episodes_closed": 0}
+              "episodes_closed": 0, "transitions": []}
 
     fact_max = fact_max_time(source)
     if fact_max is None:
@@ -368,13 +373,17 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict) -> dict:
 
     value, breach = _evaluate_window(source, alarm, fact_max)
     counts["windows"] = 1
-    counts["breaches"] = int(breach)
+    transitions = counts["transitions"]
 
     with meta_engine.begin() as conn:
+        # Only the columns the two transition dicts need: the episode row's
+        # first breach stamps and values travel into the "closed" transition
+        # unchanged (the UPDATE below does not touch them).
         open_ep = conn.execute(text(
-            "SELECT id FROM starcubes_meta.alarm_firing "
+            "SELECT id, first_breach_at, last_breach_at, first_value, last_value "
+            "FROM starcubes_meta.alarm_firing "
             "WHERE alarm_id = :aid AND closed_at IS NULL"
-        ), {"aid": alarm["id"]}).scalar()
+        ), {"aid": alarm["id"]}).mappings().first()
 
         if breach:
             if open_ep is None:
@@ -382,13 +391,19 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict) -> dict:
                 # backs this up: should a second open episode ever race in,
                 # the IntegrityError propagates to the per-alarm handler in
                 # run_alarm_cycle and is logged.
-                conn.execute(text(
+                episode_id = conn.execute(text(
                     "INSERT INTO starcubes_meta.alarm_firing "
                     "  (alarm_id, first_breach_at, last_breach_at, "
                     "   first_value, last_value) "
-                    "VALUES (:aid, :hwm, :hwm, :v, :v)"
-                ), {"aid": alarm["id"], "hwm": fact_max, "v": value})
+                    "VALUES (:aid, :hwm, :hwm, :v, :v) RETURNING id"
+                ), {"aid": alarm["id"], "hwm": fact_max, "v": value}).scalar()
                 counts["episodes_opened"] += 1
+                transitions.append({
+                    "kind": "opened", "episode_id": episode_id,
+                    "value": value,
+                    "first_breach_at": fact_max, "last_breach_at": fact_max,
+                    "closed_at": None,
+                })
                 logger.info("alarm %s (%s): episode opened at hwm %s (v=%s)",
                             alarm["name"], source.name, fact_max, value)
             else:
@@ -396,14 +411,21 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict) -> dict:
                     "UPDATE starcubes_meta.alarm_firing "
                     "SET last_breach_at = :hwm, last_value = :v "
                     "WHERE id = :eid"
-                ), {"hwm": fact_max, "v": value, "eid": open_ep})
+                ), {"hwm": fact_max, "v": value, "eid": open_ep["id"]})
                 counts["episodes_extended"] += 1
         elif open_ep is not None:
             conn.execute(text(
                 "UPDATE starcubes_meta.alarm_firing "
                 "SET closed_at = :hwm WHERE id = :eid"
-            ), {"hwm": fact_max, "eid": open_ep})
+            ), {"hwm": fact_max, "eid": open_ep["id"]})
             counts["episodes_closed"] += 1
+            transitions.append({
+                "kind": "closed", "episode_id": open_ep["id"],
+                "value": value,
+                "first_breach_at": open_ep["first_breach_at"],
+                "last_breach_at": open_ep["last_breach_at"],
+                "closed_at": fact_max,
+            })
             logger.info("alarm %s (%s): episode closed at hwm %s",
                         alarm["name"], source.name, fact_max)
 
@@ -411,6 +433,22 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict) -> dict:
             "UPDATE starcubes_meta.alarm SET eval_end = :end "
             "WHERE id = :aid"
         ), {"end": fact_max, "aid": alarm["id"]})
+
+    # Stamp every transition with the alarm's identity and channel config —
+    # plain row data the Django-side dispatcher (sources/alarm_notify.py)
+    # needs to resolve recipients and routing keys. No transport knowledge
+    # here: core/ never resolves addresses, `auth_user` is Django-managed.
+    for t in transitions:
+        t.update(
+            alarm_id=alarm["id"], alarm_name=alarm["name"],
+            datasource_id=alarm["datasource_id"], ds_name=alarm["ds_name"],
+            measure=alarm["measure"], cond_op=alarm["cond_op"],
+            threshold=alarm["threshold"], window_s=alarm["window_s"],
+            context_filter=alarm.get("context_filter"),
+            notify_channels=alarm.get("notify_channels") or [],
+            notify_email_recipients=alarm.get("notify_email_recipients") or [],
+            notify_xmpp_recipients=alarm.get("notify_xmpp_recipients") or [],
+        )
 
     return counts
 
@@ -433,7 +471,7 @@ def run_alarm_cycle(meta_engine, dest_dsn: str, *,
     """
     counts = {"alarms": 0, "windows": 0, "breaches": 0,
               "episodes_opened": 0, "episodes_extended": 0,
-              "episodes_closed": 0, "errors": 0}
+              "episodes_closed": 0, "errors": 0, "transitions": []}
 
     where = "WHERE a.enabled"
     params: dict = {}
@@ -445,6 +483,8 @@ def run_alarm_cycle(meta_engine, dest_dsn: str, *,
         rows = conn.execute(text(
             "SELECT a.id, a.datasource_id, a.name, a.context_filter, "
             "       a.measure, a.cond_op, a.threshold, a.window_s, "
+            "       a.notify_channels, a.notify_email_recipients, "
+            "       a.notify_xmpp_recipients, "
             "       a.eval_end, d.name AS ds_name "
             "  FROM starcubes_meta.alarm a "
             "  JOIN starcubes_meta.datasource d ON d.id = a.datasource_id "
@@ -484,5 +524,10 @@ def run_alarm_cycle(meta_engine, dest_dsn: str, *,
             for key in ("windows", "breaches", "episodes_opened",
                         "episodes_extended", "episodes_closed"):
                 counts[key] += res[key]
+
+            # The transitions ride along to the Django-side dispatcher —
+            # this module stays free of any transport or addressing detail
+            # (`auth_user` is Django-managed, see sources/alarm_notify.py).
+            counts["transitions"].extend(res["transitions"])
 
     return counts
