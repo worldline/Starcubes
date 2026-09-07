@@ -36,6 +36,7 @@ from core.etl import (truncate_last_partition, truncate_partition,
                       drop_partition, delete_fact_from,
                       clear_etl_history, set_highwatermark)
 from core.housekeeping import run_housekeeping
+from core.pipeline_alarm import CONDITIONS as _PIPELINE_CONDS
 from core.preflight import run_preflight
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user, history_list_user
@@ -441,6 +442,8 @@ def _build_source_context(pk: int) -> dict:
         "index_methods":    INDEX_METHODS,
         "graph_styles":     GRAPH_STYLES,
         "measure_aggs":     measure_aggs,
+        "pipeline_conditions": [{"code": c, "title": t}
+                                for c, t in sorted(PIPELINE_CONDITIONS.items())],
         "pg_types_json":    _json.dumps(PG_TYPES),
         "roles_json":       _json.dumps(ROLES),
         "idx_methods_json": _json.dumps(INDEX_METHODS),
@@ -489,6 +492,7 @@ def source_detail(request, pk: int):
         "group_set_tokens": ctx["group_set_tokens"],
         "measures":    ctx["measures"],
         "measure_aggs": ctx["measure_aggs"],
+        "pipeline_conditions": ctx["pipeline_conditions"],
         "graph_styles": ctx["graph_styles"],
         "current_source_id":   ctx["current_source_id"],
         "current_source_name": ctx["current_source_name"],
@@ -2007,6 +2011,11 @@ def measure_delete(request, pk: int, measure_id: int):
 # constraint — the DB enforces it, but validating here gives a friendlier
 # 400 than a Postgres exception bubbling up through the generic except.
 _ALARM_OPS = {">", "<", "=", ">=", "<="}
+# The pipeline conditions, keyed by code → the label the GUI shows. Read from
+# core so the list cannot drift from the evaluator or from the CHECK
+# constraint that backs it.
+PIPELINE_CONDITIONS = {c.code: c.title
+                       for c in _PIPELINE_CONDS.values()}
 
 # Notification channels — every value `alarm.notify_channels` accepts.
 # email/xmpp/pagerduty dispatch via sources/alarm_notify.py; `log` is no
@@ -2056,7 +2065,9 @@ def _parse_context_field(raw_ctx):
     return parsed, None
 
 
-def _parse_alarm_fields(request) -> tuple[dict, dict]:
+def _parse_alarm_fields(request, *,
+                        rule_kind: str | None = None
+                        ) -> tuple[dict, dict]:
     """Validate POST fields for an alarm and return (values, errors).
 
     Both alarms_list (which builds an HTML row) and the add/edit endpoints
@@ -2084,8 +2095,40 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
         "notify_email_recipients": [],
         "notify_xmpp_recipients": [],
         "enabled": True,
+        "rule_kind": "threshold",
+        "condition": None,
     }
     errors: dict = {}
+
+    # A pipeline alarm watches ETL state, not fact rows, so measure,
+    # window_s and the context are meaningless for it. Skipping their
+    # branches rather than letting the defaults through is the point: a
+    # pipeline row silently acquiring measure='count(*)', window_s=300 would
+    # be indistinguishable from a threshold row that had been mis-saved.
+    # On an edit the caller passes the *stored* kind: an alarm's kind is not
+    # editable, and the inline row editor does not send the field at all —
+    # letting it default to 'threshold' there would rewrite a pipeline row's
+    # measure and window_s on every save.
+    rule_kind_from_post = rule_kind is None
+    rule_kind = (rule_kind
+                 or (request.POST.get("rule_kind") or "threshold").strip())
+    if rule_kind not in ("threshold", "pipeline"):
+        errors["rule_kind"] = "rule_kind must be threshold or pipeline"
+        rule_kind = "threshold"
+    values["rule_kind"] = rule_kind
+    is_pipeline = rule_kind == "pipeline"
+    if is_pipeline and "condition" in request.POST:
+        condition = (request.POST.get("condition") or "").strip()
+        if condition not in PIPELINE_CONDITIONS:
+            errors["condition"] = (f"condition must be one of "
+                                   f"{sorted(PIPELINE_CONDITIONS)}")
+        else:
+            values["condition"] = condition
+    elif is_pipeline and rule_kind_from_post:
+        # Creating a pipeline alarm without naming its condition is not a
+        # keep-stored case, it is an incomplete form.
+        errors["condition"] = (f"condition is required; one of "
+                               f"{sorted(PIPELINE_CONDITIONS)}")
 
     name = (request.POST.get("name") or "").strip()
     if not name:
@@ -2112,32 +2155,35 @@ def _parse_alarm_fields(request) -> tuple[dict, dict]:
     except (TypeError, ValueError):
         errors["threshold"] = "threshold must be a number"
 
-    try:
-        window_s = int(request.POST.get("window_s") or 300)
-        if window_s <= 0:
-            errors["window_s"] = "window_s must be > 0"
-        else:
-            values["window_s"] = window_s
-    except (TypeError, ValueError):
-        errors["window_s"] = "window_s must be an integer"
+    if not is_pipeline:
+        try:
+            window_s = int(request.POST.get("window_s") or 300)
+            if window_s <= 0:
+                errors["window_s"] = "window_s must be > 0"
+            else:
+                values["window_s"] = window_s
+        except (TypeError, ValueError):
+            errors["window_s"] = "window_s must be an integer"
 
     # Syntactic measure check — the semantic column check needs the Source
     # and lives in _validate_alarm_context. quantile(col) is rejected here:
     # it is not a scalar a threshold can compare against.
-    measure = (request.POST.get("measure") or "count(*)").strip() or "count(*)"
-    m = re.match(r"(\w+)\((\w+)\)$", measure)
-    if (measure != "count(*)" and not m
-            and not re.match(r"^\w+$", measure)):
-        errors["measure"] = ("measure must be count(*), a column, or "
-                             "func(col) with func in sum/avg/min/max")
-    elif m and m.group(1) not in MEASURE_FUNCS:
-        errors["measure"] = (f"measure function {m.group(1)!r} is not "
-                             f"comparable; choose from count(*), "
-                             f"{sorted(MEASURE_FUNCS)} or a bare column")
-    else:
-        values["measure"] = measure
+    if not is_pipeline:
+        measure = (request.POST.get("measure")
+                   or "count(*)").strip() or "count(*)"
+        m = re.match(r"(\w+)\((\w+)\)$", measure)
+        if (measure != "count(*)" and not m
+                and not re.match(r"^\w+$", measure)):
+            errors["measure"] = ("measure must be count(*), a column, or "
+                                 "func(col) with func in sum/avg/min/max")
+        elif m and m.group(1) not in MEASURE_FUNCS:
+            errors["measure"] = (f"measure function {m.group(1)!r} is not "
+                                 f"comparable; choose from count(*), "
+                                 f"{sorted(MEASURE_FUNCS)} or a bare column")
+        else:
+            values["measure"] = measure
 
-    if "context" in request.POST:
+    if not is_pipeline and "context" in request.POST:
         rows, ctx_err = _parse_context_field(request.POST.get("context"))
         if ctx_err:
             errors["context"] = ctx_err
@@ -2221,6 +2267,8 @@ def _alarm_row_to_dict(row) -> dict:
         "id": row.id,
         "datasource_id": row.datasource_id,
         "name": row.name,
+        "rule_kind": row.rule_kind,
+        "condition": row.condition,
         "context_filter": row.context_filter,
         "comment": row.comment,
         "measure": row.measure,
@@ -2268,7 +2316,15 @@ def _validate_alarm_context(pk: int, values: dict):
     failure, else None. Callers pass the value of `values["context_rows"]`
     inside — None means "not submitted" (edit keeps the stored context) and
     skips context validation; the measure check always runs.
+
+    A pipeline alarm has neither a measure nor a context, so there is
+    nothing here to check — and skipping the whole function also removes
+    `Source.load` from its save path, which matters: a rule that watches an
+    ETL must not become uneditable because the source database it watches
+    is unreachable.
     """
+    if values.get("rule_kind") == "pipeline":
+        return None
     try:
         source = Source.load(_meta_engine(),
                              dest_dsn=settings.STARCUBES_POSTGRES_DSN, name_or_id=pk)
@@ -2402,7 +2458,8 @@ def alarms_list(request, pk: int):
                 return JsonResponse({"ok": False, "error":
                     f"datasource {pk} not found"}, status=404)
             rows = conn.execute(text(
-                "SELECT a.id, a.datasource_id, a.name, a.context_filter, a.comment, "
+                "SELECT a.id, a.datasource_id, a.name, "
+                "       a.rule_kind, a.condition, a.context_filter, a.comment, "
                 "       a.measure, a.cond_op, a.threshold, a.window_s, a.notify_channels, "
                 "       a.notify_email_recipients, a.notify_xmpp_recipients, a.severity, "
                 "       a.enabled, a.created_at, a.updated_at, "
@@ -2527,18 +2584,22 @@ def alarm_add(request, pk: int):
                     f"datasource {pk} not found"}, status=404)
             row = conn.execute(text(
                 "INSERT INTO starcubes_meta.alarm "
-                "  (datasource_id, name, context_filter, comment, "
+                "  (datasource_id, name, rule_kind, condition, "
+                "   context_filter, comment, "
                 "   measure, cond_op, threshold, window_s, notify_channels, "
                 "   notify_email_recipients, notify_xmpp_recipients, "
                 "   severity, enabled) "
-                "VALUES (:ds, :name, CAST(:ctx AS jsonb), :cmt, "
+                "VALUES (:ds, :name, :rk, :cond, CAST(:ctx AS jsonb), :cmt, "
                 "        :m, :op, :thr, :ws, CAST(:nc AS text[]), "
                 "        :ner, :nxr, :sev, :en) "
-                "RETURNING id, datasource_id, name, context_filter, comment, "
+                "RETURNING id, datasource_id, name, rule_kind, condition, "
+                "          context_filter, comment, "
                 "          measure, cond_op, threshold, window_s, notify_channels, "
                 "          notify_email_recipients, notify_xmpp_recipients, severity, "
                 "          enabled, created_at, updated_at"
-            ), {"ds": pk, "name": values["name"], "ctx": ctx_json,
+            ), {"ds": pk, "name": values["name"],
+                "rk": values["rule_kind"], "cond": values["condition"],
+                "ctx": ctx_json,
                 "cmt": values["comment"],
                 "m": values["measure"], "op": values["cond_op"],
                 "thr": values["threshold"], "ws": values["window_s"],
@@ -2577,7 +2638,16 @@ def alarm_edit(request, pk: int, alarm_id: int):
     evaluation progress. Old and new snapshots land in alarm_history in
     the same transaction as the UPDATE.
     """
-    values, errors = _parse_alarm_fields(request)
+    with _meta_engine().begin() as conn:
+        stored_kind = conn.execute(text(
+            "SELECT rule_kind FROM starcubes_meta.alarm "
+            " WHERE id = :id AND datasource_id = :ds"
+        ), {"id": alarm_id, "ds": pk}).scalar()
+    if stored_kind is None:
+        return JsonResponse({"ok": False, "error": "alarm not found"},
+                            status=404)
+
+    values, errors = _parse_alarm_fields(request, rule_kind=stored_kind)
     if errors:
         return JsonResponse({"ok": False, "error":
             "; ".join(f"{k}: {v}" for k, v in errors.items()),
@@ -2601,15 +2671,27 @@ def alarm_edit(request, pk: int, alarm_id: int):
     # field, so only non-UI callers hit the keep path); empty = clear to
     # NULL, i.e. back to the global default.
     set_severity = "severity" in request.POST
-    sets = ["name = :name", "comment = :cmt", "measure = :m", "cond_op = :op",
-            "threshold = :thr", "window_s = :ws",
+    # The always-set list is what makes the inline editor work: every save
+    # round-trips these. For a pipeline row that is exactly wrong — measure
+    # and window_s are not on its form, so they would be written back as the
+    # parser's defaults and quietly turn the row into something else.
+    sets = ["name = :name", "comment = :cmt", "cond_op = :op",
+            "threshold = :thr",
             "notify_channels = CAST(:nc AS text[])", "enabled = :en"]
     params: dict = {"ds": pk, "id": alarm_id, "name": values["name"],
                     "cmt": values["comment"],
-                    "m": values["measure"], "op": values["cond_op"],
-                    "thr": values["threshold"], "ws": values["window_s"],
+                    "op": values["cond_op"],
+                    "thr": values["threshold"],
                     "nc": list(values["notify_channels"]),
                     "en": values["enabled"]}
+    if values["rule_kind"] == "pipeline":
+        if values["condition"] is not None:
+            sets.append("condition = :cond")
+            params["cond"] = values["condition"]
+    else:
+        sets.extend(["measure = :m", "window_s = :ws"])
+        params["m"] = values["measure"]
+        params["ws"] = values["window_s"]
     if set_context:
         sets.append("context_filter = CAST(:ctx AS jsonb)")
         params["ctx"] = ctx_json
@@ -2626,7 +2708,8 @@ def alarm_edit(request, pk: int, alarm_id: int):
     try:
         with _meta_engine().begin() as conn:
             old = conn.execute(text(
-                "SELECT id, datasource_id, name, context_filter, comment, "
+                "SELECT id, datasource_id, name, rule_kind, condition, "
+                "       context_filter, comment, "
                 "       measure, cond_op, threshold, window_s, notify_channels, "
                 "       notify_email_recipients, notify_xmpp_recipients, severity, "
                 "       enabled, created_at, updated_at "
@@ -2658,7 +2741,8 @@ def alarm_edit(request, pk: int, alarm_id: int):
                 + ", ".join(sets)
                 + ", updated_at = now() "
                 " WHERE id = :id AND datasource_id = :ds "
-                "RETURNING id, datasource_id, name, context_filter, comment, "
+                "RETURNING id, datasource_id, name, rule_kind, condition, "
+                "          context_filter, comment, "
                 "          measure, cond_op, threshold, window_s, notify_channels, "
                 "          notify_email_recipients, notify_xmpp_recipients, severity, "
                 "          enabled, created_at, updated_at"
@@ -2785,6 +2869,24 @@ def alarm_firings(request, pk: int, alarm_id: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
+def _episode_rule(r) -> str:
+    """The one-line rule an episode row shows, per alarm kind.
+
+    A pipeline alarm has no measure and no trailing window — printing them
+    would render "None > 3600 (5 min)", and `fmt_window_s` on a window that
+    means nothing is worse than useless. This is the only place the Firings
+    view had to learn that a second kind of alarm exists: `_firings.html`,
+    `firings_context` and the per-alarm JSON endpoint treat `rule` as an
+    opaque string and needed no change at all.
+    """
+    if r["rule_kind"] == "pipeline":
+        cond = _PIPELINE_CONDS.get(r["condition"] or "")
+        label = cond.label if cond else (r["condition"] or "?")
+        return f"{label} {r['cond_op']} {r['threshold']:g}"
+    return (f"{r['measure']} {r['cond_op']} "
+            f"{r['threshold']:g} ({fmt_window_s(r['window_s'])})")
+
+
 def _firing_episodes(show: str = "all", ds: int | None = None):
     """The firing-episode rows every firings view renders.
 
@@ -2809,6 +2911,7 @@ def _firing_episodes(show: str = "all", ds: int | None = None):
             "SELECT f.id, f.first_breach_at, f.last_breach_at, f.closed_at, "
             "       f.first_value, f.last_value, "
             "       a.id AS alarm_id, a.name AS alarm_name, a.measure, "
+            "       a.rule_kind, a.condition, "
             "       a.cond_op, a.threshold, a.window_s, "
             "       d.id AS ds_id, d.name AS ds_name "
             "  FROM starcubes_meta.alarm_firing f "
@@ -2826,8 +2929,7 @@ def _firing_episodes(show: str = "all", ds: int | None = None):
             "alarm_name": r["alarm_name"],
             "ds_id": r["ds_id"],
             "ds_name": r["ds_name"],
-            "rule": (f"{r['measure']} {r['cond_op']} "
-                     f"{r['threshold']:g} ({fmt_window_s(r['window_s'])})"),
+            "rule": _episode_rule(r),
             "open": r["closed_at"] is None,
             "first_breach_at": r["first_breach_at"],
             "last_breach_at": r["last_breach_at"],

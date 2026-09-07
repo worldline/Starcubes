@@ -218,6 +218,76 @@
       </div>
     </div>
   </div>
+
+  {% comment %}
+    Pipeline alarms — deliberately a second table, not more columns on the
+    first one. Four of the threshold table's eleven columns (Context,
+    Measure, Window, and the chart link that depends on both) have no
+    meaning for a rule that watches ETL state rather than fact rows, and
+    rendering them empty would suggest they could be filled in. The two
+    tables share everything that is genuinely shared: the recipient
+    machinery, the channel checkboxes, the severity select, rowFields and
+    the same edit/save cycle.
+  {% endcomment %}
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">
+      <span class="card-title">Pipeline alarms</span>
+      <span class="text-muted" style="font-size:12px">
+        Rules about the ETL itself &mdash; a source that stopped producing, runs that fail, preflight findings, a dimension filling up. Evaluated after every load <em>and</em> from outside it, because a load that never happens is the thing most worth hearing about.
+      </span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <table class="data-table" id="palarmTable">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Condition</th>
+            <th>Comment</th>
+            <th style="text-align:center">Cond</th>
+            <th style="text-align:right">Thresh.</th>
+            <th style="text-align:center">Sev.</th>
+            <th>Channels</th>
+            <th style="text-align:center;width:70px">Enabled</th>
+            <th style="text-align:right;width:110px">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="palarmBody">
+          <tr><td colspan="9" class="text-muted" style="text-align:center;padding:16px">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
+      <button class="btn btn-secondary btn-sm" id="palarmAddBtn">+ Pipeline alarm</button>
+      <div id="palarmAddForm" style="display:none;margin-top:12px">
+        <div class="form-row">
+          <div><label class="form-label">Name</label>
+            <input class="form-control" id="paName" placeholder="e.g. source stopped"></div>
+          <div><label class="form-label">Condition</label>
+            <select class="form-control" id="paCondition">
+              {% for c in pipeline_conditions %}<option value="{{ c.code }}">{{ c.title }}</option>{% endfor %}
+            </select></div>
+          <div><label class="form-label">Cond</label>
+            <select class="form-control" id="paCondOp" style="max-width:80px">
+              <option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option><option>=</option>
+            </select></div>
+          <div><label class="form-label">Threshold</label>
+            <input class="form-control" id="paThreshold" type="number" step="any" value="3600"></div>
+        </div>
+        <div class="form-hint" id="paHint" style="margin-top:4px"></div>
+        <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12px;display:flex;gap:8px">
+            <label><input type="checkbox" class="pa-ch" value="email"> email</label>
+            <label><input type="checkbox" class="pa-ch" value="xmpp"> xmpp</label>
+            <label><input type="checkbox" class="pa-ch" value="pagerduty"> pagerduty</label>
+          </span>
+          <button class="btn btn-primary btn-sm" id="paSave">Create</button>
+          <button class="btn btn-secondary btn-sm" id="paCancel">Cancel</button>
+          <span id="paErr" class="cmd-result"></span>
+        </div>
+        <div class="form-hint" style="margin-top:6px">A rule with no channels still opens and closes episodes in the Firings tab &mdash; it just does not send anything. Pick recipients on the rule after creating it, the same way threshold alarms do.</div>
+      </div>
+    </div>
+  </div>
 </div>
 
 {% comment %}
@@ -753,12 +823,26 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     // so an add or a delete moves the number without a page reload.
     var tabCount = document.getElementById('alarmTabCount');
     if (tabCount) tabCount.textContent = alarms.length;
-    if (!alarms.length) {
+
+    // One endpoint, two tables: the server returns every rule for this
+    // datasource and the kind decides which table it belongs in.
+    var pipeline = alarms.filter(function(a) { return a.rule_kind === 'pipeline'; });
+    var thresh = alarms.filter(function(a) { return a.rule_kind !== 'pipeline'; });
+    var pbody = document.getElementById('palarmBody');
+    if (pbody) {
+      pbody.innerHTML = pipeline.length
+        ? pipeline.map(buildPipelineRow).join('')
+        : '<tr><td colspan="9" class="text-muted" style="text-align:center;'
+          + 'padding:16px">No pipeline alarms yet.</td></tr>';
+    }
+
+    if (!thresh.length) {
       tbody.innerHTML = '<tr><td colspan="11" class="text-muted" '
         + 'style="text-align:center;padding:16px">No alarms yet.</td></tr>';
+      applyCtxHighlight();
       return;
     }
-    tbody.innerHTML = alarms.map(buildRow).join('');
+    tbody.innerHTML = thresh.map(buildRow).join('');
     // The rows were just rebuilt — re-apply the highlight from the last lookup.
     applyCtxHighlight();
   }
@@ -771,6 +855,127 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
         + esc(d.error || 'Could not load alarms') + '</td></tr>';
     });
   }
+
+
+  // --- Pipeline alarms ---------------------------------------------------
+  // A rule about the ETL, not about the data. Same edit cycle as a
+  // threshold row (startEdit / rowFields / the alarms edit endpoint), a
+  // narrower set of columns: no context, no measure, no window, because a
+  // pipeline condition has none of those.
+  var PIPELINE_CONDS = {
+    {% for c in pipeline_conditions %}"{{ c.code|escapejs }}": "{{ c.title|escapejs }}"{% if not forloop.last %},
+    {% endif %}{% endfor %}
+  };
+
+  function buildPipelineRow(a) {
+    var cmt = a.comment || '';
+    var title = PIPELINE_CONDS[a.condition] || a.condition || '—';
+    return '<tr data-id="' + a.id + '">'
+      + '<td><span class="row-display"><strong>' + esc(a.name) + '</strong>'
+      +     (a.has_open_episode
+      ?       ' <span class="badge badge-running"><span class="dot">&#9679;</span> open</span>'
+      :       '')
+      +     '</span>'
+      +     '<input class="row-edit cell-input" name="name" value="' + esc(a.name) + '"></td>'
+      + '<td><span class="row-display" title="' + esc(a.condition || '') + '">'
+      +     esc(title) + '</span></td>'
+      + '<td><span class="row-display text-muted" style="font-size:11px" title="' + esc(cmt) + '">'
+      +     esc(cmt.length > 40 ? cmt.slice(0, 40) + '…' : cmt || '—') + '</span>'
+      +     '<input class="row-edit cell-input" name="comment" style="width:140px" placeholder="(none)" value="' + esc(cmt) + '"></td>'
+      + '<td style="text-align:center"><span class="row-display text-mono">' + esc(a.cond_op) + '</span>'
+      +     '<select class="row-edit cell-input" name="cond_op" style="width:60px">' + opts(COND_OPS, a.cond_op) + '</select></td>'
+      + '<td style="text-align:right"><span class="row-display">' + a.threshold.toLocaleString() + '</span>'
+      +     '<input class="row-edit cell-input" name="threshold" type="number" step="any" style="width:90px" value="' + a.threshold + '"></td>'
+      + '<td style="text-align:center"><span class="row-display text-muted"'
+      +     ' title="PagerDuty severity (global default when unset)">'
+      +     (a.severity ? esc(a.severity) : 'global') + '</span>'
+      +     '<select class="row-edit cell-input" name="severity">'
+      +         '<option value=""' + (a.severity ? '' : ' selected') + '>— global default —</option>'
+      +         ['critical', 'error', 'warning', 'info'].map(function(sv) {
+                    return '<option value="' + sv + '"'
+                      + (a.severity === sv ? ' selected' : '') + '>' + sv + '</option>';
+                  }).join('')
+      +       '</select></td>'
+      + '<td><span class="row-display text-muted" style="font-size:11px">'
+      +     alarmChannelsDisplay(a) + '</span>'
+      +     '<span class="row-edit" style="gap:8px;flex-wrap:wrap;font-size:12px">'
+      +       ['email', 'xmpp', 'pagerduty'].map(function(ch) {
+                  return '<label><input type="checkbox" name="notify_channels" value="' + ch + '"'
+                    + ((a.notify_channels || []).indexOf(ch) !== -1 ? ' checked' : '')
+                    + '> ' + ch + '</label>';
+                }).join('')
+      +     '</span></td>'
+      + '<td style="text-align:center"><span class="row-display">' + (a.enabled ? '✓' : '—') + '</span>'
+      +     '<input class="row-edit" type="checkbox" name="enabled"' + (a.enabled ? ' checked' : '') + '></td>'
+      + '<td class="actions" style="text-align:right">'
+      +   '<span class="row-display">'
+      +     '<button class="btn-icon" data-act="info" title="History &amp; firings">ⓘ</button>'
+      +     '<button class="btn-icon" data-act="edit" title="Edit">✏</button>'
+      +     '<button class="btn-icon" data-act="del" title="Delete" style="color:var(--danger)">✕</button>'
+      +   '</span>'
+      +   '<span class="row-edit" style="gap:4px">'
+      +     '<button class="btn btn-primary btn-sm" data-act="save">Save</button>'
+      +     '<button class="btn btn-secondary btn-sm" data-act="cancel">Cancel</button>'
+      +   '</span>'
+      + '</td></tr>';
+  }
+
+  (function() {
+    var box = document.getElementById('palarmAddForm');
+    var btn = document.getElementById('palarmAddBtn');
+    if (!btn) return;
+    // What each condition's threshold is counted in — a number without its
+    // unit is the fastest way to set a limit of "3600 percent".
+    var UNITS = {
+      data_stale: 'seconds of standstill (3600 = an hour without a new row)',
+      run_failed: 'failed runs since the last good one (1 = tell me about any failure)',
+      no_recent_run: 'seconds since the last successful run (3600 = an hour without one)',
+      preflight_warn: 'findings at warn or block (1 = tell me about any)',
+      dim_full_pct: 'percent of the 32767 ceiling (80 = the usual warning point)'
+    };
+    var sel = document.getElementById('paCondition');
+    function hint() {
+      document.getElementById('paHint').textContent = UNITS[sel.value] || '';
+    }
+    sel.addEventListener('change', hint);
+    hint();
+    btn.addEventListener('click', function() {
+      box.style.display = box.style.display === 'none' ? '' : 'none';
+    });
+    document.getElementById('paCancel').addEventListener('click', function() {
+      box.style.display = 'none';
+    });
+    document.getElementById('paSave').addEventListener('click', function() {
+      var err = document.getElementById('paErr');
+      var fd = new FormData();
+      fd.append('rule_kind', 'pipeline');
+      fd.append('name', document.getElementById('paName').value.trim());
+      fd.append('condition', sel.value);
+      fd.append('cond_op', document.getElementById('paCondOp').value);
+      fd.append('threshold', document.getElementById('paThreshold').value);
+      fd.append('enabled', 'on');
+      document.querySelectorAll('.pa-ch:checked').forEach(function(el) {
+        fd.append('notify_channels', el.value);
+      });
+      err.textContent = '';
+      fetch('{% url "sources:alarm_add" ds.id %}', {
+        method: 'POST', body: fd,
+        headers: {'X-CSRFToken': csrfToken()}
+      }).then(function(r) { return r.json(); }).then(function(d) {
+        if (!d.ok) {
+          err.className = 'cmd-result err';
+          err.textContent = '✗ ' + (d.error || 'could not create');
+          return;
+        }
+        box.style.display = 'none';
+        document.getElementById('paName').value = '';
+        refresh();
+      }).catch(function(e) {
+        err.className = 'cmd-result err';
+        err.textContent = '✗ ' + e;
+      });
+    });
+  })();
 
   function rowFields(tr) {
     var fd = new FormData();
@@ -856,7 +1061,11 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     apply(xmppSel, 'xmpp');
   }
 
-  document.getElementById('alarmBody').addEventListener('click', function(ev) {
+  // Both tables, one handler: every action a pipeline row offers (ⓘ, edit,
+  // save, cancel, delete) behaves identically for both kinds, and the two
+  // that do not apply — the chart link and Clone, which both need a context
+  // and a measure — simply are not rendered on a pipeline row.
+  function onAlarmRowClick(ev) {
     var btn = ev.target.closest('[data-act]');
     if (!btn) return;
     var act = btn.dataset.act;
@@ -892,7 +1101,11 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
       }).catch(function(e){ alert('✗ ' + e); })
         .finally(function(){ btn.disabled = false; });
     }
-  });
+  }
+  document.getElementById('alarmBody')
+          .addEventListener('click', onAlarmRowClick);
+  document.getElementById('palarmBody')
+          .addEventListener('click', onAlarmRowClick);
 
   document.getElementById('alarmAddForm').addEventListener('submit', function(ev) {
     ev.preventDefault();
@@ -1164,8 +1377,12 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
   setInterval(function() {
     var btn = document.querySelector('#tabNav .tab-btn[data-tab="alarms"]');
     if (!btn || !btn.classList.contains('active')) return;       // tab not open
-    if (document.querySelector('#alarmBody tr.editing')) return; // inline edit
-    if (document.querySelector('#alarmBody .alarm-detail-row')) return; // ⓘ sub-row
+    // Both tables: a rebuild wipes whichever tbody the user is working in.
+    if (document.querySelector('#alarmBody tr.editing, #palarmBody tr.editing'))
+      return;                                                  // inline edit
+    if (document.querySelector(
+          '#alarmBody .alarm-detail-row, #palarmBody .alarm-detail-row'))
+      return;                                                  // ⓘ sub-row
     if (addPanelOpen()) return;                                  // add form open
     refresh().catch(function() {});
   }, 20000);
