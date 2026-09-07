@@ -408,8 +408,37 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict, *,
 
     value, breach = _evaluate_window(source, alarm, fact_max)
     counts["windows"] = 1
-    transitions = counts["transitions"]
+    if breach:
+        counts["breaches"] = 1
 
+    episode_step(meta_engine, alarm, breach=breach, at=fact_max, value=value,
+                 counts=counts, label=source.name)
+    stamp_transitions(counts["transitions"], alarm)
+    return counts
+
+
+def episode_step(meta_engine, alarm: dict, *, breach: bool, at: datetime,
+                 value: Optional[float], counts: dict,
+                 label: str = "") -> None:
+    """Open, extend or close this alarm's episode, and record the cursor.
+
+    The whole of the episode machine, and deliberately ignorant of *why*
+    something breached: it takes a verdict, an instant and a value. That is
+    what lets a pipeline alarm — whose condition is ETL state rather than a
+    measure over fact rows — reuse it verbatim instead of growing a second,
+    subtly different copy (see `core/pipeline_alarm.py`).
+
+    `at` is the clock the episode is stamped with. For a threshold alarm
+    that is the data high watermark; for a pipeline alarm it is the wall
+    clock, because "how long has nothing arrived" has no answer in data
+    time. `label` only ever appears in the log line.
+
+    Everything happens in one transaction, so a crash mid-alarm leaves no
+    half-applied episode. The `eval_end` update deliberately does not touch
+    `updated_at` — runtime progress must never masquerade as a user
+    configuration change in `alarm_history`.
+    """
+    transitions = counts["transitions"]
     with meta_engine.begin() as conn:
         # Only the columns the two transition dicts need: the episode row's
         # first breach stamps and values travel into the "closed" transition
@@ -430,49 +459,62 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict, *,
                     "INSERT INTO starcubes_meta.alarm_firing "
                     "  (alarm_id, first_breach_at, last_breach_at, "
                     "   first_value, last_value) "
-                    "VALUES (:aid, :hwm, :hwm, :v, :v) RETURNING id"
-                ), {"aid": alarm["id"], "hwm": fact_max, "v": value}).scalar()
+                    "VALUES (:aid, :at, :at, :v, :v) RETURNING id"
+                ), {"aid": alarm["id"], "at": at, "v": value}).scalar()
                 counts["episodes_opened"] += 1
                 transitions.append({
                     "kind": "opened", "episode_id": episode_id,
                     "value": value,
-                    "first_breach_at": fact_max, "last_breach_at": fact_max,
+                    "first_breach_at": at, "last_breach_at": at,
                     "closed_at": None,
                 })
-                logger.info("alarm %s (%s): episode opened at hwm %s (v=%s)",
-                            alarm["name"], source.name, fact_max, value)
+                logger.info("alarm %s (%s): episode opened at %s (v=%s)",
+                            alarm["name"], label, at, value)
             else:
                 conn.execute(text(
                     "UPDATE starcubes_meta.alarm_firing "
-                    "SET last_breach_at = :hwm, last_value = :v "
+                    "SET last_breach_at = :at, last_value = :v "
                     "WHERE id = :eid"
-                ), {"hwm": fact_max, "v": value, "eid": open_ep["id"]})
+                ), {"at": at, "v": value, "eid": open_ep["id"]})
                 counts["episodes_extended"] += 1
         elif open_ep is not None:
             conn.execute(text(
                 "UPDATE starcubes_meta.alarm_firing "
-                "SET closed_at = :hwm WHERE id = :eid"
-            ), {"hwm": fact_max, "eid": open_ep["id"]})
+                "SET closed_at = :at WHERE id = :eid"
+            ), {"at": at, "eid": open_ep["id"]})
             counts["episodes_closed"] += 1
             transitions.append({
                 "kind": "closed", "episode_id": open_ep["id"],
                 "value": value,
                 "first_breach_at": open_ep["first_breach_at"],
                 "last_breach_at": open_ep["last_breach_at"],
-                "closed_at": fact_max,
+                "closed_at": at,
             })
-            logger.info("alarm %s (%s): episode closed at hwm %s",
-                        alarm["name"], source.name, fact_max)
+            logger.info("alarm %s (%s): episode closed at %s",
+                        alarm["name"], label, at)
 
         conn.execute(text(
             "UPDATE starcubes_meta.alarm SET eval_end = :end "
             "WHERE id = :aid"
-        ), {"end": fact_max, "aid": alarm["id"]})
+        ), {"end": at, "aid": alarm["id"]})
 
-    # Stamp every transition with the alarm's identity and channel config —
-    # plain row data the Django-side dispatcher (sources/alarm_notify.py)
-    # needs to resolve recipients and routing keys. No transport knowledge
-    # here: core/ never resolves addresses, `auth_user` is Django-managed.
+
+def stamp_transitions(transitions: list[dict], alarm: dict) -> None:
+    """Stamp every transition with the alarm's identity and channel config.
+
+    Plain row data the Django-side dispatcher (`sources/alarm_notify.py`)
+    needs to resolve recipients and routing keys. No transport knowledge
+    here: `core/` never resolves addresses, `auth_user` is Django-managed.
+
+    `measure` is what the dispatcher renders as the condition, and it is
+    subscripted there rather than `.get()`. A pipeline alarm has no measure,
+    so `core/pipeline_alarm.py` puts a readable condition label in that key
+    before calling this — which is exactly why the notification path needed
+    no change at all to carry a second kind of alarm.
+
+    Note what is *not* stamped: an `alarm.rule_kind` value must never land
+    on a transition under the key `kind`, which already means opened/closed.
+    """
     for t in transitions:
         t.update(
             alarm_id=alarm["id"], alarm_name=alarm["name"],
@@ -486,18 +528,63 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict, *,
             severity=alarm.get("severity") or None,
         )
 
-    return counts
+
+def _run_pipeline_alarms(meta_engine, alarms: list[dict],
+                         counts: dict) -> None:
+    """Evaluate the pipeline rules of a cycle, under the shared lock.
+
+    Imported lazily: `core/pipeline_alarm.py` imports the episode machine
+    from here, so a module-level import would be circular. It is also the
+    honest shape — a cycle with no pipeline rules should not pay for the
+    import at all.
+
+    The lock is what lets three evaluators coexist (the ETL loop, the
+    request path and the supervisor process). Without it they would race to
+    open the same episode, one would lose on `ux_alarm_firing_open`, and the
+    cycle would count a spurious error every time two of them happened to
+    tick together.
+    """
+    if not alarms:
+        return
+    from .pipeline_alarm import evaluate_pipeline_alarm, pipeline_eval_lock
+
+    with pipeline_eval_lock(meta_engine) as got:
+        if not got:
+            logger.debug("pipeline alarms: another evaluator holds the "
+                         "lock, skipping this cycle")
+            return
+        for alarm in alarms:
+            try:
+                res = evaluate_pipeline_alarm(meta_engine, alarm)
+            except Exception:
+                logger.exception("alarm cycle: evaluating pipeline alarm "
+                                 "%s (%s) failed, skipping it",
+                                 alarm["name"], alarm["ds_name"])
+                counts["errors"] += 1
+                continue
+            for key in ("windows", "breaches", "episodes_opened",
+                        "episodes_extended", "episodes_closed"):
+                counts[key] += res[key]
+            counts["transitions"].extend(res["transitions"])
 
 
 def run_alarm_cycle(meta_engine, dest_dsn: str, *,
                     datasource_id: Optional[int] = None,
-                    source: Optional[Source] = None) -> dict:
+                    source: Optional[Source] = None,
+                    kinds: tuple[str, ...] = ("threshold", "pipeline")) -> dict:
     """One evaluation cycle over every enabled alarm.
 
     `datasource_id` narrows the cycle to one datasource — that is how
     `etl_run` drives it after a load. `source` lets that caller hand in the
     `Source` it already holds, so the cycle does not re-load it; it is only
     honoured for the datasource it belongs to.
+
+    `kinds` selects which sort of rule to evaluate. It matters more than it
+    looks: a cycle restricted to `("pipeline",)` touches nothing but
+    `starcubes_meta` — no `Source.load`, no source connection, no fact
+    query — which is what lets the middleware and the supervisor process
+    evaluate alarms for a datasource whose source database is unreachable,
+    or whose ETL is precisely the thing that has stopped.
 
     Sources are otherwise loaded once per datasource per cycle; each alarm
     and each datasource is isolated in its own try/except so one broken rule
@@ -509,8 +596,8 @@ def run_alarm_cycle(meta_engine, dest_dsn: str, *,
               "episodes_opened": 0, "episodes_extended": 0,
               "episodes_closed": 0, "errors": 0, "transitions": []}
 
-    where = "WHERE a.enabled"
-    params: dict = {}
+    where = "WHERE a.enabled AND a.rule_kind = ANY(:kinds)"
+    params: dict = {"kinds": list(kinds)}
     if datasource_id is not None:
         where += " AND a.datasource_id = :ds"
         params["ds"] = datasource_id
@@ -518,6 +605,7 @@ def run_alarm_cycle(meta_engine, dest_dsn: str, *,
     with meta_engine.begin() as conn:
         rows = conn.execute(text(
             "SELECT a.id, a.datasource_id, a.name, a.context_filter, "
+            "       a.rule_kind, a.condition, "
             "       a.measure, a.cond_op, a.threshold, a.window_s, "
             "       a.notify_channels, a.notify_email_recipients, "
             "       a.notify_xmpp_recipients, a.severity, "
@@ -532,8 +620,16 @@ def run_alarm_cycle(meta_engine, dest_dsn: str, *,
     if not alarms:
         return counts
 
+    # Pipeline alarms first, and separately: they need no Source and no fact
+    # clock, so evaluating them must not be held hostage to loading one.
+    _run_pipeline_alarms(
+        meta_engine, [a for a in alarms if a["rule_kind"] == "pipeline"],
+        counts)
+
     by_ds: dict[int, list[dict]] = {}
     for alarm in alarms:
+        if alarm["rule_kind"] != "threshold":
+            continue
         by_ds.setdefault(alarm["datasource_id"], []).append(alarm)
 
     for ds_id, ds_alarms in by_ds.items():

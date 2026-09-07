@@ -1089,3 +1089,53 @@ COMMENT ON COLUMN starcubes_meta.datasource.max_data_lag_s IS
   'Seconds of src_now - max_wm above which the source counts as having stopped producing. Reported by the preflight. 0 = unset, which is the honest setting for any source that does not produce continuously -- a batch source would otherwise raise a false alarm every night.';
 COMMENT ON COLUMN starcubes_meta.datasource.max_run_s IS
   'Wall-clock budget for one run. Past it the parent raises EtlAborted, the workers are reaped and the row lands as failed; the same value also bounds every source statement inside the run (statement_timeout / call_timeout per dialect). Never applied to a backfill or to the initial load, which are legitimately long. 0 = unset. A circuit breaker, not self-healing: the next window is wider, not smaller, so pair it with --limit if runs are genuinely too big.';
+
+
+-- 0036_pipeline_alarm.sql — a second kind of alarm, whose condition is the
+-- pipeline rather than the data. Everything the preflight, the housekeeping
+-- and etl_run.max_wm/src_now detect had no way of reaching a person; the
+-- alarm subsystem already owns episodes, channels, opt-in and dedup, so this
+-- is a second kind of row in it rather than a new subsystem. Reuses
+-- threshold/cond_op (every condition yields a number), the notification
+-- path and the Firings view; ignores measure/window_s/context_filter.
+-- Called rule_kind, NOT kind — the transition dicts already carry a `kind`
+-- meaning opened/closed and an alarm column of that name would be stamped
+-- over it, turning every notification into a resolution. Episodes are
+-- stamped with the wall clock, which is the only clock a "nothing has
+-- arrived since" question has. Mirror block; see
+-- migrations/0036_pipeline_alarm.sql for the semantics.
+ALTER TABLE starcubes_meta.alarm
+    ADD COLUMN IF NOT EXISTS rule_kind text NOT NULL DEFAULT 'threshold',
+    ADD COLUMN IF NOT EXISTS condition text;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_schema = 'starcubes_meta' AND table_name = 'alarm'
+          AND constraint_name = 'alarm_rule_kind_check'
+    ) THEN
+        ALTER TABLE starcubes_meta.alarm
+            ADD CONSTRAINT alarm_rule_kind_check
+            CHECK (rule_kind IN ('threshold', 'pipeline'));
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_schema = 'starcubes_meta' AND table_name = 'alarm'
+          AND constraint_name = 'alarm_condition_check'
+    ) THEN
+        ALTER TABLE starcubes_meta.alarm
+            ADD CONSTRAINT alarm_condition_check
+            CHECK ((rule_kind = 'pipeline' AND condition IN (
+                        'data_stale', 'run_failed', 'no_recent_run',
+                        'preflight_warn', 'dim_full_pct'))
+                   OR (rule_kind = 'threshold' AND condition IS NULL));
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS ix_alarm_rule_kind
+    ON starcubes_meta.alarm (rule_kind) WHERE enabled;
+
+COMMENT ON COLUMN starcubes_meta.alarm.rule_kind IS
+  'threshold = a measure over fact rows in a trailing window; pipeline = a condition over ETL state (etl_run, the preflight report, the housekeeping report). Named rule_kind and not kind on purpose: the transition dicts sent to the notification dispatcher already carry a `kind` key meaning opened/closed, and an alarm column of that name would be stamped over it, turning every notification into a resolution.';
+COMMENT ON COLUMN starcubes_meta.alarm.condition IS
+  'Which pipeline condition, for rule_kind = pipeline; NULL otherwise. Each produces a number, so cond_op and threshold decide the breach exactly as they do for a threshold alarm. measure, window_s and context_filter are unused by a pipeline alarm and keep their defaults.';
