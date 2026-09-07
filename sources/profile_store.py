@@ -184,3 +184,50 @@ def insert_datasource(conn, profile, name: str, schema: str,
     return conn.execute(text(
         f"INSERT INTO starcubes_meta.datasource ({', '.join(columns)}) "
         f"VALUES ({', '.join(values)}) RETURNING id"), params).scalar()
+
+
+# The pipeline alarms a datasource gets on the day it is created. Two, and
+# deliberately these two: "the ETL is failing" and "the ETL is not running"
+# are the questions an operator would have asked for on day one and never
+# does, because setting up monitoring is always tomorrow's job.
+#
+# They are created *enabled* but with no channels, which is the whole point
+# of the compromise: they open and close episodes in the Firings tab from
+# the first load onwards, so the feature is discoverable and the history is
+# real, and they send nothing at all until somebody picks recipients. A
+# default that mails strangers would be worse than no default.
+#
+# 3600 s for "no run completed" is a guess, not a measurement — the honest
+# number is a small multiple of the datasource's forever interval, which
+# does not exist yet at creation time. It is on the rule for anyone to
+# change, which is more than the nothing that was there before.
+_DEFAULT_PIPELINE_ALARMS = (
+    ("ETL runs are failing", "run_failed", ">=", 1.0),
+    ("No ETL run is completing", "no_recent_run", ">", 3600.0),
+)
+
+
+def insert_default_pipeline_alarms(conn, datasource_id: int) -> list[str]:
+    """Give a fresh datasource its two pipeline alarms. Returns their names.
+
+    Shared by the CLI seed path and the GUI create form for the same reason
+    the rest of this module is: the two must not drift, and a datasource
+    that gets monitoring only when it was made one particular way is worse
+    than one that never gets it, because nobody knows which kind they have.
+
+    ``ON CONFLICT DO NOTHING`` on the (datasource_id, name) unique index, so
+    re-seeding an existing datasource is a no-op rather than a 409.
+    """
+    created = []
+    for name, condition, cond_op, threshold in _DEFAULT_PIPELINE_ALARMS:
+        done = conn.execute(text(
+            "INSERT INTO starcubes_meta.alarm "
+            "  (datasource_id, name, rule_kind, condition, cond_op, "
+            "   threshold, notify_channels, enabled) "
+            "VALUES (:ds, :n, 'pipeline', :c, :op, :t, '{}', true) "
+            "ON CONFLICT (datasource_id, name) DO NOTHING RETURNING id"
+        ), {"ds": datasource_id, "n": name, "c": condition,
+            "op": cond_op, "t": threshold}).scalar()
+        if done is not None:
+            created.append(name)
+    return created

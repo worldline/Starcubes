@@ -20,7 +20,9 @@ from sqlalchemy import text
 from core.profile import ProfileError, iter_profiles, load_profile
 from core.schema import SchemaNameError, create_fact, import_dimensions
 from core.source import Source, _get_cached_engine
-from sources.profile_store import insert_datasource, insert_profile_children
+from sources.profile_store import (insert_datasource,
+                                   insert_default_pipeline_alarms,
+                                   insert_profile_children)
 
 
 def _available_profiles() -> str:
@@ -50,6 +52,7 @@ def _upsert_datasource(meta_engine, name, schema, source_dsn, force, profile):
 
         ds_id = insert_datasource(conn, profile, name, schema, source_dsn)
         insert_profile_children(conn, ds_id, profile)
+        insert_default_pipeline_alarms(conn, ds_id)
     return ds_id
 
 

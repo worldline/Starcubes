@@ -54,6 +54,7 @@ from core.source import Source, _get_cached_engine
 
 from . import accounts
 from sources.profile_store import (delete_profile_children,
+                                   insert_default_pipeline_alarms,
                                    insert_profile_children,
                                    update_datasource_scalars)
 from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
@@ -280,6 +281,10 @@ def source_new(request):
                 # prefilled from this profile in the browser, so the scalar
                 # values the user is looking at are the ones just stored.
                 insert_profile_children(conn, row["id"], profile)
+            # Same two pipeline alarms the CLI seed path creates, from the
+            # shared helper, so a datasource's monitoring does not depend on
+            # which way it was made.
+            insert_default_pipeline_alarms(conn, row["id"])
         return redirect("sources:manage", pk=row["id"])
     return render(request, "sources/new.html", {
         "dialects": DIALECTS,
