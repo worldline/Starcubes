@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.datasource (
     retention_floor      timestamptz,
     dedupe_from          timestamptz,
     housekeeping_interval_s int NOT NULL DEFAULT 21600,
+    max_data_lag_s       int NOT NULL DEFAULT 0,
+    max_run_s            int NOT NULL DEFAULT 0,
     created_at           timestamptz NOT NULL DEFAULT now(),
     updated_at           timestamptz NOT NULL DEFAULT now()
 );
@@ -236,7 +238,9 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.etl_run (
     load_rows_per_s        double precision,
     stats                  jsonb,
     log_path               text,
-    log_tail               text
+    log_tail               text,
+    max_wm                 timestamptz,
+    src_now                timestamptz
 );
 
 CREATE INDEX IF NOT EXISTS ix_etl_run_last_ok
@@ -1057,3 +1061,31 @@ COMMENT ON COLUMN starcubes_meta.housekeeping_run.trigger IS
   'manual (CLI or GUI button) or forever (the loop reached the interval).';
 COMMENT ON COLUMN starcubes_meta.housekeeping_run.report IS
   'What was done and measured: the ANALYZEd partitions, BRIN ranges summarised per index, dimension fill levels against the smallserial ceiling of 32767, and pg_total_relation_size per fact partition. Kept as history -- the single newest measurement is already on the Storage tab; the series is the point.';
+
+
+-- 0035_pipeline_observability.sql — watch the pipeline, not the data. The
+-- one failure nothing could see was a healthy source that stopped
+-- producing: the HWM freezes, so alarms cannot fire by construction and the
+-- ETL just logs rows=0. etl_run.max_wm / src_now persist the two numbers
+-- every run already reads (and src_now is now read on every run, not only
+-- with wallclock_lag_s set); datasource.max_data_lag_s is the threshold on
+-- their difference, datasource.max_run_s a wall-clock budget for one run
+-- that also bounds the source statements inside it. Both off by default.
+-- Mirror block; see migrations/0035_pipeline_observability.sql for the
+-- semantics.
+ALTER TABLE starcubes_meta.etl_run
+    ADD COLUMN IF NOT EXISTS max_wm  timestamptz,
+    ADD COLUMN IF NOT EXISTS src_now timestamptz;
+
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS max_data_lag_s int NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS max_run_s      int NOT NULL DEFAULT 0;
+
+COMMENT ON COLUMN starcubes_meta.etl_run.max_wm IS
+  'max(watermark_column) as read from the source at the start of this run -- the data tip, in the source''s own clock. NULL on a --start/--end or backfill run, which does not ask.';
+COMMENT ON COLUMN starcubes_meta.etl_run.src_now IS
+  'The source database''s own wall clock at that same moment, read as UTC (Source.source_now_sql, deliberately not the session clock). src_now - max_wm is how far the newest row lags the source''s present: unbounded growth means the source stopped producing (U9), a value parked near a whole-hour offset while rows keep arriving means the watermark column is not UTC (N12).';
+COMMENT ON COLUMN starcubes_meta.datasource.max_data_lag_s IS
+  'Seconds of src_now - max_wm above which the source counts as having stopped producing. Reported by the preflight. 0 = unset, which is the honest setting for any source that does not produce continuously -- a batch source would otherwise raise a false alarm every night.';
+COMMENT ON COLUMN starcubes_meta.datasource.max_run_s IS
+  'Wall-clock budget for one run. Past it the parent raises EtlAborted, the workers are reaped and the row lands as failed; the same value also bounds every source statement inside the run (statement_timeout / call_timeout per dialect). Never applied to a backfill or to the initial load, which are legitimately long. 0 = unset. A circuit breaker, not self-healing: the next window is wider, not smaller, so pair it with --limit if runs are genuinely too big.';

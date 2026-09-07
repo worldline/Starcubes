@@ -570,8 +570,13 @@ def _load_worker(in_queue: mp.JoinableQueue,
 # reaper). These helpers close that hole: every blocking queue operation on
 # the parent side now polls for worker failure instead of blocking forever.
 
-def _raise_if_failed(abort_evt, error_q: mp.Queue, workers: list[mp.Process]) -> None:
+def _raise_if_failed(abort_evt, error_q: mp.Queue, workers: list[mp.Process],
+                     budget: Optional["_RunBudget"] = None) -> None:
     """Raise EtlStageFailed if a worker signalled abort or simply died.
+
+    Also the one place the run budget is checked while the parent is blocked
+    on a queue: both bounded helpers below poll through here, so a run that
+    is stuck on backpressure honours `max_run_s` without a second timer.
 
     Checked between every bounded put()/join() poll. `error_q.get_nowait()`
     normally has the reporting worker's own message; if it's empty (the
@@ -580,6 +585,8 @@ def _raise_if_failed(abort_evt, error_q: mp.Queue, workers: list[mp.Process]) ->
     worker's exitcode went non-None — better than hanging forever with no
     explanation.
     """
+    if budget is not None:
+        budget.check()
     dead = [w for w in workers if w.exitcode is not None]
     if not abort_evt.is_set() and not dead:
         return
@@ -597,11 +604,12 @@ def _raise_if_failed(abort_evt, error_q: mp.Queue, workers: list[mp.Process]) ->
 
 
 def _put_with_abort(q: mp.JoinableQueue, item, abort_evt, error_q: mp.Queue,
-                    workers: list[mp.Process], poll_s: float = 0.5) -> None:
+                    workers: list[mp.Process], poll_s: float = 0.5,
+                    budget: Optional["_RunBudget"] = None) -> None:
     """q.put(item) that gives up (raising EtlStageFailed) if a worker dies
     instead of blocking forever on a queue nobody is draining anymore."""
     while True:
-        _raise_if_failed(abort_evt, error_q, workers)
+        _raise_if_failed(abort_evt, error_q, workers, budget)
         try:
             q.put(item, timeout=poll_s)
             return
@@ -610,7 +618,8 @@ def _put_with_abort(q: mp.JoinableQueue, item, abort_evt, error_q: mp.Queue,
 
 
 def _join_with_abort(q: mp.JoinableQueue, abort_evt, error_q: mp.Queue,
-                     workers: list[mp.Process], poll_s: float = 0.5) -> None:
+                     workers: list[mp.Process], poll_s: float = 0.5,
+                     budget: Optional["_RunBudget"] = None) -> None:
     """JoinableQueue.join() with a liveness check.
 
     join() has no timeout and no public way to poll its internal counter,
@@ -621,7 +630,7 @@ def _join_with_abort(q: mp.JoinableQueue, abort_evt, error_q: mp.Queue,
     t.start()
     while t.is_alive():
         t.join(timeout=poll_s)
-        _raise_if_failed(abort_evt, error_q, workers)
+        _raise_if_failed(abort_evt, error_q, workers, budget)
 
 
 def _bound_log_size(max_bytes: int) -> None:
@@ -701,6 +710,50 @@ def _overlap_pks(source: Source, dest_engine, since: datetime,
     return set(pks[pk])
 
 
+def _fact_has_rows(source: Source, dest_engine) -> bool:
+    """Cheapest possible "has anything been loaded yet".
+
+    `LIMIT 1` inside the subquery, so it stops at the first row instead of
+    counting a billion. Two callers: the resume logic, and the runtime cap,
+    which must never apply to an initial load.
+    """
+    with dest_engine.begin() as dst:
+        return bool(dst.execute(text(
+            f"SELECT count(*) FROM "
+            f"(SELECT 1 FROM {source.schema_name}.fact LIMIT 1) t"
+        )).scalar())
+
+
+class _RunBudget:
+    """Wall-clock budget for one run (`datasource.max_run_s`).
+
+    Checked between chunks and between every bounded queue poll, so a run
+    wedged on backpressure gives up as reliably as one that is merely slow.
+    A source that accepts the connection and then never answers is *not*
+    caught here — the parent is blocked inside the DBAPI at that point,
+    which is what the source statement timeout is for.
+
+    Raising `EtlAborted` rather than inventing a new exception is deliberate:
+    the reaping, the `status='failed'` row and the CLI's quiet exit already
+    exist for exactly this shape of ending.
+    """
+
+    def __init__(self, source_name: str, seconds: int):
+        self.source_name = source_name
+        self.seconds = int(seconds)
+        self.deadline = time.monotonic() + self.seconds
+
+    def check(self) -> None:
+        if time.monotonic() <= self.deadline:
+            return
+        raise EtlAborted(
+            f"{self.source_name}: run exceeded max_run_s={self.seconds}s "
+            f"— aborting. The next window will be *wider*, not smaller, so "
+            f"if runs are genuinely too big, cap the rows with --limit or "
+            f"raise max_run_s; this budget only stops one run from holding "
+            f"the loop indefinitely.")
+
+
 def _resume_state(source: Source, dest_engine, meta_engine,
                   dedupe_from: Optional[datetime] = None) -> tuple[
         Optional[datetime], Optional[datetime], set]:
@@ -730,12 +783,7 @@ def _resume_state(source: Source, dest_engine, meta_engine,
     wm_expr = source.watermark_fact_sql()
     overlap = max(0, int(source.late_arrival_overlap_s or 0))
 
-    with dest_engine.begin() as dst:
-        has_rows = dst.execute(text(
-            f"SELECT count(*) FROM "
-            f"(SELECT 1 FROM {schema}.fact LIMIT 1) t"
-        )).scalar()
-    if not has_rows:
+    if not _fact_has_rows(source, dest_engine):
         return None, None, set()
 
     with meta_engine.begin() as meta:
@@ -829,8 +877,35 @@ def import_fact(source: Source, meta_engine, *,
             "a backfill re-loads one closed window, it does not chase the "
             "source watermark.")
 
-    source_engine = source.source_engine()
     dest_engine = source.dest_engine()
+
+    # The run budget, and with it the source statement timeout, is decided
+    # before anything is opened. Read fresh from the metadata rather than off
+    # the Source, for the usual reason: a forever session loads its Source
+    # once, before the loop.
+    #
+    # Three kinds of run are exempt, all for the same reason — they are
+    # legitimately long and a cap would turn them into a retry loop:
+    # a backfill, an explicit --start/--end window (the user owns it), and
+    # the initial load, whose window is "everything the source has" (N17).
+    budget: Optional[_RunBudget] = None
+    with meta_engine.begin() as meta:
+        max_run_s = int(meta.execute(text(
+            "SELECT max_run_s FROM starcubes_meta.datasource WHERE id = :ds"
+        ), {"ds": source.id}).scalar() or 0)
+    capped = (max_run_s > 0 and not backfill
+              and start_time is None and end_time_override is None
+              and _fact_has_rows(source, dest_engine))
+    if capped:
+        budget = _RunBudget(source.name, max_run_s)
+
+    # A source that accepts the connection and then never answers blocks the
+    # extract indefinitely — pool_pre_ping and pool_timeout bound the
+    # checkout, not the execution. One knob rather than two: a statement may
+    # not outlive the run it belongs to, and a second timeout column nobody
+    # could size independently would only be a second thing to get wrong.
+    source_engine = source.source_engine(
+        statement_timeout_ms=max_run_s * 1000 if capped else None)
 
     started = datetime.now(timezone.utc)
     parent_pid = os.getpid()
@@ -941,7 +1016,14 @@ def import_fact(source: Source, meta_engine, *,
             # query shapes it rides along as a second column, so it costs
             # no extra round-trip; only a user-supplied watermark_max_query
             # is opaque and needs its own statement.
-            want_now = lag_now > 0
+            # Read on every run, not only when wallclock_lag_s is set. It
+            # rides along as a second column on the two generated query
+            # shapes, so it is free there, and `src_now - max_wm` is the only
+            # thing that can see a source which is healthy but has stopped
+            # producing (U9) or one whose watermark column is not UTC (N12).
+            # Only a user-supplied watermark_max_query pays for it, with one
+            # extra trivial round trip.
+            want_now = True
             now_expr = source.source_now_sql()
             standalone_now = None
             if source.watermark_max_query:
@@ -973,6 +1055,13 @@ def import_fact(source: Source, meta_engine, *,
                 end_time = end_time.replace(tzinfo=timezone.utc)
             end_time = _ceil_second(end_time)
             max_wm = end_time
+            if src_now is not None:
+                if src_now.tzinfo is None:
+                    src_now = src_now.replace(tzinfo=timezone.utc)
+                # _resume_state and the WHERE clause assume second-
+                # granularity bounds; a raw clock reading would carry
+                # sub-second parts straight into the HWM.
+                src_now = _ceil_second(src_now)
 
             # Upper bound = the later of two independent guarantees:
             #   max(wm) - lag_wm   relative buffer under the data tip. Takes
@@ -994,12 +1083,6 @@ def import_fact(source: Source, meta_engine, *,
                         "wallclock_lag_s=%ds not applied this run",
                         source.name, lag_now)
                 else:
-                    if src_now.tzinfo is None:
-                        src_now = src_now.replace(tzinfo=timezone.utc)
-                    # _resume_state and the WHERE clause assume second-
-                    # granularity bounds; a raw clock reading would carry
-                    # sub-second parts straight into the HWM.
-                    src_now = _ceil_second(src_now)
                     skew = (src_now - max_wm).total_seconds()
                     if skew < 0:
                         # Source clock behind its own data -- almost always a
@@ -1339,6 +1422,11 @@ def import_fact(source: Source, meta_engine, *,
                 f"[rd {duplicates}]"
                 f"[tq {transform_q.qsize()}][lq {load_q.qsize()}]"
                 f"[E {live_e} T {live_t} L {live_l}]")
+            # Cheap and unconditional when no budget is set. Between
+            # chunks is the one place the parent is reliably not inside the
+            # DBAPI, so it is where a slow-but-alive run notices its cap.
+            if budget is not None:
+                budget.check()
             # Stays armed for the whole run: `Source.import_query` carries
             # no ORDER BY, so a re-fetched row can surface in any chunk.
             # (The old "disable once a full chunk arrives clean" heuristic
@@ -1365,7 +1453,8 @@ def import_fact(source: Source, meta_engine, *,
                     started)
                 extract_auto_dim_s += time.monotonic() - t_auto_start
                 t_put_start = time.monotonic()
-                _put_with_abort(transform_q, chunk, abort_evt, error_q, workers)
+                _put_with_abort(transform_q, chunk, abort_evt, error_q,
+                                workers, budget=budget)
                 _chunk_wait = time.monotonic() - t_put_start
                 extract_wait += _chunk_wait
                 # Parent never wrote its own slot before this — live["extract"]
@@ -1383,7 +1472,8 @@ def import_fact(source: Source, meta_engine, *,
                 started)
             extract_auto_dim_s += time.monotonic() - t_auto_start
             t_put_start = time.monotonic()
-            _put_with_abort(transform_q, chunk, abort_evt, error_q, workers)
+            _put_with_abort(transform_q, chunk, abort_evt, error_q,
+                                workers, budget=budget)
             _chunk_wait = time.monotonic() - t_put_start
             extract_wait += _chunk_wait
             stats_arr[extract_slot_base + 0] += len(chunk.index)
@@ -1392,11 +1482,13 @@ def import_fact(source: Source, meta_engine, *,
             if row_limit is not None and rows_total >= row_limit:
                 break
 
-        _join_with_abort(transform_q, abort_evt, error_q, workers)
-        _join_with_abort(load_q, abort_evt, error_q, workers)
+        _join_with_abort(transform_q, abort_evt, error_q, workers,
+                         budget=budget)
+        _join_with_abort(load_q, abort_evt, error_q, workers, budget=budget)
 
         for _ in range(source.transform_procs):
-            _put_with_abort(transform_q, None, abort_evt, error_q, workers)
+            _put_with_abort(transform_q, None, abort_evt, error_q, workers,
+                            budget=budget)
         _put_with_abort(load_q, None, abort_evt, error_q, workers)
     except EtlStageFailed as exc:
         status = "failed"
@@ -1497,7 +1589,9 @@ def import_fact(source: Source, meta_engine, *,
                 "       progress_at   = NULL, "
                 "       status = :s, "
                 "       error = :e, "
-                "       log_tail = :log_tail "
+                "       log_tail = :log_tail, "
+                "       max_wm = :max_wm, "
+                "       src_now = :src_now "
                 " WHERE id = :id"
             ), {"f": finished,
                 "last": end_time if status == "ok" else None,
@@ -1507,7 +1601,13 @@ def import_fact(source: Source, meta_engine, *,
                 "trs": _transform_rate(rows_total, stats_payload),
                 "lrs": _load_rate(rows_total, stats_payload),
                 "stats": _json.dumps(stats_payload) if stats_payload else None,
-                "s": status, "e": error, "log_tail": log_tail, "id": run_id})
+                "s": status, "e": error, "log_tail": log_tail,
+                # The data tip and the source's own clock at the moment this
+                # run read them. Stored because their *difference* is the only
+                # thing that can see a source which is up and has stopped
+                # producing — see U9/N12 in docs/etl-automation.md.
+                "max_wm": max_wm, "src_now": src_now,
+                "id": run_id})
             if unmapped_agg:
                 meta.execute(text(
                     "INSERT INTO starcubes_meta.etl_unmapped "

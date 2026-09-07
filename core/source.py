@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+import logging
 import os
 
 import sqlalchemy
@@ -55,6 +56,9 @@ def init_oracle_client() -> None:
             return
 
 
+logger = logging.getLogger(__name__)
+
+
 def _get_cached_engine(dsn: str, connect_args: dict | None = None) -> sqlalchemy.Engine:
     """Return a shared SQLAlchemy engine for the given DSN + connect_args.
 
@@ -77,6 +81,69 @@ def _get_cached_engine(dsn: str, connect_args: dict | None = None) -> sqlalchemy
         _install_fork_safety(engine)
         _engine_cache[key] = engine
     return _engine_cache[key]
+
+
+_bounded_engine_cache: dict = {}
+
+
+def _bounded_source_engine(dsn: str, dialect: str,
+                           timeout_ms: int) -> sqlalchemy.Engine:
+    """A source engine whose statements cannot run longer than `timeout_ms`.
+
+    A source that accepts the connection and then never answers blocks the
+    extract indefinitely: `pool_pre_ping` and `pool_timeout` bound the
+    *checkout*, not the execution. There is no portable way to say this, so
+    it is said per dialect, and a dialect with no equivalent says so out loud
+    rather than silently returning an unbounded engine:
+
+    * **postgresql** — a libpq startup option, the same mechanism
+      `console_engine` uses.
+    * **oracle** — `Connection.call_timeout` (milliseconds), which is an
+      attribute on the DBAPI connection rather than a connect argument, so it
+      is applied on the connect event.
+    * **mysql / mssql** — no equivalent wired up here. Logged once per
+      engine, because "unbounded" is a fact the operator should know rather
+      than a detail to discover during an incident.
+
+    Cached like `_get_cached_engine`, keyed on the timeout too, so the ETL
+    does not build a pool per run.
+    """
+    key = (dsn, dialect, timeout_ms)
+    if key in _bounded_engine_cache:
+        return _bounded_engine_cache[key]
+
+    connect_args: dict = {}
+    if dialect == "postgresql":
+        connect_args = {"options": f"-cstatement_timeout={timeout_ms}"}
+    elif dialect not in ("oracle",):
+        logger.warning(
+            "no statement timeout is wired up for the %s dialect — source "
+            "statements in this run are unbounded", dialect)
+
+    engine = sqlalchemy.create_engine(
+        dsn,
+        connect_args=connect_args,
+        pool_pre_ping=True,
+        pool_size=5,
+        max_overflow=10,
+        pool_recycle=1800,
+        pool_timeout=30,
+    )
+    _install_fork_safety(engine)
+    if dialect == "oracle":
+        @event.listens_for(engine, "connect")
+        def _set_call_timeout(dbapi_conn, _record):
+            # cx_Oracle/oracledb 7+. Guarded: an older driver simply has no
+            # such attribute, and losing the timeout is better than losing
+            # the connection.
+            try:
+                dbapi_conn.call_timeout = timeout_ms
+            except Exception:
+                logger.warning("could not set call_timeout on the Oracle "
+                               "connection — source statements are unbounded",
+                               exc_info=True)
+    _bounded_engine_cache[key] = engine
+    return engine
 
 
 def _install_fork_safety(engine: sqlalchemy.Engine) -> None:
@@ -111,9 +178,10 @@ def dispose_all_engines() -> None:
 
     Call from a Django shutdown signal or test teardown.
     """
-    for key, engine in list(_engine_cache.items()):
-        engine.dispose()
-        del _engine_cache[key]
+    for cache in (_engine_cache, _bounded_engine_cache):
+        for key, engine in list(cache.items()):
+            engine.dispose()
+            del cache[key]
 
 
 @dataclass
@@ -390,8 +458,24 @@ class Source:
             measures=measures,
         )
 
-    def source_engine(self) -> sqlalchemy.Engine:
-        return _get_cached_engine(self.source_dsn)
+    def source_engine(self, *,
+                      statement_timeout_ms: int | None = None
+                      ) -> sqlalchemy.Engine:
+        """Engine for the source database.
+
+        With `statement_timeout_ms` the engine is a *separate* cached pool
+        whose statements cannot outlive that budget. `_get_cached_engine`
+        keys on `(dsn, connect_args)`, so a differing timeout is naturally a
+        different engine — except for Oracle, where the setting is not a
+        connect argument at all and rides on a connect-event hook instead
+        (hence `_bounded_source_engine`).
+
+        Without it, the unbounded engine every other caller shares.
+        """
+        if not statement_timeout_ms:
+            return _get_cached_engine(self.source_dsn)
+        return _bounded_source_engine(self.source_dsn, self.source_dialect,
+                                      int(statement_timeout_ms))
 
     def dest_engine(self) -> sqlalchemy.Engine:
         return _get_cached_engine(

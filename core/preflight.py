@@ -49,6 +49,8 @@ _REQUIRED_META_COLUMNS: tuple[tuple[str, str], ...] = (
     ("alarm", "severity"),
     ("datasource", "retention_floor"),
     ("datasource", "dedupe_from"),
+    ("datasource", "max_run_s"),
+    ("etl_run", "src_now"),
 )
 
 # The index check is time-aware on purpose: the first load deliberately runs
@@ -63,6 +65,17 @@ _INDEX_WARN_HOURS = float(os.environ.get("STARCUBES_INDEX_WARN_HOURS", 24))
 # worth a line. A quiet source legitimately widens this gap, so it can only
 # ever warn (see _check_watermark_tip for the second reason).
 _HWM_GAP_WARN_S = float(os.environ.get("STARCUBES_HWM_GAP_WARN_S", 86400))
+
+
+def _fmt_s(seconds: float) -> str:
+    """Seconds in whatever unit reads naturally. A threshold of 90 s should
+    not render as "0.0h"."""
+    seconds = float(seconds)
+    if abs(seconds) < 120:
+        return f"{seconds:.0f}s"
+    if abs(seconds) < 7200:
+        return f"{seconds / 60:.0f} min"
+    return f"{seconds / 3600:.1f}h"
 
 
 def _check(code: str, level: str, message: str, **detail) -> dict:
@@ -325,13 +338,91 @@ def _check_watermark_tip(source: Source, dest_engine, meta_engine) -> dict:
               "partition_column": source.partition_column}
     if gap_s > _HWM_GAP_WARN_S:
         return _check("watermark_tip", CHECK_WARN,
-                      f"the high watermark stands {gap_s / 3600:.1f}h above "
+                      f"the high watermark stands {_fmt_s(gap_s)} above "
                       f"the newest fact row — either the source stopped "
                       f"producing, or rows were removed without rewinding "
                       f"the watermark",
                       **detail)
     return _check("watermark_tip", CHECK_OK,
-                  f"high watermark is {gap_s / 3600:.1f}h above the fact tip",
+                  f"high watermark is {_fmt_s(gap_s)} above the fact tip",
+                  **detail)
+
+
+def _check_data_staleness(source: Source, meta_engine) -> dict:
+    """U9 — the source is up and has stopped producing.
+
+    The failure most likely to go unnoticed for a whole day, and the one
+    nothing else can see: a standstill freezes the high watermark, so the
+    alarm evaluator's trailing window stops sliding and `count(*) < 1` never
+    becomes true. The ETL logs `rows=0` and sleeps.
+
+    So this watches the *pipeline* instead of the data, using the two numbers
+    every run already reads together on one query: the data tip `max_wm` and
+    the source's own clock `src_now`. Both come from the source, so their
+    difference carries no clock skew — the discipline docs/etl-audit.md
+    insists on for `needed_lag_s`.
+
+    Reported unconditionally, because the measurement is worth seeing even
+    unconfigured: a lag parked near a whole-hour offset while rows keep
+    arriving means the watermark column does not hold UTC (N12). It only
+    escalates to a warning once `max_data_lag_s` is set, which is the honest
+    default for a source that does not produce continuously — the
+    alternative, time-of-day profiles, is a calendar engine in disguise.
+    """
+    with meta_engine.begin() as conn:
+        threshold = int(conn.execute(text(
+            "SELECT max_data_lag_s FROM starcubes_meta.datasource "
+            " WHERE id = :ds"), {"ds": source.id}).scalar() or 0)
+        row = conn.execute(text(
+            "SELECT max_wm, src_now, started_at FROM starcubes_meta.etl_run "
+            " WHERE datasource_id = :ds "
+            "   AND max_wm IS NOT NULL AND src_now IS NOT NULL "
+            " ORDER BY started_at DESC LIMIT 1"
+        ), {"ds": source.id}).mappings().first()
+
+    if row is None:
+        return _check("data_staleness", CHECK_OK,
+                      "skipped — no run has recorded the source clock yet")
+    max_wm, src_now = row["max_wm"], row["src_now"]
+    if max_wm.tzinfo is None:
+        max_wm = max_wm.replace(tzinfo=timezone.utc)
+    if src_now.tzinfo is None:
+        src_now = src_now.replace(tzinfo=timezone.utc)
+    lag_s = (src_now - max_wm).total_seconds()
+    detail = {"max_wm": max_wm.isoformat(), "src_now": src_now.isoformat(),
+              "measured_at": row["started_at"].isoformat(),
+              "data_lag_s": round(lag_s, 1), "max_data_lag_s": threshold}
+
+    if lag_s < 0:
+        # The source's clock is *behind* its own newest row. `import_fact`
+        # already refuses to apply the wall-clock bound when it sees this;
+        # the preflight says the same thing in the report, because the cause
+        # is almost always a timezone mismatch — the watermark column not
+        # holding UTC, which the rest of the pipeline assumes it does — and
+        # that is a configuration problem nobody will find by reading logs.
+        return _check("data_staleness", CHECK_WARN,
+                      f"the source's own clock is {_fmt_s(-lag_s)} *behind* its "
+                      f"newest row, which cannot be true of one clock — "
+                      f"almost always {source.watermark_column} not holding "
+                      f"UTC values. The wall-clock window bound is not "
+                      f"applied while this holds, and max_data_lag_s cannot "
+                      f"be judged.",
+                      **detail)
+
+    if threshold and lag_s > threshold:
+        return _check("data_staleness", CHECK_WARN,
+                      f"the newest row in the source is {_fmt_s(lag_s)} "
+                      f"behind the source's own clock, past the "
+                      f"{_fmt_s(threshold)} max_data_lag_s — the source is "
+                      f"reachable and has stopped producing",
+                      **detail)
+    if threshold:
+        return _check("data_staleness", CHECK_OK,
+                      f"source data is {_fmt_s(lag_s)} behind the source "
+                      f"clock (limit {_fmt_s(threshold)})", **detail)
+    return _check("data_staleness", CHECK_OK,
+                  f"source data is {_fmt_s(lag_s)} behind the source "
+                  f"clock — set max_data_lag_s to have that watched",
                   **detail)
 
 
@@ -356,6 +447,7 @@ def run_preflight(source: Source, meta_engine, dest_engine, *,
     checks.append(_check_indices(source, dest_engine, meta_engine))
     checks.append(_check_source_projection(source, source_engine))
     checks.append(_check_watermark_tip(source, dest_engine, meta_engine))
+    checks.append(_check_data_staleness(source, meta_engine))
 
     blocked = [c for c in checks if c["level"] == CHECK_BLOCK]
     for c in checks:
