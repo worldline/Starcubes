@@ -1335,85 +1335,85 @@ function deleteDimRow(btn, url) {
     refreshCardButtons();
   }).catch(function(e){ alert('Error: ' + e); });
 }
-function buildFcRow(pk, r) {
-  var id = r.id;
-  var baseEdit = '/sources/' + pk + '/fact-columns/' + id + '/edit/';
-  var baseDel  = '/sources/' + pk + '/fact-columns/' + id + '/delete/';
-  return '<tr id="fc-' + id + '" data-id="' + id + '">' +
-    '<td><span class="row-display">' + r.ordinal + '</span><input class="row-edit cell-input" name="ordinal" type="number" value="' + r.ordinal + '" style="width:60px"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.name) + '</span><input class="row-edit cell-input" name="name" value="' + esc(r.name) + '"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.pg_type) + '</span><select class="row-edit cell-input" name="pg_type">' + pgTypeOpts(r.pg_type) + '</select></td>' +
-    '<td><span class="row-display"><span class="badge badge-' + r.role + '">' + r.role + '</span></span><select class="row-edit cell-input" name="role">' + roleOpts(r.role) + '</select></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.source_expr||'—') + '</span><input class="row-edit cell-input" name="source_expr" value="' + esc(r.source_expr||'') + '"></td>' +
-    '<td class="actions"><span class="row-display">' +
-      '<button class="btn-icon btn-est-card" data-role="' + r.role + '" data-name="' + esc(r.name) + '" data-fc-id="' + r.id + '" onclick="estimateCardinality(this)" title="Estimate Cardinality" style="display:none"> cardinality</button>' +
-      '<button class="btn-icon" onclick="startEdit(this,\'fc\')" title="Edit">✏</button>' +
-      '<button class="btn-icon" onclick="deleteRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
+// A row's <td>: the display span comes from the shared ROW_SPECS renderer in
+// inline_edit.js — the same one saveRow uses to refresh it — and only the edit
+// control is this table's own.
+function rowCell(spec, r, editHTML, tdAttrs) {
+  return '<td' + (tdAttrs || '') + '><span class="' + rowCellClass(spec) + '">' +
+    rowCellHTML(spec, r) + '</span>' + editHTML + '</td>';
+}
+
+// The actions cell is the same in all four tables: edit/delete while
+// displaying, save/cancel while editing. `extra` is the estimate button only
+// fact columns carry, `del` the delete handler dimension rows need.
+function rowActions(prefix, editUrl, delUrl, opts) {
+  opts = opts || {};
+  return '<td class="actions"><span class="row-display">' +
+    (opts.extra || '') +
+    '<button class="btn-icon" onclick="startEdit(this,\'' + prefix + '\')" title="Edit">✏</button>' +
+    '<button class="btn-icon" onclick="' + (opts.del || 'deleteRow') + '(this,\'' + delUrl + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
     '</span><span class="row-edit" style="gap:4px">' +
-      '<button class="btn btn-primary btn-sm" onclick="saveRow(this,\'' + baseEdit + '\',\'fc\')">Save</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>' +
-    '</span></td></tr>';
+    '<button class="btn btn-primary btn-sm" onclick="saveRow(this,\'' + editUrl + '\',\'' + prefix + '\')">Save</button>' +
+    '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>' +
+    '</span></td>';
+}
+
+function rowUrls(pk, kind, id) {
+  return {edit: '/sources/' + pk + '/' + kind + '/' + id + '/edit/',
+          del:  '/sources/' + pk + '/' + kind + '/' + id + '/delete/'};
+}
+
+function buildFcRow(pk, r) {
+  var S = ROW_SPECS.fc, u = rowUrls(pk, 'fact-columns', r.id);
+  var estimate = '<button class="btn-icon btn-est-card" data-role="' + r.role +
+    '" data-name="' + esc(r.name) + '" data-fc-id="' + r.id +
+    '" onclick="estimateCardinality(this)" title="Estimate Cardinality" style="display:none"> cardinality</button>';
+  return '<tr id="fc-' + r.id + '" data-id="' + r.id + '">' +
+    rowCell(S[0], r, '<input class="row-edit cell-input" name="ordinal" type="number" value="' + r.ordinal + '" style="width:60px">') +
+    rowCell(S[1], r, '<input class="row-edit cell-input" name="name" value="' + esc(r.name) + '">') +
+    rowCell(S[2], r, '<select class="row-edit cell-input" name="pg_type">' + pgTypeOpts(r.pg_type) + '</select>') +
+    rowCell(S[3], r, '<select class="row-edit cell-input" name="role">' + roleOpts(r.role) + '</select>') +
+    rowCell(S[4], r, '<input class="row-edit cell-input" name="source_expr" value="' + esc(r.source_expr||'') + '">') +
+    rowActions('fc', u.edit, u.del, {extra: estimate}) + '</tr>';
 }
 
 function buildDimRow(pk, r) {
-  var id = r.id;
-  var baseEdit = '/sources/' + pk + '/dimensions/' + id + '/edit/';
-  var baseDel  = '/sources/' + pk + '/dimensions/' + id + '/delete/';
-  var iv = r.inline_values || '';
-  var ivDisplay = iv ? iv.split('\n')[0] + (iv.includes('\n') ? ' …' : '') : '—';
-  return '<tr id="dim-' + id + '" data-id="' + id + '">' +
-    '<td><span class="row-display text-mono">' + esc(r.fact_column) + '</span><input class="row-edit cell-input" name="fact_column" value="' + esc(r.fact_column) + '"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.dim_table) + '</span><input class="row-edit cell-input" name="dim_table" value="' + esc(r.dim_table) + '"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.source_table||'—') + '</span><input class="row-edit cell-input dim-src-input" name="source_table" value="' + esc(r.source_table||'') + '"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.source_key||'—') + '</span><input class="row-edit cell-input dim-src-input" name="source_key" value="' + esc(r.source_key||'') + '"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.source_name||'—') + '</span><input class="row-edit cell-input dim-src-input" name="source_name" value="' + esc(r.source_name||'') + '"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.source_description||'—') + '</span><input class="row-edit cell-input dim-src-input" name="source_description" value="' + esc(r.source_description||'') + '"></td>' +
-    '<td><span class="row-display">' + (r.is_primary ? '✓' : '—') + '</span><input class="row-edit" type="checkbox" name="is_primary" ' + (r.is_primary ? 'checked' : '') + ' style="margin:4px"></td>' +
-    '<td><span class="row-display text-mono dim-inline-display">' + esc(ivDisplay) + '</span><textarea class="row-edit cell-input dim-inline-edit" name="inline_values" rows="2" style="width:120px" oninput="toggleDimSourceFields(this)">' + esc(iv) + '</textarea></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.filter_group||'—') + '</span><input class="row-edit cell-input" name="filter_group" value="' + esc(r.filter_group||'') + '"></td>' +
-    '<td class="actions"><span class="row-display">' +
-      '<button class="btn-icon" onclick="startEdit(this,\'dim\')" title="Edit">✏</button>' +
-      '<button class="btn-icon" onclick="deleteDimRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
-    '</span><span class="row-edit" style="gap:4px">' +
-      '<button class="btn btn-primary btn-sm" onclick="saveRow(this,\'' + baseEdit + '\',\'dim\')">Save</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>' +
-    '</span></td></tr>';
+  var S = ROW_SPECS.dim, u = rowUrls(pk, 'dimensions', r.id);
+  var srcInput = function(spec) {
+    return '<input class="row-edit cell-input dim-src-input" name="' + spec.f +
+      '" value="' + esc(r[spec.f]||'') + '">';
+  };
+  return '<tr id="dim-' + r.id + '" data-id="' + r.id + '">' +
+    rowCell(S[0], r, '<input class="row-edit cell-input" name="fact_column" value="' + esc(r.fact_column) + '">') +
+    rowCell(S[1], r, '<input class="row-edit cell-input" name="dim_table" value="' + esc(r.dim_table) + '">') +
+    rowCell(S[2], r, srcInput(S[2])) +
+    rowCell(S[3], r, srcInput(S[3])) +
+    rowCell(S[4], r, srcInput(S[4])) +
+    rowCell(S[5], r, srcInput(S[5])) +
+    rowCell(S[6], r, '<input class="row-edit" type="checkbox" name="is_primary" ' + (r.is_primary ? 'checked' : '') + ' style="margin:4px">') +
+    rowCell(S[7], r, '<textarea class="row-edit cell-input dim-inline-edit" name="inline_values" rows="2" style="width:120px" oninput="toggleDimSourceFields(this)">' + esc(r.inline_values||'') + '</textarea>') +
+    rowCell(S[8], r, '<input class="row-edit cell-input" name="filter_group" value="' + esc(r.filter_group||'') + '">') +
+    rowActions('dim', u.edit, u.del, {del: 'deleteDimRow'}) + '</tr>';
 }
 
 function buildIdxRow(pk, r) {
-  var id = r.id;
-  var baseEdit = '/sources/' + pk + '/indices/' + id + '/edit/';
-  var baseDel  = '/sources/' + pk + '/indices/' + id + '/delete/';
-  return '<tr id="idx-' + id + '" data-id="' + id + '">' +
-    '<td><span class="row-display text-mono">' + esc(r.column_name) + '</span><input class="row-edit cell-input" name="column_name" value="' + esc(r.column_name) + '"></td>' +
-    '<td><span class="row-display"><span class="badge badge-dialect">' + esc(r.method) + '</span></span><select class="row-edit cell-input" name="method">' + idxMethodOpts(r.method) + '</select></td>' +
-    '<td class="actions"><span class="row-display">' +
-      '<button class="btn-icon" onclick="startEdit(this,\'idx\')" title="Edit">✏</button>' +
-      '<button class="btn-icon" onclick="deleteRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
-    '</span><span class="row-edit" style="gap:4px">' +
-      '<button class="btn btn-primary btn-sm" onclick="saveRow(this,\'' + baseEdit + '\',\'idx\')">Save</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>' +
-    '</span></td></tr>';
+  var S = ROW_SPECS.idx, u = rowUrls(pk, 'indices', r.id);
+  return '<tr id="idx-' + r.id + '" data-id="' + r.id + '">' +
+    rowCell(S[0], r, '<input class="row-edit cell-input" name="column_name" value="' + esc(r.column_name) + '">') +
+    rowCell(S[1], r, '<select class="row-edit cell-input" name="method">' + idxMethodOpts(r.method) + '</select>') +
+    rowActions('idx', u.edit, u.del) + '</tr>';
 }
 
 function buildMeasureRow(pk, r) {
-  var id = r.id;
-  var baseEdit = '/sources/' + pk + '/measures/' + id + '/edit/';
-  var baseDel  = '/sources/' + pk + '/measures/' + id + '/delete/';
-  return '<tr id="measure-' + id + '" data-id="' + id + '">' +
-    '<td><span class="row-display">' + r.ordinal + '</span><input class="row-edit cell-input" name="ordinal" type="number" value="' + r.ordinal + '" style="width:60px"></td>' +
-    '<td><span class="row-display">' + esc(r.name) + '</span><input class="row-edit cell-input" name="name" value="' + esc(r.name) + '"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.agg) + '</span><select class="row-edit cell-input" name="agg">' + aggOpts(r.agg) + '</select></td>' +
-    '<td><span class="row-display"><span class="badge badge-dialect">' + esc(r.graph_style) + '</span></span><select class="row-edit cell-input" name="graph_style">' + graphStyleOpts(r.graph_style) + '</select></td>' +
-    '<td style="text-align:center"><span class="row-display">' + (r.is_default ? '✓' : '—') + '</span><input class="row-edit" type="checkbox" name="is_default" ' + (r.is_default ? 'checked' : '') + ' style="margin:4px"></td>' +
-    '<td><span class="row-display text-mono">' + esc(r.percentiles || '—') + '</span><input class="row-edit cell-input" name="percentiles" value="' + esc(r.percentiles || '') + '" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles"></td>' +
-    '<td class="actions"><span class="row-display">' +
-      '<button class="btn-icon" onclick="startEdit(this,\'measure\')" title="Edit">✏</button>' +
-      '<button class="btn-icon" onclick="deleteRow(this,\'' + baseDel + '\')" title="Delete" style="color:var(--danger)">✕</button>' +
-    '</span><span class="row-edit" style="gap:4px">' +
-      '<button class="btn btn-primary btn-sm" onclick="saveRow(this,\'' + baseEdit + '\',\'measure\')">Save</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(this)">Cancel</button>' +
-    '</span></td></tr>';
+  var S = ROW_SPECS.measure, u = rowUrls(pk, 'measures', r.id);
+  return '<tr id="measure-' + r.id + '" data-id="' + r.id + '">' +
+    rowCell(S[0], r, '<input class="row-edit cell-input" name="ordinal" type="number" value="' + r.ordinal + '" style="width:60px">') +
+    rowCell(S[1], r, '<input class="row-edit cell-input" name="name" value="' + esc(r.name) + '">') +
+    rowCell(S[2], r, '<select class="row-edit cell-input" name="agg">' + aggOpts(r.agg) + '</select>') +
+    rowCell(S[3], r, '<select class="row-edit cell-input" name="graph_style">' + graphStyleOpts(r.graph_style) + '</select>') +
+    rowCell(S[4], r, '<input class="row-edit" type="checkbox" name="is_default" ' + (r.is_default ? 'checked' : '') + ' style="margin:4px">', ' style="text-align:center"') +
+    rowCell(S[5], r, '<input class="row-edit cell-input" name="percentiles" value="' + esc(r.percentiles || '') + '" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles">') +
+    rowActions('measure', u.edit, u.del) + '</tr>';
 }
 
 var PG_TYPES = {{ pg_types_json|safe }};
@@ -1559,14 +1559,7 @@ wireAddForm('measureAddForm', '/measures/add/', {
   body: 'measureBody', empty: 'measure-empty', err: 'measureAddErr',
   build: buildMeasureRow,
   before: function(row) {
-    // A new default clears the others server-side — reflect that before appending.
-    if (!row || !row.is_default) return;
-    document.querySelectorAll('#measureBody tr').forEach(function(other) {
-      var cb = other.querySelector('input[name="is_default"]');
-      var disp = other.querySelectorAll('span.row-display')[4];
-      if (cb) cb.checked = false;
-      if (disp) disp.textContent = '—';
-    });
+    if (row && row.is_default) clearOtherDefaults(null);
   },
 });
 
