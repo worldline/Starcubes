@@ -51,7 +51,7 @@ _REQUIRED_META_COLUMNS: tuple[tuple[str, str], ...] = (
 # "no indices" is the legitimate initial state. The real complaint is "this
 # has been syncing for weeks and the indices are still missing", which needs
 # both a row count and an age to express.
-_INDEX_WARN_ROWS = int(os.environ.get("STARCUBES_INDEX_WARN_ROWS", 10_000_000))
+_INDEX_WARN_ROWS = int(os.environ.get("STARCUBES_INDEX_WARN_ROWS", 1_000_000))
 _INDEX_WARN_HOURS = float(os.environ.get("STARCUBES_INDEX_WARN_HOURS", 24))
 
 # How far the stored high watermark may stand above the fact tip before it is
