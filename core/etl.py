@@ -35,6 +35,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from tqdm import tqdm
 
 from .cache import bump_cache_epoch
+from .preflight import blocking_message, relation_exists, run_preflight
 from .schema import (UNKNOWN_SOURCE_ID, ensure_partitions_for, import_dimensions,
                      read_dimensions, refresh_dim_counts)
 from .source import Source
@@ -843,6 +844,9 @@ def import_fact(source: Source, meta_engine, *,
     end_time: Optional[datetime] = None
     last_end_time: Optional[datetime] = None
     extract_from: Optional[datetime] = None
+    # Set by the preflight below; merged into the stats jsonb in the finally
+    # so a blocked run still leaves its findings behind.
+    preflight_report: Optional[dict] = None
     # Upper-bound inputs; only set on the non-override path (see below).
     max_wm: Optional[datetime] = None
     src_now: Optional[datetime] = None
@@ -869,6 +873,18 @@ def import_fact(source: Source, meta_engine, *,
     load_q: Optional[mp.JoinableQueue] = None
 
     try:
+        # Everything that has to be true before the load, in one place --
+        # schema objects, metadata version, index coverage, the source
+        # projection, the watermark against the fact tip. Runs before
+        # import_dimensions because that already assumes the dim tables
+        # exist, and a block lands as status='failed' through the same
+        # except/finally as any other startup error. See core/preflight.py.
+        preflight_report = run_preflight(
+            source, meta_engine, dest_engine, source_engine=source_engine)
+        blocked = blocking_message(preflight_report)
+        if blocked:
+            raise RuntimeError(blocked)
+
         if refresh_dimensions:
             import_dimensions(source, source_engine, dest_engine, quiet=quiet)
         dim_frames, dim_unknowns = read_dimensions(source, dest_engine)
@@ -1420,6 +1436,13 @@ def import_fact(source: Source, meta_engine, *,
                 extract_busy, extract_wait, extract_auto_dim_s,
                 duplicates, auto_dim_inserted, runtime_ms,
                 rows_total, live=False)
+        if preflight_report is not None:
+            # stats is already jsonb and already surfaced by the GUI, so the
+            # report needs no table of its own. Merged here rather than in
+            # _build_stats_payload because a run blocked before the workers
+            # started has no stats_arr at all.
+            stats_payload = dict(stats_payload or {})
+            stats_payload["preflight"] = preflight_report
 
         # Only worth reading the log on failure — a successful run has
         # nothing a GUI viewer needs that isn't already in stats/error.
@@ -1536,11 +1559,7 @@ def truncate_partition(source: Source, dest_engine, partition_name: str,
     """TRUNCATE a named fact partition. Validates it belongs to the schema."""
     schema = source.schema_name
     with dest_engine.connect() as conn:
-        exists = conn.execute(text(
-            "SELECT 1 FROM pg_class c "
-            " JOIN pg_namespace n ON n.oid = c.relnamespace "
-            " WHERE n.nspname = :s AND c.relname = :t"
-        ), {"s": schema, "t": partition_name}).scalar()
+        exists = relation_exists(conn, schema, partition_name)
     if not exists:
         raise RuntimeError(f"Partition {schema}.{partition_name} not found")
     with dest_engine.begin() as conn:
@@ -1554,11 +1573,7 @@ def drop_partition(source: Source, dest_engine, partition_name: str,
     """DETACH and DROP a named fact partition."""
     schema = source.schema_name
     with dest_engine.connect() as conn:
-        exists = conn.execute(text(
-            "SELECT 1 FROM pg_class c "
-            " JOIN pg_namespace n ON n.oid = c.relnamespace "
-            " WHERE n.nspname = :s AND c.relname = :t"
-        ), {"s": schema, "t": partition_name}).scalar()
+        exists = relation_exists(conn, schema, partition_name)
     if not exists:
         raise RuntimeError(f"Partition {schema}.{partition_name} not found")
     with dest_engine.begin() as conn:
