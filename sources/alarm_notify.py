@@ -270,10 +270,17 @@ def send_pagerduty_test(routing_key: str, ds_name: str, ds_id: int) -> None:
 def _resolve_lookups(meta_engine, transitions: list[dict]) -> tuple[dict, dict]:
     """Resolve user ids and datasource ids of every transition in two batched
     lookups (one query per table, not one per transition)."""
-    user_ids: set = set()
+    ids: set = set()
     for t in transitions:
-        user_ids.update(t.get("notify_email_recipients") or [])
-        user_ids.update(t.get("notify_xmpp_recipients") or [])
+        ids.update(t.get("notify_email_recipients") or [])
+        ids.update(t.get("notify_xmpp_recipients") or [])
+    # Both lists, not sets: psycopg2 adapts a list to an ARRAY and refuses a
+    # set outright ("can't adapt type 'set'"). The datasource query below
+    # always sorted its ids into a list and worked; this one passed the set
+    # straight through, so *every* dispatch with a recipient raised here,
+    # was caught by the caller's "lookup failed" path, and counted as an
+    # error — e-mail and XMPP could never have been delivered.
+    user_ids = sorted(ids)
     ds_ids = sorted({t["datasource_id"] for t in transitions})
 
     users: dict = {}
