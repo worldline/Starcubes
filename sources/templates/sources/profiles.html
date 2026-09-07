@@ -45,7 +45,7 @@
             {% if p.error %}
               <span style="color:var(--danger)">Cannot read: {{ p.error }}</span>
             {% else %}
-              {{ p.n_fact_columns }} cols · {{ p.n_dimensions }} dims · {{ p.n_measures }} measures
+              {{ p.n_fact_columns }} cols · {{ p.n_dimensions }} dims · {{ p.n_measures }} measures · {{ p.n_group_dims }} group dims
             {% endif %}
           </td>
           <td class="text-muted" style="font-size:13px">{{ p.description|default:'—' }}</td>

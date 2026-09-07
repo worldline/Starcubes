@@ -10,7 +10,7 @@
     <button class="tab-btn" data-tab="dimensions">Dimensions ({{ dimensions|length }})</button>
     <button class="tab-btn" data-tab="dim-data">Dim Data</button>
     {% if user.is_authenticated %}
-    <button class="tab-btn" data-tab="group-dims">Group Dims</button>
+    <button class="tab-btn" data-tab="group-dims">Group Dims (<span id="grpTabCount">{{ group_set_tokens|length }}</span>)</button>
     {% endif %}
     <button class="tab-btn" data-tab="measures">Measures ({{ measures|length }})</button>
     <button class="tab-btn" data-tab="indices">Indices ({{ indices|length }})</button>
@@ -2083,6 +2083,10 @@ function grpRenderList() {
     ul.appendChild(li);
     empty.style.display = 'none';
   }
+  // Keep the sub-tab's count in step with the list — the saved sets only,
+  // so an unsaved draft does not bump it.
+  var tabCount = document.getElementById('grpTabCount');
+  if (tabCount) tabCount.textContent = grpSets.length;
 }
 
 function grpLoadList() {

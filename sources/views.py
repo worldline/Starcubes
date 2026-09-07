@@ -473,6 +473,7 @@ def source_detail(request, pk: int):
     return render(request, "sources/detail.html", {
         "ds":          ctx["ds"],
         "dimensions":  ctx["dimensions"],
+        "group_set_tokens": ctx["group_set_tokens"],
         "measures":    ctx["measures"],
         "measure_aggs": ctx["measure_aggs"],
         "graph_styles": ctx["graph_styles"],

@@ -385,6 +385,7 @@ def _catalogue_entry(name: str, path: Path) -> dict[str, Any]:
         "n_fact_columns": 0,
         "n_dimensions": 0,
         "n_measures": 0,
+        "n_group_dims": 0,
         "error": None,
     }
     try:
@@ -397,6 +398,7 @@ def _catalogue_entry(name: str, path: Path) -> dict[str, Any]:
         entry["n_fact_columns"] = len(raw.get("fact_columns") or [])
         entry["n_dimensions"] = len(raw.get("dimensions") or [])
         entry["n_measures"] = len(raw.get("measures") or [])
+        entry["n_group_dims"] = len(raw.get("group_dims") or [])
     except Exception as exc:            # noqa: BLE001 — catalogue must not die
         entry["error"] = str(exc)
     return entry
