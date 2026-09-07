@@ -462,6 +462,13 @@ def source_detail(request, pk: int):
     # by reloading the page onto `?tab=firings`.
     show = request.GET.get("show", "all")
     detail_url = reverse("sources:detail", args=[pk])
+    # The Alarms tab carries its count in the label, like Group Dims and
+    # Measures do. Only the value the page opens with: the tab fetches the
+    # list itself via alarms_list and keeps the number in step from there.
+    with _meta_engine().begin() as conn:
+        alarm_count = conn.execute(text(
+            "SELECT count(*) FROM starcubes_meta.alarm WHERE datasource_id = :ds"
+        ), {"ds": pk}).scalar()
     firings = firings_context(
         _firing_episodes(show, pk), show, scoped=True,
         url_all=f"{detail_url}?tab=firings",
@@ -479,6 +486,7 @@ def source_detail(request, pk: int):
         "graph_styles": ctx["graph_styles"],
         "current_source_id":   ctx["current_source_id"],
         "current_source_name": ctx["current_source_name"],
+        "alarm_count": alarm_count,
         **firings,
     })
 

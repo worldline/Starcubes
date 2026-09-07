@@ -12,7 +12,7 @@
     <button class="tab-btn active" data-tab="basics">Basics</button>
     <button class="tab-btn" data-tab="group-dims">Group Dims (<span id="grpTabCount">{{ group_set_tokens|length }}</span>)</button>
     <button class="tab-btn" data-tab="measures">Measures ({{ measures|length }})</button>
-    <button class="tab-btn" data-tab="alarms">Alarms</button>
+    <button class="tab-btn" data-tab="alarms">Alarms (<span id="alarmTabCount">{{ alarm_count }}</span>)</button>
     <button class="tab-btn" data-tab="firings">Firings</button>
   </div>
 </div>
@@ -749,6 +749,10 @@ grpLoadList().catch(function(e) { alert('Error loading group dimensions: ' + e.m
     alarmsById = {};
     alarmNames = alarms.map(function(a) { alarmsById[a.id] = a; return a.name; });
     var tbody = document.getElementById('alarmBody');
+    // Keep the sub-tab's count in step with the list the server just sent,
+    // so an add or a delete moves the number without a page reload.
+    var tabCount = document.getElementById('alarmTabCount');
+    if (tabCount) tabCount.textContent = alarms.length;
     if (!alarms.length) {
       tbody.innerHTML = '<tr><td colspan="11" class="text-muted" '
         + 'style="text-align:center;padding:16px">No alarms yet.</td></tr>';
