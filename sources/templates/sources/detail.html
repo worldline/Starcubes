@@ -324,8 +324,7 @@
     detail.textContent = parts.join(' · ');
   }
   function poll() {
-    fetch('{% url "sources:etl_status" ds.id %}')
-      .then(function(r){ return r.json(); })
+    getJSON('{% url "sources:etl_status" ds.id %}')
       .then(function(d){ if (d.runs && d.runs.length) apply(d.runs[0]); else apply(null); })
       .catch(function(){ /* keep the last state on transient errors */ });
   }

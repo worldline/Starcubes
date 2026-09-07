@@ -508,14 +508,7 @@
             <span class="cmd-result" id="result-delete-from"></span>
           </div>
         </div>
-        <div>
-          <label class="form-label">Vacuum Analyze</label>
-          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Run VACUUM ANALYZE on the fact table to update statistics.</p>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-secondary btn-sm" id="etlCmdVacuumBtn">Run</button>
-            <span class="cmd-result" id="result-vacuum"></span>
-          </div>
-        </div>
+        {% include "sources/_cmd_action.html" with title="Vacuum Analyze" desc="Run VACUUM ANALYZE on the fact table to update statistics." btn_id="etlCmdVacuumBtn" btn_label="Run" result_id="result-vacuum" last=1 %}
       </div>
     </div>
 
@@ -523,22 +516,8 @@
     <div class="card card-warn-hint">
       <div class="card-header"><span class="card-title">&#128295; Metadata</span></div>
       <div class="card-body">
-        <div style="margin-bottom:16px">
-          <label class="form-label">Set High Watermark</label>
-          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Insert an etl_run row with status=ok and last_end_time set to the max timestamp in the fact table.</p>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-primary btn-sm" id="etlCmdHwmBtn">Set</button>
-            <span class="cmd-result" id="result-set-hwm"></span>
-          </div>
-        </div>
-        <div>
-          <label class="form-label">Clear ETL History</label>
-          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Delete all ETL run history for this datasource.</p>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-danger btn-sm" id="etlCmdClearHistBtn">Clear</button>
-            <span class="cmd-result" id="result-clear-history"></span>
-          </div>
-        </div>
+        {% include "sources/_cmd_action.html" with title="Set High Watermark" desc="Insert an etl_run row with status=ok and last_end_time set to the max timestamp in the fact table." btn_id="etlCmdHwmBtn" btn_label="Set" result_id="result-set-hwm" btn_class="btn-primary" %}
+        {% include "sources/_cmd_action.html" with title="Clear ETL History" desc="Delete all ETL run history for this datasource." btn_id="etlCmdClearHistBtn" btn_label="Clear" result_id="result-clear-history" btn_class="btn-danger" last=1 %}
       </div>
     </div>
 
@@ -580,14 +559,7 @@
     <div class="card">
       <div class="card-header"><span class="card-title">&#128202; Schema</span></div>
       <div class="card-body">
-        <div style="margin-bottom:16px">
-          <label class="form-label">Create Schema</label>
-          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Create the fact table, dimension tables, and initial range partitions sized by the configured partition period. Must be run before ETL. Inline dimensions are populated automatically.</p>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-secondary btn-sm" id="etlCmdCreateFactBtn">Create Schema</button>
-            <span class="cmd-result" id="result-create-fact"></span>
-          </div>
-        </div>
+        {% include "sources/_cmd_action.html" with title="Create Schema" desc="Create the fact table, dimension tables, and initial range partitions sized by the configured partition period. Must be run before ETL. Inline dimensions are populated automatically." btn_id="etlCmdCreateFactBtn" btn_label="Create Schema" result_id="result-create-fact" %}
         <div style="margin-bottom:16px">
           <label class="form-label">Sync Schema</label>
           <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Reconcile fact table columns, types, and dim tables with the metadata config. Adds missing columns/dim tables, alters safe type changes, drops orphans on confirmation.</p>
@@ -606,22 +578,8 @@
             <span class="cmd-result" id="result-create-parts"></span>
           </div>
         </div>
-        <div style="margin-bottom:16px">
-          <label class="form-label">Import Dimensions</label>
-          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Populate dimension tables from source DB or inline values.</p>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-secondary btn-sm" id="etlCmdImportDimsBtn">Import</button>
-            <span class="cmd-result" id="result-import-dims"></span>
-          </div>
-        </div>
-        <div>
-          <label class="form-label">Refresh Counts</label>
-          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Recount dimension rows per value after ETL.</p>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-secondary btn-sm" id="etlCmdRefreshCountsBtn">Refresh</button>
-            <span class="cmd-result" id="result-refresh-counts"></span>
-          </div>
-        </div>
+        {% include "sources/_cmd_action.html" with title="Import Dimensions" desc="Populate dimension tables from source DB or inline values." btn_id="etlCmdImportDimsBtn" btn_label="Import" result_id="result-import-dims" %}
+        {% include "sources/_cmd_action.html" with title="Refresh Counts" desc="Recount dimension rows per value after ETL." btn_id="etlCmdRefreshCountsBtn" btn_label="Refresh" result_id="result-refresh-counts" last=1 %}
       </div>
     </div>
 
@@ -835,7 +793,7 @@ var dtpAuditTo = new DateTimePicker(document.getElementById('auditTo'), { nextFo
   if (badge) badge.textContent = origText + ' …';
   var btnPreview = document.getElementById('btnPreview');
   if (btnPreview) { btnPreview.disabled = true; btnPreview.title = 'Checking connection…'; }
-  fetch('/sources/' + DS_PK + '/connection-status/', {signal: AbortSignal.timeout(15000)}).then(function(r){ return r.json(); }).then(function(d) {
+  getJSON('/sources/' + DS_PK + '/connection-status/', {signal: AbortSignal.timeout(15000)}).then(function(d) {
     var cls = d.ok ? 'badge badge-conn-ok' : 'badge badge-conn-fail';
     if (badge) { badge.className = cls; badge.textContent = origText; if (!d.ok) badge.title = d.error || 'Connection failed'; }
     if (badgeDl) { badgeDl.className = cls; badgeDl.textContent = origText; if (!d.ok) badgeDl.title = d.error || 'Connection failed'; }
@@ -875,17 +833,23 @@ document.getElementById('btnPreview').addEventListener('click', function() {
 });
 
 // --- Dimensions tab: Import Dims ---
+// Import Dims is reachable twice — here on the Dimensions tab and from the ETL
+// Commands card — and both report the same response. Only the wording is
+// shared; the two use different result containers on purpose.
+function importDimsSummary(d) {
+  return d.dims.map(function(dim) {
+    return dim.dim_table + ': ' + dim.rows + ' rows' + (dim.inline ? ' (inline)' : '');
+  }).join(', ');
+}
+
 document.getElementById('btnImportDims').addEventListener('click', function() {
   var btn = this;
   var el = document.getElementById('dimResult');
   btn.disabled = true; btn.textContent = 'Importing…';
   postJSON('/sources/' + DS_PK + '/import-dims/', {}).then(function(d) {
     if (d.ok) {
-      var lines = d.dims.map(function(dim) {
-        return dim.dim_table + ': ' + dim.rows + ' rows' + (dim.inline ? ' (inline)' : '');
-      });
       el.className = 'action-result ok';
-      el.textContent = '✓ ' + lines.join(', ');
+      el.textContent = '✓ ' + importDimsSummary(d);
       if (d.warning) el.textContent += ' ⚠ ' + d.warning;
     } else {
       el.className = 'action-result err';
@@ -976,7 +940,7 @@ function startEtlPoll() {
 function stopEtlPoll() { clearInterval(etlPollTimer); etlPollTimer = null; }
 
 function pollEtlStatus() {
-  fetch('/sources/' + DS_PK + '/etl/status/').then(function(r){ return r.json(); }).then(function(data) {
+  getJSON('/sources/' + DS_PK + '/etl/status/').then(function(data) {
     if (!data.runs || !data.runs.length) return;
     var run = data.runs[0];
     var killBtn = document.getElementById('etlKillBtn');
@@ -1091,7 +1055,7 @@ var etlLogOffsets = {};
 var etlLogPendingSelect = null;
 
 function etlLogPopulateFiles(preselect) {
-  fetch('/sources/' + DS_PK + '/etl/logs/').then(function(r){ return r.json(); }).then(function(data) {
+  getJSON('/sources/' + DS_PK + '/etl/logs/').then(function(data) {
     if (!data.ok) return;
     var sel = document.getElementById('etlLogFile');
     var cur = preselect || sel.value;
@@ -1119,8 +1083,8 @@ function etlLogFetch(reset) {
   if (!name) return;
   if (reset) etlLogOffsets[name] = 0;
   var offset = etlLogOffsets[name] || 0;
-  fetch('/sources/' + DS_PK + '/etl/log/?file=' + encodeURIComponent(name) + '&offset=' + offset)
-    .then(function(r){ return r.json(); }).then(function(data) {
+  getJSON('/sources/' + DS_PK + '/etl/log/?file=' + encodeURIComponent(name) + '&offset=' + offset)
+    .then(function(data) {
       if (!data.ok) { if (data.error) document.getElementById('etlLogPane').textContent = data.error; return; }
       var pane = document.getElementById('etlLogPane');
       if (data.truncated || offset === 0) pane.textContent = '';
@@ -1157,7 +1121,7 @@ document.getElementById('etlLogRefresh').addEventListener('click', function(){ e
 // Check on page load if ETL is already running
 pollEtlStatus();
 // Start polling if already running
-fetch('/sources/' + DS_PK + '/etl/status/').then(function(r){ return r.json(); }).then(function(data){
+getJSON('/sources/' + DS_PK + '/etl/status/').then(function(data){
   if (data.runs && data.runs[0] && data.runs[0].status === 'running') {
     etlStrip.className = 'etl-strip show running';
     startEtlPoll();
@@ -1170,7 +1134,7 @@ fetch('/sources/' + DS_PK + '/etl/status/').then(function(r){ return r.json(); }
 var foreverPollTimer = null;
 
 function pollForeverStatus() {
-  fetch('/sources/' + DS_PK + '/etl/forever/status/').then(function(r){ return r.json(); }).then(function(data) {
+  getJSON('/sources/' + DS_PK + '/etl/forever/status/').then(function(data) {
     if (data.error && !data.id) { return; }  // endpoint error, not a forever session
     var statusEl = document.getElementById('foreverStatus');
     var startBtn = document.getElementById('foreverStartBtn');
@@ -1291,7 +1255,7 @@ document.getElementById('etlCmdRun').addEventListener('click', function() {
   var btn = this;
   var resultEl = document.getElementById('result-etl-run');
   // Check forever status first
-  fetch('/sources/' + DS_PK + '/etl/forever/status/').then(function(r){ return r.json(); }).then(function(fd) {
+  getJSON('/sources/' + DS_PK + '/etl/forever/status/').then(function(fd) {
     if (fd.active) {
       showCmdResult(resultEl, false, '✗ Stop Forever ETL first');
       return;
@@ -1545,88 +1509,65 @@ function removeEmpty(tbody, emptyId) {
   if (e) e.remove();
 }
 
-document.getElementById('fcAddForm').addEventListener('submit', function(e) {
-  e.preventDefault();
-  postJSON('/sources/' + DS_PK + '/fact-columns/add/', new FormData(this)).then(function(d) {
-    if (!d.ok) {
-      var errEl = document.getElementById('fcAddErr');
-      errEl.textContent = '✗ ' + d.error; errEl.style.display = 'block'; return;
-    }
-    removeEmpty(document.getElementById('fcBody'), 'fc-empty');
-    document.getElementById('fcBody').insertAdjacentHTML('beforeend', buildFcRow(DS_PK, d.row));
+// The four add forms differ only in endpoint, target tbody, row builder and
+// what they do around the insert. `before(row)` runs while the table still
+// holds the old rows — the measures form needs that to clear the other default
+// flags; `after(row)` runs once the new row is in place.
+function wireAddForm(formId, path, opts) {
+  var form = document.getElementById(formId);
+  if (!form) return;
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+    var errEl = document.getElementById(opts.err);
+    postJSON('/sources/' + DS_PK + path, new FormData(this)).then(function(d) {
+      if (!d.ok) { errEl.textContent = '✗ ' + d.error; errEl.style.display = 'block'; return; }
+      var body = document.getElementById(opts.body);
+      removeEmpty(body, opts.empty);
+      if (opts.before) opts.before(d.row);
+      body.insertAdjacentHTML('beforeend', opts.build(DS_PK, d.row));
+      if (opts.after) opts.after(d.row);
+      errEl.style.display = 'none';
+      e.target.reset();
+    }).catch(function(err) {
+      errEl.textContent = '✗ ' + err;
+      errEl.style.display = 'block';
+    });
+  });
+}
+
+wireAddForm('fcAddForm', '/fact-columns/add/', {
+  body: 'fcBody', empty: 'fc-empty', err: 'fcAddErr',
+  build: buildFcRow,
+  after: function() { refreshCardButtons(); },
+});
+
+wireAddForm('dimAddForm', '/dimensions/add/', {
+  body: 'dimBody', empty: 'dim-empty', err: 'dimAddErr',
+  build: buildDimRow,
+  after: function(row) {
+    if (row && row.fact_column) DIM_FC_NAMES.add(row.fact_column);
     refreshCardButtons();
-    document.getElementById('fcAddErr').style.display = 'none';
-    e.target.reset();
-  }).catch(function(e) {
-    var errEl = document.getElementById('fcAddErr');
-    errEl.textContent = '✗ ' + e;
-    errEl.style.display = 'block';
-  });
+  },
 });
 
-document.getElementById('dimAddForm').addEventListener('submit', function(e) {
-  e.preventDefault();
-  postJSON('/sources/' + DS_PK + '/dimensions/add/', new FormData(this)).then(function(d) {
-    if (!d.ok) {
-      var errEl = document.getElementById('dimAddErr');
-      errEl.textContent = '✗ ' + d.error; errEl.style.display = 'block'; return;
-    }
-    removeEmpty(document.getElementById('dimBody'), 'dim-empty');
-    document.getElementById('dimBody').insertAdjacentHTML('beforeend', buildDimRow(DS_PK, d.row));
-    if (d.row && d.row.fact_column) DIM_FC_NAMES.add(d.row.fact_column);
-    refreshCardButtons();
-    document.getElementById('dimAddErr').style.display = 'none';
-    e.target.reset();
-  }).catch(function(e) {
-    var errEl = document.getElementById('dimAddErr');
-    errEl.textContent = '✗ ' + e;
-    errEl.style.display = 'block';
-  });
+wireAddForm('idxAddForm', '/indices/add/', {
+  body: 'idxBody', empty: 'idx-empty', err: 'idxAddErr',
+  build: buildIdxRow,
 });
 
-document.getElementById('idxAddForm').addEventListener('submit', function(e) {
-  e.preventDefault();
-  postJSON('/sources/' + DS_PK + '/indices/add/', new FormData(this)).then(function(d) {
-    if (!d.ok) {
-      var errEl = document.getElementById('idxAddErr');
-      errEl.textContent = '✗ ' + d.error; errEl.style.display = 'block'; return;
-    }
-    removeEmpty(document.getElementById('idxBody'), 'idx-empty');
-    document.getElementById('idxBody').insertAdjacentHTML('beforeend', buildIdxRow(DS_PK, d.row));
-    document.getElementById('idxAddErr').style.display = 'none';
-    e.target.reset();
-  }).catch(function(e) {
-    var errEl = document.getElementById('idxAddErr');
-    errEl.textContent = '✗ ' + e;
-    errEl.style.display = 'block';
-  });
-});
-
-document.getElementById('measureAddForm').addEventListener('submit', function(e) {
-  e.preventDefault();
-  postJSON('/sources/' + DS_PK + '/measures/add/', new FormData(this)).then(function(d) {
-    if (!d.ok) {
-      var errEl = document.getElementById('measureAddErr');
-      errEl.textContent = '✗ ' + d.error; errEl.style.display = 'block'; return;
-    }
-    removeEmpty(document.getElementById('measureBody'), 'measure-empty');
-    // A new default clears the others — reflect that before appending.
-    if (d.row && d.row.is_default) {
-      document.querySelectorAll('#measureBody tr').forEach(function(other) {
-        var cb = other.querySelector('input[name="is_default"]');
-        var disp = other.querySelectorAll('span.row-display')[4];
-        if (cb) cb.checked = false;
-        if (disp) disp.textContent = '—';
-      });
-    }
-    document.getElementById('measureBody').insertAdjacentHTML('beforeend', buildMeasureRow(DS_PK, d.row));
-    document.getElementById('measureAddErr').style.display = 'none';
-    e.target.reset();
-  }).catch(function(e) {
-    var errEl = document.getElementById('measureAddErr');
-    errEl.textContent = '✗ ' + e;
-    errEl.style.display = 'block';
-  });
+wireAddForm('measureAddForm', '/measures/add/', {
+  body: 'measureBody', empty: 'measure-empty', err: 'measureAddErr',
+  build: buildMeasureRow,
+  before: function(row) {
+    // A new default clears the others server-side — reflect that before appending.
+    if (!row || !row.is_default) return;
+    document.querySelectorAll('#measureBody tr').forEach(function(other) {
+      var cb = other.querySelector('input[name="is_default"]');
+      var disp = other.querySelectorAll('span.row-display')[4];
+      if (cb) cb.checked = false;
+      if (disp) disp.textContent = '—';
+    });
+  },
 });
 
 // --- Create / Drop All Indices ---
@@ -1690,7 +1631,7 @@ document.querySelectorAll('#tabNav .tab-btn').forEach(function(btn) {
 function loadDimList() {
   document.getElementById('dimDataPrompt').style.display = 'none';
   document.getElementById('dimDataLoading').style.display = 'block';
-  fetch('/sources/' + DS_PK + '/dim-data/').then(function(r){ return r.json(); }).then(function(data) {
+  getJSON('/sources/' + DS_PK + '/dim-data/').then(function(data) {
     document.getElementById('dimDataLoading').style.display = 'none';
     if (!data.ok) {
       document.getElementById('dimDataEmpty').textContent = '✗ ' + data.error;
@@ -1757,7 +1698,7 @@ function loadDimDataSingle(dimTable) {
   loadEl.style.padding = '16px';
   loadEl.textContent = 'Loading…';
   pane.appendChild(loadEl);
-  fetch('/sources/' + DS_PK + '/dim-data/' + encodeURIComponent(dimTable) + '/').then(function(r){ return r.json(); }).then(function(data) {
+  getJSON('/sources/' + DS_PK + '/dim-data/' + encodeURIComponent(dimTable) + '/').then(function(data) {
     var ld = pane.querySelector('.dim-loading');
     if (ld) ld.remove();
     if (!data.ok) {
@@ -1803,47 +1744,59 @@ function showCmdResult(el, ok, msg) {
   el.textContent = msg;
 }
 
+// One shape for the ETL/schema command buttons: disable, POST, report into the
+// button's own result span, re-enable. What a single button does differently —
+// a confirm, a request payload, a busy label, its success wording — is an
+// option, not another copy of the body.
+//   opts.body()      request payload; return null to abort (it told the user itself)
+//   opts.confirm     confirm text, or a function of the payload returning one
+//   opts.busyLabel   label while the request runs; the original is restored after
+//   opts.ok(d)       success message (default '✓ Done')
+// Buttons that keep themselves disabled on success (ETL Forever, Kill) do not
+// fit this shape and stay hand-written.
+function cmdButton(btnId, path, resultId, opts) {
+  opts = opts || {};
+  var btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.addEventListener('click', function() {
+    var body = opts.body ? opts.body() : {};
+    if (body === null) return;
+    var ask = typeof opts.confirm === 'function' ? opts.confirm(body) : opts.confirm;
+    if (ask && !confirm(ask)) return;
+    var resultEl = document.getElementById(resultId);
+    var label = btn.textContent;
+    btn.disabled = true;
+    if (opts.busyLabel) btn.textContent = opts.busyLabel;
+    resultEl.textContent = '';
+    postJSON('/sources/' + DS_PK + path, body).then(function(d) {
+      showCmdResult(resultEl, d.ok, d.ok ? (opts.ok ? opts.ok(d) : '✓ Done') : ('✗ ' + d.error));
+    }).catch(function(e) {
+      showCmdResult(resultEl, false, '✗ ' + e);
+    }).finally(function() {
+      btn.disabled = false;
+      if (opts.busyLabel) btn.textContent = label;
+    });
+  });
+}
+
 
 // Delete From
-document.getElementById('etlCmdDeleteBtn').addEventListener('click', function() {
-  var val = dtpDeleteFrom.getUTCISO();
-  if (!val) { alert('Select a timestamp.'); return; }
-  if (!confirm('Delete all fact rows at or after this timestamp?')) return;
-  var btn = this;
-  btn.disabled = true;
-  var resultEl = document.getElementById('result-delete-from');
-  resultEl.textContent = '';
-  postJSON('/sources/' + DS_PK + '/etl/delete-from/', {from_time: val}).then(function(d) {
-    showCmdResult(resultEl, d.ok, d.ok ? ('✓ ' + (d.deleted || 0) + ' rows deleted') : ('✗ ' + d.error));
-  }).catch(function(e) {
-    showCmdResult(resultEl, false, '✗ ' + e);
-  }).finally(function() { btn.disabled = false; });
+cmdButton('etlCmdDeleteBtn', '/etl/delete-from/', 'result-delete-from', {
+  body: function() {
+    var val = dtpDeleteFrom.getUTCISO();
+    if (!val) { alert('Select a timestamp.'); return null; }
+    return {from_time: val};
+  },
+  confirm: 'Delete all fact rows at or after this timestamp?',
+  ok: function(d) { return '✓ ' + (d.deleted || 0) + ' rows deleted'; },
 });
 
 // Vacuum Analyze
-document.getElementById('etlCmdVacuumBtn').addEventListener('click', function() {
-  var btn = this;
-  btn.disabled = true;
-  var resultEl = document.getElementById('result-vacuum');
-  resultEl.textContent = '';
-  postJSON('/sources/' + DS_PK + '/etl/vacuum-analyze/', {}).then(function(d) {
-    showCmdResult(resultEl, d.ok, d.ok ? '✓ Done' : ('✗ ' + d.error));
-  }).catch(function(e) {
-    showCmdResult(resultEl, false, '✗ ' + e);
-  }).finally(function() { btn.disabled = false; });
-});
+cmdButton('etlCmdVacuumBtn', '/etl/vacuum-analyze/', 'result-vacuum');
 
 // Set High Watermark
-document.getElementById('etlCmdHwmBtn').addEventListener('click', function() {
-  var btn = this;
-  btn.disabled = true;
-  var resultEl = document.getElementById('result-set-hwm');
-  resultEl.textContent = '';
-  postJSON('/sources/' + DS_PK + '/etl/set-highwatermark/', {}).then(function(d) {
-    showCmdResult(resultEl, d.ok, d.ok ? ('✓ HWM set to ' + (d.highwatermark || '')) : ('✗ ' + d.error));
-  }).catch(function(e) {
-    showCmdResult(resultEl, false, '✗ ' + e);
-  }).finally(function() { btn.disabled = false; });
+cmdButton('etlCmdHwmBtn', '/etl/set-highwatermark/', 'result-set-hwm', {
+  ok: function(d) { return '✓ HWM set to ' + (d.highwatermark || ''); },
 });
 
 // --- Gap Audit ---------------------------------------------------------
@@ -2175,44 +2128,35 @@ document.getElementById('etlCmdClearHistBtn2').addEventListener('click', functio
 });
 
 // Query Cache: delete rows by (group_by, measure) breakdown
-document.getElementById('cacheClearBtn').addEventListener('click', function() {
-  var groupBy = document.getElementById('cacheClearGroupBy').value;
-  var measure = document.getElementById('cacheClearMeasure').value.trim();
-  var scope;
-  if (!groupBy && !measure) scope = 'every cached plot for this datasource';
-  else scope = 'cache rows matching ' +
-       (groupBy ? 'group_by=' + groupBy : '') +
-       (groupBy && measure ? ', ' : '') +
-       (measure ? 'measure=' + measure : '');
-  if (!confirm('Delete ' + scope + '?')) return;
-  var btn = this;
-  btn.disabled = true;
-  var resultEl = document.getElementById('result-cache-clear');
-  resultEl.textContent = '';
-  var data = {};
-  if (groupBy) data.group_by = groupBy;
-  if (measure) data.measure = measure;
-  postJSON('/sources/' + DS_PK + '/cache/clear/', data).then(function(d) {
-    showCmdResult(resultEl, d.ok, d.ok ? ('✓ Deleted ' + (d.deleted || 0) + ' row(s)') : ('✗ ' + d.error));
-  }).catch(function(e) {
-    showCmdResult(resultEl, false, '✗ ' + e);
-  }).finally(function() { btn.disabled = false; });
+cmdButton('cacheClearBtn', '/cache/clear/', 'result-cache-clear', {
+  body: function() {
+    var data = {};
+    var groupBy = document.getElementById('cacheClearGroupBy').value;
+    var measure = document.getElementById('cacheClearMeasure').value.trim();
+    if (groupBy) data.group_by = groupBy;
+    if (measure) data.measure = measure;
+    return data;
+  },
+  confirm: function(data) {
+    var scope = (!data.group_by && !data.measure)
+      ? 'every cached plot for this datasource'
+      : 'cache rows matching ' +
+        (data.group_by ? 'group_by=' + data.group_by : '') +
+        (data.group_by && data.measure ? ', ' : '') +
+        (data.measure ? 'measure=' + data.measure : '');
+    return 'Delete ' + scope + '?';
+  },
+  ok: function(d) { return '✓ Deleted ' + (d.deleted || 0) + ' row(s)'; },
 });
 
 // Create Fact Table
-document.getElementById('etlCmdCreateFactBtn').addEventListener('click', function() {
-  var btn = this;
-  btn.disabled = true;
-  btn.textContent = 'Creating…';
-  var resultEl = document.getElementById('result-create-fact');
-  resultEl.textContent = '';
-  postJSON('/sources/' + DS_PK + '/create-fact/', {}).then(function(d) {
+cmdButton('etlCmdCreateFactBtn', '/create-fact/', 'result-create-fact', {
+  busyLabel: 'Creating…',
+  ok: function(d) {
     var msg = '✓ ' + d.fact + ' created';
     if (d.dims && d.dims.length) msg += '; dims: ' + d.dims.join(', ');
-    showCmdResult(resultEl, d.ok, d.ok ? msg : ('✗ ' + d.error));
-  }).catch(function(e) {
-    showCmdResult(resultEl, false, '✗ ' + e);
-  }).finally(function() { btn.disabled = false; btn.textContent = 'Create Schema'; });
+    return msg;
+  },
 });
 
 // Sync Schema
@@ -2320,60 +2264,25 @@ document.getElementById('etlCmdCreateFactBtn').addEventListener('click', functio
     }).finally(function() { btn.disabled = false; btn.textContent = 'Check'; });
   }
 })();
-document.getElementById('etlCmdCreatePartsBtn').addEventListener('click', function() {
-  var n = document.getElementById('etlCmdPartN').value || '1';
-  var btn = this;
-  btn.disabled = true;
-  var resultEl = document.getElementById('result-create-parts');
-  resultEl.textContent = '';
-  postJSON('/sources/' + DS_PK + '/etl/create-partitions/', {n: n}).then(function(d) {
-    showCmdResult(resultEl, d.ok, d.ok ? ('✓ Created ' + (d.partitions || []).join(', ')) : ('✗ ' + d.error));
-  }).catch(function(e) {
-    showCmdResult(resultEl, false, '✗ ' + e);
-  }).finally(function() { btn.disabled = false; });
+cmdButton('etlCmdCreatePartsBtn', '/etl/create-partitions/', 'result-create-parts', {
+  body: function() { return {n: document.getElementById('etlCmdPartN').value || '1'}; },
+  ok: function(d) { return '✓ Created ' + (d.partitions || []).join(', '); },
 });
 
 // Import Dimensions (tab version)
-document.getElementById('etlCmdImportDimsBtn').addEventListener('click', function() {
-  var btn = this;
-  btn.disabled = true;
-  btn.textContent = 'Importing…';
-  var resultEl = document.getElementById('result-import-dims');
-  resultEl.textContent = '';
-  postJSON('/sources/' + DS_PK + '/import-dims/', {}).then(function(d) {
-    if (d.ok) {
-      var lines = d.dims.map(function(dim) {
-        return dim.dim_table + ': ' + dim.rows + ' rows' + (dim.inline ? ' (inline)' : '');
-      });
-      var msg = '✓ ' + lines.join(', ');
-      if (d.warning) msg += ' ⚠ ' + d.warning;
-      showCmdResult(resultEl, true, msg);
-    } else {
-      showCmdResult(resultEl, false, '✗ ' + d.error);
-    }
-  }).catch(function(e) {
-    showCmdResult(resultEl, false, '✗ ' + e);
-  }).finally(function() {
-    btn.disabled = false;
-    btn.textContent = 'Import';
-  });
+cmdButton('etlCmdImportDimsBtn', '/import-dims/', 'result-import-dims', {
+  busyLabel: 'Importing…',
+  ok: function(d) {
+    var msg = '✓ ' + importDimsSummary(d);
+    if (d.warning) msg += ' ⚠ ' + d.warning;
+    return msg;
+  },
 });
 
 // Refresh Counts
-document.getElementById('etlCmdRefreshCountsBtn').addEventListener('click', function() {
-  var btn = this;
-  btn.disabled = true;
-  btn.textContent = 'Refreshing…';
-  var resultEl = document.getElementById('result-refresh-counts');
-  resultEl.textContent = '';
-  postJSON('/sources/' + DS_PK + '/etl/refresh-counts/', {}).then(function(d) {
-    showCmdResult(resultEl, d.ok, d.ok ? '✓ Counts refreshed' : ('✗ ' + d.error));
-  }).catch(function(e) {
-    showCmdResult(resultEl, false, '✗ ' + e);
-  }).finally(function() {
-    btn.disabled = false;
-    btn.textContent = 'Refresh';
-  });
+cmdButton('etlCmdRefreshCountsBtn', '/etl/refresh-counts/', 'result-refresh-counts', {
+  busyLabel: 'Refreshing…',
+  ok: function() { return '✓ Counts refreshed'; },
 });
 
 // --- Storage tab: partition actions ---
@@ -2518,8 +2427,7 @@ function sortTable(th) {
   // `preselect` is the slug the profile catalogue deep-linked with
   // (?apply=<slug>); omitted when the dialog is opened from this page.
   function applyDialog(preselect) {
-    fetch('/sources/profiles/list/')
-      .then(function(r) { return r.json(); })
+    getJSON('/sources/profiles/list/')
       .then(function(d) {
         var opts = (d.profiles || []).filter(function(p) { return !p.error; })
           .map(function(p) {

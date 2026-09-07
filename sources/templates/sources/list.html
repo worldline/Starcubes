@@ -80,7 +80,7 @@
   if (adminOnly) {
     document.querySelectorAll('[id^="conn-"]').forEach(function(el) {
       var pk = el.id.replace('conn-', '');
-      fetch('/sources/' + pk + '/connection-status/', {signal: AbortSignal.timeout(15000)}).then(function(r){ return r.json(); }).then(function(d) {
+      getJSON('/sources/' + pk + '/connection-status/', {signal: AbortSignal.timeout(15000)}).then(function(d) {
         el.className = 'badge ' + (d.ok ? 'badge-conn-ok' : 'badge-conn-fail');
         el.textContent = el.textContent.replace(' …', '').trim();
         if (!d.ok) el.title = d.error || 'Connection failed';
@@ -119,8 +119,7 @@
     var timer = setInterval(function() {
       if (!runningRows.length) { clearInterval(timer); return; }
       runningRows.slice().forEach(function(pk) {
-        fetch('/sources/' + pk + '/etl/status/')
-          .then(function(r){ return r.json(); })
+        getJSON('/sources/' + pk + '/etl/status/')
           .then(function(data) {
             if (data.runs && data.runs.length) updateBadge(pk, data.runs[0]);
           });

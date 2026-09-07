@@ -259,9 +259,8 @@
     // profile_detail, not profiles_list — the catalogue JSON moved to
     // /profiles/list/ and this call was rewritten along with it by mistake,
     // which made every prefill request 404.
-    fetch('{% url "sources:profile_detail" "PLACEHOLDER" %}'
-          .replace('PLACEHOLDER', encodeURIComponent(name)))
-      .then(function(r) { return r.json(); })
+    getJSON('{% url "sources:profile_detail" "PLACEHOLDER" %}'
+            .replace('PLACEHOLDER', encodeURIComponent(name)))
       .then(function(d) {
         if (!d.ok) {
           info.className = 'action-result err';

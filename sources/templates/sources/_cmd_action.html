@@ -1,0 +1,25 @@
+{% comment %}
+  One ETL/schema command: a labelled description with a button and the result
+  span its handler writes into. Used by the ETL Commands tab of manage.html.
+
+  Parameters:
+    title      the label above the description
+    desc       one line of explanation
+    btn_id     id the cmdButton() call in manage.html binds to
+    btn_label  button caption
+    result_id  id of the span cmdButton() reports into
+    btn_class  button style, default "btn-secondary"
+    last       truthy on the final entry of a card, which drops the bottom gap
+
+  Blocks that carry an extra control (a timestamp field, a row count, a diff
+  container) stay written out in manage.html — squeezing them through
+  parameters reads worse than the repetition.
+{% endcomment %}
+<div{% if not last %} style="margin-bottom:16px"{% endif %}>
+  <label class="form-label">{{ title }}</label>
+  <p style="margin:0 0 6px;color:var(--muted);font-size:12px">{{ desc }}</p>
+  <div style="display:flex;gap:8px;align-items:center">
+    <button class="btn {{ btn_class|default:'btn-secondary' }} btn-sm" id="{{ btn_id }}">{{ btn_label }}</button>
+    <span class="cmd-result" id="{{ result_id }}"></span>
+  </div>
+</div>

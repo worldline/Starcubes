@@ -780,6 +780,13 @@ function postJSON(url, formOrData) {
     body: body,
   }).then(function(r){ return r.json(); });
 }
+
+// GET counterpart to postJSON, so a read does not have to spell out the
+// .then(r => r.json()) hop every time. `opts` is passed straight to fetch,
+// which is how the connection probe hands in its AbortSignal.timeout.
+function getJSON(url, opts) {
+  return fetch(url, opts).then(function(r){ return r.json(); });
+}
 </script>
 <main class="page">
   {% block content %}{% endblock %}
