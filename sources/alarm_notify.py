@@ -59,10 +59,24 @@ _ADDRESSED = ("email", "xmpp")
 
 
 def _fmt(v) -> str:
+    """Numbers as a person reads them; anything else as-is.
+
+    `%g` alone drops into scientific notation past six significant digits,
+    so a count of 8729883 rows — or a pipeline alarm reporting 8729883
+    seconds since the last successful run — arrived in the subject line as
+    "8.72988e+06". Correct, and useless in an alert somebody is reading at
+    three in the morning. Large magnitudes get thousands separators
+    instead; small ones keep `%g`, which is what makes 3.9 render as "3.9"
+    rather than "3.900000".
+    """
     if v is None:
         return "-"
     if isinstance(v, float):
+        if abs(v) >= 10000:
+            return f"{v:,.0f}"
         return f"{v:g}"
+    if isinstance(v, int) and abs(v) >= 10000:
+        return f"{v:,d}"
     return str(v)
 
 
