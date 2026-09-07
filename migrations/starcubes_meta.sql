@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.datasource (
     wallclock_lag_s      int NOT NULL DEFAULT 0,
     retention_floor      timestamptz,
     dedupe_from          timestamptz,
+    housekeeping_interval_s int NOT NULL DEFAULT 21600,
     created_at           timestamptz NOT NULL DEFAULT now(),
     updated_at           timestamptz NOT NULL DEFAULT now()
 );
@@ -1019,3 +1020,40 @@ COMMENT ON COLUMN starcubes_meta.datasource.retention_floor IS
   'Rows with partition_column below this instant were disposed of on purpose (a dropped or truncated partition), not lost. core/audit.py clamps its windows up to it so a retired window is not reported as a gap. Only advanced when the oldest partition goes -- a hole in the middle cannot be expressed as a floor. NULL means nothing has been retired.';
 COMMENT ON COLUMN starcubes_meta.datasource.dedupe_from IS
   'Set by a high-watermark rewind (delete_fact_from): the next incremental run must load with the _overlap_pks PK filter armed from this instant, even when late_arrival_overlap_s is 0, or the reload duplicates the rows the delete did not remove. Cleared by the run that honoured it. NULL means no rewind is pending.';
+
+
+-- 0034_housekeeping.sql — the periodic work that cannot live inside a load:
+-- targeted ANALYZE and BRIN summarisation (COPY-only tables never trigger
+-- autovacuum's scale factors, so statistics rot and BRIN ranges are never
+-- summarised — the index silently stops covering the newest data),
+-- dimension fill levels against the smallserial ceiling, and partition
+-- sizes recorded as a series. Interval defaults to 6h and is deliberately
+-- *on*: the damage is silent and identical everywhere, so off-by-default
+-- would just mean nobody runs it. Mirror block; see
+-- migrations/0034_housekeeping.sql for the semantics.
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS housekeeping_interval_s int NOT NULL DEFAULT 21600;
+
+COMMENT ON COLUMN starcubes_meta.datasource.housekeeping_interval_s IS
+  'Seconds between automatic `manage.py etl_housekeeping` runs, checked by the forever loop after each load. Targeted ANALYZE + BRIN summarisation + dimension fill levels + partition sizes. Default 6h and deliberately on: stale statistics and unsummarised BRIN ranges degrade silently on every installation, so an off-by-default setting would only mean nobody runs it. 0 disables the automatic run; the command still works by hand.';
+
+CREATE TABLE IF NOT EXISTS starcubes_meta.housekeeping_run (
+    id              serial PRIMARY KEY,
+    datasource_id   int NOT NULL REFERENCES starcubes_meta.datasource(id)
+                        ON DELETE CASCADE,
+    ran_at          timestamptz NOT NULL DEFAULT now(),
+    runtime_ms      bigint,
+    trigger         text NOT NULL DEFAULT 'manual'
+        CHECK (trigger IN ('manual', 'forever')),
+    report          jsonb
+);
+
+CREATE INDEX IF NOT EXISTS ix_housekeeping_run_ds
+    ON starcubes_meta.housekeeping_run (datasource_id, ran_at DESC);
+
+COMMENT ON TABLE starcubes_meta.housekeeping_run IS
+  'One row per `manage.py etl_housekeeping` run. The forever loop reads the newest ran_at per datasource to decide whether housekeeping_interval_s has elapsed.';
+COMMENT ON COLUMN starcubes_meta.housekeeping_run.trigger IS
+  'manual (CLI or GUI button) or forever (the loop reached the interval).';
+COMMENT ON COLUMN starcubes_meta.housekeeping_run.report IS
+  'What was done and measured: the ANALYZEd partitions, BRIN ranges summarised per index, dimension fill levels against the smallserial ceiling of 32767, and pg_total_relation_size per fact partition. Kept as history -- the single newest measurement is already on the Storage tab; the series is the point.';

@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from sqlalchemy import text
 
 from core.alarm import run_alarm_cycle
+from core.housekeeping import housekeeping_due, run_housekeeping
 from core.etl import import_fact, truncate_last_partition, delete_fact_from, \
                       clear_etl_history, set_highwatermark, EtlAborted
 from core.preflight import DatasourceLocked
@@ -369,6 +370,24 @@ class Command(BaseCommand):
                     except Exception:
                         log.exception("%s: alarm notification failed, "
                                       "continuing", source.name)
+
+                # Housekeeping: the periodic work that does not belong
+                # inside a load. The forever loop is the only scheduler this
+                # system has, so this is where the interval is checked —
+                # hours, not per iteration. Own try/except for the same
+                # reason as the alarm phase, and nothing in it takes the
+                # datasource lock (ANALYZE and BRIN summarisation are safe
+                # alongside a load). Only in forever mode: a one-shot run is
+                # somebody watching, not a scheduler.
+                if forever_id is not None:
+                    try:
+                        if housekeeping_due(meta, source.id):
+                            run_housekeeping(source, meta,
+                                             source.dest_engine(),
+                                             trigger="forever")
+                    except Exception:
+                        log.exception("%s: housekeeping failed, continuing",
+                                      source.name)
 
                 iteration += 1
 
