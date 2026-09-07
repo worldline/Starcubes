@@ -60,6 +60,8 @@
         <dt>Bar Pixel Target</dt><dd>{{ ds.bar_pixel_target }}</dd>
         <dt>PK Format</dt><dd class="mono">{{ ds.pk_format|default:'—' }}</dd>
         <dt>Late Arrival Overlap</dt><dd>{% if ds.late_arrival_overlap_s %}{{ ds.late_arrival_overlap_s }} s{% else %}off{% endif %}</dd>
+        <dt>Data Lag Limit</dt><dd>{% if ds.max_data_lag_s %}{{ ds.max_data_lag_s }} s{% else %}unset{% endif %}</dd>
+        <dt>Max Run Time</dt><dd>{% if ds.max_run_s %}{{ ds.max_run_s }} s{% else %}unset{% endif %}</dd>
         <dt>Housekeeping</dt><dd>{% if ds.housekeeping_interval_s %}every {{ ds.housekeeping_interval_s }} s{% else %}manual only{% endif %}</dd>
         <dt>Window Lag</dt><dd>{% if ds.watermark_lag_s or ds.wallclock_lag_s %}{{ ds.watermark_lag_s|default:0 }} s below tip{% if ds.wallclock_lag_s %} / {{ ds.wallclock_lag_s }} s absolute{% endif %}{% else %}off{% endif %}</dd>
         <dt>Watermark Fact Expr</dt><dd class="mono">{{ ds.watermark_fact_expr|default:'— (partition column)' }}</dd>
@@ -715,6 +717,7 @@
           <th>Rows</th>
           <th>Runtime (ms)</th>
           <th>txn/s</th>
+          <th title="src_now − max_wm: how far the newest row in the source lags the source's own clock. Growing without bound means the source stopped producing; a value parked near a whole-hour offset while rows keep arriving means the watermark column is not UTC.">Data lag</th>
           <th>E / T / L</th>
           <th>Error</th>
           <th>Log</th>
@@ -732,6 +735,7 @@
           <td>{{ r.rows|default:'—' }}</td>
           <td>{{ r.runtime_ms|default:'—' }}</td>
           <td class="text-mono" data-rate="{{ r.rows_per_s|default:'' }}">—</td>
+          <td class="text-mono" data-lag="{{ r.data_lag_s|default_if_none:'' }}">—</td>
           <td class="text-mono" data-etl="{{ r.extract_rows_per_s|default:'' }}" data-trl="{{ r.transform_rows_per_s|default:'' }}" data-lrl="{{ r.load_rows_per_s|default:'' }}"
               title="E: busy {{ r.stats.extract.busy_s|default:'?' }}s wait {{ r.stats.extract.wait_s|default:'?' }}s | T: busy {{ r.stats.transform.busy_s|default:'?' }}s wait {{ r.stats.transform.wait_s|default:'?' }}s | L: busy {{ r.stats.load.busy_s|default:'?' }}s wait {{ r.stats.load.wait_s|default:'?' }}s">—</td>
           <td class="text-muted" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ r.error|default:'' }}</td>
@@ -934,6 +938,23 @@ localiseTimestamps();
 document.querySelectorAll('[data-rate]').forEach(function(el) {
   var v = el.getAttribute('data-rate');
   el.textContent = v ? fmtRate(v) : '—';
+});
+// src_now − max_wm, in whatever unit reads naturally. A negative value is
+// not a small lag: it means the source's clock is behind its own newest row,
+// which one clock cannot be — almost always a timezone mismatch.
+function fmtLag(v) {
+  var s = parseFloat(v);
+  if (isNaN(s)) return '—';
+  var neg = s < 0, a = Math.abs(s), out;
+  if (a < 120) out = a.toFixed(0) + 's';
+  else if (a < 7200) out = (a / 60).toFixed(0) + ' min';
+  else out = (a / 3600).toFixed(1) + ' h';
+  return neg ? '−' + out + ' (clock behind data)' : out;
+}
+document.querySelectorAll('[data-lag]').forEach(function(el) {
+  var v = el.getAttribute('data-lag');
+  el.textContent = v === '' ? '—' : fmtLag(v);
+  if (v !== '' && parseFloat(v) < 0) el.style.color = 'var(--warn)';
 });
 document.querySelectorAll('[data-etl]').forEach(function(el) {
   var e = el.getAttribute('data-etl'), t = el.getAttribute('data-trl'), l = el.getAttribute('data-lrl');

@@ -46,6 +46,8 @@ silent version of a bug first.
 | Single occupancy per datasource | ✅ `preflight.datasource_lock` — a Postgres advisory lock on its own NullPool connection, held for the whole run and taken briefly by the four destructive maintenance gestures. N11. |
 | The watermark after a delete | ✅ `delete_fact_from` rewinds it and arms `datasource.dedupe_from`; the partition gestures write `datasource.retention_floor` instead. All four bump the cache epoch. U1, N15. |
 | Statistics, BRIN summarisation, dimension fill, disk trend | ✅ `manage.py etl_housekeeping` / `core/housekeeping.py`, triggered by the forever loop every `datasource.housekeeping_interval_s` (default 6 h). One row per run in `starcubes_meta.housekeeping_run`. U6, N13, N14. |
+| A source that is up and has stopped producing | ✅ `etl_run.max_wm` / `src_now` persisted per run, compared against `datasource.max_data_lag_s` by the preflight; the difference is a column in the ETL History table. U9, N12. |
+| A run bounding its own time | ✅ `datasource.max_run_s` — `EtlAborted` past the budget, and the same value as the per-dialect source statement timeout. Never applied to a backfill, a `--start/--end` window or the initial load. U7 first half. |
 
 ## Evaluation
 
@@ -65,12 +67,12 @@ column plus GUI field).
 | U5a | Warehouse schema drift | `sync_schema` produces a dry-run diff (`core/schema.py:340`) but is only ever called by hand | high | M | preflight (diagnosis only) | its execute phase is `drop_indices` → ALTER → `create_indices` — hours on a billion rows. Applying automatically is **not** acceptable |
 | U5b | Source schema drift | ✅ **done** — `preflight._check_source_projection`, one `WHERE 1=0` round trip; a rejected query blocks, an unreachable source only warns | high | S | preflight | almost nothing: one `WHERE 1=0` round trip |
 | U6 | VACUUM / ANALYZE | ✅ **done** — `housekeeping` ANALYZEs the partitions actually holding the newest rows and calls `brin_summarize_new_values` on every fact-partition BRIN index. Full `VACUUM ANALYZE` stays manual | high | S | housekeeping | ANALYZE on the partitioned parent samples across every partition — target the newest partition instead |
-| U7 | Wedged forever ETL | `progress_at` correctly stops advancing, but the stale sweep only runs **when somebody opens a GUI page** (`sources/views.py:842`, `:1261`); no timeout on the source connection | **critical** | M | preflight + a process decision | a watchdog inside the watched process is not a watchdog; a runtime cap must not shoot down a legitimate first load |
+| U7 | Wedged forever ETL | first half ✅ **done** — `max_run_s` bounds the run and every source statement in it (per dialect). The second half, supervising the loop from outside, is still the open process decision below | **critical** | M | preflight + a process decision | a watchdog inside the watched process is not a watchdog; a runtime cap must not shoot down a legitimate first load |
 | U8 | Alarm phase too slow | steps 1+2 ✅ **done** — `fact_max` is read once per datasource in `run_alarm_cycle` and passed down; both fact-side queries carry `STARCUBES_ALARM_TIMEOUT_MS`. Steps 3 (phase budget) and 4 (outbox) still open, and step 4 waits on U7 | high | S → M | ETL hook | an outbox needs a deliverer — the same process problem as U7 |
-| U9 | Source reachable, data stopped | invisible: alarms cannot see it by construction (`docs/alarm.md`), the ETL logs `rows=0` and carries on | **critical** | M | pipeline alarm | false alarms during legitimate quiet periods; time-of-day profiles are a bottomless pit |
+| U9 | Source reachable, data stopped | ✅ **detected** — `src_now - max_wm` per run against `max_data_lag_s`, reported by the preflight and shown per run in ETL History. *Delivering* it to somebody still needs the pipeline alarms | **critical** | M | pipeline alarm | false alarms during legitimate quiet periods; time-of-day profiles are a bottomless pit |
 | U10 | Indices never created | ✅ **done** — `preflight._check_indices` diffs `pg_index`/`pg_constraint` against what `create_indices` would build; time-aware (`STARCUBES_INDEX_WARN_ROWS`/`_HOURS`), report only | medium-high | S | preflight (report only) | building them automatically is out: no `CONCURRENTLY` anywhere in the repo, ACCESS EXCLUSIVE, blocks COPY for hours |
 | N11 | Two ETL processes at once | ✅ **done** — `pg_try_advisory_lock` on a dedicated NullPool connection, held for the run, taken briefly by the destructive maintenance gestures. Backfill serialises on the same key | high | S | preflight | an advisory lock is session-scoped — it needs a connection held for the whole run; backfill needs an explicit rule |
-| N12 | Source clock skew | the clamp and its warning exist; the measured skew is computed per run but never stored | medium | S | falls out of U9 | none worth naming |
+| N12 | Source clock skew | ✅ **done** — stored per run and rendered as a column, so a skew parked near a whole-hour offset is a trend rather than a log line; a *negative* lag gets named as what it is (the watermark column not holding UTC) | medium | S | falls out of U9 | none worth naming |
 | N13 | A dimension fills up | ✅ **done** — fill measured as `max(index)` against the 32767 ceiling, warning past `STARCUBES_DIM_FULL_WARN_PCT` (80) | medium | S | housekeeping | none |
 | N14 | Disk growth | ✅ **done** — `pg_total_relation_size` *and* `pg_relation_size` per partition, recorded per run so the series exists | medium | S | housekeeping | none |
 | N15 | Cache after a retroactive change | ✅ **done** for the four delete paths — all bump the epoch now; U3b's retention loop must remember to as well | medium | S | same functions | easy to forget — which is the reason to write it down |
@@ -358,6 +360,26 @@ lock and is safe alongside an active load.
 
 ## U7 — Detecting a wedged forever ETL
 
+**Built — the first half.** `datasource.max_run_s` (off by default) aborts a
+run past its budget through the existing `EtlAborted` path, checked between
+chunks *and* inside both bounded queue helpers, so a run wedged on
+backpressure gives up as reliably as one that is merely slow. The same value
+bounds every source statement inside the run, per dialect (Postgres
+`statement_timeout`, Oracle `call_timeout`; a dialect with no equivalent logs
+that it is unbounded rather than pretending). One knob rather than two: a
+statement may not outlive the run it belongs to, and a second timeout column
+nobody could size independently would only be a second thing to get wrong.
+
+**One claim below is wrong and worth correcting rather than deleting.** "The
+next iteration retries a smaller window" does not follow. The high watermark
+did not move, so the next window starts in the same place and ends later — it
+is *wider*. `max_run_s` is a circuit breaker and a diagnosis: it converts a
+run that would have held the forever loop indefinitely into a failed row with
+a reason in it. Narrowing the work is what `--limit` is for.
+
+The second half — noticing that the loop stopped making progress at all —
+is untouched, and is still the process decision below.
+
 **Today.** The building blocks are in place and the wiring is not:
 
 - `progress_at` only advances when rows actually moved (`core/etl.py:1196`) —
@@ -471,6 +493,25 @@ before that decision is made.
 
 ## U9 — Source reachable, data stopped
 
+**Built — the detection half.** `etl_run.max_wm` / `etl_run.src_now` are
+persisted on every run and `datasource.max_data_lag_s` is the threshold on
+their difference; `preflight._check_data_staleness` reports it, and the ETL
+History table shows the lag per run. Delivery is still the missing half:
+there is no mechanism yet for "the pipeline has a problem, tell somebody" —
+that is the pipeline alarms, item 6.
+
+One thing this needed that the note below assumed was already true:
+`src_now` was only read when `wallclock_lag_s` was set. It is read on every
+run now. For the two generated query shapes it rides along as a second
+column and costs nothing; only a hand-written `watermark_max_query` pays for
+it, with one extra trivial round trip.
+
+A *negative* lag is not a small lag. A clock cannot be behind its own data,
+so it means the watermark column does not hold UTC — which the rest of the
+pipeline assumes it does. The window arithmetic already refused the
+wall-clock bound in that case; the check now says why, in the report, where
+somebody will see it.
+
 **Today.** Nothing sees it. `docs/alarm.md` states the limitation outright: a
 total standstill freezes the HWM, so the trailing window stops sliding and
 `count(*) < 1` never becomes true. The ETL logs `rows=0` and sleeps. The load
@@ -569,6 +610,10 @@ safer default — both paths write the same dim tables.
 
 ## N12 — Source clock skew
 
+**Built**, and it did fall out of U9 as predicted — the columns were the
+whole cost. The lag is a column in the ETL History table, negative values
+called out in the warning colour.
+
 The window bound already clamps and warns when `src_now` runs ahead of the
 data. Once `etl_run.max_wm` and `src_now` are stored (U9), a persistent skew
 parked near a whole-hour offset while rows keep arriving becomes visible as a
@@ -648,11 +693,11 @@ therefore well before `ensure_partitions_for`. The `etl_run` row is written
 by then, so a `block` lands as `status='failed'` with the reason in `error`
 through the same `except`/`finally` as any other startup failure.
 
-Five checks today, in cost order: schema objects (U2), migration probe (N16),
+Six checks today, in cost order: schema objects (U2), migration probe (N16),
 index/FK coverage (U10), source projection probe (U5b),
-watermark-vs-fact-tip (U1's detection half). Every one is a catalogue query
-or a single round trip. Still to come: warehouse drift dry-run (U5a) and data
-staleness (U9).
+watermark-vs-fact-tip (U1's detection half) and data staleness (U9). Every
+one is a catalogue query or a single round trip. Still to come: the warehouse
+drift dry-run (U5a).
 
 Two design points that turned out to matter in practice:
 
@@ -747,11 +792,15 @@ reasoning behind the sequence stays readable.
 4. ~~**U6 + N13 + N14** — the housekeeping command~~ — ✅ small and
    self-contained, as predicted; what was not predicted is that both of its
    "obvious" heuristics were wrong on real data (see U6).
-5. **U9 + N12** (`max_wm`/`src_now` columns + threshold) and **U7 half one**
-   (statement timeout, runtime cap). Next — and the housekeeping work made
-   the case for U9 concrete: the one production datasource here has been
-   loading `rows=0` since April without a single thing raising its voice.
-6. **Pipeline alarms**, and with them the process decision from U7.
+5. ~~**U9 + N12** (`max_wm`/`src_now` columns + threshold) and **U7 half
+   one** (statement timeout, runtime cap)~~ — ✅ the detection exists and is
+   visible in the GUI. What U9 still lacks is *delivery*, which is item 6 by
+   construction. Note the case that motivated it was not hypothetical: the
+   one production datasource here has been loading `rows=0` since April
+   without anything raising its voice.
+6. **Pipeline alarms**, and with them the process decision from U7. Next —
+   and it is now the *only* thing standing between the checks that already
+   run and somebody hearing about them.
 7. **U3b** (retention) and **N17** (first-load chunking) last — both change
    assumptions other subsystems hold. U3b is now the *only* thing standing
    between `retention_floor` and an actual retention policy: the floor, the

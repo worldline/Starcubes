@@ -214,6 +214,9 @@ crashed/orphaned sessions are revived.
 - `POST .../etl/truncate-partition/` — truncate a named partition
 - `POST .../etl/drop-partition/` — drop a named partition
 - `POST .../etl/vacuum-analyze/` — VACUUM ANALYZE fact table
+- `POST .../etl/preflight/`'s `data_staleness` check compares the newest
+  run's `src_now - max_wm` against `datasource.max_data_lag_s`; the ETL
+  History table renders the same difference per run.
 - `POST .../etl/housekeeping/` — run the periodic maintenance now instead of
   waiting for `housekeeping_interval_s`: targeted `ANALYZE`, BRIN range
   summarisation, dimension fill levels, partition sizes. Returns

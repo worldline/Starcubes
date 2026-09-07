@@ -145,6 +145,16 @@ Two things keep that cost from leaning on the ETL loop, both from U8 in
 An alarm *phase* budget (U8 step 3) and a notification outbox (step 4) are
 still open; the outbox waits on the process decision in U7.
 
+**The limitation this evaluator cannot fix itself** — a total standstill
+freezes the HWM, so the trailing window stops sliding and `count(*) < 1`
+never becomes true — is now at least *detected* elsewhere:
+`etl_run.max_wm` / `src_now` and `datasource.max_data_lag_s` see a source
+that is up and has stopped producing, and the preflight reports it (U9 in
+[`etl-automation.md`](etl-automation.md)). Turning that detection into a
+message is the pipeline-alarm work, which will share `alarm_firing` and the
+notification path with this module but evaluate over pipeline state rather
+than over fact rows.
+
 There is deliberately **no forever loop**. A load is the only thing that
 moves the HWM, so it is the only moment an alarm's answer can have changed;
 a second, independently timed evaluator would race the ETL for the same

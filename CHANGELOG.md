@@ -39,6 +39,22 @@ runs through further pre-release tags — see
   sizes over time, so growth is something you can see coming rather than
   discover. The interval is per datasource on the edit form; 0 turns the
   automatic run off. Safe to run during a live load.
+- **A source that is up but has stopped sending data is now visible.** It
+  was the one failure nothing could see: alarms cannot fire during a
+  standstill by construction — the watermark stops moving, so their window
+  stops sliding — and the ETL simply logs that it loaded nothing and sleeps.
+  Every run now records how far the newest row in the source lags the
+  source's *own* clock, shown per run in the ETL History tab, and a **Max
+  Data Lag** on the edit form turns that into a preflight warning. Both
+  numbers come from the source, so the figure is unaffected by clock
+  differences between machines — and a negative one is reported for what it
+  is, a watermark column that is not in UTC, rather than as a small lag.
+- **A run can be given a time limit.** **Max Run Time** aborts a run that
+  overruns it and records it as failed, and bounds the queries it sends to
+  the source — a source that accepts the connection and then never answers
+  used to block the load indefinitely. Never applied to a backfill, an
+  explicit Start/End window, or the first load. It is a circuit breaker
+  rather than a repair: the next window is wider, not smaller.
 - **A datasource can only be loaded by one process at a time.** A hand-run
   `manage.py etl_run` used to run happily alongside a live forever session,
   which can duplicate rows and race the dimension tables. It refuses now, and

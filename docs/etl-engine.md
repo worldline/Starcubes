@@ -98,6 +98,50 @@ production incidents.
   the hole `_etl_busy_response` never covered: no maintenance view has ever
   called it.
 
+- **A run can bound its own time, and the source statements inside it.**
+  `datasource.max_run_s` (off by default) gives the parent a wall-clock
+  budget: past it, `_RunBudget.check` raises `EtlAborted`, which the existing
+  reaping and `status='failed'` machinery already handles. It is checked
+  between chunks and inside `_raise_if_failed`, which both bounded queue
+  helpers poll through — so a run wedged on backpressure gives up as
+  reliably as one that is merely slow.
+
+  What a deadline in the parent *cannot* catch is a source that accepts the
+  connection and then never answers: the parent is blocked inside the DBAPI
+  at that point. `pool_pre_ping` and `pool_timeout` bound the checkout, not
+  the execution. So the same value becomes a per-dialect statement timeout on
+  a separate source engine (`Source.source_engine(statement_timeout_ms=)` →
+  `_bounded_source_engine`): a libpq startup option for Postgres, a connect-
+  event hook setting `call_timeout` for Oracle, and a warning that statements
+  are unbounded for a dialect with no equivalent. One knob rather than two —
+  a statement may not outlive the run it belongs to.
+
+  Three run shapes are exempt, all legitimately long: a backfill, an explicit
+  `--start/--end` window, and the initial load (N17). The last is decided by
+  `_fact_has_rows`, the same probe `_resume_state` uses.
+
+  It is a circuit breaker, not a repair. An aborted run leaves the watermark
+  where it was, so the next window starts in the same place and ends later —
+  it is *wider*, not smaller. What it buys is that one wedged run stops
+  holding the forever loop, and lands as a failed row with a reason in it
+  instead of a process that merely looks alive.
+
+- **Every run records the data tip and the source's own clock.**
+  `etl_run.max_wm` and `etl_run.src_now`, read together on the max-watermark
+  query. `src_now` is read on *every* run now, not only when
+  `wallclock_lag_s` is set — it rides along as a second column on the two
+  generated query shapes, so it is free there, and only a hand-written
+  `watermark_max_query` pays an extra trivial round trip. The window
+  arithmetic is unchanged: the wall-clock term is still gated on the lag
+  being configured.
+
+  Their difference is the only thing in the system that can see a source
+  which is up and has stopped producing — a standstill freezes the HWM, so
+  the alarm evaluator's window stops sliding and can never fire. The
+  preflight compares it against `datasource.max_data_lag_s`; the ETL History
+  table shows it per run. A *negative* value is not a small lag but a clock
+  behind its own data, which means the watermark column does not hold UTC.
+
 - **A delete now tells the watermark, and which thing it tells depends on
   what kind of delete it was.** `delete_fact_from` is a *repair*: it rewinds
   the high watermark to the delete boundary by inserting a new `etl_run` row

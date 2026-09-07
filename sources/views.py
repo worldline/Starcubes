@@ -336,7 +336,11 @@ def _build_source_context(pk: int) -> dict:
             "SELECT id, status, started_at, finished_at, "
             "       first_end_time, last_end_time, rows, runtime_ms, error, "
             "       rows_per_s, extract_rows_per_s, transform_rows_per_s, "
-            "       load_rows_per_s, stats, log_path, log_tail "
+            "       load_rows_per_s, stats, log_path, log_tail, "
+            # The two source-clock readings themselves are only interesting
+            # as a difference, so the difference is what the table shows.
+            "       max_wm, src_now, "
+            "       extract(epoch from (src_now - max_wm)) AS data_lag_s "
             "  FROM starcubes_meta.etl_run "
             " WHERE datasource_id = :id ORDER BY id DESC LIMIT 20"
         ), {"id": pk}).mappings().all()
@@ -564,6 +568,8 @@ def source_edit(request, pk: int):
                     wallclock_lag_s    = :wallclock_lag_s,
                     pagerduty_routing_key = NULLIF(:pdrk, ''),
                     housekeeping_interval_s = :hk_interval,
+                    max_data_lag_s     = :max_data_lag_s,
+                    max_run_s          = :max_run_s,
                     updated_at         = now()
                 WHERE id = :id
             """), {
@@ -591,6 +597,9 @@ def source_edit(request, pk: int):
                 "pdrk":               p.get("pagerduty_routing_key", ""),
                 "hk_interval":        max(0, int(
                     p.get("housekeeping_interval_s") or 0)),
+                "max_data_lag_s":     max(0, int(
+                    p.get("max_data_lag_s") or 0)),
+                "max_run_s":          max(0, int(p.get("max_run_s") or 0)),
             })
         return redirect("sources:manage", pk=pk)
     ds = _load_datasource(pk)
