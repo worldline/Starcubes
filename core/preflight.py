@@ -239,6 +239,73 @@ def _check_indices(source: Source, dest_engine, meta_engine) -> dict:
                   **detail)
 
 
+def _check_warehouse_drift(source: Source, dest_engine) -> dict:
+    """U5a — the fact table's columns against what the configuration says.
+
+    `sync_schema` with `drop_columns=None` is already a pure dry run
+    returning a diff, so this is a reading of that diff and nothing more.
+    **The execute half is deliberately unreachable from here**: it is
+    `drop_indices` → ALTER → `create_indices`, which on a billion-row fact
+    table is hours of ACCESS EXCLUSIVE, and no preflight may start that.
+
+    The severities follow from what the load would actually do:
+
+    * A configured column the table does not have (`add_columns`) blocks.
+      The COPY writes one value per configured column into a table with
+      fewer, and fails on the column count — later, and far less legibly.
+    * A type the table cannot widen into safely (`unsafe_type_changes`)
+      blocks for the same reason: the load cannot put the value there.
+    * A safe widening still pending (`alter_columns`) and a physical column
+      the configuration has forgotten (`drop_columns`) only warn. The COPY
+      names its columns, so an orphan is inert, and a narrower-but-castable
+      type still accepts the rows.
+
+    `create_dims`/`drop_dims` are deliberately *not* reported: the
+    schema-objects check already creates a missing dim table, and two checks
+    disagreeing about the same table would be worse than one.
+    """
+    from .schema import sync_schema
+
+    try:
+        diff = sync_schema(source, dest_engine, drop_columns=None, quiet=True)
+    except Exception as exc:
+        return _check("warehouse_drift", CHECK_WARN,
+                      f"schema comparison failed: {exc}", error=str(exc))
+
+    add = [c["name"] for c in diff.get("add_columns") or []]
+    unsafe = [f"{c['name']} {c['from_type']}→{c['to_type']}"
+              for c in diff.get("unsafe_type_changes") or []]
+    alter = [f"{c['name']} {c['from_type']}→{c['to_type']}"
+             for c in diff.get("alter_columns") or []]
+    orphan = list(diff.get("drop_columns") or [])
+    detail = {"add_columns": add, "unsafe_type_changes": unsafe,
+              "alter_columns": alter, "drop_columns": orphan}
+
+    if add or unsafe:
+        parts = []
+        if add:
+            parts.append(f"missing column(s): {', '.join(add)}")
+        if unsafe:
+            parts.append(f"incompatible type(s): {', '.join(unsafe)}")
+        return _check("warehouse_drift", CHECK_BLOCK,
+                      f"{source.schema_name}.fact does not match the "
+                      f"configuration — {'; '.join(parts)}. Run Sync Schema "
+                      f"(it rebuilds the indices, so not from here)",
+                      **detail)
+    if alter or orphan:
+        parts = []
+        if alter:
+            parts.append(f"widenable type(s): {', '.join(alter)}")
+        if orphan:
+            parts.append(f"column(s) no longer configured: "
+                         f"{', '.join(orphan)}")
+        return _check("warehouse_drift", CHECK_WARN,
+                      f"{source.schema_name}.fact has drifted, harmlessly so "
+                      f"far — {'; '.join(parts)}", **detail)
+    return _check("warehouse_drift", CHECK_OK,
+                  f"{source.schema_name}.fact matches the configuration")
+
+
 def _check_source_projection(source: Source, source_engine) -> dict:
     """U5b — the upstream columns behind source_expr / base_table still exist.
 
@@ -345,6 +412,12 @@ def _check_watermark_tip(source: Source, dest_engine, meta_engine) -> dict:
                       f"producing, or rows were removed without rewinding "
                       f"the watermark",
                       **detail)
+    if gap_s < 0:
+        # Normal whenever the watermark expression trails the partition
+        # column, which is the whole reason watermark_fact_expr exists.
+        return _check("watermark_tip", CHECK_OK,
+                      f"high watermark is {_fmt_s(-gap_s)} below the fact "
+                      f"tip", **detail)
     return _check("watermark_tip", CHECK_OK,
                   f"high watermark is {_fmt_s(gap_s)} above the fact tip",
                   **detail)
@@ -496,6 +569,7 @@ def run_preflight(source: Source, meta_engine, dest_engine, *,
     repairs.extend(done)
     checks.append(_check_meta_migrations(meta_engine))
     checks.append(_check_indices(source, dest_engine, meta_engine))
+    checks.append(_check_warehouse_drift(source, dest_engine))
     checks.append(_check_source_projection(source, source_engine))
     checks.append(_check_watermark_tip(source, dest_engine, meta_engine))
     checks.append(_check_data_staleness(source, meta_engine))
