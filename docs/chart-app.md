@@ -130,7 +130,7 @@ rather than inside one:
   is appended last and only if it fits.
   The bell used to point at the firing episodes; that view is still one click
   away from the menu and from the Alarms tab's own per-datasource link.
-- **The return trip** is `chartUrl()` in `sources/templates/sources/detail.html`:
+- **The return trip** is `chartUrl()` in `sources/templates/sources/_alarms_js.html`:
   every alarm row links back into the chart with its stored `context_filter`
   re-serialized as `filter=`/`andor=`/`indent=`, mirroring
   `buildHistoryParams()`. It always writes `group_by`, even empty — the boot

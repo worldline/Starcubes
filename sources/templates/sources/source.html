@@ -1,22 +1,50 @@
 {% extends "sources/base.html" %}{% load static %}
 {% block title %}{{ ds.name }} — starcubes Sources{% endblock %}
 
+{% block prepaint %}
+<script>
+(function(){
+  // /sources/<pk>/manage/ forces expert; /sources/<pk>/ follows what was
+  // remembered. Runs before the first paint so the expert tabs do not flash
+  // into view on a Basic load — same reason the theme snippet above is here.
+  var m = {% if force_expert %}'expert'{% else %}null{% endif %};
+  if (!m) { try { m = localStorage.getItem('starcubes-source-mode'); } catch(e) {} }
+  document.documentElement.setAttribute('data-mode', m === 'expert' ? 'expert' : 'basic');
+})();
+</script>
+{% endblock %}
+
 {% block content %}
-<!-- Sub-tabs: lower tier of the double-tab header, full-bleed beneath the top nav -->
+{% comment %}
+  Sub-tabs: lower tier of the double-tab header, full-bleed beneath the top
+  nav. Two different mechanisms decide what a visitor sees here, and they
+  must not be confused:
+
+    * {% templatetag openblock %} if expert_allowed {% templatetag closeblock %}
+      is the security gate. A non-superuser never receives the admin panels
+      at all — not the delete form, not its csrf token, not the ETL buttons.
+    * .expert-only is the view toggle on top of that, for superusers only.
+      html[data-mode="basic"] hides it; base.html carries the rule.
+{% endcomment %}
 <div class="subtabs-bar">
   <div class="tabs" id="tabNav">
     <button class="tab-btn active" data-tab="basics">Basics</button>
-    <button class="tab-btn" data-tab="fact-cols">Fact Columns ({{ fact_cols|length }})</button>
-    <button class="tab-btn" data-tab="dimensions">Dimensions ({{ dimensions|length }})</button>
-    <button class="tab-btn" data-tab="dim-data">Dim Data</button>
-    {% if user.is_authenticated %}
-    <button class="tab-btn" data-tab="group-dims">Group Dims (<span id="grpTabCount">{{ group_set_tokens|length }}</span>)</button>
+    {% if expert_allowed %}
+    <button class="tab-btn expert-only" data-tab="fact-cols">Fact Columns ({{ fact_cols|length }})</button>
+    <button class="tab-btn expert-only" data-tab="dimensions">Dimensions ({{ dimensions|length }})</button>
+    <button class="tab-btn expert-only" data-tab="dim-data">Dim Data</button>
     {% endif %}
+    <button class="tab-btn" data-tab="group-dims">Group Dims (<span id="grpTabCount">{{ group_set_tokens|length }}</span>)</button>
     <button class="tab-btn" data-tab="measures">Measures ({{ measures|length }})</button>
-    <button class="tab-btn" data-tab="indices">Indices ({{ indices|length }})</button>
-    <button class="tab-btn" data-tab="storage">Storage</button>
-    <button class="tab-btn" data-tab="etl">ETL</button>
+    {% if expert_allowed %}
+    <button class="tab-btn expert-only" data-tab="indices">Indices ({{ indices|length }})</button>
+    <button class="tab-btn expert-only" data-tab="storage">Storage</button>
+    <button class="tab-btn expert-only" data-tab="etl">ETL</button>
+    {% endif %}
+    <button class="tab-btn" data-tab="alarms">Alarms (<span id="alarmTabCount">{{ alarm_count }}</span>)</button>
+    <button class="tab-btn" data-tab="firings">Firings</button>
   </div>
+  {% include "sources/_mode_toggle.html" %}
 </div>
 
 <!-- Basics tab -->
@@ -24,7 +52,8 @@
   <div class="card">
     <div class="card-header">
       <span class="card-title">Connection &amp; ETL Settings</span>
-      <span style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      {% if expert_allowed %}
+      <span class="expert-only card-actions">
         <a class="btn btn-secondary btn-sm" href="{% url 'sources:edit' ds.id %}">Edit</a>
         <button class="btn btn-secondary btn-sm" id="btnPreview">Preview Import</button>
         <button class="btn btn-secondary btn-sm" id="btnSaveProfile">Save as Profile…</button>
@@ -35,9 +64,12 @@
           <button type="button" class="btn btn-danger btn-sm" onclick="confirmDelete()">Delete</button>
         </form>
       </span>
+      {% endif %}
     </div>
+    {% if expert_allowed %}
     <div id="previewResult" class="preview-table" style="margin:0 16px 12px;display:none"></div>
     <div id="profileResult" class="action-result" style="margin:0 16px 12px;display:none"></div>
+    {% endif %}
     <div class="card-body">
       <dl class="dl-grid">
         <dt>Name</dt><dd>{{ ds.name }}</dd>
@@ -47,31 +79,32 @@
         <dt>Import Query</dt><dd class="mono">{{ ds.import_query|default:'(composed from base_table)' }}</dd>
         <dt>Base Table</dt><dd class="mono">{{ ds.base_table|default:'—' }}</dd>
         <dt>Watermark Column</dt><dd class="mono">{{ ds.watermark_column }}</dd>
-        <dt>Watermark Max Query</dt><dd class="mono">{{ ds.watermark_max_query|default:'—' }}</dd>
+        {% if expert_allowed %}<dt class="expert-only">Watermark Max Query</dt><dd class="expert-only mono">{{ ds.watermark_max_query|default:'—' }}</dd>{% endif %}
         <dt>Partition Column</dt><dd class="mono">{{ ds.partition_column }}</dd>
         <dt>Partition Period</dt><dd class="mono">{{ ds.partition_period }}</dd>
-        <dt>Chunk Size</dt><dd>{{ ds.chunksize }}</dd>
-        <dt>Transform Procs</dt><dd>{{ ds.transform_procs }}</dd>
-        <dt>Small Window Hint</dt><dd class="mono">{{ ds.small_window_hint|default:'—' }}</dd>
+        {% if expert_allowed %}<dt class="expert-only">Chunk Size</dt><dd class="expert-only">{{ ds.chunksize }}</dd>{% endif %}
+        {% if expert_allowed %}<dt class="expert-only">Transform Procs</dt><dd class="expert-only">{{ ds.transform_procs }}</dd>{% endif %}
+        {% if expert_allowed %}<dt class="expert-only">Small Window Hint</dt><dd class="expert-only mono">{{ ds.small_window_hint|default:'—' }}</dd>{% endif %}
         <dt>Interval Ladder</dt><dd class="mono">{{ ds.interval_ladder_str }}</dd>
-        <dt>Bar Pixel Target</dt><dd>{{ ds.bar_pixel_target }}</dd>
+        {% if expert_allowed %}<dt class="expert-only">Bar Pixel Target</dt><dd class="expert-only">{{ ds.bar_pixel_target }}</dd>{% endif %}
         <dt>PK Format</dt><dd class="mono">{{ ds.pk_format|default:'—' }}</dd>
         <dt>Late Arrival Overlap</dt><dd>{% if ds.late_arrival_overlap_s %}{{ ds.late_arrival_overlap_s }} s{% else %}off{% endif %}</dd>
-        <dt>Data Lag Limit</dt><dd>{% if ds.max_data_lag_s %}{{ ds.max_data_lag_s }} s{% else %}unset{% endif %}</dd>
-        <dt>Max Run Time</dt><dd>{% if ds.max_run_s %}{{ ds.max_run_s }} s{% else %}unset{% endif %}</dd>
-        <dt>Retention</dt><dd>{% if ds.retention_periods %}keep {{ ds.retention_periods }} {{ ds.partition_period }}(s){% if ds.retention_floor %} &mdash; floor {{ ds.retention_floor }}{% endif %}{% else %}keep everything{% endif %}</dd>
-        <dt>Initial Window</dt><dd>{% if ds.initial_window_s %}{{ ds.initial_window_s }} s per catch-up step{% else %}unbounded{% endif %}</dd>
-        <dt>Dim Refresh</dt><dd>{% if ds.dim_refresh_interval_s %}every {{ ds.dim_refresh_interval_s }} s{% else %}every run{% endif %}</dd>
-        <dt>Housekeeping</dt><dd>{% if ds.housekeeping_interval_s %}every {{ ds.housekeeping_interval_s }} s{% else %}manual only{% endif %}</dd>
+        {% if expert_allowed %}<dt class="expert-only">Data Lag Limit</dt><dd class="expert-only">{% if ds.max_data_lag_s %}{{ ds.max_data_lag_s }} s{% else %}unset{% endif %}</dd>{% endif %}
+        {% if expert_allowed %}<dt class="expert-only">Max Run Time</dt><dd class="expert-only">{% if ds.max_run_s %}{{ ds.max_run_s }} s{% else %}unset{% endif %}</dd>{% endif %}
+        {% if expert_allowed %}<dt class="expert-only">Retention</dt><dd class="expert-only">{% if ds.retention_periods %}keep {{ ds.retention_periods }} {{ ds.partition_period }}(s){% if ds.retention_floor %} &mdash; floor {{ ds.retention_floor }}{% endif %}{% else %}keep everything{% endif %}</dd>{% endif %}
+        {% if expert_allowed %}<dt class="expert-only">Initial Window</dt><dd class="expert-only">{% if ds.initial_window_s %}{{ ds.initial_window_s }} s per catch-up step{% else %}unbounded{% endif %}</dd>{% endif %}
+        {% if expert_allowed %}<dt class="expert-only">Dim Refresh</dt><dd class="expert-only">{% if ds.dim_refresh_interval_s %}every {{ ds.dim_refresh_interval_s }} s{% else %}every run{% endif %}</dd>{% endif %}
+        {% if expert_allowed %}<dt class="expert-only">Housekeeping</dt><dd class="expert-only">{% if ds.housekeeping_interval_s %}every {{ ds.housekeeping_interval_s }} s{% else %}manual only{% endif %}</dd>{% endif %}
         <dt>Window Lag</dt><dd>{% if ds.watermark_lag_s or ds.wallclock_lag_s %}{{ ds.watermark_lag_s|default:0 }} s below tip{% if ds.wallclock_lag_s %} / {{ ds.wallclock_lag_s }} s absolute{% endif %}{% else %}off{% endif %}</dd>
-        <dt>Watermark Fact Expr</dt><dd class="mono">{{ ds.watermark_fact_expr|default:'— (partition column)' }}</dd>
+        {% if expert_allowed %}<dt class="expert-only">Watermark Fact Expr</dt><dd class="expert-only mono">{{ ds.watermark_fact_expr|default:'— (partition column)' }}</dd>{% endif %}
       </dl>
     </div>
   </div>
 </div>
 
+{% if expert_allowed %}
 <!-- Fact Columns tab -->
-<div class="tab-panel" id="tab-fact-cols">
+<div class="tab-panel expert-only" id="tab-fact-cols">
   <div class="card">
     <div class="card-header">
       <span class="card-title">Fact Columns</span>
@@ -168,8 +201,10 @@
   </div>
 </div>
 
+{% endif %}
+{% if expert_allowed %}
 <!-- Dimensions tab -->
-<div class="tab-panel" id="tab-dimensions">
+<div class="tab-panel expert-only" id="tab-dimensions">
   <div class="card">
     <div class="card-header">
       <span class="card-title">Dimensions</span>
@@ -268,8 +303,10 @@
   </div>
 </div>
 
+{% endif %}
+{% if expert_allowed %}
 <!-- Dim Data tab -->
-<div class="tab-panel" id="tab-dim-data">
+<div class="tab-panel expert-only" id="tab-dim-data">
   <div id="dimDataTabs" style="display:none">
     <div class="tabs" id="dimSubTabs"></div>
     <div id="dimDataPane"></div>
@@ -279,14 +316,16 @@
   <p id="dimDataPrompt" class="text-muted" style="padding:16px">Switch to this tab to load dimension table data.</p>
 </div>
 
+{% endif %}
 <!-- Group Dims tab -->
 {% include "sources/_group_dims_panel.html" %}
 
 <!-- Measures tab -->
 {% include "sources/_measures_panel.html" %}
 
+{% if expert_allowed %}
 <!-- Indices tab -->
-<div class="tab-panel" id="tab-indices">
+<div class="tab-panel expert-only" id="tab-indices">
   <div class="card">
     <div class="card-header">
       <span class="card-title">Fact Indices</span>
@@ -350,8 +389,10 @@
   </div>
 </div>
 
+{% endif %}
+{% if expert_allowed %}
 <!-- Storage tab -->
-<div class="tab-panel" id="tab-storage">
+<div class="tab-panel expert-only" id="tab-storage">
   <div style="display:flex;gap:12px;margin-bottom:12px;align-items:center">
     <span style="font-size:13px;color:var(--muted)">Schema: <strong class="text-mono">{{ ds.schema_name }}</strong></span>
     <span style="font-size:13px;color:var(--muted)">Total size: <strong>{{ total_schema_size }}</strong></span>
@@ -438,12 +479,14 @@
   </div>
 </div>
 
+{% endif %}
+{% if expert_allowed %}
 <!-- ETL tab: everything that happens around a load — the commands that
      start one, the maintenance around it, and the three read-only views
      onto what a run did. Sub-tabbed like Dim Data; the sub-panels are
      .etl-subpanel, not .tab-panel, because the top-level tab switcher
      clears every .tab-panel in the document. -->
-<div class="tab-panel" id="tab-etl">
+<div class="tab-panel expert-only" id="tab-etl">
   <div id="etlSubWrap">
     <div class="tabs" id="etlSubTabs">
       <button class="tab-btn active" data-sub="run">Run</button>
@@ -789,6 +832,22 @@
     </div>
   </div>
 </div>
+{% endif %}
+
+<!-- Alarms tab -->
+{% include "sources/_alarms_panel.html" %}
+
+{% comment %}
+  Firings tab — the global episode overview (/sources/alarms/firings/)
+  scoped to this datasource. Same rows, same table: both come from
+  views._firing_episodes and sources/_firings.html, with `scoped` dropping
+  the datasource dropdown and the Datasource column and putting an
+  "All firings" link in their place. The All / Open only links reload this
+  page onto ?tab=firings, which the sub-tab deep-link puts back here.
+{% endcomment %}
+<div class="tab-panel" id="tab-firings">
+  {% include "sources/_firings.html" %}
+</div>
 
 <!-- Persistent bottom status bar: ETL status segment on the left,
      dialect badge + schema name pinned bottom-right. Mirrors the canvas page #info bar. -->
@@ -805,13 +864,23 @@
 
 {% block extra_js %}
 {{ block.super }}
-{# Shared with detail.html; must load AFTER the panel markup, never deferred. #}
+{# Must load AFTER the panel markup, never deferred. #}
 <script src="{% static 'sources/inline_edit.js' %}"></script>
 <script src="{% static 'sources/group_dims.js' %}"></script>
 <script>
 var DS_PK = {{ ds.id }};
 var DS_NAME = '{{ ds.name|escapejs }}';
 var DS_SCHEMA = '{{ ds.schema_name|escapejs }}';
+
+// Bind a handler only if its element was rendered. The expert panels are
+// gated server-side, so on a Basic-only page (a non-superuser) none of the
+// admin controls exist — every binding below has to tolerate that rather
+// than throw and take the rest of the script down with it. cmdButton() and
+// wireAddForm() already guard themselves the same way.
+function on(id, ev, fn) {
+  var el = document.getElementById(id);
+  if (el) el.addEventListener(ev, fn);
+}
 
 // --- Delete confirmation ---
 function confirmDelete() {
@@ -830,13 +899,21 @@ function doDelete() {
     document.getElementById('drop-schema-check').checked ? '1' : '';
   document.getElementById('delete-form').submit();
 }
+{% if expert_allowed %}
+{# Every one of these inputs lives in an expert panel, so the whole block #}
+{# is skipped rather than guarded five times over. #}
 var dtpStart = new DateTimePicker(document.getElementById('etlCmdStart'), { nextFocus: document.getElementById('etlCmdEnd'), onChange: function(){} });
 var dtpEnd = new DateTimePicker(document.getElementById('etlCmdEnd'), { nextFocus: document.getElementById('etlCmdStart'), onChange: function(){} });
 var dtpDeleteFrom = new DateTimePicker(document.getElementById('etlCmdDeleteFrom'), { onChange: function(){} });
 var dtpAuditFrom = new DateTimePicker(document.getElementById('auditFrom'), { nextFocus: document.getElementById('auditTo'), onChange: function(){} });
 var dtpAuditTo = new DateTimePicker(document.getElementById('auditTo'), { nextFocus: document.getElementById('auditFrom'), onChange: function(){} });
+{% endif %}
 
 // --- Connection status auto-check ---
+// connection-status/ is admin-gated (views.py), so this probe belongs to the
+// expert side only. Without the gate a Basic-only page would fire it and log
+// a 403 on every load.
+{% if expert_allowed %}
 (function() {
   var badge = document.getElementById('conn-badge');
   var badgeDl = document.getElementById('conn-badge-dl');
@@ -855,9 +932,10 @@ var dtpAuditTo = new DateTimePicker(document.getElementById('auditTo'), { nextFo
     if (btnPreview) { btnPreview.disabled = true; btnPreview.title = 'Source connection failed'; }
   });
 })();
+{% endif %}
 
 // --- Basics tab: Preview Import ---
-document.getElementById('btnPreview').addEventListener('click', function() {
+on('btnPreview', 'click', function() {
   var btn = this;
   var prev = document.getElementById('previewResult');
   btn.disabled = true; btn.textContent = 'Loading…';
@@ -893,7 +971,7 @@ function importDimsSummary(d) {
   }).join(', ');
 }
 
-document.getElementById('btnImportDims').addEventListener('click', function() {
+on('btnImportDims', 'click', function() {
   var btn = this;
   var el = document.getElementById('dimResult');
   btn.disabled = true; btn.textContent = 'Importing…';
@@ -915,22 +993,34 @@ document.getElementById('btnImportDims').addEventListener('click', function() {
 });
 
 // --- Tabs ---
+function activateTab(btn) {
+  if (!btn) return;
+  document.querySelectorAll('#tabNav .tab-btn').forEach(function(b){ b.classList.remove('active'); });
+  document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
+  btn.classList.add('active');
+  document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  // The log tail is the one panel with an activate/teardown. It sits a tier
+  // down, so entering the ETL tab only resumes it when Log is the sub-tab
+  // that is showing; every other tab stops the poll.
+  if (btn.dataset.tab === 'etl' && activeEtlSub === 'log') {
+    etlLogActivate();
+  } else {
+    etlLogStopPoll();
+  }
+}
+
 document.querySelectorAll('#tabNav .tab-btn').forEach(function(btn) {
-  btn.addEventListener('click', function() {
-    document.querySelectorAll('#tabNav .tab-btn').forEach(function(b){ b.classList.remove('active'); });
-    document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
-    btn.classList.add('active');
-    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    // The log tail is the one panel with an activate/teardown. It now sits a
-    // tier down, so entering the ETL tab only resumes it when Log is the
-    // sub-tab that is showing; every other tab stops the poll.
-    if (btn.dataset.tab === 'etl' && activeEtlSub === 'log') {
-      etlLogActivate();
-    } else {
-      etlLogStopPoll();
-    }
-  });
+  btn.addEventListener('click', function() { activateTab(btn); });
 });
+
+// ?tab=<name> deep-links a tab — this is what lets the chart's bell land on
+// Alarms rather than on Basics, and what brings the Firings filter links back
+// to their own tab. Came over from the old detail.html with the panels.
+(function() {
+  var want = new URLSearchParams(location.search).get('tab');
+  if (!want) return;
+  activateTab(document.querySelector('#tabNav .tab-btn[data-tab="' + CSS.escape(want) + '"]'));
+})();
 
 // --- ETL sub-tabs ---
 // Same shape as the Dim Data sub-tabs, but the buttons are in the template
@@ -1024,13 +1114,17 @@ function pollEtlStatus() {
   getJSON('/sources/' + DS_PK + '/etl/status/').then(function(data) {
     if (!data.runs || !data.runs.length) return;
     var run = data.runs[0];
+    // Expert-only control: absent for a non-superuser, who still gets the
+    // status strip below (etl/status/ is login-gated, not admin-gated).
     var killBtn = document.getElementById('etlKillBtn');
-    if (run.status === 'running' && !foreverActive) {
-      killBtn.style.display = '';
-    } else {
-      killBtn.style.display = 'none';
-      etlKillForce = false;
-      killBtn.textContent = 'Kill';
+    if (killBtn) {
+      if (run.status === 'running' && !foreverActive) {
+        killBtn.style.display = '';
+      } else {
+        killBtn.style.display = 'none';
+        etlKillForce = false;
+        killBtn.textContent = 'Kill';
+      }
     }
     if (foreverActive) {
       // When forever is active, let pollForeverStatus control the strip.
@@ -1200,8 +1294,8 @@ function openEtlLogFile(path) {
   activateEtlSub('log');
 }
 
-document.getElementById('etlLogFile').addEventListener('change', function(){ etlLogFetch(true); });
-document.getElementById('etlLogRefresh').addEventListener('click', function(){ etlLogFetch(false); });
+on('etlLogFile', 'change', function(){ etlLogFetch(true); });
+on('etlLogRefresh', 'click', function(){ etlLogFetch(false); });
 
 // Check on page load if ETL is already running
 pollEtlStatus();
@@ -1295,7 +1389,7 @@ function pollForeverStatus() {
   });
 }
 
-document.getElementById('foreverStartBtn').addEventListener('click', function() {
+on('foreverStartBtn', 'click', function() {
   var btn = this;
   var interval = document.getElementById('foreverInterval').value;
   btn.disabled = true;
@@ -1315,7 +1409,7 @@ document.getElementById('foreverStartBtn').addEventListener('click', function() 
   });
 });
 
-document.getElementById('foreverStopBtn').addEventListener('click', function() {
+on('foreverStopBtn', 'click', function() {
   var btn = this;
   btn.disabled = true;
   var resultEl = document.getElementById('result-forever');
@@ -1336,7 +1430,7 @@ document.getElementById('foreverStopBtn').addEventListener('click', function() {
 });
 
 // Guard: block one-shot ETL if forever is active
-document.getElementById('etlCmdRun').addEventListener('click', function() {
+on('etlCmdRun', 'click', function() {
   var btn = this;
   var resultEl = document.getElementById('result-etl-run');
   // Check forever status first
@@ -1375,13 +1469,19 @@ document.getElementById('etlCmdRun').addEventListener('click', function() {
   });
 });
 
-// Check forever status on page load
+// Check forever status on page load. etl/forever/status/ is admin-gated, so
+// only the expert side asks — the status strip a Basic user sees is fed by
+// etl/status/, which is login-gated.
+{% if expert_allowed %}
 pollForeverStatus();
+{% endif %}
 
 // --- ETL Kill ---
 var etlKillBtn = document.getElementById('etlKillBtn');
 var etlKillForce = false;
-etlKillBtn.addEventListener('click', function() {
+// The variable stays declared either way — pollEtlStatus() reads it — but
+// there is nothing to bind to when the ETL panel was not rendered.
+on('etlKillBtn', 'click', function() {
   var btn = this;
   var body = {};
   if (etlKillForce) {
@@ -1407,7 +1507,7 @@ etlKillBtn.addEventListener('click', function() {
 
 // --- Inline edit helpers ---
 // startEdit / cancelEdit / saveRow / deleteRow live in
-// sources/static/sources/inline_edit.js, shared with detail.html.
+// sources/static/sources/inline_edit.js.
 // startEdit is wrapped further down to re-sync the dimension source fields.
 
 function deleteDimRow(btn, url) {
@@ -1650,7 +1750,7 @@ wireAddForm('measureAddForm', '/measures/add/', {
 
 // --- Create / Drop All Indices ---
 
-document.getElementById('btnCreateIndices').addEventListener('click', function() {
+on('btnCreateIndices', 'click', function() {
   var btn = this;
   var el = document.getElementById('idxResult');
   btn.disabled = true; btn.textContent = 'Creating…';
@@ -1665,7 +1765,7 @@ document.getElementById('btnCreateIndices').addEventListener('click', function()
   });
 });
 
-document.getElementById('btnDropIndices').addEventListener('click', function() {
+on('btnDropIndices', 'click', function() {
   var btn = this;
   var el = document.getElementById('idxResult');
   if (!confirm('Drop all FK constraints and indexes on the fact table for "' + DS_NAME + '"?\n\nType the datasource name to confirm.')) return;
@@ -1812,9 +1912,10 @@ function loadDimDataSingle(dimTable) {
 }
 
 // --- Group Dims tab ---
-// The editor lives in sources/static/sources/group_dims.js, shared with
-// detail.html. It wires itself to the panel markup at load time; this page
-// only kicks off the first load lazily, on the first click of the tab.
+// The editor lives in sources/static/sources/group_dims.js. It wires itself
+// to the panel markup at load time; this page only kicks off the first load
+// lazily, on the first click of the tab — in both detail levels, since Group
+// Dims is one of the tabs Basic keeps.
 
 // --- ETL tab: command cards ---
 function showCmdResult(el, ok, msg) {
@@ -2248,19 +2349,19 @@ function auditCompareIds(from, to, btn) {
   }).finally(function() { if (btn) btn.disabled = false; });
 }
 
-document.getElementById('auditIdsBtn').addEventListener('click', function() {
+on('auditIdsBtn', 'click', function() {
   var from = dtpAuditFrom.getUTCISO();
   var to = dtpAuditTo.getUTCISO();
   if (!from || !to) { alert('Pick a From and To timestamp.'); return; }
   auditCompareIds(from, to, this);
 });
 
-document.getElementById('auditIdBackfillBtn').addEventListener('click', function() {
+on('auditIdBackfillBtn', 'click', function() {
   if (!auditIdWindowRange) return;
   auditBackfill(auditIdWindowRange[0], auditIdWindowRange[1], this);
 });
 
-document.getElementById('auditRunBtn').addEventListener('click', function() {
+on('auditRunBtn', 'click', function() {
   var btn = this;
   var from = dtpAuditFrom.getUTCISO();
   var to = dtpAuditTo.getUTCISO();
@@ -2295,7 +2396,7 @@ document.getElementById('auditRunBtn').addEventListener('click', function() {
   }).finally(function() { btn.disabled = false; });
 });
 
-document.getElementById('auditBackfillAllBtn').addEventListener('click', function() {
+on('auditBackfillAllBtn', 'click', function() {
   if (!auditGapSpan) return;
   auditBackfill(auditGapSpan[0], auditGapSpan[1], this);
 });
@@ -2312,10 +2413,10 @@ function clearEtlHistory(btn, resultEl) {
     showCmdResult(resultEl, false, '✗ ' + e);
   }).finally(function() { btn.disabled = false; });
 }
-document.getElementById('etlCmdClearHistBtn').addEventListener('click', function() {
+on('etlCmdClearHistBtn', 'click', function() {
   clearEtlHistory(this, document.getElementById('result-clear-history'));
 });
-document.getElementById('etlCmdClearHistBtn2').addEventListener('click', function() {
+on('etlCmdClearHistBtn2', 'click', function() {
   clearEtlHistory(this, document.getElementById('result-etl-run'));
 });
 
@@ -2354,6 +2455,7 @@ cmdButton('etlCmdCreateFactBtn', '/create-fact/', 'result-create-fact', {
 // Sync Schema
 (function() {
   var btn = document.getElementById('etlCmdSyncSchemaBtn');
+  if (!btn) return;
   var resultEl = document.getElementById('result-sync-schema');
   var diffEl = document.getElementById('syncSchemaDiff');
 
@@ -2753,6 +2855,41 @@ function sortTable(th) {
   } else if (qs.get('save-profile') === '1') {
     saveDialog();
   }
+})();
+</script>
+{% include "sources/_alarms_js.html" %}
+<script>
+// --- Detail level (Basic / Expert) ---
+// Only the visibility of already-rendered panels. What a non-superuser may
+// see is decided server-side by `expert_allowed`; for them the toggle is not
+// rendered at all and this returns immediately.
+(function() {
+  var group = document.getElementById('modeToggle');
+  if (!group) return;
+  var root = document.documentElement;
+
+  function apply(mode) {
+    root.setAttribute('data-mode', mode);
+    try { localStorage.setItem('starcubes-source-mode', mode); } catch (e) {}
+    group.querySelectorAll('.chip').forEach(function(c) {
+      c.classList.toggle('active', c.dataset.mode === mode);
+    });
+    // Going down a level can pull the rug out from under the open tab, so
+    // fall back to Basics when the active one is about to be hidden.
+    if (mode === 'basic') {
+      var active = document.querySelector('#tabNav .tab-btn.active');
+      if (active && active.classList.contains('expert-only')) {
+        activateTab(document.querySelector('#tabNav .tab-btn[data-tab="basics"]'));
+      }
+    }
+  }
+
+  group.querySelectorAll('.chip').forEach(function(c) {
+    c.addEventListener('click', function() { apply(c.dataset.mode); });
+  });
+  // Reconcile the chips with whatever the pre-paint block settled on — and
+  // record it, so arriving via /manage/ is remembered like a click would be.
+  apply(root.getAttribute('data-mode') === 'expert' ? 'expert' : 'basic');
 })();
 </script>
 {% endblock %}

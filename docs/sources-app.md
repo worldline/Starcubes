@@ -27,23 +27,26 @@ script (theme helper + `makePopover` call) sits inside `{% block extra_js %}`
 of `base.html`; templates that override the block must start with
 `{{ block.super }}` (list/manage/new/firings do).
 Create-new-source and Manage used to be menu rows; they live on their
-pages now (`+ New Datasource` on the list, the Manage link in the detail
-header).
+pages now (`+ New Datasource` on the list; the expert half of the datasource
+page behind its Basic/Expert switch).
 
 ## Shared panels and scripts
 
-`manage.html` and `detail.html` render the same Group Dims and Measures tabs.
-They used to hold two verbatim copies of that markup and its JavaScript — 919
-identical lines, kept in step by a rule in `sources/CLAUDE.md` rather than by a
-mechanism, which is exactly how the Measures help text and the `fmtRate` /
-`fmtLocal` pairs drifted apart. Four shared files replace the rule:
+There used to be two datasource pages — `detail.html` and `manage.html` —
+holding two verbatim copies of the Group Dims and Measures markup and its
+JavaScript: 919 identical lines, kept in step by a rule in `sources/CLAUDE.md`
+rather than by a mechanism, which is exactly how the Measures help text and the
+`fmtRate` / `fmtLocal` pairs drifted apart. Shared files replaced the rule, and
+the two pages have since become one (`source.html`) with a Basic/Expert switch,
+which removes the question entirely. The partials stayed, because a 3,900-line
+template is worse than four small ones:
 
 | File | What it holds |
 |------|---------------|
 | `sources/templates/sources/_group_dims_panel.html` | The Group Dims tab panel. No parameters; a caller needing a permission gate wraps the include. |
 | `sources/templates/sources/_measures_panel.html` | The Measures tab panel. Optional `measures_help_short` (truthy = the short help line, default = the long one naming every ladder style), the same `{% if %}` / `\|default:` convention `_nav_menu.html` uses. |
 | `sources/static/sources/group_dims.js` | The group-dimension editor, ~660 lines. Needs `DS_PK` and `csrfToken()`; defines `GROUP_PALETTE` itself. |
-| `sources/static/sources/inline_edit.js` | `startEdit` / `cancelEdit` / `saveRow` / `deleteRow`, plus `ROW_SPECS` — each table's display columns described once, read both by `saveRow` and by manage.html's row builders. Needs `csrfToken()`, `postJSON()` and the page's `esc()`. |
+| `sources/static/sources/inline_edit.js` | `startEdit` / `cancelEdit` / `saveRow` / `deleteRow`, plus `ROW_SPECS` — each table's display columns described once, read both by `saveRow` and by source.html's row builders. Needs `csrfToken()`, `postJSON()` and the page's `esc()`. |
 | `sources/templates/sources/_cmd_action.html` | One ETL/schema command block (label, description, button, result span). Parameters `title`, `desc`, `btn_id`, `btn_label`, `result_id`, plus optional `btn_class` and `last`. |
 
 Three more files are shared with the **chart app** (`viz/`), which loads them
@@ -57,26 +60,25 @@ apps, and the repo already includes across the boundary in both directions
 | `sources/static/sources/nav.css` / `nav.js` | The anchored-dropdown mechanic and its styling. `nav.js` exports `makePopover` and `closeTopPopover`. |
 | `sources/static/sources/datetimepicker.js` / `.css` | The date/time picker and its popup styling. The two apps had grown separate features — the chart's copy knew a `trigger` button and clamped the popup inside the viewport, the shell's had `getUTCISO()`; the shared file is the union. Field chrome stays per app (`.dtp-label` in the shell, `.dtp-field` in the chart). |
 
-**The colour palettes stay per app.** The two do not agree on `--muted`,
-`--accent` or `--bg2`, and the shared files use `var(--…)` throughout, so each
-page resolves them against its own tokens. Reconciling the palettes would be a
+**The colour palettes stay per app** — sources vs. chart. The two do not agree
+on `--muted`, `--accent` or `--bg2`, and the shared files use `var(--…)`
+throughout, so each page resolves them against its own tokens. Reconciling the palettes would be a
 visible design change, not a refactor.
 
 **The one non-obvious constraint is load order.** `group_dims.js` binds its
 event handlers at top level, not on `DOMContentLoaded`, so it must come after
-the panel markup. At the same time both pages call `grpLoadList()` from inline
-scripts, and an inline script runs while the document is parsed — earlier than
+the panel markup. At the same time the page calls `grpLoadList()` from an inline
+script, and an inline script runs while the document is parsed — earlier than
 any deferred file. So both tags are plain synchronous `<script src>`, placed
 after the markup and before the page's own inline script; adding `defer` would
-raise `grpLoadList is not defined`. `manage.html` puts them in
-`{% block extra_js %}` after `{{ block.super }}`, `detail.html` just above its
-inline script in the content block.
+raise `grpLoadList is not defined`. `source.html` puts them in
+`{% block extra_js %}` after `{{ block.super }}`, and `_alarms_js.html` follows
+for the same reason: it needs `esc()` and `postJSON()` to exist already.
 
-The pages still differ where they should: `manage.html` loads the
-group-dimension list lazily on first tab click (it has 9 tabs),
-`detail.html` eagerly on load (it has 5), and `manage.html` wraps `startEdit`
-afterwards to re-sync the dimension source fields — which works because
-`inline_edit.js` leaves it a global function declaration.
+The group-dimension list loads lazily, on the first click of its tab, in both
+detail levels. `startEdit` is wrapped further down to re-sync the dimension
+source fields — which works because `inline_edit.js` leaves it a global
+function declaration.
 
 `esc()` stays per-page rather than shared, but `saveRow` calls it, so the two
 definitions must remain the identical null-safe variant. It only runs on click,
@@ -89,21 +91,33 @@ The `/sources/` UI splits along three axes:
 | Audience          | Path                          | Purpose                                       |
 |-------------------|-------------------------------|-----------------------------------------------|
 | Any user          | `/sources/`                   | List of datasources with last-run status       |
-| Any user          | `/sources/<pk>/`              | Editable detail (Basics read-only; Group Dims, Measures, Alarms are CRUD) |
+| Any user          | `/sources/<pk>/`              | The datasource page at the remembered detail level. Basic = Basics (read-only) + Group Dims, Measures, Alarms, Firings — the last three full CRUD |
 | Any user          | `/sources/alarms/firings/`    | Global firing-episode overview (`?show=open` for the live breaches) |
 | Any user          | `/sources/<pk>/?tab=firings`  | The same overview scoped to one datasource (`&show=open` likewise) |
-| Superuser         | `/sources/<pk>/manage/`       | Full configuration (9 sub-tabs; ETL run / audit / history / log are sub-tabs of ETL) |
+| Superuser         | `/sources/<pk>/manage/`       | The same page forced to Expert: 11 tabs, adding Fact Columns, Dimensions, Dim Data, Indices, Storage and ETL (itself sub-tabbed into Run / Maintenance / Schema / Audit / History / Log) |
 | Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
 | Superuser         | `/sources/profiles/`          | Profile catalogue + upload (replaces the modal that used to live on `list.html`) |
 | Logged-in user    | `/sources/me/`                | Own profile, password change, alarm-channel opt-in (email/XMPP), query history    |
 | Superuser         | `/sources/settings/`          | User admin (create / edit / password / delete)  |
 
-The split between `detail` and `manage` is about *audience*, not about
-read versus write. `detail` carries the three things any signed-in user is
-meant to curate — group dimensions, measures and alarms — and they are
-fully editable there. `manage` adds the schema, storage and ETL surface
-that only an operator has any use for, behind a superuser gate. The link
-to `manage` is rendered only for superusers.
+The split between Basic and Expert is about *audience*, not about read
+versus write. Basic carries the things any signed-in user is meant to
+curate — group dimensions, measures and alarms — and they are fully
+editable there. Expert adds the schema, storage and ETL surface that only
+an operator has any use for.
+
+Two mechanisms enforce that, and they are not interchangeable. Whether the
+expert markup is **rendered** is decided server-side by `expert_allowed`
+(`request.user.is_superuser`): a non-superuser never receives the admin
+panels, the delete form, its csrf token, the expert `<dl>` rows or the ETL
+controls. That is the boundary that matters, since every endpoint behind
+them is `@_admin_required_json`. Whether *rendered* markup is **shown** is
+the `.expert-only` class against `html[data-mode]`, and that exists for
+superusers alone — a view preference, remembered in `localStorage` under
+`starcubes-source-mode` and applied before first paint by `base.html`'s
+`{% block prepaint %}`. The switch itself (`_mode_toggle.html`, right-hand
+end of the sub-tab bar) is rendered only for superusers, for the same
+reason the old Manage link was.
 
 The datasource-independent pages — the datasource list, profiles,
 firings, transports (notification transports + SSO, editing
@@ -156,11 +170,12 @@ Notes:
 - `GET /sources/settings/` — user admin (superuser only)
 - `GET /sources/profiles/` — profile catalogue + upload form (superuser only)
 - `GET/POST /sources/new/` — create datasource (superuser only)
-- `GET /sources/<pk>/` — user page (4 sub-tabs: Basics, Group Dims, Measures,
-  Alarms). Basics is read-only; the other three are editable by any signed-in
-  user — that is the point of the page, and their endpoints are login-only.
-- `GET /sources/<pk>/manage/` — full detail (9 sub-tabs; ETL run / audit /
-  history / log are sub-tabs of ETL) (superuser only)
+- `GET /sources/<pk>/` — the datasource page at the remembered detail level
+  (Basic: Basics, Group Dims, Measures, Alarms, Firings). Basics is read-only;
+  Group Dims, Measures and Alarms are editable by any signed-in user — that is
+  the point of the page, and their endpoints are login-only.
+- `GET /sources/<pk>/manage/` — the same page forced to Expert (11 tabs; ETL
+  run / audit / history / log are sub-tabs of ETL) (superuser only)
 - `GET/POST /sources/<pk>/edit/` — edit scalar fields (superuser only)
 - `POST /sources/<pk>/delete/` — delete (CASCADE in DB) (superuser only)
 
@@ -360,9 +375,12 @@ user-editable and a stored grouped reference would silently change the
 alarm's meaning. Fan-out filter_group tokens stay allowed. The evaluator
 (`core/alarm.py`, driven by `etl_run` after every load) records firings as
 episodes in `starcubes_meta.alarm_firing`, stamped with the data high
-watermark — see [`docs/alarm.md`](alarm.md). The Alarms tab lives on `detail.html` only —
-alarms are a user concern, so `manage.html` does not carry a copy. The
-chart drill-down's Alert form posts here too (with `context`).
+watermark — see [`docs/alarm.md`](alarm.md). The Alarms tab (partials
+`_alarms_panel.html` + `_alarms_js.html`) shows in **both** detail levels:
+alarms are a user concern, and its endpoints are login-gated, so hiding it
+from an operator would only have cost them a tab. It used to live on
+`detail.html` alone, which is why the merged page had to gain it. The chart
+drill-down's Alert form posts here too (with `context`).
 
 The tab is one half of a round trip with the chart:
 
@@ -462,7 +480,7 @@ The **global episode overview** lives at `/sources/alarms/firings/`
 episode joined with its alarm rule and datasource. It is linked from the
 shared tab bar (`_global_tabs.html`) and from the hamburger menu
 ("Firings", any logged-in user). The per-alarm episodes remain in
-detail.html's ⓘ sub-row.
+the Alarms tab's ⓘ sub-row.
 
 The same list is a **Firings tab on the datasource page**, and it is the
 same code twice over:
@@ -486,7 +504,7 @@ are toggled client-side and there is no navigation to hang a lazy load off;
 the cost is one extra meta query per detail page load. The Alarms tab's
 header links to it with a single "Firings →" (`?tab=firings`) — the tab
 itself carries the way out to the global overview. The `firings_context`
-key is `firings_ds`, not `ds`: detail.html's `ds` is the datasource row.
+key is `firings_ds`, not `ds`: the page's `ds` is the datasource row.
 
 ### JSON: inline CRUD
 Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delete/`.
@@ -536,7 +554,7 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   the `csrfToken()` helper in `sources/base.html`.
 - **ETL subprocess**: uses `sys.executable` so the venv Python is used, and
   inherits `STARCUBES_POSTGRES_DSN` from the environment.
-- **ETL throughput metrics + kill button** (manage.html, the ETL tab's History
+- **ETL throughput metrics + kill button** (source.html, the ETL tab's History
   sub-tab and
   the persistent statusbar): `pollEtlStatus()`/`pollForeverStatus()` render
   `rows_per_s`/`extract_rows_per_s`/`transform_rows_per_s`/`load_rows_per_s`
@@ -563,7 +581,7 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   Run once card (`etlCmdClearHistBtn2`) — both wire to the shared
   `clearEtlHistory()` function, which also calls `refreshHistTable([])` so
   the table doesn't keep showing deleted rows after a clear.
-- **Audit sub-tab** (`etlsub-audit`, manage.html): reconciles source vs fact row counts per time
+- **Audit sub-tab** (`etlsub-audit`, source.html): reconciles source vs fact row counts per time
   bucket, so late-arriving transactions that slipped past
   `datasource.late_arrival_overlap_s` become visible. The From/To fields — and
   every other `DateTimePicker` in the ETL tabs — are read in the **browser's
@@ -600,7 +618,7 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   moment when no lag is configured.
   The summary says **raise by**, not set to: with a lag already in force the
   figure is the additional amount, and it is a lower bound either way.
-- **Log sub-tab** (`etlsub-log`, manage.html): lazy-loaded on first activation
+- **Log sub-tab** (`etlsub-log`, source.html): lazy-loaded on first activation
   via `etlLogActivate()` — populates the `<select>` from `etl/logs/`, then
   tails the selected file from `etl/log/`. Polls every 2s only while the
   sub-tab is active — `activateEtlSub()` starts and stops it, and the
@@ -610,12 +628,14 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   per-filename byte offset so re-fetches are incremental; a `truncated`
   response (the server-side `core/etl.py:_bound_log_size` shrank the file)
   resets to offset 0 and clears the pane instead of appending garbage.
-- **Manage-handoff query params**: `manage.html` reads
+- **Profile-handoff query params**: `source.html` reads
   `?apply=<slug>` and `?save-profile=1` once its profile IIFE has wired
   `saveDialog` / `applyDialog`. The catalogue page can therefore deep-link
-  straight into the apply flow against a chosen datasource. The handoff
-  triggers are no-ops if the user isn't a superuser (the buttons aren't
-  rendered), so non-admin sessions land on a normal Manage page.
+  straight into the apply flow against a chosen datasource; it builds the
+  URL as a string against `/manage/`, not through `{% url %}`, so that path
+  has to keep working. The handoff triggers are no-ops if the user isn't a
+  superuser (the buttons aren't rendered), so non-admin sessions land on a
+  plain Basic page.
 - **User admin (`settings.html`)**: every mutation goes through
   `settings_page`'s `action=` dispatch (`create_user`, `update_user`,
   `set_password`, `change_password`, `delete_user`). Self-demotion

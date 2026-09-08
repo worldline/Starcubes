@@ -15,6 +15,12 @@
 <script>
 (function(){var t=localStorage.getItem('starcubes-theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark');})();
 </script>
+{% comment %}
+  Pages with a remembered view state fill this to set it before the first
+  paint, the way the theme snippet above does. The datasource page uses it
+  for data-mode, so the expert tabs never flash into view on a Basic load.
+{% endcomment %}
+{% block prepaint %}{% endblock %}
 <link rel="stylesheet" href="{% static 'sources/nav.css' %}">
 <link rel="stylesheet" href="{% static 'sources/datetimepicker.css' %}">
 <style>
@@ -172,6 +178,10 @@ a:hover { text-decoration: underline; }
    padding-right matches the bleed so content lands on the .page content edge
    (16px in narrow regime, more once max-width clamps). */
 .subtabs-bar {
+  /* A row, so a trailing control (the Basic/Expert switch) sits beside the
+     tab strip rather than wrapping under it. The tabs take the slack. */
+  display: flex;
+  align-items: stretch;
   margin-left: calc(-1 * var(--tabs-left));
   margin-right: calc(-1 * max(16px, 100vw - var(--tabs-left) - 1200px + 16px));
   margin-bottom: 20px;
@@ -361,7 +371,7 @@ tr.editing .row-edit { display: flex; }
 /* Subordinate (lower) tier inside the double-tab header. Hover/active
    indicator language mirrors the top nav's .source-tab, one level down:
    slightly smaller, lighter, and aligned flush under the nav. */
-.subtabs-bar .tabs { margin: 0; border-bottom: none; }
+.subtabs-bar .tabs { margin: 0; border-bottom: none; flex: 1; min-width: 0; }
 .subtabs-bar .tab-btn {
   display: flex;
   align-items: center;
@@ -601,6 +611,39 @@ tr.editing .row-edit { display: flex; }
 [data-theme="dark"] .group-dim-item:hover { background: #1a1d27; }
 [data-theme="dark"] .group-dim-item.active { background: #252836; }
 
+/* Right-aligned button row in a card header. Was an inline style until the
+   expert switch needed to hide it — an inline `display:flex` outranks the
+   `display:none` that hiding relies on. */
+.card-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+
+/* Detail-level switch (Basic / Expert) at the right end of the sub-tab bar,
+   and the class it acts on. `expert_allowed` in the template decides whether
+   a panel is rendered at all; this only decides whether a rendered one shows.
+   A chip group reads as one segmented control: shared edges, rounded ends —
+   the same shape the chart page uses, restated here because the two apps
+   keep deliberately different palettes (see docs/sources-app.md). */
+html[data-mode="basic"] .expert-only { display: none; }
+.mode-toggle { margin-left: auto; align-self: center; margin-right: 2px; }
+.chip-group { display: inline-flex; }
+.chip {
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.chip:hover { color: var(--fg); background: var(--tab-active-hover-bg); }
+.chip.active { color: var(--tab-active-fg); background: var(--tab-active-bg); }
+.chip-group .chip { border-radius: 0; margin-left: -1px; }
+.chip-group .chip:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
+.chip-group .chip:last-child  { border-radius: 0 5px 5px 0; }
+.chip-group .chip:hover, .chip-group .chip.active,
+.chip-group .chip:focus-visible { position: relative; z-index: 1; }
+
 /* ETL tab: command-card grid */
 .etl-cmd-grid {
   display: grid;
@@ -741,7 +784,7 @@ function getJSON(url, opts) {
 </main>
 {% block extra_js %}
 <script src="{% static 'sources/nav.js' %}"></script>
-{# Shared with viz/chart.html. Plain and synchronous: manage.html constructs #}
+{# Shared with viz/chart.html. Plain and synchronous: source.html constructs #}
 {# pickers in its own inline script, which runs while the document parses. #}
 <script src="{% static 'sources/datetimepicker.js' %}"></script>
 <script>

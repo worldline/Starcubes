@@ -2,7 +2,7 @@
 
 The three audit modes in `core/audit.py` and the rationale for why each
 one exists. Read before changing `core/audit.py` or the Audit sub-tab of
-the ETL tab in `sources/templates/sources/manage.html`.
+the ETL tab in `sources/templates/sources/source.html`.
 
 **Highest-value section for the Audit sub-tab** — read before changing
 audit semantics. The ~46 B/id memory measurement in particular is the

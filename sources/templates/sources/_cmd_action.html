@@ -1,18 +1,18 @@
 {% comment %}
   One ETL/schema command: a labelled description with a button and the result
-  span its handler writes into. Used by the ETL tab of manage.html.
+  span its handler writes into. Used by the ETL tab of source.html.
 
   Parameters:
     title      the label above the description
     desc       one line of explanation
-    btn_id     id the cmdButton() call in manage.html binds to
+    btn_id     id the cmdButton() call in source.html binds to
     btn_label  button caption
     result_id  id of the span cmdButton() reports into
     btn_class  button style, default "btn-secondary"
     last       truthy on the final entry of a card, which drops the bottom gap
 
   Blocks that carry an extra control (a timestamp field, a row count, a diff
-  container) stay written out in manage.html — squeezing them through
+  container) stay written out in source.html — squeezing them through
   parameters reads worse than the repetition.
 {% endcomment %}
 <div{% if not last %} style="margin-bottom:16px"{% endif %}>

@@ -11,6 +11,7 @@ Guide to using the starcubes GUI and configuring datasources. See the
   - [SSO login (optional, Keycloak/OIDC)](#sso-login-optional-keycloakoidc)
   - [Datasource list](#datasource-list)
   - [Creating a datasource](#creating-a-datasource)
+  - [Basic and Expert](#basic-and-expert)
   - [Tab: Basics](#tab-basics)
   - [Tab: Fact Columns](#tab-fact-columns)
   - [Tab: Dimensions](#tab-dimensions)
@@ -293,9 +294,26 @@ changes required.
   configuration — what the profile does not define, the datasource loses —
   but never touches name, schema or DSN.
 
+### Basic and Expert
+
+The datasource page has two detail levels, switched with the
+**[ Basic | Expert ]** control at the right-hand end of the tab bar.
+
+**Basic** shows the five tabs anyone signed in is meant to work with:
+Basics, Group Dims, Measures, Alarms and Firings. **Expert** adds the six
+an operator needs — Fact Columns, Dimensions, Dim Data, Indices, Storage
+and ETL — and fills out the Basics tab with the tuning fields.
+
+The switch appears for administrators only; everyone else gets Basic and
+never sees a control that would lead nowhere. The choice is remembered in
+the browser, so opening another datasource keeps the level you were at.
+`/sources/<id>/manage/` still opens straight into Expert, which is where
+the links from the profile catalogue and the create/edit forms land.
+
 ### Tab: Basics
 
-Read-only display of all 14 datasource fields (see
+Read-only display of the datasource's configuration — thirteen fields in
+Basic, all twenty-five in Expert (see
 [Source configuration reference](#source-configuration-reference)). Click
 **Edit** to go to the edit form. The dialect badge shows the connection status
 (green = reachable, red = unreachable) — checked on page load.
@@ -614,8 +632,8 @@ traceback even though the process itself exited silently otherwise.
 
 ### Editing and deleting a datasource
 
-- **Edit**: click **Edit Basics** on the detail page header (or the Edit link
-  on the Basics tab) to open the edit form. Same four cards as the create
+- **Edit**: click **Edit** in the Basics tab header (Expert level) to open
+  the edit form. Same four cards as the create
   form, pre-populated with current values. Schema name changes do not rename
   the actual Postgres schema. The Source DSN field shows the current value
   as-is (it contains credentials).

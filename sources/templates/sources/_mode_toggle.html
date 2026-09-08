@@ -1,0 +1,20 @@
+{% comment %}
+  Basic / Expert detail-level switch, sitting at the right-hand end of the
+  sub-tab bar on the datasource page.
+
+  Only rendered for superusers: for everyone else the expert panels are not
+  in the document at all, so there is nothing to switch to. That gate is
+  `expert_allowed`, set by sources.views._render_source_page.
+
+  Switching is client-side — it sets data-mode on <html>, which base.html's
+  `html[data-mode="basic"] .expert-only { display: none }` acts on. The
+  choice is remembered in localStorage under 'starcubes-source-mode', the
+  same way the theme is, and base.html's pre-paint block applies it before
+  the first paint so the expert tabs never flash into view.
+{% endcomment %}
+{% if expert_allowed %}
+<div class="chip-group mode-toggle" id="modeToggle" role="group" aria-label="Detail level">
+  <button type="button" class="chip" data-mode="basic">Basic</button>
+  <button type="button" class="chip" data-mode="expert">Expert</button>
+</div>
+{% endif %}

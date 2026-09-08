@@ -46,7 +46,7 @@ branch — **`master` is the only long-lived branch.**
   `sources/management/commands/etl_run.py`.
 - **[`docs/etl-audit.md`](docs/etl-audit.md)** — read when editing
   `core/audit.py` or the ETL tab's Audit sub-tab in
-  `sources/templates/sources/manage.html`.
+  `sources/templates/sources/source.html`.
 - **[`docs/etl-automation.md`](docs/etl-automation.md)** — what has to be true
   *around* a load: preconditions the engine guarantees itself vs. the ones that
   still hang on an operator, and the evaluation of each. Read when planning
@@ -69,10 +69,11 @@ branch — **`master` is the only long-lived branch.**
   `starcubes/version.py`, or changing what the About dialog reports.
 - **[`docs/source-profiles.md`](docs/source-profiles.md)** — read when touching
   `core/profile.py`, `sources/profile_store.py`, `profiles/`, `seed_example.py`,
-  or the profile UI in `new.html` / `profiles.html` / `manage.html`.
+  or the profile UI in `new.html` / `profiles.html` / `source.html`.
 - **[`docs/alarm.md`](docs/alarm.md)** — alarm evaluation. Read when editing
   `core/alarm.py`, `sources/management/commands/alarm_run.py`, the alarm hook
-  in `etl_run.py`, or the alarm UI in `detail.html` / `chart.html`.
+  in `etl_run.py`, or the alarm UI in `_alarms_panel.html` /
+  `_alarms_js.html` / `chart.html`.
 
 
 ## Repo state

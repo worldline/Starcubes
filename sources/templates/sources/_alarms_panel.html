@@ -1,0 +1,243 @@
+{% comment %}
+  The Alarms tab panel, split out of the old detail.html so the one
+  datasource page can render it in both detail levels.
+
+  Takes no parameters. The behaviour lives in sources/_alarms_js.html,
+  which must be included AFTER this panel and after the page's esc() /
+  postJSON() / getJSON() / csrfToken() helpers — hence the split into two
+  partials: the markup belongs in the content block, the script in
+  {% templatetag openblock %} block extra_js {% templatetag closeblock %}.
+
+  Needs from the context: ds, dimensions, measure_aggs,
+  pipeline_conditions, alarm_count.
+{% endcomment %}
+<div class="tab-panel" id="tab-alarms">
+  {% comment %}
+    The add form is a card of its own, above the list. It shares none of the
+    table's columns — context, duplicate hint and the enabled checkbox have no
+    place in a row — and folding it into the list card used to push the table
+    out of sight the moment the chart's bell opened it. Hidden until asked
+    for; see #alarmAddHint below for why there is no add button.
+  {% endcomment %}
+  <div class="card card-accent" id="alarmAddPanel" hidden>
+    <div class="card-header">
+      <span class="card-title">New alarm</span>
+      <span id="alarmAddHeadNote" style="margin-left:auto;font-size:12px;color:var(--muted)">
+        The context comes from the chart's filter or from the alarm this was
+        cloned from &mdash; it is not typed here.
+      </span>
+    </div>
+    {% comment %}
+      The collapsed face of the card: a context travelled here from the chart
+      (the Group Dims / Measures links carry it too, not just the bell), so it
+      is named and offered — but writing the alarm stays a click the user makes.
+    {% endcomment %}
+    <div class="card-body" id="alarmAddHead"
+         style="display:none;gap:12px;align-items:center;flex-wrap:wrap">
+      <span class="text-muted" style="font-size:12px">Context carried over:</span>
+      <span id="alarmAddCtxHead" class="text-muted" style="font-size:11px"></span>
+      <span id="alarmAddMatchNote" class="text-muted" style="font-size:11px"></span>
+      <button type="button" id="alarmAddOpen" class="btn btn-primary btn-sm"
+              style="margin-left:auto">Add alarm &#9656;</button>
+    </div>
+    <div class="card-body" id="alarmAddBody">
+      <form id="alarmAddForm" style="display:grid;grid-template-columns:1fr 1fr 130px 80px 110px 100px 1fr 150px;gap:8px;align-items:end">
+        {% csrf_token %}
+        <div><label class="form-label">Name</label><input class="form-control" name="name" required></div>
+        <div><label class="form-label">Comment</label><input class="form-control" name="comment" placeholder="(optional)"></div>
+        <div><label class="form-label">Measure</label>
+          <select class="form-control" name="measure">
+            {# quantile(col) is not a scalar an alarm threshold can compare against #}
+            {% for a in measure_aggs %}{% if "quantile" not in a %}<option{% if a == 'count(*)' %} selected{% endif %}>{{ a }}</option>{% endif %}{% endfor %}
+          </select>
+        </div>
+        <div><label class="form-label">Cond</label>
+          <select class="form-control" name="cond_op">
+            <option>&gt;</option><option>&lt;</option><option>=</option><option>&gt;=</option><option>&lt;=</option>
+          </select>
+        </div>
+        <div><label class="form-label">Threshold</label><input class="form-control" name="threshold" type="number" step="any" required></div>
+        <div><label class="form-label">Window (s)</label><input class="form-control" name="window_s" type="number" value="300" min="1" required></div>
+        <div>
+          <label class="form-label">Channels</label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;font-size:12px;padding:4px 0">
+            <label><input type="checkbox" name="notify_channels" value="email" onchange="alarmChannelsChanged()"> email</label>
+            <label><input type="checkbox" name="notify_channels" value="xmpp" onchange="alarmChannelsChanged()"> xmpp</label>
+            <label><input type="checkbox" name="notify_channels" value="pagerduty" onchange="alarmChannelsChanged()"> pagerduty</label>
+          </div>
+        </div>
+        <div>
+          <label class="form-label">Severity</label>
+          <select class="form-control" name="severity">
+            <option value="">— global default —</option>
+            <option value="critical">critical</option>
+            <option value="error">error</option>
+            <option value="warning">warning</option>
+            <option value="info">info</option>
+          </select>
+        </div>
+        <div style="grid-column:1/-1;display:flex;gap:16px;flex-wrap:wrap" id="alarmRecipientRow">
+          <div>
+            <label class="form-label">E-mail recipients</label>
+            <select class="form-control" name="notify_email_recipients" multiple size="4" style="min-width:220px" disabled></select>
+          </div>
+          <div>
+            <label class="form-label">XMPP recipients</label>
+            <select class="form-control" name="notify_xmpp_recipients" multiple size="4" style="min-width:220px" disabled></select>
+          </div>
+          <div class="text-muted" style="font-size:11px;align-self:end;max-width:280px">
+            Recipients are the login users; addresses come from the accounts
+            (e-mail) and from the XMPP JID field on the settings page.
+          </div>
+        </div>
+        {% comment %}
+          The context is carried in, not typed: a filter expression is a UI
+          of its own, and the chart already has it. The hidden field holds
+          the flat filter rows verbatim; the box beside it is the readable
+          form.
+        {% endcomment %}
+        <div style="grid-column:1/-1">
+          <label class="form-label">Context</label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <span id="alarmAddCtx" class="text-muted" style="font-size:11px"></span>
+            <button type="button" id="alarmAddCtxClear" class="btn btn-secondary btn-sm"
+                    style="display:none">Clear</button>
+          </div>
+          <input type="hidden" name="context" id="alarmAddCtxInput">
+          <div id="alarmAddDup" style="font-size:11px;margin-top:6px"></div>
+        </div>
+        <div style="grid-column:1/-1;display:flex;gap:12px;align-items:center">
+          <button type="submit" class="btn btn-primary btn-sm">Add</button>
+          <label style="font-size:12px;color:var(--muted)"><input type="checkbox" name="enabled" checked> enabled</label>
+          <button type="button" id="alarmAddCancel" class="btn btn-secondary btn-sm">Cancel</button>
+          <span class="text-muted" style="font-size:11px">A context-less alarm watches the whole datasource.</span>
+        </div>
+      </form>
+      <div id="alarmAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Alarms</span>
+      <span style="margin-left:auto;font-size:12px;color:var(--muted);display:flex;gap:12px;align-items:center">
+        {% comment %}
+          One link, to the sibling Firings tab: the episodes for this
+          datasource now live on this page, and that tab carries the link
+          out to the global overview. Two links out of here (?ds= plus the
+          unfiltered one) would only compete with it.
+        {% endcomment %}
+        <a href="?tab=firings" style="font-size:12px">Firings &rarr;</a>
+        Threshold rules, evaluated after every ETL load over the last window of loaded data; firings land in the alarm_firing episode table &mdash; notify via e-mail, XMPP, PagerDuty or the episode log.
+      </span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <table class="data-table" id="alarmTable">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Context</th>
+            <th>Comment</th>
+            <th>Measure</th>
+            <th style="text-align:center">Cond</th>
+            <th style="text-align:right">Thresh.</th>
+            <th style="text-align:right">Window (s)</th>
+            <th style="text-align:center">Sev.</th>
+            <th>Channels</th>
+            <th style="text-align:center;width:70px">Enabled</th>
+            <th style="text-align:right;width:130px">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="alarmBody">
+          <tr id="alarm-loading"><td colspan="11" class="text-muted" style="text-align:center;padding:16px">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
+      {% comment %}
+        No "add alarm" entry point here. An alarm without a context watches the
+        whole datasource, which is rarely what anyone means, and this used to be
+        the most inviting way to create one by accident. The form is still here
+        — the bell fills it, Clone fills it — but it opens on request, not as
+        an offer. A deliberately global alarm is still reachable: open a chart
+        with no filters and press the bell.
+      {% endcomment %}
+      <div id="alarmAddHint" class="text-muted" style="font-size:12px">
+        &#9432; Alarms are created from a chart view &mdash; the bell carries its
+        filter here as the alarm's context.
+        <a href="/?name={{ ds.name|urlencode }}">Open chart &rarr;</a>
+        Or clone an existing alarm and change its metric.
+      </div>
+    </div>
+  </div>
+
+  {% comment %}
+    Pipeline alarms — deliberately a second table, not more columns on the
+    first one. Four of the threshold table's eleven columns (Context,
+    Measure, Window, and the chart link that depends on both) have no
+    meaning for a rule that watches ETL state rather than fact rows, and
+    rendering them empty would suggest they could be filled in. The two
+    tables share everything that is genuinely shared: the recipient
+    machinery, the channel checkboxes, the severity select, rowFields and
+    the same edit/save cycle.
+  {% endcomment %}
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">
+      <span class="card-title">Pipeline alarms</span>
+      <span class="text-muted" style="font-size:12px">
+        Rules about the ETL itself &mdash; a source that stopped producing, runs that fail, preflight findings, a dimension filling up. Evaluated after every load <em>and</em> from outside it, because a load that never happens is the thing most worth hearing about.
+      </span>
+    </div>
+    <div class="card-body" style="padding:0">
+      <table class="data-table" id="palarmTable">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Condition</th>
+            <th>Comment</th>
+            <th style="text-align:center">Cond</th>
+            <th style="text-align:right">Thresh.</th>
+            <th style="text-align:center">Sev.</th>
+            <th>Channels</th>
+            <th style="text-align:center;width:70px">Enabled</th>
+            <th style="text-align:right;width:110px">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="palarmBody">
+          <tr><td colspan="9" class="text-muted" style="text-align:center;padding:16px">Loading&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
+      <button class="btn btn-secondary btn-sm" id="palarmAddBtn">+ Pipeline alarm</button>
+      <div id="palarmAddForm" style="display:none;margin-top:12px">
+        <div class="form-row">
+          <div><label class="form-label">Name</label>
+            <input class="form-control" id="paName" placeholder="e.g. source stopped"></div>
+          <div><label class="form-label">Condition</label>
+            <select class="form-control" id="paCondition">
+              {% for c in pipeline_conditions %}<option value="{{ c.code }}">{{ c.title }}</option>{% endfor %}
+            </select></div>
+          <div><label class="form-label">Cond</label>
+            <select class="form-control" id="paCondOp" style="max-width:80px">
+              <option>&gt;</option><option>&gt;=</option><option>&lt;</option><option>&lt;=</option><option>=</option>
+            </select></div>
+          <div><label class="form-label">Threshold</label>
+            <input class="form-control" id="paThreshold" type="number" step="any" value="3600"></div>
+        </div>
+        <div class="form-hint" id="paHint" style="margin-top:4px"></div>
+        <div style="margin-top:10px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <span style="font-size:12px;display:flex;gap:8px">
+            <label><input type="checkbox" class="pa-ch" value="email"> email</label>
+            <label><input type="checkbox" class="pa-ch" value="xmpp"> xmpp</label>
+            <label><input type="checkbox" class="pa-ch" value="pagerduty"> pagerduty</label>
+          </span>
+          <button class="btn btn-primary btn-sm" id="paSave">Create</button>
+          <button class="btn btn-secondary btn-sm" id="paCancel">Cancel</button>
+          <span id="paErr" class="cmd-result"></span>
+        </div>
+        <div class="form-hint" style="margin-top:6px">A rule with no channels still opens and closes episodes in the Firings tab &mdash; it just does not send anything. Pick recipients on the rule after creating it, the same way threshold alarms do.</div>
+      </div>
+    </div>
+  </div>
+</div>

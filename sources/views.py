@@ -459,23 +459,35 @@ def _build_source_context(pk: int) -> dict:
     }
 
 
-def source_detail(request, pk: int):
-    """User-facing detail page: Basics header + Group Dims + Measures + Alarms.
+def _render_source_page(request, pk: int, force_expert: bool):
+    """The one datasource page, rendered at one of two detail levels.
 
-    Admin-only configuration lives at ``source_manage`` and renders the
-    full ``manage.html`` with all 9 sub-tabs. Keeping the two apart
-    means a non-admin can edit group dim memberships and inspect
-    measures without seeing the storage and ETL tabs that have
-    nothing for them to act on.
+    There used to be two templates here — a slim ``detail.html`` for any
+    signed-in user and the admin-only ``manage.html``. They were meant as
+    two detail levels of the same thing but drifted: Alarms and Firings
+    existed only on the first, six configuration tabs only on the second,
+    and the only way across was a ⚙ button with no way back. Now it is one
+    template with a Basic/Expert switch, and the split lives in two places
+    that must not be confused:
+
+    * ``expert_allowed`` gates the *rendering*. A non-superuser never
+      receives the admin panels — not the delete form, not its csrf token,
+      not the ETL controls. Their endpoints are ``@_admin_required_json``
+      anyway, but a control that only earns a 403 has no business existing.
+    * ``force_expert`` picks the level the page opens at. The client
+      remembers the last choice; ``/manage/`` overrides it, which is what
+      keeps every existing deep link (the profile hand-off, the redirects
+      after create/edit, the Cancel on the edit form) landing where it did.
     """
     ctx = _build_source_context(pk)
     # The Firings tab is the global overview scoped to this datasource —
     # same reader, same template partial, so the two cannot drift. It is
-    # server-rendered with the page (the sub-tabs are JS-toggled, so there
-    # is no request to hang a lazy load off), and `?show=open` filters it
-    # by reloading the page onto `?tab=firings`.
+    # server-rendered with the page (the tabs are JS-toggled, so there is no
+    # request to hang a lazy load off), and `?show=open` filters it by
+    # reloading the page onto `?tab=firings`. The links point back at the
+    # URL actually being viewed, so filtering from /manage/ stays there.
     show = request.GET.get("show", "all")
-    detail_url = reverse("sources:detail", args=[pk])
+    page_url = request.path
     # The Alarms tab carries its count in the label, like Group Dims and
     # Measures do. Only the value the page opens with: the tab fetches the
     # list itself via alarms_list and keeps the number in step from there.
@@ -485,37 +497,32 @@ def source_detail(request, pk: int):
         ), {"ds": pk}).scalar()
     firings = firings_context(
         _firing_episodes(show, pk), show, scoped=True,
-        url_all=f"{detail_url}?tab=firings",
-        url_open=f"{detail_url}?tab=firings&show=open")
-    # Carve the slim context detail.html needs. The keys not in this set
-    # are present in ``manage.html`` only. measure_aggs / graph_styles are
-    # passed so admins get the same inline-edit / add-form pattern here
-    # that manage.html uses — see detail.html#L170-L236.
-    return render(request, "sources/detail.html", {
-        "ds":          ctx["ds"],
-        "dimensions":  ctx["dimensions"],
-        "group_set_tokens": ctx["group_set_tokens"],
-        "measures":    ctx["measures"],
-        "measure_aggs": ctx["measure_aggs"],
-        "pipeline_conditions": ctx["pipeline_conditions"],
-        "graph_styles": ctx["graph_styles"],
-        "current_source_id":   ctx["current_source_id"],
-        "current_source_name": ctx["current_source_name"],
-        "alarm_count": alarm_count,
-        **firings,
-    })
+        url_all=f"{page_url}?tab=firings",
+        url_open=f"{page_url}?tab=firings&show=open")
+    ctx["alarm_count"] = alarm_count
+    ctx["expert_allowed"] = request.user.is_superuser
+    ctx["force_expert"] = force_expert
+    ctx.update(firings)
+    return render(request, "sources/source.html", ctx)
+
+
+def source_detail(request, pk: int):
+    """The datasource page at whichever level the visitor last chose.
+
+    No decorator: ``RequireLoginMiddleware`` covers ``/sources/``, and what
+    a non-superuser gets to see is decided inside, by ``expert_allowed``.
+    """
+    return _render_source_page(request, pk, force_expert=False)
 
 
 @_admin_required_page
 def source_manage(request, pk: int):
-    """Admin-only configuration page — superset of source_detail.
+    """The same page, forced to Expert. Superuser only.
 
-    Renders the full 9-tab ``manage.html`` with the same context
-    builder. ``source_manage`` itself does not gate: routing or the
-    decorator wrap does (see Commit_3).
+    Kept as its own URL so the deep links into configuration keep working
+    and so there is still a way to hand someone the expert view directly.
     """
-    ctx = _build_source_context(pk)
-    return render(request, "sources/source.html", ctx)
+    return _render_source_page(request, pk, force_expert=True)
 
 
 @_admin_required_page

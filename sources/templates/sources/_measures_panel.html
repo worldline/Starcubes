@@ -1,25 +1,16 @@
 {% comment %}
-  The Measures tab panel, shared by sources/manage.html and
-  sources/detail.html.
-
-  Optional parameter:
-    measures_help_short — truthy renders the short help line instead of the
-      full one that spells out every ladder style. Follows the same
-      optional-parameter convention as sources/_nav_menu.html.
+  The Measures tab panel of sources/source.html. Takes no parameters —
+  there used to be a `measures_help_short` switch for the old detail.html,
+  which had a shorter help line; with one page there is one help line.
 
   Row editing comes from sources/static/sources/inline_edit.js; the add-form
-  handler stays with the including page, because the two pages do different
-  things on success (manage appends a row, detail reloads).
+  handler stays with the including page.
 {% endcomment %}
 <div class="tab-panel" id="tab-measures">
   <div class="card">
     <div class="card-header">
       <span class="card-title">Measures</span>
-{% if measures_help_short %}
-      <span style="margin-left:auto;font-size:12px;color:var(--muted)">Chart measure dropdown. <code>agg</code> is <code>count(*)</code> or func(measure column). <code>multiline</code> draws one line per group series, <code>multipoint</code> one dot per slot per series; <code>multibar</code> stacks them. The five <em>ladder styles</em> need a <code>quantile(col)</code> agg and a <code>Percentiles</code> ladder.</span>
-{% else %}
       <span style="margin-left:auto;font-size:12px;color:var(--muted)">Chart measure dropdown. <code>agg</code> is <code>count(*)</code> or func(measure column). <code>multiline</code> draws one line per group series, <code>multipoint</code> one dot per slot per series; <code>multibar</code> stacks them. The five <em>ladder styles</em> (<code>quantile-bands</code>, <code>quantile-steps</code>, <code>quantile-steps-open</code>, <code>error-bars</code>, <code>candlestick</code>) need a <code>quantile(col)</code> agg and a <code>Percentiles</code> ladder (e.g. <code>5,25,50,75,95</code>); they all read the same per-bin percentile array, only the renderer differs — <code>quantile-steps</code> connects the rungs with risers (default), <code>quantile-steps-open</code> drops them; <code>error-bars</code> marks each pair symmetric around the median; <code>candlestick</code> draws a boxplot (outer pair = whiskers, inner pair = body, median tick).</span>
-{% endif %}
     </div>
     <table class="data-table" id="measureTable">
       <thead>

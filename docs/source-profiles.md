@@ -31,7 +31,7 @@ them. See [`docs/deployment-config.md`](deployment-config.md).
 - **Profile picker in `/sources/new/`** (GUI) — selecting a profile prefills
   the form from it and seeds the child rows on submit. The form fields stay
   editable, so what you see before clicking Create is what gets stored.
-- **Save as Profile / Apply Profile** on the datasource Manage page
+- **Save as Profile / Apply Profile** on the datasource page (Expert)
   (Basics tab, superuser-only) — export the current configuration, or
   replace it with another. Apply supports a `?apply=<slug>` deep-link so
   the profile catalogue can land straight in the apply dialog against a
@@ -254,7 +254,7 @@ profile was loaded at module import.
 | `sources/views.py` | the profile endpoints (see `docs/sources-app.md`); the catalogue page is `profiles_page`, the JSON catalogue endpoint is `profiles_list` |
 | `sources/templates/sources/new.html` | profile picker + form prefill |
 | `sources/templates/sources/profiles.html` | catalogue page + upload form (superuser-only) |
-| `sources/templates/sources/manage.html` | Save as Profile / Apply Profile buttons + `?apply=<slug>` / `?save-profile=1` deep-link handlers |
+| `sources/templates/sources/source.html` | Save as Profile / Apply Profile buttons (expert-gated) + `?apply=<slug>` / `?save-profile=1` deep-link handlers |
 
 ## Related
 
