@@ -128,3 +128,36 @@ Three items below are cross-referenced from it.
   group sets — fanning out would need a "whose set wins" rule that is not
   worth inventing until a real query needs it. Plain filters on the same
   columns fan out normally.
+
+- **A fact column promoted to a dimension is only repaired on two of the
+  three paths — never for auto-dimensions.** `import_dimensions` calls
+  `core/schema.py:_backfill_fact_column` on the inline path and on the
+  source-DB path, but the auto-dimension branch only ensures the `-1` /
+  `__unknown__` sentinels and `continue`s, so a column promoted to
+  `role='auto-dimension'` keeps its raw source values until a foreign key or
+  a wrong chart makes it visible. All three calls are additionally gated on
+  `created` — on the dim table being brand new — so none of them repairs raw
+  values that appear after the fact either. The symptom, the diagnosis, and
+  why `--backfill` does not fix it are written up in
+  [`star-schema.md`](star-schema.md).
+
+  Closing this is **not** "call the same function on the third path". That
+  entry explains why calling it on a live auto-dimension actively corrupts
+  correctly mapped rows, and a safe form needs two things it does not have: a
+  restriction to rows with no partner in `dim.index`, and an answer for the
+  case where the index and `source_id` ranges overlap — which for
+  auto-dimensions is the normal case, not the exception, because their
+  `source_id`s are typically small integers and the indices start at 1. Where
+  the ranges do overlap, no repair can be complete: rows whose raw value
+  collides with a valid index are unfindable, and repairing the rest turns a
+  loud foreign-key failure into a green one over data that is still wrong.
+
+  Evaluated, not built. The shape worth building is a diagnosis plus an
+  explicitly confirmed repair, never a silent automatism — `sync_schema_view`
+  in `sources/views.py` is the precedent (dry-run diff, confirmation,
+  ETL interlock), and `docs/etl-automation.md` rules the preflight out as the
+  home for it: it "only repairs what is idempotent and finishes in
+  milliseconds", which an UPDATE across a fact table is not. Also note that
+  `create_indices` builds foreign keys only for `primary_dimensions()`, while
+  several fact columns can share one dim table — a repair has to cover every
+  column pointing at the table, or the non-primary ones stay broken.

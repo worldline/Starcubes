@@ -213,3 +213,74 @@ in the warehouse. They are stable unless this document changes.
   adding a new integer measure column whose `source_expr` could go
   negative or overflow should know it will be clamped, not preserved or
   flagged.
+
+- **A dimension column holds surrogate indices, never the source's own
+  values — and once the two are mixed they cannot be told apart.**
+  `fk_<fact_column>` references `<dim_table>.index`, the `smallserial`
+  surrogate, not the source's code. A column loaded *before* it was
+  configured as a dimension holds the raw value instead, and nothing notices
+  until `core/schema.py:create_indices` first adds the key:
+
+  ```
+  (psycopg2.errors.ForeignKeyViolation) insert or update on table
+  "fact_y2026m04" violates foreign key constraint "fk_cncy_code"
+  DETAIL: Key (cncy_code)=(978) is not present in table "cncy_code".
+  [SQL: ALTER TABLE ... ADD CONSTRAINT fk_cncy_code
+   FOREIGN KEY(cncy_code) REFERENCES ...(index)]
+  ```
+
+  Two things in that message mislead. The statement is `ADD CONSTRAINT`
+  *without* `NOT VALID`, so Postgres is validating rows that are already
+  there and merely words it as an insert — nothing is being loaded, and the
+  named partition is where the offending row sits, not where a write went.
+  And the reported value is a `source_id` (978 is ISO 4217 for EUR), which
+  *is* present in the dim table — just not in the column the key points at,
+  which is why "but 978 is definitely in there" and the error are both true.
+
+  A running ETL cannot produce this state. `core/etl.py:_map_dimensions`
+  (~line 433) routes every unmappable value to the `__unknown__` sentinel and
+  records it in `starcubes_meta.etl_unmapped`, so a raw value never reaches
+  `fact` while the column is configured as a dimension. Finding one means the
+  rows predate the dimension.
+
+  Diagnosis — which values, in which partitions:
+
+  ```sql
+  SELECT f.tableoid::regclass AS partition, f.<col>, count(*)
+    FROM <schema>.fact f
+    LEFT JOIN <schema>.<dim> d ON d.index = f.<col>
+   WHERE d.index IS NULL
+   GROUP BY 1, 2 ORDER BY 1, 3 DESC;
+  ```
+
+  **A `--backfill` does not repair this.** It de-dupes the whole window
+  against the PKs already in `fact` (`core/etl.py`, `import_fact` docstring),
+  so the broken rows survive and the corrected ones are discarded as
+  duplicates. Either the rows go first — Truncate Partition, then backfill,
+  remembering that truncating sets `datasource.retention_floor` — or they are
+  rewritten in place by `core/schema.py:_backfill_fact_column`.
+
+  **The trap in rewriting in place:** that function's
+  `WHERE f.<col>::text = d.source_id` matches *every* row whose value reads
+  like a `source_id`, including rows that are already correct. It is safe
+  only where it is called from — immediately after a dim table was newly
+  created (`if created:` in `import_dimensions`), when nothing is mapped yet.
+  Invoked at any later point it re-maps correct rows: a row holding index `3`
+  becomes the index of `source_id = '3'`. Restricting it to rows with no
+  partner in `dim.index` fixes that much, but leaves a second class
+  untouched — a raw value that happens to collide with a valid index
+  violates no key, cannot be found, and stays silently wrong while the
+  foreign key reports green. Whether that class can exist at all is
+  decidable:
+
+  ```sql
+  SELECT count(*) FROM <schema>.<dim>
+   WHERE index::text IN (SELECT source_id FROM <schema>.<dim>);
+  ```
+
+  Zero means every row is unambiguous and an in-place repair is complete.
+  Non-zero means only reloading the affected range gives certainty. For
+  ISO-code dimensions the two ranges are disjoint in practice; for
+  auto-dimensions they routinely are not, since their `source_id`s are often
+  small integers and the indices start at 1. See
+  [`backlog.md`](backlog.md) for why no automatic repair exists.

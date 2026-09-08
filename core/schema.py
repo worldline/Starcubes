@@ -543,6 +543,15 @@ def import_dimensions(source: Source, source_engine, dest_engine,
         # Auto-dim path: ensure the dim table exists with the -1 and
         # __unknown__ sentinels. New values are discovered and inserted
         # during the ETL transform stage.
+        #
+        # Deliberately no _backfill_fact_column call here, unlike the two
+        # paths around it. An auto-dim table keeps growing, so on every run
+        # after the first, `fact` already holds mapped indices and the
+        # backfill would re-map them (a row holding index 3 becomes the index
+        # of source_id '3'). A column promoted to 'auto-dimension' after rows
+        # were loaded therefore keeps its raw values — read
+        # docs/star-schema.md ("A dimension column holds surrogate indices")
+        # and docs/backlog.md before trying to close that here.
         if d.fact_column in auto_dim_cols:
             _populate_dim_table(dest_engine, schema, d.dim_table, [],
                                 source_name=source.name, quiet=quiet)
@@ -657,6 +666,12 @@ def _backfill_fact_column(dest_engine, schema: str, fact_col: str,
     the dim table's SMALLSERIAL indices (e.g. 1, 2, 3) so the query layer can
     join correctly.  This is a no-op when the fact column doesn't exist yet
     (next ETL load will populate it correctly via the transform stage).
+
+    Only safe on a dim table that was *just* created, which is why both
+    callers gate it on ``created``: the UPDATE matches every row whose value
+    reads like a ``source_id``, so on a table that already has mapped rows it
+    re-maps the correct ones as well.  See docs/star-schema.md before calling
+    it from anywhere else.
     """
     with dest_engine.begin() as conn:
         col_exists = conn.execute(text(
