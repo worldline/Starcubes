@@ -304,11 +304,11 @@
       ? [a.measure].concat(MEASURE_AGGS) : MEASURE_AGGS;
     var cmt = a.comment || '';
     return '<tr data-id="' + a.id + '">'
-      + '<td><span class="row-display"><strong>' + esc(a.name) + '</strong>'
+      + '<td><span class="row-display">'
       +     (a.has_open_episode
-      ?       ' <span class="badge badge-running"><span class="dot">&#9679;</span> open</span>'
+      ?       '<span class="dot-live" title="Open firing episode">&#9679;</span> '
       :       '')
-      +     '</span>'
+      +     '<strong>' + esc(a.name) + '</strong></span>'
       +     '<input class="row-edit cell-input" name="name" value="' + esc(a.name) + '"></td>'
       + '<td><span class="row-display text-muted" style="font-size:11px">' + ctxSummary(a.context_filter, ctxLabels) + '</span></td>'
       + '<td><span class="row-display text-muted" style="font-size:11px" title="' + esc(cmt) + '">'
@@ -423,11 +423,11 @@
     var cmt = a.comment || '';
     var title = PIPELINE_CONDS[a.condition] || a.condition || '—';
     return '<tr data-id="' + a.id + '">'
-      + '<td><span class="row-display"><strong>' + esc(a.name) + '</strong>'
+      + '<td><span class="row-display">'
       +     (a.has_open_episode
-      ?       ' <span class="badge badge-running"><span class="dot">&#9679;</span> open</span>'
+      ?       '<span class="dot-live" title="Open firing episode">&#9679;</span> '
       :       '')
-      +     '</span>'
+      +     '<strong>' + esc(a.name) + '</strong></span>'
       +     '<input class="row-edit cell-input" name="name" value="' + esc(a.name) + '"></td>'
       + '<td><span class="row-display" title="' + esc(a.condition || '') + '">'
       +     esc(title) + '</span></td>'

@@ -2932,6 +2932,7 @@ def _firing_episodes(show: str = "all", ds: int | None = None):
             "SELECT f.id, f.first_breach_at, f.last_breach_at, f.closed_at, "
             "       f.first_value, f.last_value, "
             "       a.id AS alarm_id, a.name AS alarm_name, a.measure, "
+            "       a.comment, "
             "       a.rule_kind, a.condition, "
             "       a.cond_op, a.threshold, a.window_s, "
             "       d.id AS ds_id, d.name AS ds_name "
@@ -2948,6 +2949,7 @@ def _firing_episodes(show: str = "all", ds: int | None = None):
         episodes.append({
             "alarm_id": r["alarm_id"],
             "alarm_name": r["alarm_name"],
+            "comment": r["comment"],
             "ds_id": r["ds_id"],
             "ds_name": r["ds_name"],
             "rule": _episode_rule(r),

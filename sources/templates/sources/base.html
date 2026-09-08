@@ -280,14 +280,13 @@ a.btn-icon { display: inline-block; text-decoration: none; }
 .badge-conn-fail { background: var(--badge-failed-bg); color: var(--badge-failed-fg); font-size: 11px; padding: 1px 6px; border-radius: 4px; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 .badge-running .dot { animation: pulse 1.2s ease-in-out infinite; }
-/* Open firing episodes: a red blinking dot at the very start of the row
-   (tr.row-open on _firings.html). The amber "open" badge in the status
-   column stays; the dot is the at-a-glance signal. */
-.row-open td:first-child::before {
-  content: "\25CF";
+/* A firing alarm, seen from the Alarms tab: the tiny blinking red dot at
+   the start of the first column is the whole signal — no pill here. The
+   pill lives on the Firings tab's status column instead (_firings.html). */
+.dot-live {
   color: var(--badge-failed-fg);
+  font-size: 9px;
   animation: pulse 1.2s ease-in-out infinite;
-  margin-right: 6px;
 }
 
 /* Forms */

@@ -491,9 +491,10 @@ same code twice over:
   filling it. Its one switch is `scoped`: on a datasource's own page the
   `Datasource` dropdown makes no sense, so it becomes an "All firings ↗"
   link to the global page and the `Datasource` column drops out of the
-  table. Open episodes carry a `row-open` class — a red blinking dot
-  (`::before` on the first cell, `--badge-failed-fg`, `@keyframes pulse`)
-  at the start of the row, next to the amber "open" status badge.
+  table. The status column's amber "open" pill (with its blinking inner
+  dot) is the only signal here — the blinking red dot at the start of the
+  row was dropped and lives on the Alarms tab instead (`.dot-live` in
+  `base.html`, emitted by `_alarms_js.html` when `has_open_episode`).
   `url_all` / `url_open` come from the caller because each page
   filters inside its own URL — `?show=` globally, `?tab=firings[&show=open]`
   on the tab, which reloads the detail page and lands back on the tab
