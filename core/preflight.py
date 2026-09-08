@@ -50,7 +50,9 @@ _REQUIRED_META_COLUMNS: tuple[tuple[str, str], ...] = (
     ("datasource", "retention_floor"),
     ("datasource", "dedupe_from"),
     ("datasource", "max_run_s"),
+    ("datasource", "retention_periods"),
     ("etl_run", "src_now"),
+    ("alarm", "rule_kind"),
 )
 
 # The index check is time-aware on purpose: the first load deliberately runs
@@ -426,6 +428,55 @@ def _check_data_staleness(source: Source, meta_engine) -> dict:
                   **detail)
 
 
+def _check_alarm_windows(source: Source, meta_engine) -> dict:
+    """Alarm windows that reach below the retention floor.
+
+    Such an alarm is not evaluated (see `core/alarm.py:_evaluate_window`),
+    which is the right answer and a silent one. Reported here so the silence
+    is explained: a rule that has quietly stopped answering looks exactly
+    like a rule that is content.
+    """
+    floor = getattr(source, "retention_floor", None)
+    if floor is None:
+        return _check("alarm_windows", CHECK_OK,
+                      "skipped — nothing has been retired")
+    if floor.tzinfo is None:
+        floor = floor.replace(tzinfo=timezone.utc)
+
+    with meta_engine.begin() as conn:
+        hwm = conn.execute(text(
+            "SELECT last_end_time FROM starcubes_meta.etl_run "
+            " WHERE datasource_id = :ds AND status = 'ok' "
+            "   AND kind = 'incremental' "
+            " ORDER BY finished_at DESC LIMIT 1"
+        ), {"ds": source.id}).scalar()
+        rows = conn.execute(text(
+            "SELECT name, window_s FROM starcubes_meta.alarm "
+            " WHERE datasource_id = :ds AND enabled "
+            "   AND rule_kind = 'threshold' ORDER BY name"
+        ), {"ds": source.id}).mappings().all()
+    if hwm is None or not rows:
+        return _check("alarm_windows", CHECK_OK,
+                      "skipped — no watermark or no threshold alarms")
+    if hwm.tzinfo is None:
+        hwm = hwm.replace(tzinfo=timezone.utc)
+
+    room = (hwm - floor).total_seconds()
+    over = [r["name"] for r in rows if r["window_s"] > room]
+    detail = {"retention_floor": floor.isoformat(),
+              "room_s": round(room, 1), "alarms": over}
+    if over:
+        return _check("alarm_windows", CHECK_WARN,
+                      f"{len(over)} alarm window(s) reach below the "
+                      f"retention floor and are therefore not evaluated: "
+                      f"{', '.join(over)}. Only {_fmt_s(room)} of data is "
+                      f"kept — shorten window_s or raise retention_periods",
+                      **detail)
+    return _check("alarm_windows", CHECK_OK,
+                  f"all {len(rows)} alarm window(s) fit inside the "
+                  f"{_fmt_s(room)} of retained data", **detail)
+
+
 def run_preflight(source: Source, meta_engine, dest_engine, *,
                   source_engine=None, repair: bool = True) -> dict:
     """Run every pre-load check, cheapest first, and return the report.
@@ -448,6 +499,7 @@ def run_preflight(source: Source, meta_engine, dest_engine, *,
     checks.append(_check_source_projection(source, source_engine))
     checks.append(_check_watermark_tip(source, dest_engine, meta_engine))
     checks.append(_check_data_staleness(source, meta_engine))
+    checks.append(_check_alarm_windows(source, meta_engine))
 
     blocked = [c for c in checks if c["level"] == CHECK_BLOCK]
     for c in checks:

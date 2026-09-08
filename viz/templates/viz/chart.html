@@ -1961,6 +1961,26 @@ function cacheGet(key) {
   return JSON.parse(JSON.stringify(entry.plot));
 }
 
+// The datasource's cache epoch as of the last response we saw. The server
+// bumps it whenever data the cache considered final has changed underneath
+// it — a backfill, a high-watermark rewind, a retention drop. The
+// server-side cache carries the epoch inside its key and is safe by
+// construction; this one keys on the query string alone, so a block below a
+// retention floor ("final, not trailing" — the most cacheable shape there
+// is) would otherwise keep painting rows whose partitions have been dropped,
+// for as long as the tab stays open.
+let cacheEpoch = null;
+
+function noteCacheEpoch(plot) {
+  const e = plot && plot.cache_epoch;
+  if (e === undefined || e === null) return;
+  if (cacheEpoch !== null && e !== cacheEpoch) {
+    dataCache.clear();
+    cacheSize = 0;
+  }
+  cacheEpoch = e;
+}
+
 function cachePut(key, plot) {
   if (dataCache.has(key)) {
     const old = dataCache.get(key);
@@ -2323,6 +2343,10 @@ async function fetchRange(from, to, interval, signal) {
     }
     plot = await r.json();
     freshlyFetched = true;
+    // Before anything is stored or drawn: a changed epoch invalidates every
+    // block we are holding, including the one about to be returned from a
+    // sibling request.
+    noteCacheEpoch(plot);
   }
   // Tag with current group_by so updateLegend can ignore residual blocks
   // pushed under a previous group_by selection (resetAndFetch keeps old

@@ -86,7 +86,7 @@ from __future__ import annotations
 import logging
 import operator
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import text
@@ -350,6 +350,39 @@ def fact_max_time(source: Source) -> Optional[datetime]:
         )).scalar()
 
 
+def _window_below_floor(source: Source, alarm: dict,
+                        fact_max: datetime) -> bool:
+    """True when this alarm's window reaches below the retention floor.
+
+    Such a window must not be evaluated, and that is arithmetic rather than
+    caution. Below the floor the partitions are gone *on purpose*, so the
+    aggregate silently measures a shorter span than the rule asked for — and
+    the error is not symmetric. `count(*) <` and `sum(col) <`, which is
+    exactly what people write to detect an outage, then report an outage
+    that retention itself caused. `>` and `>=` merely miss breaches.
+
+    The floor and the window are both in the partition clock (`_build_where`
+    filters on `partition_column`), so the comparison is sound even when
+    `watermark_fact_expr` puts `fact_max` on a different one.
+    """
+    floor = getattr(source, "retention_floor", None)
+    if floor is None:
+        return False
+    if floor.tzinfo is None:
+        floor = floor.replace(tzinfo=timezone.utc)
+    win_start = fact_max - timedelta(seconds=alarm["window_s"])
+    if win_start >= floor:
+        return False
+    logger.warning(
+        "alarm %s (%s): window starts %s, below the retention floor %s — "
+        "not evaluated. Shorten window_s below %.0fs or raise "
+        "retention_periods; a truncated window would make a 'too little "
+        "data' rule fire on data that was disposed of on purpose.",
+        alarm["name"], source.name, win_start, floor,
+        (fact_max - floor).total_seconds())
+    return True
+
+
 def _evaluate_window(
     source: Source,
     alarm: dict,
@@ -360,6 +393,9 @@ def _evaluate_window(
     Returns `(value, breach)`. A SQL NULL aggregate is never a breach — an
     empty `sum(col)` window says nothing, whereas `count(*)` returns a
     genuine 0 and can legitimately satisfy `< 1`.
+
+    Callers must have cleared `_window_below_floor` first — a truncated
+    window produces a confident wrong number, not an obviously missing one.
     """
     win_start = fact_max - timedelta(seconds=alarm["window_s"])
     sql, params = alarm_aggregate_sql(source, alarm, win_start, fact_max)
@@ -404,6 +440,12 @@ def evaluate_alarm(source: Source, meta_engine, alarm: dict, *,
     if alarm["eval_end"] is not None and fact_max <= alarm["eval_end"]:
         # The load brought no new data: the window would be identical to the
         # one already evaluated, and so would its verdict.
+        return counts
+
+    if _window_below_floor(source, alarm, fact_max):
+        # Not "no breach" — no answer. Same shape as the eval_end skip above:
+        # no window counted, no episode touched, and a standing episode is
+        # deliberately left open rather than closed on missing evidence.
         return counts
 
     value, breach = _evaluate_window(source, alarm, fact_max)

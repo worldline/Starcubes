@@ -244,6 +244,9 @@ def plot_json(request):
             )
             cached = get_cached_plot(meta, cache_key)
             if cached is not None:
+                # The epoch rides on every response, hit or miss — see the
+                # note at the store below.
+                cached["cache_epoch"] = cache_epoch
                 return JsonResponse(cached, json_dumps_params={"default": str})
 
         group_by_groups = None
@@ -326,6 +329,14 @@ def plot_json(request):
                             group_by=group_by_raw,
                             measure=measure,
                             payload=plot)
+        # Every response carries the datasource's cache epoch, because the
+        # server-side cache is not the only one. The chart keeps a 50 MB
+        # in-page LRU keyed on the query string alone, and a window below a
+        # retention floor is the most cacheable shape there is — "final, not
+        # trailing" — so an open tab would happily keep painting bars whose
+        # partitions have been dropped. Stamped after the store so the
+        # persisted blob stays free of a value that would age inside it.
+        plot["cache_epoch"] = cache_epoch
         return JsonResponse(plot, json_dumps_params={"default": str})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)
@@ -596,6 +607,19 @@ def api_source_meta(request):
                 "  FROM starcubes_meta.etl_run "
                 " WHERE datasource_id = :ds AND status = 'ok'"
             ), {"ds": source.id}).mappings().one()
+        # The run history remembers windows whose partitions have since been
+        # retired. Clamp the advertised extent to the retention floor, or the
+        # chart offers a range where fact is empty on purpose and a user
+        # reads it as data loss.
+        wm = dict(wm)
+        if source.retention_floor is not None and wm["lo"] is not None:
+            floor = source.retention_floor
+            if floor.tzinfo is None:
+                floor = floor.replace(tzinfo=timezone.utc)
+            lo = wm["lo"]
+            if lo.tzinfo is None:
+                lo = lo.replace(tzinfo=timezone.utc)
+            wm["lo"] = max(lo, floor)
 
         return JsonResponse({
             "id":                       source.id,
