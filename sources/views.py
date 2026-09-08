@@ -515,7 +515,7 @@ def source_manage(request, pk: int):
     decorator wrap does (see Commit_3).
     """
     ctx = _build_source_context(pk)
-    return render(request, "sources/manage.html", ctx)
+    return render(request, "sources/source.html", ctx)
 
 
 @_admin_required_page
