@@ -710,6 +710,35 @@ def _overlap_pks(source: Source, dest_engine, since: datetime,
     return set(pks[pk])
 
 
+def _source_min_watermark(source: Source, source_engine) -> Optional[datetime]:
+    """`min(watermark_column)` in the source — where its data actually begins.
+
+    Nothing ever asked this before. The engine only ever wanted the *tip*,
+    because every window since the first one starts at the stored high
+    watermark; the very first window simply had no lower bound at all
+    (`WHERE wm < end_time`, open on the left since the beginning of time).
+    Stepping that first load needs somewhere to start from.
+
+    Asked only when `initial_window_s` is set and the fact table is empty —
+    once per datasource lifetime, in practice.
+    """
+    wm = source.watermark_column
+    if source.base_table:
+        q = f"SELECT min({wm}) FROM {source.base_table}"
+    else:
+        q = f"SELECT min({wm}) FROM ({source.import_query}) q"
+    with source_engine.begin() as src:
+        value = src.execute(text(q)).scalar()
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    # Rounded *down*, unlike every other bound in here: this one is an
+    # inclusive lower edge, and `_ceil_second` would step past the oldest
+    # row it exists to include.
+    return value.replace(microsecond=0)
+
+
 def _fact_has_rows(source: Source, dest_engine) -> bool:
     """Cheapest possible "has anything been loaded yet".
 
@@ -896,6 +925,13 @@ def import_fact(source: Source, meta_engine, *,
     capped = (max_run_s > 0 and not backfill
               and start_time is None and end_time_override is None
               and _fact_has_rows(source, dest_engine))
+    # The width cap (N17) is the better instrument for a long first load than
+    # exempting it from the time cap: with it set, the first load is a series
+    # of ordinary short runs and the exemption above stops mattering.
+    with meta_engine.begin() as meta:
+        initial_window_s = int(meta.execute(text(
+            "SELECT initial_window_s FROM starcubes_meta.datasource "
+            " WHERE id = :ds"), {"ds": source.id}).scalar() or 0)
     if capped:
         budget = _RunBudget(source.name, max_run_s)
 
@@ -1153,6 +1189,18 @@ def import_fact(source: Source, meta_engine, *,
             last_end_time, extract_from, existing_pks = _resume_state(
                 source, dest_engine, meta_engine, dedupe_pending)
 
+            if extract_from is None and initial_window_s > 0:
+                # The initial load, and somebody wants it stepped. Ask the
+                # source where its data begins — the one question the engine
+                # never had to ask, because every other window starts at the
+                # stored watermark.
+                extract_from = _source_min_watermark(source, source_engine)
+                if extract_from is None:
+                    logger.warning(
+                        "%s: initial_window_s is set but the source reports "
+                        "no min(%s); loading the whole history in one window",
+                        source.name, source.watermark_column)
+
             if start_time is not None:
                 if start_time.tzinfo is None:
                     start_time = start_time.replace(tzinfo=timezone.utc)
@@ -1182,6 +1230,32 @@ def import_fact(source: Source, meta_engine, *,
                         "(nothing new to load)",
                         source.name, end_time, last_end_time)
             end_time = last_end_time
+
+        # Cap the width while the load is still catching up. Placed here on
+        # purpose: `extract_from` only exists after the block above, and
+        # doing it before the HWM clamp would let that clamp quietly undo it.
+        #
+        # Measured from the high watermark rather than from `extract_from`,
+        # because the late-arrival overlap re-reads ground that is already
+        # loaded — capping from there would shrink the window by the overlap
+        # and, with a cap smaller than the overlap, produce an `end_time`
+        # below the HWM that the clamp above would push straight back up.
+        #
+        # It necessarily applies to every step of the catch-up rather than
+        # only to the literally first run: cap step one and step two would
+        # otherwise load the entire remainder, which is the thing being
+        # avoided. A datasource that has caught up never reaches the cap,
+        # because its window is narrower than the cap anyway.
+        if not backfill and start_time is None and initial_window_s > 0:
+            base = last_end_time if last_end_time is not None else extract_from
+            if base is not None:
+                capped = base + timedelta(seconds=initial_window_s)
+                if capped < end_time:
+                    logger.info(
+                        "%s: catching up — window capped to %s "
+                        "(initial_window_s=%ds, tip is %s)",
+                        source.name, capped, initial_window_s, end_time)
+                    end_time = capped
 
         # Update first_end_time now that we know it
         with meta_engine.begin() as meta:
