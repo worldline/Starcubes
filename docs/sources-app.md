@@ -73,7 +73,7 @@ raise `grpLoadList is not defined`. `manage.html` puts them in
 inline script in the content block.
 
 The pages still differ where they should: `manage.html` loads the
-group-dimension list lazily on first tab click (it has 12 tabs),
+group-dimension list lazily on first tab click (it has 9 tabs),
 `detail.html` eagerly on load (it has 5), and `manage.html` wraps `startEdit`
 afterwards to re-sync the dimension source fields — which works because
 `inline_edit.js` leaves it a global function declaration.
@@ -92,7 +92,7 @@ The `/sources/` UI splits along three axes:
 | Any user          | `/sources/<pk>/`              | Editable detail (Basics read-only; Group Dims, Measures, Alarms are CRUD) |
 | Any user          | `/sources/alarms/firings/`    | Global firing-episode overview (`?show=open` for the live breaches) |
 | Any user          | `/sources/<pk>/?tab=firings`  | The same overview scoped to one datasource (`&show=open` likewise) |
-| Superuser         | `/sources/<pk>/manage/`       | Full configuration (12 sub-tabs incl. ETL run / log) |
+| Superuser         | `/sources/<pk>/manage/`       | Full configuration (9 sub-tabs; ETL run / audit / history / log are sub-tabs of ETL) |
 | Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
 | Superuser         | `/sources/profiles/`          | Profile catalogue + upload (replaces the modal that used to live on `list.html`) |
 | Logged-in user    | `/sources/me/`                | Own profile, password change, alarm-channel opt-in (email/XMPP), query history    |
@@ -159,7 +159,8 @@ Notes:
 - `GET /sources/<pk>/` — user page (4 sub-tabs: Basics, Group Dims, Measures,
   Alarms). Basics is read-only; the other three are editable by any signed-in
   user — that is the point of the page, and their endpoints are login-only.
-- `GET /sources/<pk>/manage/` — full detail (12 sub-tabs incl. ETL run / log) (superuser only)
+- `GET /sources/<pk>/manage/` — full detail (9 sub-tabs; ETL run / audit /
+  history / log are sub-tabs of ETL) (superuser only)
 - `GET/POST /sources/<pk>/edit/` — edit scalar fields (superuser only)
 - `POST /sources/<pk>/delete/` — delete (CASCADE in DB) (superuser only)
 
@@ -194,7 +195,7 @@ Notes:
   `failed`, error `killed by user...`, via `EtlAborted`); `{force: 1}`
   escalates to `SIGKILL` on the whole process group and the view finishes
   the row itself, since a killed parent can no longer write it. Returns 409
-  if an ETL Forever session is active for the datasource — use Stop Forever
+  if a Run Forever session is active for the datasource — use Stop Forever
   instead.
 - `POST .../etl/forever/start/` — start continuous ETL loop (`--forever`)
 - `POST .../etl/forever/stop/` — request stop of running forever loop
@@ -535,7 +536,8 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   the `csrfToken()` helper in `sources/base.html`.
 - **ETL subprocess**: uses `sys.executable` so the venv Python is used, and
   inherits `STARCUBES_POSTGRES_DSN` from the environment.
-- **ETL throughput metrics + kill button** (manage.html, ETL History tab and
+- **ETL throughput metrics + kill button** (manage.html, the ETL tab's History
+  sub-tab and
   the persistent statusbar): `pollEtlStatus()`/`pollForeverStatus()` render
   `rows_per_s`/`extract_rows_per_s`/`transform_rows_per_s`/`load_rows_per_s`
   via the `fmtRate()`/`fmtCount()` JS helpers (k/M-suffixed). Those four
@@ -551,16 +553,17 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   column carries a `title=` tooltip built from the per-stage `busy_s`/
   `wait_s` in the `stats` jsonb column — see the same note for the shape and
   why it's measured as net busy time, not wall time. Its `Log` column links
-  to the ETL Log tab (`openEtlLogFile()`, preselects the file by basename)
+  to the Log sub-tab (`openEtlLogFile()` switches both tiers and preselects the
+  file by basename)
   and, for a failed run, a `<details>` showing `log_tail`. The **Kill**
-  button next to Run ETL only appears while `status === 'running'` **and**
+  button next to Run once only appears while `status === 'running'` **and**
   no Forever session is active (mirrors the 409 the view returns); the
   first click sends a plain `SIGTERM`, the second (after `confirm()`) sends
   `{force: 1}`. "Clear ETL History" is duplicated as a second button in the
-  Run ETL card (`etlCmdClearHistBtn2`) — both wire to the shared
+  Run once card (`etlCmdClearHistBtn2`) — both wire to the shared
   `clearEtlHistory()` function, which also calls `refreshHistTable([])` so
   the table doesn't keep showing deleted rows after a clear.
-- **Audit tab** (`tab-audit`, manage.html): reconciles source vs fact row counts per time
+- **Audit sub-tab** (`etlsub-audit`, manage.html): reconciles source vs fact row counts per time
   bucket, so late-arriving transactions that slipped past
   `datasource.late_arrival_overlap_s` become visible. The From/To fields — and
   every other `DateTimePicker` in the ETL tabs — are read in the **browser's
@@ -597,10 +600,11 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   moment when no lag is configured.
   The summary says **raise by**, not set to: with a lag already in force the
   figure is the additional amount, and it is a lower bound either way.
-- **ETL Log tab** (`tab-etl-log`, manage.html): lazy-loaded on first activation
+- **Log sub-tab** (`etlsub-log`, manage.html): lazy-loaded on first activation
   via `etlLogActivate()` — populates the `<select>` from `etl/logs/`, then
-  tails the selected file from `etl/log/`. Polls every 2s only while the tab
-  is active (mirrors `startEtlPoll`/`stopEtlPoll`'s idiom) **and** the last
+  tails the selected file from `etl/log/`. Polls every 2s only while the
+  sub-tab is active — `activateEtlSub()` starts and stops it, and the
+  top-level tab switcher stops it whenever the ETL tab is left (mirrors `startEtlPoll`/`stopEtlPoll`'s idiom) **and** the last
   known status is `running`; `pollEtlStatus()` calls `etlLogStopPoll()`
   alongside `stopEtlPoll()` once a run resolves. `etlLogOffsets` is a
   per-filename byte offset so re-fetches are incremental; a `truncated`

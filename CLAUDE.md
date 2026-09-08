@@ -45,7 +45,8 @@ branch — **`master` is the only long-lived branch.**
   `core/etl.py`, `sources/etl_logging.py`, `sources/etl_spawn.py`, or
   `sources/management/commands/etl_run.py`.
 - **[`docs/etl-audit.md`](docs/etl-audit.md)** — read when editing
-  `core/audit.py` or the Audit tab in `sources/templates/sources/manage.html`.
+  `core/audit.py` or the ETL tab's Audit sub-tab in
+  `sources/templates/sources/manage.html`.
 - **[`docs/etl-automation.md`](docs/etl-automation.md)** — what has to be true
   *around* a load: preconditions the engine guarantees itself vs. the ones that
   still hang on an operator, and the evaluation of each. Read when planning

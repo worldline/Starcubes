@@ -17,10 +17,8 @@ Guide to using the starcubes GUI and configuring datasources. See the
   - [Tab: Dim Data](#tab-dim-data)
   - [Tab: Group Dims](#tab-group-dims)
   - [Tab: Indices](#tab-indices)
-  - [Tab: ETL History](#tab-etl-history)
-  - [Tab: ETL Commands](#tab-etl-commands)
   - [Tab: Storage](#tab-storage)
-  - [Tab: ETL Log](#tab-etl-log)
+  - [Tab: ETL](#tab-etl)
   - [Editing and deleting a datasource](#editing-and-deleting-a-datasource)
 - [Source configuration reference](#source-configuration-reference)
   - [Identity fields](#identity-fields)
@@ -456,76 +454,6 @@ to type the datasource name to confirm. Useful before a bulk re-load.
 
 Both operations show their result in the action result panel below the header.
 
-### Tab: ETL History
-
-Shows the last 20 ETL runs:
-
-| Column | Description |
-|--------|-------------|
-| ID | Run ID |
-| Status | Badge: running (pulsing), ok (green), failed (red) |
-| Started | Start timestamp |
-| Finished | Finish timestamp |
-| Window Start | First end_time in the load window |
-| Window End | Last end_time in the load window |
-| Rows | Number of rows loaded |
-| Runtime (ms) | Wall-clock duration |
-| Error | Truncated error message (hover for full text) |
-| Log | **Log** button opens that run's log file in the ETL Log tab. A failed
-run also shows a collapsible **tail** with the last ~8 KB of the log
-(readable even without shell/volume access to the container). |
-
-The table refreshes live while an ETL is running. While a run is `running`,
-the statusbar at the bottom of the page shows live per-stage throughput
-(`E … T … L …`) and queue depths (`[tq n lq n]`) read from the run's `stats`
-— the four rate columns above are only filled in once the run finishes. If
-`no progress for Ns` appears in the statusbar, the run is stalled: something
-downstream (usually the load stage) has stopped making progress. Check the
-ETL Log tab for the traceback.
-
-### Tab: ETL Commands
-
-A card-based layout with all ETL and maintenance operations:
-
-**Run ETL** — Start an incremental ETL load. Optional fields:
-- **Start** — Override the high watermark start time
-- **End** — Override the end time (skip the source max query)
-- **Limit** — Cap the maximum number of rows to import
-
-**ETL Forever** — Run ETL continuously at a fixed interval. Enter the interval
-in seconds and click **Start Forever**. The card shows the current status
-(running/stopping/stopped/failed) and the latest run result. Click **Stop
-Forever** to signal the process to stop; it finishes the current iteration and
-then exits. Only one forever session can be active per datasource.
-
-**Data Cleanup**:
-- **Delete From** — Delete all fact rows at or after a given timestamp
-- **Vacuum Analyze** — Run `VACUUM ANALYZE` on the fact table
-
-**Metadata**:
-- **Set High Watermark** — Insert an `etl_run` row with `status=ok` and
-  `last_end_time` set to `max(partition_column)` from the fact table. Useful
-  for skipping historical data that has already been loaded externally.
-- **Clear ETL History** — Delete all `etl_run` rows for the datasource.
-
-**Schema**:
-- **Create Schema** — Create the fact table, dimension tables, and initial
-  monthly partitions. Must be run before the first ETL. Refused while ETL is
-  running.
-- **Sync Schema** — Compare the physical warehouse schema with the current
-  metadata configuration. Click **Check** for a dry-run diff (added columns,
-  type changes, missing dim tables). Then select columns/dim tables to drop
-  and click **Confirm** to execute the sync. Refused while ETL is running.
-- **Create Partitions** — Create N future partitions. Rarely needed now:
-  every ETL run already ensures the partitions its load window (plus one
-  period of runway) needs before it starts, including filling in a gap left
-  by a source that's been idle a while. This button remains for pre-creating
-  further ahead than that, or for a source that hasn't run yet.
-- **Import Dimensions** — Re-import all dimension tables from the source DB
-  or inline CSV values.
-
-All actions that modify data or schema require confirmation.
-
 ### Tab: Storage
 
 Shows Postgres warehouse statistics for the datasource schema:
@@ -561,7 +489,107 @@ entirely) action buttons.
 | Rows Read | Tuples read via index |
 | Rows Fetched | Tuples fetched (heap fetches) |
 
-### Tab: ETL Log
+
+### Tab: ETL
+
+Everything that happens around a load, in six sub-tabs: **Run** starts one,
+**Maintenance** and **Schema** hold the operations around it, and **Audit**,
+**History** and **Log** are the read-only views onto what a run did.
+
+All actions that modify data or schema require confirmation.
+
+#### Run
+
+**Run once** — Start an incremental ETL load. Optional fields:
+- **Start** — Override the high watermark start time
+- **End** — Override the end time (skip the source max query)
+- **Limit** — Cap the maximum number of rows to import
+
+**Run Forever** — Run ETL continuously at a fixed interval. Enter the interval
+in seconds and click **Start Forever**. The card shows the current status
+(running/stopping/stopped/failed) and the latest run result. Click **Stop
+Forever** to signal the process to stop; it finishes the current iteration and
+then exits. Only one forever session can be active per datasource.
+
+**Preflight** — The checks every ETL run makes before it loads anything:
+schema objects, metadata version, index coverage, the source projection, and
+the watermark against the newest fact row. A dry run — it reports what a load
+would repair and changes nothing, so it is safe to click at any time.
+
+#### Maintenance
+
+**Housekeeping** — Runs the periodic maintenance the forever loop performs
+every `housekeeping_interval_s`: targeted `ANALYZE` of the partitions being
+written, BRIN range summarisation, dimension fill levels and partition sizes.
+Safe alongside a running load, and unlike Preflight it is not a dry run.
+
+**Data Cleanup**:
+- **Delete From** — Delete all fact rows at or after a given timestamp
+- **Vacuum Analyze** — Run `VACUUM ANALYZE` on the fact table
+
+**Metadata**:
+- **Set High Watermark** — Insert an `etl_run` row with `status=ok` and
+  `last_end_time` set to `max(partition_column)` from the fact table. Useful
+  for skipping historical data that has already been loaded externally.
+- **Clear ETL History** — Delete all `etl_run` rows for the datasource.
+
+**Query Cache** — Delete cached plot rows from `starcubes_meta.query_cache`
+for this datasource. Leave both filters blank to drop every cached plot, or
+pick a group_by and/or measure to delete only that breakdown.
+
+#### Schema
+- **Create Schema** — Create the fact table, dimension tables, and initial
+  monthly partitions. Must be run before the first ETL. Refused while ETL is
+  running.
+- **Sync Schema** — Compare the physical warehouse schema with the current
+  metadata configuration. Click **Check** for a dry-run diff (added columns,
+  type changes, missing dim tables). Then select columns/dim tables to drop
+  and click **Confirm** to execute the sync. Refused while ETL is running.
+- **Create Partitions** — Create N future partitions. Rarely needed now:
+  every ETL run already ensures the partitions its load window (plus one
+  period of runway) needs before it starts, including filling in a gap left
+  by a source that's been idle a while. This button remains for pre-creating
+  further ahead than that, or for a source that hasn't run yet.
+- **Import Dimensions** — Re-import all dimension tables from the source DB
+  or inline CSV values.
+
+#### Audit
+
+Compares row counts between the source and the fact table per time bucket,
+and diffs the primary keys of a window to name the exact rows that are
+missing. See [Finding and repairing missed transactions](#finding-and-repairing-missed-transactions)
+for the full workflow.
+
+#### History
+
+
+Shows the last 20 ETL runs:
+
+| Column | Description |
+|--------|-------------|
+| ID | Run ID |
+| Status | Badge: running (pulsing), ok (green), failed (red) |
+| Started | Start timestamp |
+| Finished | Finish timestamp |
+| Window Start | First end_time in the load window |
+| Window End | Last end_time in the load window |
+| Rows | Number of rows loaded |
+| Runtime (ms) | Wall-clock duration |
+| Error | Truncated error message (hover for full text) |
+| Log | **Log** button opens that run's log file in the **Log** sub-tab. A failed
+run also shows a collapsible **tail** with the last ~8 KB of the log
+(readable even without shell/volume access to the container). |
+
+The table refreshes live while an ETL is running. While a run is `running`,
+the statusbar at the bottom of the page shows live per-stage throughput
+(`E … T … L …`) and queue depths (`[tq n lq n]`) read from the run's `stats`
+— the four rate columns above are only filled in once the run finishes. If
+`no progress for Ns` appears in the statusbar, the run is stalled: something
+downstream (usually the load stage) has stopped making progress. Check the
+**Log** sub-tab for the traceback.
+
+#### Log
+
 
 Tails the raw log file of a spawned ETL process — every `manage.py etl_run`
 invocation started from the GUI (single run or forever) writes its own
@@ -573,9 +601,9 @@ image; mount a volume there to keep logs across `podman rm`).
 - **Follow** (checked by default) auto-scrolls to the bottom as new lines
   arrive.
 - **Refresh** fetches immediately instead of waiting for the next 2s poll.
-  Polling only runs while this tab is open and the selected run is still
+  Polling only runs while this sub-tab is open and the selected run is still
   active.
-- Clicking **Log** on an ETL History row jumps here with that run's file
+- Clicking **Log** on a **History** row jumps here with that run's file
   preselected.
 
 If a run stalls, this is the first place to look — every 30s (tunable via
@@ -672,8 +700,9 @@ Requirements and trade-offs:
 - A fact column with `role = 'pk'` is required. Without one the run fails
   rather than inserting duplicates.
 - Default is `0`, i.e. the historical behaviour. Do not guess a value — run
-  the **Audit** tab over a representative window first (see below), see how
-  far back rows actually turn up, and set the overlap above that.
+  the ETL tab's **Audit** sub-tab over a representative window first (see
+  below), see how far back rows actually turn up, and set the overlap above
+  that.
 - The cost is one extra source-side range scan per run. A few minutes of
   overlap on an indexed watermark column is usually negligible; hours are
   not.
@@ -694,8 +723,8 @@ for the late-arrival overlap mechanism.*
 
 ### Finding and repairing missed transactions
 
-The **Audit** tab on a datasource compares row counts between the source and
-the fact table, bucket by bucket, over a window you choose:
+The **Audit** sub-tab of a datasource's ETL tab compares row counts between
+the source and the fact table, bucket by bucket, over a window you choose:
 
 1. Pick **From** / **To** and a bucket count (max 200), then **Run Audit**.
    The source is counted on its watermark column, the fact table on the
@@ -706,7 +735,8 @@ the fact table, bucket by bucket, over a window you choose:
 3. **Backfill** on a row — or **Backfill all gaps** for the whole span —
    re-loads that window and inserts only the rows that are not already
    present, matched by primary key. It runs as a normal background ETL
-   subprocess, so progress shows up in the ETL Log and ETL History tabs.
+   subprocess, so progress shows up in the ETL tab's **Log** and **History**
+   sub-tabs.
 
 **Compare IDs** is the precise follow-up, and worth reaching for even when
 the counts look clean. Counting cannot tell a healthy bucket from one that

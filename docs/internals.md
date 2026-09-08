@@ -26,7 +26,7 @@ datasource lives as metadata rows in `starcubes_meta`, editable from a GUI).
     partition lifecycle, and `ensure_starcubes_meta`.
   - `etl.py` — the three-stage extract / transform / load pipeline, window
     resolution and high-watermark handling, throughput metrics, and the
-    maintenance operations the GUI's ETL Commands tab calls.
+    maintenance operations the GUI's ETL tab calls.
   - `query.py` — `timeseries_multibar`, the JSON producer behind the chart,
     plus the shared filter-tree builder and its validation.
   - `alarm.py` — alarm evaluation over the trailing window, driven by the ETL
@@ -252,7 +252,7 @@ Use the GUI at `/sources/new/` or write a seed script modelled on
   out of watermark order — the load window then reaches that many seconds
   back past the high watermark and drops what it already has by primary key.
   Pair it with `watermark_fact_expr` when the watermark is not itself a fact
-  column. The Audit tab on the datasource page measures how much overlap a
+  column. The ETL tab's Audit sub-tab measures how much overlap a
   given source actually needs, and backfills whatever slipped past it;
 - `fact_column` rows describing the warehouse layout (one `time` role, one
   `pk` role, N `measure` / `dimension` / `auto-dimension` roles) — each with

@@ -217,7 +217,7 @@ overlap can usually go to 0, which removes the PK check entirely.
       plus a btree on an UNLOGGED billion-row table. The PK set is matched
       in the parent process instead, where it is free.
     - **Not on by default.** The right value is deployment-specific — it is
-      *measured* with the Audit tab, not guessed — so the column defaults to
+      *measured* with the Audit sub-tab, not guessed — so the column defaults to
       0, which reproduces the old behaviour exactly.
   Two guards, both raised before the worker pool starts:
   `late_arrival_overlap_s > 0` without a `role='pk'` fact column fails the
@@ -488,7 +488,7 @@ overlap can usually go to 0, which removes the PK check entirely.
   `SIG_IGN`, so a dead reader raises a catchable `BrokenPipeError`
   instead of killing the process. `etl_run.log_path`/`log_tail`
   (migration `0021`) record the file path on every run and the last ~8 KB
-  on failure, so the GUI's ETL Log tab and history table work even
+  on failure, so the GUI's ETL Log sub-tab and history table work even
   without shell access to the log volume. `core/etl.py:_bound_log_size`
   `ftruncate`s the file in place once it exceeds
   `STARCUBES_LOG_MAX_BYTES` — safe specifically because the fd is

@@ -76,7 +76,7 @@ deliberately out.
 | After a load, on `housekeeping_interval_s` (default 6 h) | **Housekeeping** — retention, targeted ANALYZE, BRIN summarisation, dimension fill, partition sizes | `core/housekeeping.py` |
 | Any HTTP request, throttled to `STARCUBES_PIPELINE_ALARM_INTERVAL_S` | **Pipeline alarms**, on a daemon thread | `starcubes/middleware.py:PipelineAlarmMiddleware` |
 | Continuously, in its own container process | **Pipeline alarms** | `manage.py pipeline_watch` |
-| By hand | `manage.py etl_housekeeping`, `manage.py alarm_run`, the ETL Commands tab's Preflight and Housekeeping buttons | — |
+| By hand | `manage.py etl_housekeeping`, `manage.py alarm_run`, the ETL tab's Preflight and Housekeeping buttons | — |
 
 Nothing else is periodic. If you are about to add something that must happen
 regularly, it belongs in one of those rows or it will not happen.
@@ -368,7 +368,7 @@ is still gated on the lag being configured.
 Their difference is the only thing in the system that can see **a source that
 is up and has stopped producing**: a standstill freezes the watermark, so a
 threshold alarm's trailing window stops sliding and can never fire. The
-preflight compares it against `max_data_lag_s`, the ETL History tab shows it
+preflight compares it against `max_data_lag_s`, the ETL History sub-tab shows it
 per run, and the `data_stale` pipeline alarm delivers it.
 
 A **negative** value is not a small lag. A clock cannot be behind its own
@@ -381,7 +381,7 @@ wall-clock bound in that case; the report says why.
 ## Housekeeping
 
 `manage.py etl_housekeeping`, triggered by the forever loop every
-`housekeeping_interval_s` and runnable by hand or from the ETL Commands tab.
+`housekeeping_interval_s` and runnable by hand or from the ETL tab.
 One row per run in `starcubes_meta.housekeeping_run`.
 
 | Step | What | Why it cannot wait for autovacuum |

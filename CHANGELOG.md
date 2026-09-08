@@ -26,7 +26,7 @@ runs through further pre-release tags — see
   code, the indices and foreign keys are in place, the source still projects
   every configured column, and the stored high watermark has not been left
   standing above a fact table that shrank underneath it. Findings land in the
-  run's `stats`, and a **Preflight** card in the ETL Commands tab asks the
+  run's `stats`, and a **Preflight** card in the ETL tab asks the
   same questions as a dry run without starting a load. Missing indices are
   reported, never built — an unattended index build on a large fact table
   would block every load for hours. A renamed source column now refuses the
@@ -86,7 +86,7 @@ runs through further pre-release tags — see
   standstill by construction — the watermark stops moving, so their window
   stops sliding — and the ETL simply logs that it loaded nothing and sleeps.
   Every run now records how far the newest row in the source lags the
-  source's *own* clock, shown per run in the ETL History tab, and a **Max
+  source's *own* clock, shown per run in the ETL History table, and a **Max
   Data Lag** on the edit form turns that into a preflight warning. Both
   numbers come from the source, so the figure is unaffected by clock
   differences between machines — and a negative one is reported for what it

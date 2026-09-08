@@ -463,9 +463,9 @@ def source_detail(request, pk: int):
     """User-facing detail page: Basics header + Group Dims + Measures + Alarms.
 
     Admin-only configuration lives at ``source_manage`` and renders the
-    full ``manage.html`` with all 12 sub-tabs. Keeping the two apart
+    full ``manage.html`` with all 9 sub-tabs. Keeping the two apart
     means a non-admin can edit group dim memberships and inspect
-    measures without seeing storage/audit/ETL history tabs that have
+    measures without seeing the storage and ETL tabs that have
     nothing for them to act on.
     """
     ctx = _build_source_context(pk)
@@ -510,7 +510,7 @@ def source_detail(request, pk: int):
 def source_manage(request, pk: int):
     """Admin-only configuration page — superset of source_detail.
 
-    Renders the full 12-tab ``manage.html`` with the same context
+    Renders the full 9-tab ``manage.html`` with the same context
     builder. ``source_manage`` itself does not gate: routing or the
     decorator wrap does (see Commit_3).
     """

@@ -49,7 +49,7 @@ change it. Then, at `http://localhost:8080/sources/`:
 1. **New Datasource** — name, dialect, connection URL.
 2. **Apply a profile**, or fill in the base table, watermark column and fact
    columns yourself.
-3. **Run ETL**, and open the chart.
+3. **Run once**, and open the chart.
 
 ![The datasource list](docs/img/sources-list.png)
 

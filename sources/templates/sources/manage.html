@@ -15,10 +15,7 @@
     <button class="tab-btn" data-tab="measures">Measures ({{ measures|length }})</button>
     <button class="tab-btn" data-tab="indices">Indices ({{ indices|length }})</button>
     <button class="tab-btn" data-tab="storage">Storage</button>
-    <button class="tab-btn" data-tab="etl-cmds">ETL Commands</button>
-    <button class="tab-btn" data-tab="audit">Audit</button>
-    <button class="tab-btn" data-tab="history">ETL History ({{ runs|length }})</button>
-    <button class="tab-btn" data-tab="etl-log">ETL Log</button>
+    <button class="tab-btn" data-tab="etl">ETL</button>
   </div>
 </div>
 
@@ -441,335 +438,355 @@
   </div>
 </div>
 
-<!-- ETL Commands tab -->
-<div class="tab-panel" id="tab-etl-cmds">
-  <div class="etl-cmd-grid">
+<!-- ETL tab: everything that happens around a load — the commands that
+     start one, the maintenance around it, and the three read-only views
+     onto what a run did. Sub-tabbed like Dim Data; the sub-panels are
+     .etl-subpanel, not .tab-panel, because the top-level tab switcher
+     clears every .tab-panel in the document. -->
+<div class="tab-panel" id="tab-etl">
+  <div id="etlSubWrap">
+    <div class="tabs" id="etlSubTabs">
+      <button class="tab-btn active" data-sub="run">Run</button>
+      <button class="tab-btn" data-sub="maint">Maintenance</button>
+      <button class="tab-btn" data-sub="schema">Schema</button>
+      <button class="tab-btn" data-sub="audit">Audit</button>
+      <button class="tab-btn" data-sub="history">History ({{ runs|length }})</button>
+      <button class="tab-btn" data-sub="log">Log</button>
+    </div>
 
-    <!-- Card 1: Run ETL -->
-    <div class="card card-accent">
-      <div class="card-header"><span class="card-title">&#9889; Run ETL</span></div>
-      <div class="card-body">
-        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">Start an incremental ETL load. Override the window with Start/End timestamps or cap rows with Limit.</p>
-        <div class="form-row">
-          <div>
-            <label class="form-label dtp-label">Start
-              <input type="text" id="etlCmdStart" placeholder="YYYY-MM-DD HH:MM">
+    <div class="etl-subpanel active" id="etlsub-run">
+      <div class="etl-cmd-grid">
+        <!-- Card: Run once -->
+        <div class="card card-accent">
+          <div class="card-header"><span class="card-title">&#9889; Run once</span></div>
+          <div class="card-body">
+            <p style="margin:0 0 12px;color:var(--muted);font-size:13px">Start an incremental ETL load. Override the window with Start/End timestamps or cap rows with Limit.</p>
+            <div class="form-row">
+              <div>
+                <label class="form-label dtp-label">Start
+                  <input type="text" id="etlCmdStart" placeholder="YYYY-MM-DD HH:MM">
+                </label>
+                <div class="form-hint">Optional HWM override</div>
+              </div>
+              <div>
+                <label class="form-label dtp-label">End
+                  <input type="text" id="etlCmdEnd" placeholder="YYYY-MM-DD HH:MM">
+                </label>
+                <div class="form-hint">Optional end override</div>
+              </div>
+              <div>
+                <label class="form-label">Limit</label>
+                <input class="form-control" type="number" id="etlCmdLimit" min="1" placeholder="e.g. 100000">
+                <div class="form-hint">Optional max rows</div>
+              </div>
+            </div>
+            <div style="margin-top:12px">
+              <button class="btn btn-primary" id="etlCmdRun">Run once</button>
+              <button class="btn btn-danger" id="etlKillBtn" style="display:none">Kill</button>
+              <button class="btn btn-danger btn-sm" id="etlCmdClearHistBtn2">Clear ETL History</button>
+              <span class="cmd-result" id="result-etl-run"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card: Run Forever -->
+        <div class="card card-accent" id="foreverCard">
+          <div class="card-header"><span class="card-title">&#128260; Run Forever</span></div>
+          <div class="card-body">
+            <p style="margin:0 0 12px;color:var(--muted);font-size:13px">Run ETL continuously at a fixed interval. Each iteration creates a normal ETL run row.</p>
+            <div class="form-row">
+              <div>
+                <label class="form-label">Interval (seconds)</label>
+                <input class="form-control" type="number" id="foreverInterval" value="60" min="1" style="max-width:120px">
+                <div class="form-hint">Seconds between iterations</div>
+              </div>
+            </div>
+            <div id="foreverStatus" style="margin-top:8px;font-size:13px;display:none"></div>
+            <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+              <button class="btn btn-primary" id="foreverStartBtn">Start Forever</button>
+              <button class="btn btn-danger" id="foreverStopBtn" style="display:none">Stop Forever</button>
+              <span class="cmd-result" id="result-forever"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card: Preflight -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">&#128269; Preflight</span></div>
+          <div class="card-body">
+            <p style="margin:0 0 12px;color:var(--muted);font-size:13px">The checks every ETL run makes before it loads anything: schema objects, metadata version, index coverage, the source projection, and the watermark against the newest fact row. This is a dry run &mdash; it reports what a load would repair, and changes nothing.</p>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn btn-primary btn-sm" id="preflightBtn">Run checks</button>
+              <span class="cmd-result" id="result-preflight"></span>
+            </div>
+            <div id="preflightOut" style="margin-top:12px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="etl-subpanel" id="etlsub-maint">
+      <div class="etl-cmd-grid">
+        <!-- Card: Housekeeping -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">&#129529; Housekeeping</span></div>
+          <div class="card-body">
+            <p style="margin:0 0 12px;color:var(--muted);font-size:13px">The periodic maintenance the forever loop runs every <code>housekeeping_interval_s</code>: targeted <code>ANALYZE</code> of the partitions being written, BRIN range summarisation, dimension fill levels and partition sizes. Safe alongside a running load. This runs it now &mdash; unlike Preflight it is not a dry run.</p>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn btn-primary btn-sm" id="hkBtn">Run now</button>
+              <span class="cmd-result" id="result-housekeeping"></span>
+            </div>
+            <div id="hkOut" style="margin-top:12px"></div>
+          </div>
+        </div>
+
+        <!-- Card 2: Data Cleanup -->
+        <div class="card card-danger-hint">
+          <div class="card-header"><span class="card-title">&#128465; Data Cleanup</span></div>
+          <div class="card-body">
+            <div style="margin-bottom:16px">
+              <label class="form-label">Delete From</label>
+              <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Delete all fact rows at or after a given timestamp.</p>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <span class="dtp-label">
+                  <input type="text" id="etlCmdDeleteFrom" placeholder="YYYY-MM-DD HH:MM" style="max-width:260px">
+                </span>
+                <button class="btn btn-danger btn-sm" id="etlCmdDeleteBtn">Delete</button>
+                <span class="cmd-result" id="result-delete-from"></span>
+              </div>
+            </div>
+            {% include "sources/_cmd_action.html" with title="Vacuum Analyze" desc="Run VACUUM ANALYZE on the fact table to update statistics." btn_id="etlCmdVacuumBtn" btn_label="Run" result_id="result-vacuum" last=1 %}
+          </div>
+        </div>
+
+        <!-- Card 3: Metadata -->
+        <div class="card card-warn-hint">
+          <div class="card-header"><span class="card-title">&#128295; Metadata</span></div>
+          <div class="card-body">
+            {% include "sources/_cmd_action.html" with title="Set High Watermark" desc="Insert an etl_run row with status=ok and last_end_time set to the max timestamp in the fact table." btn_id="etlCmdHwmBtn" btn_label="Set" result_id="result-set-hwm" btn_class="btn-primary" %}
+            {% include "sources/_cmd_action.html" with title="Clear ETL History" desc="Delete all ETL run history for this datasource." btn_id="etlCmdClearHistBtn" btn_label="Clear" result_id="result-clear-history" btn_class="btn-danger" last=1 %}
+          </div>
+        </div>
+
+        <!-- Card: Query Cache -->
+        <div class="card card-danger-hint">
+          <div class="card-header"><span class="card-title">&#128465; Query Cache</span></div>
+          <div class="card-body">
+            <p style="margin:0 0 12px;color:var(--muted);font-size:13px">Delete cached plot rows from <code>starcubes_meta.query_cache</code> for this datasource. Leave both filters blank to drop every cached plot; pick a group_by and/or measure to delete only that breakdown.</p>
+            <div class="form-row">
+              <div>
+                <label class="form-label">group_by</label>
+                <select class="form-control" id="cacheClearGroupBy">
+                  <option value="">(all)</option>
+                  {% for fc in fact_cols %}
+                    {% if fc.role == 'dimension' or fc.role == 'auto-dimension' %}
+                      <option value="{{ fc.name }}">{{ fc.name }}</option>
+                    {% endif %}
+                  {% endfor %}
+                  {% for gs in group_set_tokens %}
+                    <option value="{{ gs.token }}">{{ gs.label }}</option>
+                  {% endfor %}
+                </select>
+                <div class="form-hint">Matches the <code>group_by</code> URL param the chart sent</div>
+              </div>
+              <div>
+                <label class="form-label">measure</label>
+                <input class="form-control" type="text" id="cacheClearMeasure" placeholder="count(*)">
+                <div class="form-hint">Default <code>count(*)</code>; only count(*) is cacheable today</div>
+              </div>
+            </div>
+            <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+              <button class="btn btn-danger btn-sm" id="cacheClearBtn">Delete cache rows</button>
+              <span class="cmd-result" id="result-cache-clear"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="etl-subpanel" id="etlsub-schema">
+        <!-- Card 4: Schema -->
+        <div class="card">
+          <div class="card-header"><span class="card-title">&#128202; Schema</span></div>
+          <div class="card-body">
+            {% include "sources/_cmd_action.html" with title="Create Schema" desc="Create the fact table, dimension tables, and initial range partitions sized by the configured partition period. Must be run before ETL. Inline dimensions are populated automatically." btn_id="etlCmdCreateFactBtn" btn_label="Create Schema" result_id="result-create-fact" %}
+            <div style="margin-bottom:16px">
+              <label class="form-label">Sync Schema</label>
+              <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Reconcile fact table columns, types, and dim tables with the metadata config. Adds missing columns/dim tables, alters safe type changes, drops orphans on confirmation.</p>
+              <div style="display:flex;gap:8px;align-items:center">
+                <button class="btn btn-secondary btn-sm" id="etlCmdSyncSchemaBtn">Check</button>
+                <span class="cmd-result" id="result-sync-schema"></span>
+              </div>
+              <div id="syncSchemaDiff" style="display:none;margin-top:10px;font-size:13px"></div>
+            </div>
+            <div style="margin-bottom:16px">
+              <label class="form-label">Create Partitions</label>
+              <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Add new range partitions to the fact table (sized by the configured partition period).</p>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <input class="form-control" type="number" id="etlCmdPartN" value="1" min="1" style="width:80px">
+                <button class="btn btn-secondary btn-sm" id="etlCmdCreatePartsBtn">Create</button>
+                <span class="cmd-result" id="result-create-parts"></span>
+              </div>
+            </div>
+            {% include "sources/_cmd_action.html" with title="Import Dimensions" desc="Populate dimension tables from source DB or inline values." btn_id="etlCmdImportDimsBtn" btn_label="Import" result_id="result-import-dims" %}
+            {% include "sources/_cmd_action.html" with title="Refresh Counts" desc="Recount dimension rows per value after ETL." btn_id="etlCmdRefreshCountsBtn" btn_label="Refresh" result_id="result-refresh-counts" last=1 %}
+          </div>
+        </div>
+    </div>
+
+    <!-- Audit tab -->
+    <!-- Source-vs-fact reconciliation. The ETL's overlap re-fetch
+         (datasource.late_arrival_overlap_s) absorbs a bounded amount of
+         out-of-order arrival; this finds what exceeded it, and is how the
+         overlap value gets measured in the first place. -->
+    <div class="etl-subpanel" id="etlsub-audit">
+      <div class="card">
+        <div class="card-header"><span class="card-title">&#128269; Gap Audit</span></div>
+        <div class="card-body">
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            <strong>Run Audit</strong> counts rows on both sides per time bucket —
+            cheap, and unbounded in window size, so it is the sweep that shows
+            <em>where</em> to look. The source is counted on
+            <span class="text-mono">{{ ds.watermark_column }}</span>, the fact table on
+            <span class="text-mono">{{ ds.watermark_fact_expr|default:ds.partition_column }}</span>.
+          </p>
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            <strong>Compare IDs</strong> pulls both primary-key sets and diffs
+            them, naming the exact rows. Use it on a bucket the count flagged —
+            or on one it did not, because counting has a blind spot: a window
+            that lost 100 rows and had 100 deleted upstream nets to zero and
+            reads as clean. It also finds duplicate PKs in fact, which counting
+            cannot see at all. Bounded by memory, so keep the window tight.
+          </p>
+          <div class="form-row">
+            <div>
+              <label class="form-label dtp-label">From
+                <input type="text" id="auditFrom" placeholder="YYYY-MM-DD HH:MM">
+              </label>
+            </div>
+            <div>
+              <label class="form-label dtp-label">To
+                <input type="text" id="auditTo" placeholder="YYYY-MM-DD HH:MM">
+              </label>
+            </div>
+            <div>
+              <label class="form-label">Buckets</label>
+              <input class="form-control" type="number" id="auditBuckets" min="1" max="200" value="24">
+              <div class="form-hint">Max 200</div>
+            </div>
+          </div>
+          <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary" id="auditRunBtn">Run Audit</button>
+            <button class="btn btn-secondary" id="auditIdsBtn">Compare IDs</button>
+            <button class="btn btn-secondary" id="auditBackfillAllBtn" style="display:none">Backfill all gaps</button>
+            <span class="cmd-result" id="result-audit"></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" id="auditResultCard" style="display:none">
+        <div class="card-header">
+          <span class="card-title">Buckets</span>
+          <span class="text-muted" style="font-size:11px;margin-left:auto">times shown in local timezone</span>
+        </div>
+        <table class="data-table" id="auditTable">
+          <thead>
+            <tr>
+              <th>Bucket start</th>
+              <th style="text-align:right">Source rows</th>
+              <th style="text-align:right">Fact rows</th>
+              <th style="text-align:right">Missing</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="auditTbody"></tbody>
+        </table>
+      </div>
+
+      <div class="card" id="auditIdCard" style="display:none">
+        <div class="card-header">
+          <span class="card-title">ID comparison</span>
+          <span class="text-muted" style="font-size:11px;margin-left:auto" id="auditIdWindow"></span>
+        </div>
+        <div class="card-body">
+          <dl class="dl-grid" id="auditIdSummary"></dl>
+          <div id="auditIdLists"></div>
+          <div id="auditDetailBox"></div>
+          <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-secondary btn-sm" id="auditIdBackfillBtn" style="display:none">Backfill this window</button>
+            <span class="cmd-result" id="result-audit-ids"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="etl-subpanel" id="etlsub-history">
+      <div class="card">
+        <div class="card-header"><span class="card-title">ETL Run History</span><span class="text-muted" style="font-size:11px">times shown in local timezone</span></div>
+        <table class="data-table" id="histTable">
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Status</th>
+              <th>Started</th>
+              <th>Finished</th>
+              <th>Window Start</th>
+              <th>Window End</th>
+              <th>Rows</th>
+              <th>Runtime (ms)</th>
+              <th>txn/s</th>
+              <th title="src_now − max_wm: how far the newest row in the source lags the source's own clock. Growing without bound means the source stopped producing; a value parked near a whole-hour offset while rows keep arriving means the watermark column is not UTC.">Data lag</th>
+              <th>E / T / L</th>
+              <th>Error</th>
+              <th>Log</th>
+            </tr>
+          </thead>
+          <tbody id="histBody">
+            {% for r in runs %}
+            <tr>
+              <td>{{ r.id }}</td>
+              <td><span class="badge badge-{{ r.status }}">{{ r.status }}</span></td>
+              <td class="text-mono text-muted" data-ts="{{ r.started_at|date:'c' }}">{{ r.started_at|default:'—' }}</td>
+              <td class="text-mono text-muted" data-ts="{{ r.finished_at|date:'c' }}">{{ r.finished_at|default:'—' }}</td>
+              <td class="text-mono text-muted" data-ts="{{ r.first_end_time|date:'c' }}">{{ r.first_end_time|default:'—' }}</td>
+              <td class="text-mono text-muted" data-ts="{{ r.last_end_time|date:'c' }}">{{ r.last_end_time|default:'—' }}</td>
+              <td>{{ r.rows|default:'—' }}</td>
+              <td>{{ r.runtime_ms|default:'—' }}</td>
+              <td class="text-mono" data-rate="{{ r.rows_per_s|default:'' }}">—</td>
+              <td class="text-mono" data-lag="{{ r.data_lag_s|default_if_none:'' }}">—</td>
+              <td class="text-mono" data-etl="{{ r.extract_rows_per_s|default:'' }}" data-trl="{{ r.transform_rows_per_s|default:'' }}" data-lrl="{{ r.load_rows_per_s|default:'' }}"
+                  title="E: busy {{ r.stats.extract.busy_s|default:'?' }}s wait {{ r.stats.extract.wait_s|default:'?' }}s | T: busy {{ r.stats.transform.busy_s|default:'?' }}s wait {{ r.stats.transform.wait_s|default:'?' }}s | L: busy {{ r.stats.load.busy_s|default:'?' }}s wait {{ r.stats.load.wait_s|default:'?' }}s">—</td>
+              <td class="text-muted" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ r.error|default:'' }}</td>
+              <td>
+                {% if r.log_path %}<button type="button" class="btn btn-secondary btn-sm" onclick="openEtlLogFile('{{ r.log_path|escapejs }}')">Log</button>{% else %}—{% endif %}
+                {% if r.log_tail %}<details style="margin-top:4px"><summary style="cursor:pointer;font-size:11px;color:var(--muted)">tail</summary><pre class="text-mono" style="max-width:320px;max-height:160px;overflow:auto;font-size:10px;white-space:pre-wrap;word-break:break-all">{{ r.log_tail }}</pre></details>{% endif %}
+              </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="12" class="empty-state">No ETL runs yet</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ETL Log tab: tails the per-run log file the spawner points a
+         detached ETL process's stdout/stderr at (sources/etl_spawn.py). -->
+    <div class="etl-subpanel" id="etlsub-log">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">ETL Log</span>
+          <span style="display:flex;gap:8px;align-items:center;margin-left:auto">
+            <select id="etlLogFile" style="max-width:420px"></select>
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer">
+              <input type="checkbox" id="etlLogFollow" checked> Follow
             </label>
-            <div class="form-hint">Optional HWM override</div>
-          </div>
-          <div>
-            <label class="form-label dtp-label">End
-              <input type="text" id="etlCmdEnd" placeholder="YYYY-MM-DD HH:MM">
-            </label>
-            <div class="form-hint">Optional end override</div>
-          </div>
-          <div>
-            <label class="form-label">Limit</label>
-            <input class="form-control" type="number" id="etlCmdLimit" min="1" placeholder="e.g. 100000">
-            <div class="form-hint">Optional max rows</div>
-          </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="etlLogRefresh">Refresh</button>
+          </span>
         </div>
-        <div style="margin-top:12px">
-          <button class="btn btn-primary" id="etlCmdRun">Run ETL</button>
-          <button class="btn btn-danger" id="etlKillBtn" style="display:none">Kill</button>
-          <button class="btn btn-danger btn-sm" id="etlCmdClearHistBtn2">Clear ETL History</button>
-          <span class="cmd-result" id="result-etl-run"></span>
-        </div>
+        <pre id="etlLogPane" class="text-mono" style="margin:0;padding:12px;max-height:70vh;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all">(select a log file)</pre>
       </div>
     </div>
-
-    <!-- Card: ETL Forever -->
-    <div class="card card-accent" id="foreverCard">
-      <div class="card-header"><span class="card-title">&#128260; ETL Forever</span></div>
-      <div class="card-body">
-        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">Run ETL continuously at a fixed interval. Each iteration creates a normal ETL run row.</p>
-        <div class="form-row">
-          <div>
-            <label class="form-label">Interval (seconds)</label>
-            <input class="form-control" type="number" id="foreverInterval" value="60" min="1" style="max-width:120px">
-            <div class="form-hint">Seconds between iterations</div>
-          </div>
-        </div>
-        <div id="foreverStatus" style="margin-top:8px;font-size:13px;display:none"></div>
-        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-          <button class="btn btn-primary" id="foreverStartBtn">Start Forever</button>
-          <button class="btn btn-danger" id="foreverStopBtn" style="display:none">Stop Forever</button>
-          <span class="cmd-result" id="result-forever"></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Card: Preflight -->
-    <div class="card">
-      <div class="card-header"><span class="card-title">&#128269; Preflight</span></div>
-      <div class="card-body">
-        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">The checks every ETL run makes before it loads anything: schema objects, metadata version, index coverage, the source projection, and the watermark against the newest fact row. This is a dry run &mdash; it reports what a load would repair, and changes nothing.</p>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn btn-primary btn-sm" id="preflightBtn">Run checks</button>
-          <span class="cmd-result" id="result-preflight"></span>
-        </div>
-        <div id="preflightOut" style="margin-top:12px"></div>
-      </div>
-    </div>
-
-    <!-- Card: Housekeeping -->
-    <div class="card">
-      <div class="card-header"><span class="card-title">&#129529; Housekeeping</span></div>
-      <div class="card-body">
-        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">The periodic maintenance the forever loop runs every <code>housekeeping_interval_s</code>: targeted <code>ANALYZE</code> of the partitions being written, BRIN range summarisation, dimension fill levels and partition sizes. Safe alongside a running load. This runs it now &mdash; unlike Preflight it is not a dry run.</p>
-        <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn btn-primary btn-sm" id="hkBtn">Run now</button>
-          <span class="cmd-result" id="result-housekeeping"></span>
-        </div>
-        <div id="hkOut" style="margin-top:12px"></div>
-      </div>
-    </div>
-
-    <!-- Card 2: Data Cleanup -->
-    <div class="card card-danger-hint">
-      <div class="card-header"><span class="card-title">&#128465; Data Cleanup</span></div>
-      <div class="card-body">
-        <div style="margin-bottom:16px">
-          <label class="form-label">Delete From</label>
-          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Delete all fact rows at or after a given timestamp.</p>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <span class="dtp-label">
-              <input type="text" id="etlCmdDeleteFrom" placeholder="YYYY-MM-DD HH:MM" style="max-width:260px">
-            </span>
-            <button class="btn btn-danger btn-sm" id="etlCmdDeleteBtn">Delete</button>
-            <span class="cmd-result" id="result-delete-from"></span>
-          </div>
-        </div>
-        {% include "sources/_cmd_action.html" with title="Vacuum Analyze" desc="Run VACUUM ANALYZE on the fact table to update statistics." btn_id="etlCmdVacuumBtn" btn_label="Run" result_id="result-vacuum" last=1 %}
-      </div>
-    </div>
-
-    <!-- Card 3: Metadata -->
-    <div class="card card-warn-hint">
-      <div class="card-header"><span class="card-title">&#128295; Metadata</span></div>
-      <div class="card-body">
-        {% include "sources/_cmd_action.html" with title="Set High Watermark" desc="Insert an etl_run row with status=ok and last_end_time set to the max timestamp in the fact table." btn_id="etlCmdHwmBtn" btn_label="Set" result_id="result-set-hwm" btn_class="btn-primary" %}
-        {% include "sources/_cmd_action.html" with title="Clear ETL History" desc="Delete all ETL run history for this datasource." btn_id="etlCmdClearHistBtn" btn_label="Clear" result_id="result-clear-history" btn_class="btn-danger" last=1 %}
-      </div>
-    </div>
-
-    <!-- Card: Query Cache -->
-    <div class="card card-danger-hint">
-      <div class="card-header"><span class="card-title">&#128465; Query Cache</span></div>
-      <div class="card-body">
-        <p style="margin:0 0 12px;color:var(--muted);font-size:13px">Delete cached plot rows from <code>starcubes_meta.query_cache</code> for this datasource. Leave both filters blank to drop every cached plot; pick a group_by and/or measure to delete only that breakdown.</p>
-        <div class="form-row">
-          <div>
-            <label class="form-label">group_by</label>
-            <select class="form-control" id="cacheClearGroupBy">
-              <option value="">(all)</option>
-              {% for fc in fact_cols %}
-                {% if fc.role == 'dimension' or fc.role == 'auto-dimension' %}
-                  <option value="{{ fc.name }}">{{ fc.name }}</option>
-                {% endif %}
-              {% endfor %}
-              {% for gs in group_set_tokens %}
-                <option value="{{ gs.token }}">{{ gs.label }}</option>
-              {% endfor %}
-            </select>
-            <div class="form-hint">Matches the <code>group_by</code> URL param the chart sent</div>
-          </div>
-          <div>
-            <label class="form-label">measure</label>
-            <input class="form-control" type="text" id="cacheClearMeasure" placeholder="count(*)">
-            <div class="form-hint">Default <code>count(*)</code>; only count(*) is cacheable today</div>
-          </div>
-        </div>
-        <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
-          <button class="btn btn-danger btn-sm" id="cacheClearBtn">Delete cache rows</button>
-          <span class="cmd-result" id="result-cache-clear"></span>
-        </div>
-      </div>
-    </div>
-
-    <!-- Card 4: Schema -->
-    <div class="card">
-      <div class="card-header"><span class="card-title">&#128202; Schema</span></div>
-      <div class="card-body">
-        {% include "sources/_cmd_action.html" with title="Create Schema" desc="Create the fact table, dimension tables, and initial range partitions sized by the configured partition period. Must be run before ETL. Inline dimensions are populated automatically." btn_id="etlCmdCreateFactBtn" btn_label="Create Schema" result_id="result-create-fact" %}
-        <div style="margin-bottom:16px">
-          <label class="form-label">Sync Schema</label>
-          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Reconcile fact table columns, types, and dim tables with the metadata config. Adds missing columns/dim tables, alters safe type changes, drops orphans on confirmation.</p>
-          <div style="display:flex;gap:8px;align-items:center">
-            <button class="btn btn-secondary btn-sm" id="etlCmdSyncSchemaBtn">Check</button>
-            <span class="cmd-result" id="result-sync-schema"></span>
-          </div>
-          <div id="syncSchemaDiff" style="display:none;margin-top:10px;font-size:13px"></div>
-        </div>
-        <div style="margin-bottom:16px">
-          <label class="form-label">Create Partitions</label>
-          <p style="margin:0 0 6px;color:var(--muted);font-size:12px">Add new range partitions to the fact table (sized by the configured partition period).</p>
-          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <input class="form-control" type="number" id="etlCmdPartN" value="1" min="1" style="width:80px">
-            <button class="btn btn-secondary btn-sm" id="etlCmdCreatePartsBtn">Create</button>
-            <span class="cmd-result" id="result-create-parts"></span>
-          </div>
-        </div>
-        {% include "sources/_cmd_action.html" with title="Import Dimensions" desc="Populate dimension tables from source DB or inline values." btn_id="etlCmdImportDimsBtn" btn_label="Import" result_id="result-import-dims" %}
-        {% include "sources/_cmd_action.html" with title="Refresh Counts" desc="Recount dimension rows per value after ETL." btn_id="etlCmdRefreshCountsBtn" btn_label="Refresh" result_id="result-refresh-counts" last=1 %}
-      </div>
-    </div>
-
-  </div>
-</div>
-
-<!-- Audit tab -->
-<!-- Source-vs-fact reconciliation. The ETL's overlap re-fetch
-     (datasource.late_arrival_overlap_s) absorbs a bounded amount of
-     out-of-order arrival; this finds what exceeded it, and is how the
-     overlap value gets measured in the first place. -->
-<div class="tab-panel" id="tab-audit">
-  <div class="card">
-    <div class="card-header"><span class="card-title">&#128269; Gap Audit</span></div>
-    <div class="card-body">
-      <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
-        <strong>Run Audit</strong> counts rows on both sides per time bucket —
-        cheap, and unbounded in window size, so it is the sweep that shows
-        <em>where</em> to look. The source is counted on
-        <span class="text-mono">{{ ds.watermark_column }}</span>, the fact table on
-        <span class="text-mono">{{ ds.watermark_fact_expr|default:ds.partition_column }}</span>.
-      </p>
-      <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
-        <strong>Compare IDs</strong> pulls both primary-key sets and diffs
-        them, naming the exact rows. Use it on a bucket the count flagged —
-        or on one it did not, because counting has a blind spot: a window
-        that lost 100 rows and had 100 deleted upstream nets to zero and
-        reads as clean. It also finds duplicate PKs in fact, which counting
-        cannot see at all. Bounded by memory, so keep the window tight.
-      </p>
-      <div class="form-row">
-        <div>
-          <label class="form-label dtp-label">From
-            <input type="text" id="auditFrom" placeholder="YYYY-MM-DD HH:MM">
-          </label>
-        </div>
-        <div>
-          <label class="form-label dtp-label">To
-            <input type="text" id="auditTo" placeholder="YYYY-MM-DD HH:MM">
-          </label>
-        </div>
-        <div>
-          <label class="form-label">Buckets</label>
-          <input class="form-control" type="number" id="auditBuckets" min="1" max="200" value="24">
-          <div class="form-hint">Max 200</div>
-        </div>
-      </div>
-      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <button class="btn btn-primary" id="auditRunBtn">Run Audit</button>
-        <button class="btn btn-secondary" id="auditIdsBtn">Compare IDs</button>
-        <button class="btn btn-secondary" id="auditBackfillAllBtn" style="display:none">Backfill all gaps</button>
-        <span class="cmd-result" id="result-audit"></span>
-      </div>
-    </div>
-  </div>
-
-  <div class="card" id="auditResultCard" style="display:none">
-    <div class="card-header">
-      <span class="card-title">Buckets</span>
-      <span class="text-muted" style="font-size:11px;margin-left:auto">times shown in local timezone</span>
-    </div>
-    <table class="data-table" id="auditTable">
-      <thead>
-        <tr>
-          <th>Bucket start</th>
-          <th style="text-align:right">Source rows</th>
-          <th style="text-align:right">Fact rows</th>
-          <th style="text-align:right">Missing</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody id="auditTbody"></tbody>
-    </table>
-  </div>
-
-  <div class="card" id="auditIdCard" style="display:none">
-    <div class="card-header">
-      <span class="card-title">ID comparison</span>
-      <span class="text-muted" style="font-size:11px;margin-left:auto" id="auditIdWindow"></span>
-    </div>
-    <div class="card-body">
-      <dl class="dl-grid" id="auditIdSummary"></dl>
-      <div id="auditIdLists"></div>
-      <div id="auditDetailBox"></div>
-      <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <button class="btn btn-secondary btn-sm" id="auditIdBackfillBtn" style="display:none">Backfill this window</button>
-        <span class="cmd-result" id="result-audit-ids"></span>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- ETL History tab -->
-<div class="tab-panel" id="tab-history">
-  <div class="card">
-    <div class="card-header"><span class="card-title">ETL Run History</span><span class="text-muted" style="font-size:11px">times shown in local timezone</span></div>
-    <table class="data-table" id="histTable">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Status</th>
-          <th>Started</th>
-          <th>Finished</th>
-          <th>Window Start</th>
-          <th>Window End</th>
-          <th>Rows</th>
-          <th>Runtime (ms)</th>
-          <th>txn/s</th>
-          <th title="src_now − max_wm: how far the newest row in the source lags the source's own clock. Growing without bound means the source stopped producing; a value parked near a whole-hour offset while rows keep arriving means the watermark column is not UTC.">Data lag</th>
-          <th>E / T / L</th>
-          <th>Error</th>
-          <th>Log</th>
-        </tr>
-      </thead>
-      <tbody id="histBody">
-        {% for r in runs %}
-        <tr>
-          <td>{{ r.id }}</td>
-          <td><span class="badge badge-{{ r.status }}">{{ r.status }}</span></td>
-          <td class="text-mono text-muted" data-ts="{{ r.started_at|date:'c' }}">{{ r.started_at|default:'—' }}</td>
-          <td class="text-mono text-muted" data-ts="{{ r.finished_at|date:'c' }}">{{ r.finished_at|default:'—' }}</td>
-          <td class="text-mono text-muted" data-ts="{{ r.first_end_time|date:'c' }}">{{ r.first_end_time|default:'—' }}</td>
-          <td class="text-mono text-muted" data-ts="{{ r.last_end_time|date:'c' }}">{{ r.last_end_time|default:'—' }}</td>
-          <td>{{ r.rows|default:'—' }}</td>
-          <td>{{ r.runtime_ms|default:'—' }}</td>
-          <td class="text-mono" data-rate="{{ r.rows_per_s|default:'' }}">—</td>
-          <td class="text-mono" data-lag="{{ r.data_lag_s|default_if_none:'' }}">—</td>
-          <td class="text-mono" data-etl="{{ r.extract_rows_per_s|default:'' }}" data-trl="{{ r.transform_rows_per_s|default:'' }}" data-lrl="{{ r.load_rows_per_s|default:'' }}"
-              title="E: busy {{ r.stats.extract.busy_s|default:'?' }}s wait {{ r.stats.extract.wait_s|default:'?' }}s | T: busy {{ r.stats.transform.busy_s|default:'?' }}s wait {{ r.stats.transform.wait_s|default:'?' }}s | L: busy {{ r.stats.load.busy_s|default:'?' }}s wait {{ r.stats.load.wait_s|default:'?' }}s">—</td>
-          <td class="text-muted" style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis">{{ r.error|default:'' }}</td>
-          <td>
-            {% if r.log_path %}<button type="button" class="btn btn-secondary btn-sm" onclick="openEtlLogFile('{{ r.log_path|escapejs }}')">Log</button>{% else %}—{% endif %}
-            {% if r.log_tail %}<details style="margin-top:4px"><summary style="cursor:pointer;font-size:11px;color:var(--muted)">tail</summary><pre class="text-mono" style="max-width:320px;max-height:160px;overflow:auto;font-size:10px;white-space:pre-wrap;word-break:break-all">{{ r.log_tail }}</pre></details>{% endif %}
-          </td>
-        </tr>
-        {% empty %}
-        <tr><td colspan="12" class="empty-state">No ETL runs yet</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-
-<!-- ETL Log tab: tails the per-run log file the spawner points a
-     detached ETL process's stdout/stderr at (sources/etl_spawn.py). -->
-<div class="tab-panel" id="tab-etl-log">
-  <div class="card">
-    <div class="card-header">
-      <span class="card-title">ETL Log</span>
-      <span style="display:flex;gap:8px;align-items:center;margin-left:auto">
-        <select id="etlLogFile" style="max-width:420px"></select>
-        <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer">
-          <input type="checkbox" id="etlLogFollow" checked> Follow
-        </label>
-        <button type="button" class="btn btn-secondary btn-sm" id="etlLogRefresh">Refresh</button>
-      </span>
-    </div>
-    <pre id="etlLogPane" class="text-mono" style="margin:0;padding:12px;max-height:70vh;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all">(select a log file)</pre>
   </div>
 </div>
 
@@ -904,12 +921,37 @@ document.querySelectorAll('#tabNav .tab-btn').forEach(function(btn) {
     document.querySelectorAll('.tab-panel').forEach(function(p){ p.classList.remove('active'); });
     btn.classList.add('active');
     document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
-    if (btn.dataset.tab === 'etl-log') {
+    // The log tail is the one panel with an activate/teardown. It now sits a
+    // tier down, so entering the ETL tab only resumes it when Log is the
+    // sub-tab that is showing; every other tab stops the poll.
+    if (btn.dataset.tab === 'etl' && activeEtlSub === 'log') {
       etlLogActivate();
     } else {
       etlLogStopPoll();
     }
   });
+});
+
+// --- ETL sub-tabs ---
+// Same shape as the Dim Data sub-tabs, but the buttons are in the template
+// rather than built from JSON, so this only has to toggle classes. The
+// panels stay in the DOM at all times: every card handler below binds by id
+// on page load, as do the DateTimePicker instances.
+var activeEtlSub = 'run';
+
+function activateEtlSub(name) {
+  document.querySelectorAll('#etlSubTabs .tab-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.sub === name);
+  });
+  document.querySelectorAll('.etl-subpanel').forEach(function(p) {
+    p.classList.toggle('active', p.id === 'etlsub-' + name);
+  });
+  activeEtlSub = name;
+  if (name === 'log') etlLogActivate(); else etlLogStopPoll();
+}
+
+document.querySelectorAll('#etlSubTabs .tab-btn').forEach(function(btn) {
+  btn.addEventListener('click', function() { activateEtlSub(btn.dataset.sub); });
 });
 
 function formatDuration(s) {
@@ -1150,8 +1192,12 @@ function etlLogActivate() {
 function openEtlLogFile(path) {
   if (!path) return;
   etlLogPendingSelect = path.split('/').pop();
-  var btn = document.querySelector('.tab-btn[data-tab="etl-log"]');
+  // Two tiers to switch now: the ETL tab, then its Log sub-tab. The main
+  // tab's own handler reads activeEtlSub, so set the sub-tab afterwards —
+  // activateEtlSub is what actually starts the tail.
+  var btn = document.querySelector('#tabNav .tab-btn[data-tab="etl"]');
   if (btn) btn.click();
+  activateEtlSub('log');
 }
 
 document.getElementById('etlLogFile').addEventListener('change', function(){ etlLogFetch(true); });
@@ -1324,7 +1370,7 @@ document.getElementById('etlCmdRun').addEventListener('click', function() {
       showCmdResult(resultEl, false, '✗ ' + e);
     }).finally(function() {
       btn.disabled = false;
-      btn.textContent = 'Run ETL';
+      btn.textContent = 'Run once';
     });
   });
 });
@@ -1770,7 +1816,7 @@ function loadDimDataSingle(dimTable) {
 // detail.html. It wires itself to the panel markup at load time; this page
 // only kicks off the first load lazily, on the first click of the tab.
 
-// --- ETL Commands tab ---
+// --- ETL tab: command cards ---
 function showCmdResult(el, ok, msg) {
   el.className = 'cmd-result ' + (ok ? 'ok' : 'err');
   el.textContent = msg;

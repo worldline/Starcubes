@@ -381,14 +381,17 @@ tr.editing .row-edit { display: flex; }
 }
 .subtabs-bar .tab-btn.active:hover { background: var(--tab-active-bg); }
 
-/* In-content dimension sub-tabs (Dim Data tab). Same colorized active
-   treatment as the .subtabs-bar tier so all tab rows read as one system. */
-/* Cancel .subtabs-bar's 20px content gap: this panel's first element is
-   itself a tab row, so the dim tabs should hug the bar with the same 4px
+/* In-content sub-tabs, one tier below .subtabs-bar: the per-dimension row
+   on the Dim Data tab and the Run/Maintenance/... row on the ETL tab. Same
+   colorized active treatment as the .subtabs-bar tier so all tab rows read
+   as one system — both rows share these rules rather than each carrying
+   its own copy. */
+/* Cancel .subtabs-bar's 20px content gap: these panels' first element is
+   itself a tab row, so the sub-tabs should hug the bar with the same 4px
    button headroom as the Basics tab sits under the nav, not 20px lower. */
-#dimDataTabs { margin-top: -20px; }
-#dimSubTabs.tabs { margin: 0; border-bottom: 1px solid var(--border); }
-#dimSubTabs .tab-btn {
+#dimDataTabs, #etlSubWrap { margin-top: -20px; }
+#dimSubTabs.tabs, #etlSubTabs.tabs { margin: 0; border-bottom: 1px solid var(--border); }
+#dimSubTabs .tab-btn, #etlSubTabs .tab-btn {
   display: flex;
   align-items: center;
   height: 34px;
@@ -396,13 +399,20 @@ tr.editing .row-edit { display: flex; }
   border-radius: 5px 5px 0 0;
   transition: background 0.12s, color 0.12s;
 }
-#dimSubTabs .tab-btn:hover { color: var(--fg); background: var(--tab-active-hover-bg); }
-#dimSubTabs .tab-btn.active {
+#dimSubTabs .tab-btn:hover, #etlSubTabs .tab-btn:hover { color: var(--fg); background: var(--tab-active-hover-bg); }
+#dimSubTabs .tab-btn.active, #etlSubTabs .tab-btn.active {
   color: var(--tab-active-fg);
   background: var(--tab-active-bg);
   border-bottom-color: var(--btn-bg);
 }
-#dimSubTabs .tab-btn.active:hover { background: var(--tab-active-bg); }
+#dimSubTabs .tab-btn.active:hover, #etlSubTabs .tab-btn.active:hover { background: var(--tab-active-bg); }
+/* The ETL tab's sub-panels. Deliberately not .tab-panel: the top-level tab
+   switcher deactivates every .tab-panel in the document, nested or not. */
+.etl-subpanel { display: none; }
+.etl-subpanel.active { display: block; }
+/* Both sub-tab rows sit flush against the bar above them, so the content
+   below carries the gap the negative margin cancelled. */
+#dimDataPane, .etl-subpanel { padding-top: 16px; }
 
 /* Action result panel */
 .action-result {
@@ -591,7 +601,7 @@ tr.editing .row-edit { display: flex; }
 [data-theme="dark"] .group-dim-item:hover { background: #1a1d27; }
 [data-theme="dark"] .group-dim-item.active { background: #252836; }
 
-/* ETL Commands tab */
+/* ETL tab: command-card grid */
 .etl-cmd-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

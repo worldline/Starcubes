@@ -1,10 +1,10 @@
 # Audit modes — deep reference
 
 The three audit modes in `core/audit.py` and the rationale for why each
-one exists. Read before changing `core/audit.py` or the Audit tab in
-`sources/templates/sources/detail.html`.
+one exists. Read before changing `core/audit.py` or the Audit sub-tab of
+the ETL tab in `sources/templates/sources/manage.html`.
 
-**Highest-value section for the Audit tab** — read before changing
+**Highest-value section for the Audit sub-tab** — read before changing
 audit semantics. The ~46 B/id memory measurement in particular is the
 reason `MAX_AUDIT_IDS` is what it is.
 
@@ -97,7 +97,7 @@ reason `MAX_AUDIT_IDS` is what it is.
 ## Counting strategy
 
 - **`core/audit.py` counts the two sides differently on purpose.** Any
-  *bounded* overlap can be exceeded, so the Audit tab compares source and
+  *bounded* overlap can be exceeded, so the Audit sub-tab compares source and
   fact row counts per time bucket — and is also how an operator measures
   what `late_arrival_overlap_s` should be in the first place. The fact side
   is one query bucketed server-side by integer division on the epoch; the
