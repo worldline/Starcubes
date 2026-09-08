@@ -12,6 +12,8 @@ committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
 [`docs/releases.md`](docs/releases.md).
 
+## [2.0.0-alpha.4] — 2026-09-08
+
 ### Added
 
 - **The preflight also compares the fact table against its own

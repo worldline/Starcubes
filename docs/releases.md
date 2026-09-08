@@ -170,7 +170,7 @@ A pre-release is a tag like any other; SemVer's ordering does the rest:
 2.0.0-alpha.1  <  2.0.0-beta.1  <  2.0.0-rc.1  <  2.0.0
 ```
 
-The current tag is **`v2.0.0-alpha.1`**: the 2.0.0 feature set is in place,
+The current tag is **`v2.0.0-alpha.4`**: the 2.0.0 feature set is in place,
 but the schema, the env vars and the profile format may still move before
 2.0.0 is final. Moving on is just another tag — `v2.0.0-alpha.2` for another
 alpha, `v2.0.0-beta.1` to promote it, `v2.0.0` to release. Nothing in the
