@@ -75,25 +75,15 @@ Three items below are cross-referenced from it.
   editable. Remaining gap: nothing repairs a datasource already holding a
   folded name — its metadata and disk still disagree until someone edits the
   field to the folded spelling.
-- **Partition retirement** — half-closed. `datasource.retention_floor` now
-  exists and is written by `drop_partition` / `truncate_partition` /
-  `truncate_last_partition`, `core/audit.py` clamps its windows to it, and
-  the gestures bump the cache epoch. What is still missing is the policy
-  side: a `retention_periods` column and a loop that applies it (that is U3b,
-  and it belongs in the housekeeping command). Note the floor's honest limit
-  — it only advances when the *oldest* partition goes, because a hole in the
-  middle cannot be expressed as a lower bound. Long alarm windows still know
-  nothing about the floor.
-
-  `import_fact` also ensures partitions forward of
-  the load window exist on every run (`core/schema.py:ensure_partitions_for`,
-  see [`docs/etl-engine.md`](etl-engine.md) "Importing ensures partitions
-  exist before the worker pool") — the manual `create_future_partitions`
-  CLI flag / GUI button is now redundant for the common case. Old partitions
-  are still not auto-dropped or archived; that stays manual
-  (`etl/drop-partition/`, `etl/truncate-partition/`). Retirement is not just a
-  drop loop — the audit, the plot cache and long alarm windows all assume fact
-  covers everything since the beginning of time; see U3b in
+- **Partition retirement** — closed. `datasource.retention_periods` drops
+  aged-out partitions from the housekeeping, at most a couple per run so a
+  mistyped value walks visibly instead of clearing the table in one pass.
+  What made it an M rather than an S was never the drop loop: four
+  subsystems assumed `fact` covered everything since the beginning of time
+  and had to learn about the floor — the audit, the server-side plot cache,
+  the chart's own in-page cache (which keys on the query string and had
+  never heard of the cache epoch), and alarms, where a truncated window
+  makes `count(*) <` report an outage retention itself caused. See
   [`etl-automation.md`](etl-automation.md).
 - **Authentication on JSON endpoints.** All `viz/` JSON endpoints
   (`plot_json`, `drill_json`, `txn_json`, `api_sources`, `api_source_meta`)

@@ -100,6 +100,17 @@ saw the value back under the threshold (`closed_at`). One record spans the
 first to the last breach — a long outage is one row, not one per load. An
 episode seen by a single load has span 0.
 
+**A window reaching below the retention floor is not evaluated at all.**
+Below the floor the partitions were disposed of on purpose, so the aggregate
+silently measures a shorter span than the rule asked for — and the error is
+not symmetric. `count(*) <` and `sum(col) <`, which is exactly what people
+write to detect an outage, would report an outage that retention itself
+caused; `>` and `>=` merely miss breaches. The evaluator returns `None`, the
+same "not answerable" this codebase uses for the pipeline conditions: no
+window counted, no episode opened, and a standing episode deliberately left
+open rather than closed on missing evidence. The `alarm_windows` preflight
+check names the affected rules so the silence is explained.
+
 **Trade-offs (accepted):**
 
 - A load that fails or is delayed takes its evaluation with it. The window

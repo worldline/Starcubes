@@ -14,6 +14,10 @@ runs through further pre-release tags — see
 
 ### Added
 
+- **The preflight also compares the fact table against its own
+  configuration.** A column the configuration expects but the table does not
+  have now refuses the run by name, instead of failing later inside the bulk
+  load with a column-count error.
 - **Every ETL run checks its assumptions before acting on them.** A new
   preflight runs at the start of each load: the fact and dimension tables
   exist (and are created, loudly, if not), `starcubes_meta` is as new as the
@@ -25,6 +29,26 @@ runs through further pre-release tags — see
   reported, never built — an unattended index build on a large fact table
   would block every load for hours. A renamed source column now refuses the
   run with the column named, instead of failing mid-extract.
+- **Old data can finally be thrown away.** A retention setting per
+  datasource keeps the last N months (or weeks, or days) and lets the
+  housekeeping drop the rest. Fact partitions have been unbounded since the
+  beginning — cheap to write, never reclaimed. Off by default and
+  irreversible, so it is limited on purpose: at most a couple of partitions
+  go per run, which turns a mistyped number into something that walks
+  visibly over hours instead of clearing the table in one pass. Everything
+  that assumed the data went back forever now knows better — the Audit tab,
+  both caches, the chart's advertised time range, and alarms, whose windows
+  stop being evaluated rather than quietly reporting an outage that
+  retention itself caused.
+- **A first load no longer blocks everything else for a day.** Setting an
+  initial window makes a catching-up datasource load in steps, so alarms are
+  evaluated and housekeeping runs in between, instead of one run of many
+  hours during which nothing else happens. Off by default.
+- **The dimension import can be throttled.** It runs on every load, which at
+  a one-minute interval means re-reading every lookup table sixty times an
+  hour to find values that arrive weekly. Off by default, because throttling
+  costs freshness: a brand-new dimension value shows as unknown until the
+  next refresh.
 - **Alarms can now watch the ETL itself, not just the data in it.** A second
   kind of alarm rule — set up in the Alarms tab, in its own table below the
   threshold rules — fires on the things that were previously only ever
@@ -95,6 +119,10 @@ runs through further pre-release tags — see
   are different columns, the reload is de-duplicated by primary key so the
   repair cannot introduce duplicates. All four also invalidate the plot
   cache, which they previously did only from the GUI.
+- **The chart could keep showing data that no longer exists.** Its in-page
+  cache had no way of knowing the server's data had changed underneath it,
+  so a backfill, a watermark correction or a retention drop stayed invisible
+  until the page was reloaded.
 - **Large numbers in alert subjects were unreadable.** A count of 8729883
   arrived as "8.72988e+06"; it now reads 8,729,883.
 - **The alarm phase no longer scales with the number of alarms.** The fact

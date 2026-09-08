@@ -658,6 +658,20 @@ same historic period.
   - Returns `false` when `fetchGeneration` has moved on, so `autoFetch`
     abandons the remaining tiers instead of fetching for a stale viewport.
 
+## The in-page data cache and the epoch
+
+`dataCache` is a 50 MB LRU keyed on the request query string. That key knows
+nothing about the *state* of the datasource, and a historical block is the
+most cacheable shape there is — final, not trailing — so anything that
+changes data the server already considered final would otherwise keep being
+painted from this cache for as long as the tab stays open. A retention drop
+is the sharp case; a backfill and a watermark rewind have the same shape.
+
+So every `plot_json` response carries `cache_epoch`, the counter the
+server-side cache already keys on, and `noteCacheEpoch` clears `dataCache`
+whenever the value moves. There is no other reset path: entries otherwise
+leave only by LRU eviction.
+
 ## Provisional blocks and the ETL high-water mark
 
 The server answers with two different facts about the same request:

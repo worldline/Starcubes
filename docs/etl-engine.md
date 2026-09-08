@@ -126,6 +126,31 @@ production incidents.
   holding the forever loop, and lands as a failed row with a reason in it
   instead of a process that merely looks alive.
 
+- **A catching-up load walks forward instead of leaping.**
+  `datasource.initial_window_s` caps the width of each window while the
+  datasource is behind. Without it, an empty fact table means the first
+  window is "everything the source has" — literally, with no lower bound in
+  the WHERE clause — and the forever loop does nothing else for its whole
+  duration. Off by default.
+
+  Two details that are easy to get wrong. The cap applies to every step of
+  the catch-up, not only the first run, or step two loads the entire
+  remainder. And it measures from the high watermark rather than from
+  `extract_from`: the late-arrival overlap re-reads already-loaded ground,
+  so capping from there would shrink each window by the overlap, and with a
+  cap smaller than the overlap the resulting `end_time` would fall below the
+  watermark and be pushed straight back to the tip by the monotonicity
+  clamp. Stepping the first load also needs a lower bound, so the engine
+  asks the source for `min(watermark_column)` — the one question it never
+  had to ask before.
+
+- **`import_dimensions` can be throttled.**
+  `datasource.dim_refresh_interval_s`, default 0 (every run, as before).
+  Unlike the housekeeping interval this default is not timidity: throttling
+  costs freshness, because a new value in a *regular* dimension maps to
+  `__unknown__` until the next refresh. Auto-dimensions are unaffected.
+  `--import-dims` and the GUI button always import and reset the clock.
+
 - **Every run records the data tip and the source's own clock.**
   `etl_run.max_wm` and `etl_run.src_now`, read together on the max-watermark
   query. `src_now` is read on *every* run now, not only when
