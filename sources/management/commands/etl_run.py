@@ -173,6 +173,14 @@ class Command(BaseCommand):
                                for d in source.dimensions)
             src_engine = source.source_engine() if needs_source else None
             import_dimensions(source, src_engine, source.dest_engine())
+            # Forced, so it bypasses dim_refresh_interval_s — but it still
+            # resets the clock, or the next load would re-import what was
+            # just imported.
+            with meta.begin() as conn:
+                conn.execute(text(
+                    "UPDATE starcubes_meta.datasource "
+                    "   SET dim_refreshed_at = now() WHERE id = :ds"
+                ), {"ds": source.id})
             self.stdout.write(f"{source.name}: dimensions imported/updated")
             return
 

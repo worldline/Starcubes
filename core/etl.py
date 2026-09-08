@@ -739,6 +739,46 @@ def _source_min_watermark(source: Source, source_engine) -> Optional[datetime]:
     return value.replace(microsecond=0)
 
 
+def _dim_refresh_due(source: Source, meta_engine) -> bool:
+    """Whether this run should import the dimensions.
+
+    `import_dimensions` runs on every `import_fact`. At a 60-second forever
+    interval that is a full `SELECT source_key, source_name, source_description`
+    per regular dimension, sixty times an hour, against the source database —
+    to discover changes that arrive maybe weekly.
+
+    `datasource.dim_refresh_interval_s` throttles it, and defaults to 0
+    (every run) because unlike the housekeeping interval this one **costs**
+    something visible: a new value in a *regular* dimension maps to
+    `__unknown__` until the next refresh, which is a wrong-looking series in
+    the chart for up to one interval. Auto-dimensions are unaffected — they
+    are resolved during the extract by `_resolve_auto_dim_chunk` and never
+    depended on the periodic import.
+
+    Read fresh from the metadata, like every other per-run setting: a forever
+    session holds one `Source` for its whole life.
+    """
+    with meta_engine.begin() as meta:
+        row = meta.execute(text(
+            "SELECT dim_refresh_interval_s AS iv, "
+            "       extract(epoch from (now() - dim_refreshed_at)) AS age "
+            "  FROM starcubes_meta.datasource WHERE id = :ds"
+        ), {"ds": source.id}).mappings().first()
+    if row is None:
+        return True
+    interval = int(row["iv"] or 0)
+    if interval <= 0:
+        return True
+    age = row["age"]
+    if age is None:          # never refreshed
+        return True
+    if age >= interval:
+        return True
+    logger.debug("%s: dimensions refreshed %.0fs ago, interval is %ds — "
+                 "skipping the import this run", source.name, age, interval)
+    return False
+
+
 def _fact_has_rows(source: Source, dest_engine) -> bool:
     """Cheapest possible "has anything been loaded yet".
 
@@ -1019,8 +1059,13 @@ def import_fact(source: Source, meta_engine, *,
         if blocked:
             raise RuntimeError(blocked)
 
-        if refresh_dimensions:
+        if refresh_dimensions and _dim_refresh_due(source, meta_engine):
             import_dimensions(source, source_engine, dest_engine, quiet=quiet)
+            with meta_engine.begin() as meta:
+                meta.execute(text(
+                    "UPDATE starcubes_meta.datasource "
+                    "   SET dim_refreshed_at = now() WHERE id = :ds"
+                ), {"ds": source.id})
         dim_frames, dim_unknowns = read_dimensions(source, dest_engine)
 
         dim_fact_to_table = source.dim_fact_to_table()

@@ -3420,6 +3420,13 @@ def import_dims(request, pk: int):
                 # Source DB unreachable but we have inline dims — proceed with those.
 
         import_dimensions(source, src_engine, source.dest_engine())
+        # Forced, so it bypasses dim_refresh_interval_s — but it still resets
+        # the clock, or the next load would repeat the work.
+        with _meta_engine().begin() as conn:
+            conn.execute(text(
+                "UPDATE starcubes_meta.datasource "
+                "   SET dim_refreshed_at = now() WHERE id = :ds"
+            ), {"ds": source.id})
 
         # Summarize dim table row counts
         dims = []
