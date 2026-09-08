@@ -29,17 +29,22 @@ Three concerns, from `docs/etl-automation.md`:
   "the disk filled up overnight" into something visible in advance, and what
   would let a retention policy be sized rather than guessed.
 
+* **U3b — retention.** `datasource.retention_periods` disposes of
+  partitions that have aged out. The only part of this module that destroys
+  anything, and therefore the only part that takes the datasource lock.
+
 Deliberately *not* here: `VACUUM`. Full `VACUUM ANALYZE fact` stays a manual
 action for after a large delete or backfill — the targeted ANALYZE plus BRIN
 summarisation below addresses the actual problem for a fraction of the I/O.
 
-**No advisory lock.** Everything in this module is safe alongside a running
-load and says so explicitly: ANALYZE takes SHARE UPDATE EXCLUSIVE, which does
-not conflict with COPY; `brin_summarize_new_values` takes a row-level lock;
-the rest is catalogue reads and `count(*)` over tables of at most 32767 rows.
-Taking the datasource lock here would refuse a hand-run housekeeping during
-forever mode for no reason. Retention (U3b) will be the first thing in here
-that genuinely touches partitions, and it will need the lock.
+**The lock is taken for retention and for nothing else.** ANALYZE takes
+SHARE UPDATE EXCLUSIVE, which does not conflict with COPY;
+`brin_summarize_new_values` takes a row-level lock; the rest is catalogue
+reads and `count(*)` over tables of at most 32767 rows. Locking those would
+refuse a hand-run housekeeping during forever mode for no reason. Dropping a
+partition is the one thing here that is not safe alongside a load, so
+`_run_retention` takes the datasource lock non-blocking and skips itself when
+a load holds it — the rest of the run continues either way.
 
 Django-free, like everything in `core/`.
 """
@@ -54,6 +59,7 @@ from typing import Optional
 
 from sqlalchemy import text
 
+from .cache import clear_cache
 from .source import Source
 
 logger = logging.getLogger(__name__)
@@ -63,6 +69,16 @@ logger = logging.getLogger(__name__)
 # max(index), which is what will actually collide.
 DIM_INDEX_CEILING = 32767
 _DIM_WARN_PCT = float(os.environ.get("STARCUBES_DIM_FULL_WARN_PCT", 80))
+
+# How many partitions retention may remove in one housekeeping run.
+#
+# Not a performance limit — a blast radius. Fact partitions are UNLOGGED and
+# nothing backs them up, so the difference between `retention_periods = 12`
+# and a mistyped `1` is the difference between a policy and an accident. With
+# a step limit the mistake walks forward a couple of partitions per interval,
+# visibly, through the log and through housekeeping_run.report, and somebody
+# can still stop it. Without one it is a single irreversible pass.
+_MAX_RETENTION_DROPS = int(os.environ.get("STARCUBES_MAX_RETENTION_DROPS", 2))
 
 
 def _analyze_targets(partitions: list[dict]) -> list[str]:
@@ -175,6 +191,98 @@ def _partition_sizes(source: Source, conn) -> list[dict]:
              "heap_bytes": int(r["heap_bytes"])} for r in rows]
 
 
+def _retention_cutoff(source: Source, keep_periods: int) -> datetime:
+    """The instant below which partitions may be disposed of.
+
+    `keep_periods` whole periods back from the start of the current one, so
+    "keep 12 months" means the twelve completed months plus the one being
+    written, never eleven-and-a-bit.
+    """
+    from .schema import _floor_to_period, _prev_period
+
+    period = source.partition_period
+    cur = _floor_to_period(datetime.now(), period)
+    for _ in range(keep_periods):
+        cur = _prev_period(cur, period)
+    return cur.astimezone()
+
+
+def _run_retention(source: Source, meta_engine, dest_engine,
+                   report: dict, *, quiet: bool = False) -> None:
+    """Drop partitions that have aged out of `datasource.retention_periods`.
+
+    The one part of the housekeeping that destroys data, and therefore the
+    one part that must not run alongside a load. It does **not** take the
+    datasource lock itself: `drop_partition` already does, per partition, and
+    `datasource_lock` opens its own connection each time — so a lock held
+    here would refuse the very drops it is protecting. The first version did
+    exactly that and skipped every run. Catching `DatasourceLocked` from the
+    drop is both simpler and the right granularity: whatever was already
+    disposed of stays disposed of, and the rest waits for the next interval.
+
+    Everything else is deliberately delegated to `drop_partition`, which
+    already refuses a partition that is not the oldest, raises
+    `retention_floor` only when it is, and bumps the cache epoch. Retention
+    adds one thing on top: it *clears* the plot cache rather than only
+    invalidating it, because the epoch bump makes old rows unreachable
+    without deleting them and a periodic policy would grow `query_cache`
+    without bound.
+    """
+    from .etl import drop_partition
+    from .preflight import DatasourceLocked
+    from .schema import _parse_partition_name, list_fact_partitions
+
+    with meta_engine.begin() as meta:
+        keep = int(meta.execute(text(
+            "SELECT retention_periods FROM starcubes_meta.datasource "
+            " WHERE id = :ds"), {"ds": source.id}).scalar() or 0)
+    if keep <= 0:
+        return
+
+    parts = list_fact_partitions(source, dest_engine)
+    cutoff = _retention_cutoff(source, keep)
+    period = source.partition_period
+    doomed = [p for p in parts
+              if _parse_partition_name(period, p).astimezone() < cutoff]
+
+    # Two guards that have nothing to do with the policy and everything to do
+    # with not destroying a datasource by arithmetic: never take more than
+    # half of what exists, and never take the partition the newest data is
+    # in. A `retention_periods` shorter than the data's own span would
+    # otherwise be indistinguishable from "drop the table".
+    if len(doomed) > len(parts) // 2:
+        doomed = doomed[:len(parts) // 2]
+    doomed = [p for p in doomed if p != parts[-1]][:_MAX_RETENTION_DROPS]
+    if not doomed:
+        return
+
+    dropped: list[str] = []
+    try:
+        for name in doomed:
+            logger.warning(
+                "%s: retention drops partition %s (keeping %d %s(s), "
+                "cutoff %s)", source.name, name, keep, period, cutoff)
+            drop_partition(source, dest_engine, name,
+                           meta_engine=meta_engine, quiet=quiet)
+            dropped.append(name)
+    except DatasourceLocked:
+        report["warnings"].append(
+            {"code": "retention_skipped",
+             "message": "a load holds the datasource — retention will try "
+                        "again on the next housekeeping run"})
+    finally:
+        if dropped:
+            # The epoch bump inside drop_partition already makes the stale
+            # keys unreachable; this is what stops them accumulating.
+            clear_cache(meta_engine, source.id)
+
+    report["retention"] = {
+        "keep_periods": keep, "cutoff": cutoff.isoformat(),
+        "dropped": dropped, "eligible": len(doomed),
+        "step_limit": _MAX_RETENTION_DROPS,
+    }
+
+
 def run_housekeeping(source: Source, meta_engine, dest_engine, *,
                      analyze: bool = True, trigger: str = "manual",
                      quiet: bool = False) -> dict:
@@ -188,6 +296,15 @@ def run_housekeeping(source: Source, meta_engine, dest_engine, *,
     report: dict = {"analyzed": [], "brin": [], "dimensions": [],
                     "partitions": [], "warnings": []}
     schema = source.schema_name
+
+    # Retention runs before the measurements, or they would describe
+    # partitions that no longer exist by the time the report is written.
+    try:
+        _run_retention(source, meta_engine, dest_engine, report, quiet=quiet)
+    except Exception as exc:
+        logger.exception("%s: retention failed", source.name)
+        report["warnings"].append(
+            {"code": "retention_failed", "message": str(exc)})
 
     # Measure first: the partition sizes are N14's whole point, and they are
     # also what decides where the ANALYZE goes (see _analyze_targets).
@@ -268,6 +385,10 @@ def run_housekeeping(source: Source, meta_engine, dest_engine, *,
             ", ".join(a["partition"] for a in report["analyzed"]) or "nothing",
             ranges, len(report["partitions"]),
             report["total_bytes"] / 1024 ** 3)
+        if report.get("retention", {}).get("dropped"):
+            logger.warning("%s: retention dropped %s",
+                           source.name,
+                           ", ".join(report["retention"]["dropped"]))
     return report
 
 

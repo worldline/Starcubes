@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.datasource (
     housekeeping_interval_s int NOT NULL DEFAULT 21600,
     max_data_lag_s       int NOT NULL DEFAULT 0,
     max_run_s            int NOT NULL DEFAULT 0,
+    retention_periods    int NOT NULL DEFAULT 0,
+    initial_window_s     int NOT NULL DEFAULT 0,
+    dim_refresh_interval_s int NOT NULL DEFAULT 0,
+    dim_refreshed_at     timestamptz,
     created_at           timestamptz NOT NULL DEFAULT now(),
     updated_at           timestamptz NOT NULL DEFAULT now()
 );
@@ -1139,3 +1143,31 @@ COMMENT ON COLUMN starcubes_meta.alarm.rule_kind IS
   'threshold = a measure over fact rows in a trailing window; pipeline = a condition over ETL state (etl_run, the preflight report, the housekeeping report). Named rule_kind and not kind on purpose: the transition dicts sent to the notification dispatcher already carry a `kind` key meaning opened/closed, and an alarm column of that name would be stamped over it, turning every notification into a resolution.';
 COMMENT ON COLUMN starcubes_meta.alarm.condition IS
   'Which pipeline condition, for rule_kind = pipeline; NULL otherwise. Each produces a number, so cond_op and threshold decide the breach exactly as they do for a threshold alarm. measure, window_s and context_filter are unused by a pipeline alarm and keep their defaults.';
+
+
+-- 0037_retention_and_first_load.sql — the three knobs that change what the
+-- rest of the system may assume about the fact table. retention_periods
+-- finally disposes of old partitions (four subsystems had to learn about the
+-- floor: the audit, the server cache, the chart's browser cache, and alarms
+-- whose window would otherwise be silently truncated — `count(*) <` then
+-- reports an outage retention itself caused). initial_window_s walks a
+-- catching-up load forward in bounded steps so the forever loop gets its
+-- turn in between, and gives the first load a real lower bound via a new
+-- min(watermark) probe. dim_refresh_interval_s throttles the per-run
+-- dimension import, off by default because throttling costs freshness.
+-- Mirror block; see migrations/0037_retention_and_first_load.sql for the
+-- semantics.
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS retention_periods      int NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS initial_window_s       int NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS dim_refresh_interval_s int NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS dim_refreshed_at       timestamptz;
+
+COMMENT ON COLUMN starcubes_meta.datasource.retention_periods IS
+  'Keep this many partition periods; the housekeeping drops older ones, raises retention_floor and clears the plot cache. 0 = keep everything (the default). Irreversible: fact partitions are UNLOGGED and there is no backup. At most a couple of partitions go per housekeeping run, so a mistyped value walks visibly instead of clearing the table in one pass.';
+COMMENT ON COLUMN starcubes_meta.datasource.initial_window_s IS
+  'Width of each load window while the datasource is still catching up, in seconds. 0 = one unbounded window (the default), which on a large source is a single run of hours or days during which the forever loop evaluates no alarms and runs no housekeeping. Applies to every step of the catch-up, not only the first run -- otherwise step two loads the whole remainder. A caught-up datasource never reaches the cap.';
+COMMENT ON COLUMN starcubes_meta.datasource.dim_refresh_interval_s IS
+  'Seconds between dimension imports. 0 = every run (the default). Throttling costs freshness: a new value in a *regular* dimension maps to __unknown__ until the next refresh, which is a visibly wrong series in the chart for up to one interval. Auto-dimensions are unaffected, they resolve during the extract. --import-dims and the GUI button always force an import.';
+COMMENT ON COLUMN starcubes_meta.datasource.dim_refreshed_at IS
+  'When import_dimensions last actually ran, for dim_refresh_interval_s to count from. NULL = never, so the first run always imports.';
