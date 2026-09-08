@@ -62,6 +62,9 @@
         <dt>Late Arrival Overlap</dt><dd>{% if ds.late_arrival_overlap_s %}{{ ds.late_arrival_overlap_s }} s{% else %}off{% endif %}</dd>
         <dt>Data Lag Limit</dt><dd>{% if ds.max_data_lag_s %}{{ ds.max_data_lag_s }} s{% else %}unset{% endif %}</dd>
         <dt>Max Run Time</dt><dd>{% if ds.max_run_s %}{{ ds.max_run_s }} s{% else %}unset{% endif %}</dd>
+        <dt>Retention</dt><dd>{% if ds.retention_periods %}keep {{ ds.retention_periods }} {{ ds.partition_period }}(s){% if ds.retention_floor %} &mdash; floor {{ ds.retention_floor }}{% endif %}{% else %}keep everything{% endif %}</dd>
+        <dt>Initial Window</dt><dd>{% if ds.initial_window_s %}{{ ds.initial_window_s }} s per catch-up step{% else %}unbounded{% endif %}</dd>
+        <dt>Dim Refresh</dt><dd>{% if ds.dim_refresh_interval_s %}every {{ ds.dim_refresh_interval_s }} s{% else %}every run{% endif %}</dd>
         <dt>Housekeeping</dt><dd>{% if ds.housekeeping_interval_s %}every {{ ds.housekeeping_interval_s }} s{% else %}manual only{% endif %}</dd>
         <dt>Window Lag</dt><dd>{% if ds.watermark_lag_s or ds.wallclock_lag_s %}{{ ds.watermark_lag_s|default:0 }} s below tip{% if ds.wallclock_lag_s %} / {{ ds.wallclock_lag_s }} s absolute{% endif %}{% else %}off{% endif %}</dd>
         <dt>Watermark Fact Expr</dt><dd class="mono">{{ ds.watermark_fact_expr|default:'— (partition column)' }}</dd>

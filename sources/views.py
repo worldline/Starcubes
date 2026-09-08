@@ -579,6 +579,9 @@ def source_edit(request, pk: int):
                     housekeeping_interval_s = :hk_interval,
                     max_data_lag_s     = :max_data_lag_s,
                     max_run_s          = :max_run_s,
+                    retention_periods  = :retention_periods,
+                    initial_window_s   = :initial_window_s,
+                    dim_refresh_interval_s = :dim_refresh_interval_s,
                     updated_at         = now()
                 WHERE id = :id
             """), {
@@ -609,6 +612,12 @@ def source_edit(request, pk: int):
                 "max_data_lag_s":     max(0, int(
                     p.get("max_data_lag_s") or 0)),
                 "max_run_s":          max(0, int(p.get("max_run_s") or 0)),
+                "retention_periods":  max(0, int(
+                    p.get("retention_periods") or 0)),
+                "initial_window_s":   max(0, int(
+                    p.get("initial_window_s") or 0)),
+                "dim_refresh_interval_s": max(0, int(
+                    p.get("dim_refresh_interval_s") or 0)),
             })
         return redirect("sources:manage", pk=pk)
     ds = _load_datasource(pk)

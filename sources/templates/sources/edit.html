@@ -162,6 +162,21 @@
         <div class="form-hint">Wall-clock budget for one ETL run. Past it the run is aborted and recorded as failed, and the same value bounds every query it sends to the source &mdash; a source that accepts the connection and then never answers otherwise blocks the extract indefinitely. Never applied to a backfill, an explicit Start/End window, or the very first load, all of which are legitimately long. <strong>0 = unset</strong>; set it from observed run durations rather than guessing. Note it is a circuit breaker, not a repair: the next window is <em>wider</em>, not smaller, so pair it with Limit if runs are genuinely too big.</div>
       </div>
       <div class="form-group">
+        <label class="form-label">Retention (periods)</label>
+        <input class="form-control" name="retention_periods" type="number" min="0" step="1" value="{{ ds.retention_periods|default:0 }}">
+        <div class="form-hint"><strong>Deletes data, irreversibly.</strong> Keep this many partition periods; the housekeeping drops older partitions, records how far back the data still goes, and clears the plot cache. Fact partitions are UNLOGGED and nothing backs them up. At most a couple of partitions go per housekeeping run, so a mistyped value walks visibly through the log over hours instead of clearing the table in one pass &mdash; but it still walks. <strong>0 = keep everything</strong>, which is the default. Note that alarm windows reaching below the kept range stop being evaluated: a truncated window would make a &ldquo;too little data&rdquo; rule fire on data you disposed of on purpose.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Initial Window (s)</label>
+        <input class="form-control" name="initial_window_s" type="number" min="0" step="1" value="{{ ds.initial_window_s|default:0 }}">
+        <div class="form-hint">Width of each load window while the datasource is still catching up. With an empty fact table the first window is otherwise &ldquo;everything the source has&rdquo;, which on a large source is one run of hours or days during which the forever loop evaluates no alarms and runs no housekeeping. Setting this walks the load forward in steps and gives the loop its turn in between. It applies to every step of the catch-up, not only the first run; a datasource that has caught up never reaches it. <strong>0 = one unbounded window</strong> (the default).</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Dimension Refresh Interval (s)</label>
+        <input class="form-control" name="dim_refresh_interval_s" type="number" min="0" step="1" value="{{ ds.dim_refresh_interval_s|default:0 }}">
+        <div class="form-hint">Seconds between dimension imports. At a 60-second forever interval the default re-reads every dimension lookup table sixty times an hour to find values that arrive maybe weekly. Throttling costs freshness, which is why it is off by default: a new value in a <em>regular</em> dimension shows as <code>__unknown__</code> until the next refresh. Auto-dimensions are unaffected &mdash; they are resolved while extracting. <strong>0 = every run</strong>; the Import Dimensions button always forces one.</div>
+      </div>
+      <div class="form-group">
         <label class="form-label">Housekeeping Interval (s)</label>
         <input class="form-control" name="housekeeping_interval_s" type="number" min="0" step="1" value="{{ ds.housekeeping_interval_s|default:21600 }}">
         <div class="form-hint">Seconds between automatic housekeeping runs, checked by the forever loop after each load: targeted <code>ANALYZE</code> of the partitions being written, BRIN range summarisation, dimension fill levels and partition sizes. Defaults to 6&nbsp;hours and is deliberately on &mdash; the load is COPY-only, so autovacuum's thresholds are effectively never reached, statistics on the newest partition go stale and BRIN ranges are never summarised, which silently stops the index covering the newest data. 0 disables the automatic run; the ETL&nbsp;Commands tab and <code>manage.py etl_housekeeping</code> still work by hand.</div>
