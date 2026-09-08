@@ -12,6 +12,34 @@ committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
 [`docs/releases.md`](docs/releases.md).
 
+## [2.0.0-alpha.5] — 2026-09-08
+
+### Changed
+
+- **The datasource page is one page now.** `detail.html` (lean, login-only)
+  and `manage.html` (admin-only) had drifted apart — Alarms and Firings
+  existed only on one, the six configuration tabs only on the other, and the
+  only way across was a ⚙ button with no way back. Both render as
+  `source.html` now, with a **Basic/Expert** toggle in the sub-tab bar:
+  Basic keeps the five tabs a non-admin needs, Expert shows all eleven, and
+  what a non-superuser receives at all is decided server-side as before.
+  `/sources/<pk>/manage/` still exists and still forces Expert, so the
+  profile hand-off and the edit form's redirects keep working.
+- **The four ETL tabs are one tab.** ETL Commands, Audit, ETL History and
+  ETL Log were a quarter of the tab bar under one subject; they are a single
+  **ETL** tab now, with six sub-tabs — Run, Maintenance, Schema, Audit,
+  History, Log — under the same sub-tab row Dim Data already had. Nine
+  entries left in the top row.
+
+### Fixed
+
+- The alarm UI no longer says "open" twice. On the Firings tab the amber
+  status pill is the only signal (the blinking red dot at the start of the
+  row is gone); on the Alarms tab it is the other way round — a rule with an
+  open episode leads with the bare blinking dot instead of the pill. The
+  alarm titles on the Firings tab also show the rule's comment as a tooltip,
+  and the My Profile page drops its heading in favour of the tab title.
+
 ## [2.0.0-alpha.4] — 2026-09-08
 
 ### Added
