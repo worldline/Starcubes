@@ -398,9 +398,9 @@ tr.editing .row-edit { display: flex; }
 /* Cancel .subtabs-bar's 20px content gap: these panels' first element is
    itself a tab row, so the sub-tabs should hug the bar with the same 4px
    button headroom as the Basics tab sits under the nav, not 20px lower. */
-#dimDataTabs, #etlSubWrap { margin-top: -20px; }
-#dimSubTabs.tabs, #etlSubTabs.tabs { margin: 0; border-bottom: 1px solid var(--border); }
-#dimSubTabs .tab-btn, #etlSubTabs .tab-btn {
+#dimDataTabs, #etlSubWrap, #rollupSubWrap { margin-top: -20px; }
+#dimSubTabs.tabs, #etlSubTabs.tabs, #rollupSubTabs.tabs { margin: 0; border-bottom: 1px solid var(--border); }
+#dimSubTabs .tab-btn, #etlSubTabs .tab-btn, #rollupSubTabs .tab-btn {
   display: flex;
   align-items: center;
   height: 34px;
@@ -408,20 +408,21 @@ tr.editing .row-edit { display: flex; }
   border-radius: 5px 5px 0 0;
   transition: background 0.12s, color 0.12s;
 }
-#dimSubTabs .tab-btn:hover, #etlSubTabs .tab-btn:hover { color: var(--fg); background: var(--tab-active-hover-bg); }
-#dimSubTabs .tab-btn.active, #etlSubTabs .tab-btn.active {
+#dimSubTabs .tab-btn:hover, #etlSubTabs .tab-btn:hover, #rollupSubTabs .tab-btn:hover { color: var(--fg); background: var(--tab-active-hover-bg); }
+#dimSubTabs .tab-btn.active, #etlSubTabs .tab-btn.active, #rollupSubTabs .tab-btn.active {
   color: var(--tab-active-fg);
   background: var(--tab-active-bg);
   border-bottom-color: var(--btn-bg);
 }
-#dimSubTabs .tab-btn.active:hover, #etlSubTabs .tab-btn.active:hover { background: var(--tab-active-bg); }
-/* The ETL tab's sub-panels. Deliberately not .tab-panel: the top-level tab
-   switcher deactivates every .tab-panel in the document, nested or not. */
-.etl-subpanel { display: none; }
-.etl-subpanel.active { display: block; }
+#dimSubTabs .tab-btn.active:hover, #etlSubTabs .tab-btn.active:hover, #rollupSubTabs .tab-btn.active:hover { background: var(--tab-active-bg); }
+/* The ETL and Rollup tabs' sub-panels. Deliberately not .tab-panel: the
+   top-level tab switcher deactivates every .tab-panel in the document,
+   nested or not. */
+.etl-subpanel, .rollup-subpanel { display: none; }
+.etl-subpanel.active, .rollup-subpanel.active { display: block; }
 /* Both sub-tab rows sit flush against the bar above them, so the content
    below carries the gap the negative margin cancelled. */
-#dimDataPane, .etl-subpanel { padding-top: 16px; }
+#dimDataPane, .etl-subpanel, .rollup-subpanel { padding-top: 16px; }
 
 /* Action result panel */
 .action-result {
@@ -433,6 +434,11 @@ tr.editing .row-edit { display: flex; }
 }
 .action-result.ok { background: var(--badge-ok-bg); color: var(--badge-ok-fg); display: block; }
 .action-result.err { background: var(--badge-failed-bg); color: var(--badge-failed-fg); display: block; }
+/* Third variant, for a state that is neither a result nor a failure: the
+   Rollup tab's retention-floor notice is a standing property of the data, not
+   the outcome of the last click. Reuses the amber the running badge already
+   defines in both themes rather than introducing a fourth colour. */
+.action-result.warn { background: var(--badge-running-bg); color: var(--badge-running-fg); display: block; }
 /* Server-rendered page banner: the .action-result colours, but shown
    unconditionally (the template already decided) and spaced for the top of a
    page rather than for sitting under a form. */

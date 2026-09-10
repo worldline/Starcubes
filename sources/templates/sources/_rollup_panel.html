@@ -1,0 +1,290 @@
+{% comment %}
+  The Rollup tab: the pre-aggregation's whole lifecycle, in the order
+  docs/rollup.md lays it out — measure (Advise), decide (Config), build
+  (Build), check (Verify) — with Status as the page you land on.
+
+  Sub-panels are .rollup-subpanel, deliberately not .tab-panel: the top-level
+  tab switcher in source.html deactivates every .tab-panel in the document,
+  nested ones included. Same reason the ETL tab has .etl-subpanel.
+
+  Rendered only behind the caller's expert_allowed gate — every endpoint
+  behind it is @_admin_required_json, so a non-superuser must not receive
+  the markup at all.
+
+  The behaviour lives in _rollup_js.html, which is included after this and
+  after the page's esc()/postJSON()/getJSON() helpers.
+{% endcomment %}
+<div class="tab-panel expert-only" id="tab-rollup">
+  <div id="rollupSubWrap">
+    <div class="tabs" id="rollupSubTabs">
+      <button class="tab-btn active" data-sub="status">Status</button>
+      <button class="tab-btn" data-sub="advise">Advise</button>
+      <button class="tab-btn" data-sub="config">Config</button>
+      <button class="tab-btn" data-sub="build">Build</button>
+      <button class="tab-btn" data-sub="verify">Verify</button>
+      <span style="flex:1"></span>
+      <span class="etl-strip" id="rollupStrip" style="align-self:center"></span>
+    </div>
+
+    {# ── Status ─────────────────────────────────────────────────────── #}
+    <div class="rollup-subpanel active" id="rollupsub-status">
+      <div id="rollupBanners"></div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">&#128202; Pre-aggregation</span>
+          <button class="btn btn-secondary btn-sm" id="rollupRefreshBtn">Refresh</button>
+        </div>
+        <div class="card-body">
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            A rollup is a <em>column set</em> aggregated at bucket granularity. A chart
+            query is served from it when its breakdown and every column its filter reads
+            are inside that set; anything else falls back to <code>fact</code> &mdash;
+            slower, never wrong. Percentiles can never be served: they do not sum.
+          </p>
+          <div id="rollupConfigSummary"></div>
+          <div id="rollupSpecs" style="margin-top:14px"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-header"><span class="card-title">&#128337; Recent runs</span></div>
+        <div class="card-body">
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            Every <code>rollup_advise</code>, <code>rollup_build</code> and
+            <code>rollup_verify</code>, whether started here or from a shell.
+          </p>
+          <div id="rollupRuns"></div>
+        </div>
+      </div>
+    </div>
+
+    {# ── Advise ─────────────────────────────────────────────────────── #}
+    <div class="rollup-subpanel" id="rollupsub-advise">
+      <div class="card">
+        <div class="card-header"><span class="card-title">&#128207; Measure</span></div>
+        <div class="card-body">
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            Which columns a rollup can afford is not derivable from the schema &mdash; on
+            real data one column of a few hundred values can cost more than all the others
+            together. This measures instead of guessing: one exact pass over a window of
+            <code>fact</code>, after which every number below is computed from that.
+            It writes nothing.
+            <strong>Run <code>create_indices</code> first</strong> if the indices are
+            missing, or every measurement scans the whole partition and the speed-up
+            factors come out optimistic.
+          </p>
+          <div class="form-row">
+            <div>
+              <label class="form-label">Bucket width (s)</label>
+              <input class="form-control" type="number" id="advInterval" value="3600">
+              <div class="form-hint">3600 unless there is a reason not to &mdash; see Config</div>
+            </div>
+            <div>
+              <label class="form-label">Window (buckets)</label>
+              <input class="form-control" type="number" id="advWindow" value="24">
+              <div class="form-hint">24 = one day at hourly buckets</div>
+            </div>
+          </div>
+          <div class="form-row" style="margin-top:12px">
+            <div>
+              <label class="form-label">Target factor</label>
+              <input class="form-control" type="number" id="advTarget" value="20">
+              <div class="form-hint">Suggests the <em>widest</em> set reaching it</div>
+            </div>
+            <div>
+              <label class="form-label">Extrapolate to (rows/hour)</label>
+              <input class="form-control" type="number" id="advExtrapolate" placeholder="(leave blank)">
+              <div class="form-hint">Only when this window is not representative &mdash; on a datasource already carrying its real volume the measurement <em>is</em> the answer</div>
+            </div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary btn-sm" id="advRunBtn">Measure</button>
+            <span class="cmd-result" id="result-advise"></span>
+          </div>
+        </div>
+      </div>
+      <div id="advReport" style="margin-top:16px"></div>
+    </div>
+
+    {# ── Config ─────────────────────────────────────────────────────── #}
+    <div class="rollup-subpanel" id="rollupsub-config">
+      <div class="card">
+        <div class="card-header"><span class="card-title">&#9881; Column set</span></div>
+        <div class="card-body">
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            <strong>Coarsening is cheap, refining is not.</strong> Removing a column
+            re-groups the small rollup table; adding one has to read <code>fact</code>
+            again, and below the retention floor <code>fact</code> no longer has the rows.
+            Start wide and narrow later. Changing anything here is safe at any moment:
+            the stored rows stop matching the configuration and every chart quietly goes
+            back to <code>fact</code> until a build re-establishes them.
+          </p>
+          <div class="form-row">
+            <div>
+              <label class="form-label">Bucket width (s)</label>
+              <input class="form-control" type="number" id="cfgInterval" placeholder="3600">
+              <div class="form-hint">
+                Must divide every chart interval it should serve: 3600 covers hour
+                <em>and</em> day bins, 86400 only day bins. A day bin is a <em>UTC</em>
+                day &mdash; with hourly buckets, moving to local day boundaries later stays
+                a query change; with 86400 it becomes a rebuild.
+              </div>
+            </div>
+            <div>
+              <label class="form-label">Measures beside count(*)</label>
+              <div id="cfgMeasures" class="form-control" style="height:auto;max-height:230px;overflow:auto;padding:8px"></div>
+              <div class="form-hint">A measure changes the row width, never the row count &mdash; cheap. Adding one still needs a rebuild.</div>
+            </div>
+          </div>
+          <div class="form-row" style="margin-top:12px">
+            <div>
+              <label class="form-label">Core columns</label>
+              <div id="cfgColumns" class="form-control" style="height:auto;max-height:345px;overflow:auto;padding:8px"></div>
+              <div class="form-hint">Serves a query whose breakdown <em>and</em> every filter column are in this set</div>
+            </div>
+            <div>
+              <label class="form-label">Marginals</label>
+              <div id="cfgMarginals" class="form-control" style="height:auto;max-height:345px;overflow:auto;padding:8px"></div>
+              <div class="form-hint">One single-column rollup each &mdash; for a column too expensive for the core set whose unfiltered breakdown should still be fast</div>
+            </div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary btn-sm" id="cfgSaveBtn">Save configuration</button>
+            <button class="btn btn-secondary btn-sm" id="cfgOffBtn">Turn pre-aggregation off</button>
+            <span class="cmd-result" id="result-config"></span>
+          </div>
+          <div id="cfgErrors" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <div class="card card-danger-hint" style="margin-top:16px">
+        <div class="card-header"><span class="card-title">&#128465; Drop rollup tables</span></div>
+        <div class="card-body">
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            Drops every rollup table of this datasource and forgets its state.
+            Above the retention floor this is reversible &mdash; a rollup is a cache and a
+            build reads <code>fact</code> again. Below it, <code>fact</code> no longer holds
+            those rows, so the aggregates are the only copy there is; that span is refused
+            unless it is confirmed explicitly.
+          </p>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button class="btn btn-danger btn-sm" id="rollupDropBtn">Drop</button>
+            <span class="cmd-result" id="result-rollup-drop"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {# ── Build ──────────────────────────────────────────────────────── #}
+    <div class="rollup-subpanel" id="rollupsub-build">
+      <div class="etl-cmd-grid">
+        <div class="card">
+          <div class="card-header"><span class="card-title">&#9654; Build now</span></div>
+          <div class="card-body">
+            <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+              Advance every rollup up to the finality horizon &mdash; the same work the ETL
+              hook does after each load. A bucket is only rolled up once it is old enough
+              that no late row can still land in it.
+            </p>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn btn-primary btn-sm" id="buildFwdBtn">Build now</button>
+              <span class="cmd-result" id="result-build-fwd"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><span class="card-title">&#9198; Backfill history</span></div>
+          <div class="card-body">
+            <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+              Works <em>backwards</em> from the newest built bucket, so the windows people
+              actually look at become fast first and a half-finished backfill is already
+              usable. Interruptible: every batch has committed.
+            </p>
+            <div style="margin-bottom:10px">
+              <label class="form-label">Stop at</label>
+              <span class="dtp-label">
+                <input type="text" id="buildFrom" placeholder="YYYY-MM-DD HH:MM" style="max-width:260px">
+              </span>
+              <div class="form-hint">Blank = the oldest row in <code>fact</code></div>
+            </div>
+            <div class="form-row">
+              <div>
+                <label class="form-label">Batch (buckets)</label>
+                <input class="form-control" type="number" id="buildBatch" placeholder="168">
+                <div class="form-hint">168 = one week of hourly buckets</div>
+              </div>
+              <div>
+                <label class="form-label">Max batches</label>
+                <input class="form-control" type="number" id="buildMaxBatches" placeholder="0 = no limit">
+                <div class="form-hint">Build a piece now, continue later</div>
+              </div>
+            </div>
+            <div style="margin-top:12px;display:flex;gap:8px;align-items:center">
+              <button class="btn btn-primary btn-sm" id="buildBackfillBtn">Backfill</button>
+              <span class="cmd-result" id="result-build-backfill"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="card card-warn-hint">
+          <div class="card-header"><span class="card-title">&#128260; Rebuild</span></div>
+          <div class="card-body">
+            <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+              Discards what exists and builds it again from <code>fact</code> &mdash; what a
+              changed column set needs, since the information a new column wants is not in
+              the old rows. Refused for any span below the retention floor unless forced:
+              a rebuild reads <code>fact</code>, and there <code>fact</code> is empty.
+            </p>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button class="btn btn-danger btn-sm" id="buildRebuildBtn">Rebuild</button>
+              <span class="cmd-result" id="result-build-rebuild"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <div class="card-header">
+          <span class="card-title">&#128225; Progress</span>
+          <span id="rollupKillWrap"></span>
+        </div>
+        <div class="card-body">
+          <div id="rollupProgress"></div>
+        </div>
+      </div>
+    </div>
+
+    {# ── Verify ─────────────────────────────────────────────────────── #}
+    <div class="rollup-subpanel" id="rollupsub-verify">
+      <div class="card">
+        <div class="card-header"><span class="card-title">&#9989; Verify</span></div>
+        <div class="card-body">
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            Runs a matrix of chart queries twice &mdash; once against <code>fact</code>, once
+            against the rollup the read path picks &mdash; and compares the payloads cell by
+            cell. A case the rollup cannot serve counts as <strong>skipped</strong>, not
+            failed: a skip is the read path correctly falling back to <code>fact</code>.
+          </p>
+          <div class="form-row">
+            <div>
+              <label class="form-label">Days</label>
+              <input class="form-control" type="number" step="0.5" id="verDays" value="3">
+              <div class="form-hint">Correctness does not depend on the window, but every case runs the <code>fact</code> query too. 0 = the whole built range</div>
+            </div>
+            <div>
+              <label class="form-label">Interval (s)</label>
+              <input class="form-control" type="number" id="verInterval" placeholder="both 3600 and 86400">
+              <div class="form-hint">Blank tests both</div>
+            </div>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+            <button class="btn btn-primary btn-sm" id="verRunBtn">Verify</button>
+            <span class="cmd-result" id="result-verify"></span>
+          </div>
+        </div>
+      </div>
+      <div id="verReport" style="margin-top:16px"></div>
+    </div>
+  </div>
+</div>

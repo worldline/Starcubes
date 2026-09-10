@@ -1,0 +1,636 @@
+{% comment %}
+  Behaviour for the Rollup tab (_rollup_panel.html).
+
+  A template rather than a static .js file, for the same reason
+  _alarms_js.html is one: it needs the datasource's dimension and measure
+  catalogue, and those come from the view as JSON context.
+
+  Must be included AFTER the panel markup and after the page's helpers.
+  esc(), postJSON(), getJSON(), fmtLocal(), fmtCount(), cmdButton(),
+  showCmdResult(), activateTab(), openEtlLogFile() and DateTimePicker all
+  have to exist when this runs, because it binds by id at top level.
+{% endcomment %}
+<script>
+(function() {
+  var ROLLUP_DIMS = {{ rollup_dims_json|safe }};
+  var ROLLUP_MEASURES = {{ rollup_measures_json|safe }};
+
+  var state = null;          // last /rollup/state/ payload
+  var pollTimer = null;
+  var lastRunId = null;      // to notice a run finishing and refresh state
+  // A spawn is detached: the view returns as soon as the process exists, and
+  // the process writes its own rollup_run row a moment later. Between those
+  // two instants a poll sees no running run, and stopping there would end the
+  // polling before the run it was started for ever appeared. So a start opens
+  // a grace window, closed by the first run that began inside it — whether it
+  // is still running or already finished, which a 5-second verify can be.
+  var awaitingSince = 0;
+  var AWAIT_MS = 30000;
+
+  function el(id) { return document.getElementById(id); }
+  function on(id, ev, fn) { var e = el(id); if (e) e.addEventListener(ev, fn); }
+
+  // ── Status ──────────────────────────────────────────────────────────
+
+  var STATUS_BADGE = {
+    'usable':    'badge-ok',
+    'empty':     'badge-none',
+    'not built': 'badge-none',
+    'stale':     'badge-failed'
+  };
+  // A stale rollup is not broken and not lost — the stored rows describe a
+  // different column set, so the read path ignores them. Saying that beats a
+  // bare word the operator has to look up.
+  var STATUS_TITLE = {
+    'usable':    'Serving queries it covers',
+    'empty':     'Configured, nothing built yet',
+    'not built': 'No table state — run a build',
+    'stale':     'Configuration changed since these rows were built; every chart reads fact until a rebuild'
+  };
+
+  function renderBanners(d) {
+    var html = '';
+    if (d.errors && d.errors.length) {
+      html += '<div class="action-result err" style="margin-bottom:12px">'
+        + '<strong>The configuration is not valid</strong><ul style="margin:6px 0 0 18px">'
+        + d.errors.map(function(e) { return '<li>' + esc(e) + '</li>'; }).join('')
+        + '</ul></div>';
+    }
+    if (d.unreconstructable) {
+      html += '<div class="action-result warn" style="margin-bottom:12px">'
+        + '<strong>' + fmtLocal(d.unreconstructable.from) + ' – '
+        + fmtLocal(d.unreconstructable.to) + ' exists only in the rollups.</strong> '
+        + 'Retention has removed those rows from <code>fact</code>, so nothing can '
+        + 'rebuild that span. Dropping or rebuilding it needs an explicit '
+        + 'confirmation, and these tables belong in the backup — unlike '
+        + '<code>fact</code>, they are not reproducible from the source.'
+        + '</div>';
+    }
+    el('rollupBanners').innerHTML = html;
+  }
+
+  function renderConfigSummary(d) {
+    if (!d.interval_s) {
+      el('rollupConfigSummary').innerHTML =
+        '<div class="text-muted">Pre-aggregation is <strong>off</strong>. '
+        + 'Charts aggregate raw rows on every request. Start with '
+        + '<em>Advise</em> to see what a rollup would cost and save.</div>';
+      return;
+    }
+    function row(label, value) {
+      return '<div class="text-muted">' + esc(label) + '</div><div>' + value + '</div>';
+    }
+    function cols(list) {
+      return list && list.length
+        ? list.map(function(c) { return '<code>' + esc(c) + '</code>'; }).join(' ')
+        : '<span class="text-muted">—</span>';
+    }
+    var factRows = d.fact && d.fact.rows;
+    var rollupBytes = (d.specs || []).reduce(function(a, s) { return a + (s.bytes || 0); }, 0);
+    el('rollupConfigSummary').innerHTML =
+      '<div class="dl-grid">'
+      + row('Bucket width', '<code>' + d.interval_s + 's</code>')
+      + row('Core columns', cols(d.columns))
+      + row('Marginals', cols(d.marginals))
+      + row('Measures', '<code>count(*)</code> ' + cols(d.measures))
+      + row('fact', (factRows ? fmtCount(factRows) + ' rows' : '—')
+            + (d.fact && d.fact.size ? ' · ' + esc(d.fact.size) : ''))
+      + row('Rollups', fmtBytes(rollupBytes)
+            + (d.fact && d.fact.bytes && rollupBytes
+               ? ' · <strong>' + (d.fact.bytes / rollupBytes).toFixed(0)
+                 + '×</strong> smaller than fact' : ''))
+      + '</div>';
+  }
+
+  function fmtBytes(n) {
+    if (!n) return '0 bytes';
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + ' GB';
+    if (n >= 1048576) return (n / 1048576).toFixed(0) + ' MB';
+    if (n >= 1024) return (n / 1024).toFixed(0) + ' kB';
+    return n + ' bytes';
+  }
+
+  function renderSpecs(d) {
+    if (!d.specs || !d.specs.length) {
+      el('rollupSpecs').innerHTML = '';
+      return;
+    }
+    var html = '<table class="data-table"><thead><tr>'
+      + '<th>Table</th><th>Columns</th><th>Built from</th><th>Built through</th>'
+      + '<th>Rows</th><th>Size</th><th>Status</th></tr></thead><tbody>';
+    d.specs.forEach(function(s) {
+      html += '<tr>'
+        + '<td class="text-mono">' + esc(s.name) + '</td>'
+        + '<td>' + s.columns.map(function(c) {
+              return '<code>' + esc(c) + '</code>'; }).join(' ') + '</td>'
+        + '<td class="text-mono text-muted">' + (s.built_from ? fmtLocal(s.built_from) : '—') + '</td>'
+        + '<td class="text-mono text-muted">' + (s.built_through ? fmtLocal(s.built_through) : '—') + '</td>'
+        + '<td>' + (s.rows ? fmtCount(s.rows) : '—') + '</td>'
+        + '<td>' + esc(s.size || '—') + '</td>'
+        + '<td><span class="badge ' + (STATUS_BADGE[s.status] || 'badge-none') + '"'
+        + ' title="' + esc(STATUS_TITLE[s.status] || '') + '">' + esc(s.status) + '</span></td>'
+        + '</tr>';
+    });
+    el('rollupSpecs').innerHTML = html + '</tbody></table>';
+  }
+
+  function loadState() {
+    return getJSON('/sources/' + DS_PK + '/rollup/state/').then(function(d) {
+      if (!d.ok) {
+        el('rollupBanners').innerHTML =
+          '<div class="action-result err">' + esc(d.error) + '</div>';
+        return;
+      }
+      state = d;
+      renderBanners(d);
+      renderConfigSummary(d);
+      renderSpecs(d);
+      fillConfigForm(d);
+    });
+  }
+
+  // ── Config ──────────────────────────────────────────────────────────
+
+  // Core columns and marginals are mutually exclusive — validate_config
+  // rejects an overlap — so ticking a column on one side unticks it on the
+  // other rather than letting the server refuse a form it could have
+  // prevented.
+  function checkboxes(container, items, group) {
+    container.innerHTML = items.map(function(it, i) {
+      var id = group + '-' + i;
+      return '<label style="display:block;font-weight:normal;cursor:pointer;padding:1px 0" '
+        + (it.title ? 'title="' + esc(it.title) + '" ' : '')
+        + (it.disabled ? 'class="text-muted"' : '') + '>'
+        + '<input type="checkbox" id="' + id + '" value="' + esc(it.value) + '"'
+        + (it.disabled ? ' disabled' : '') + '> ' + esc(it.label) + '</label>';
+    }).join('');
+  }
+
+  function checked(container) {
+    return Array.prototype.slice
+      .call(container.querySelectorAll('input:checked'))
+      .map(function(i) { return i.value; });
+  }
+
+  function setChecked(container, values) {
+    Array.prototype.forEach.call(container.querySelectorAll('input'), function(i) {
+      i.checked = values.indexOf(i.value) !== -1;
+    });
+  }
+
+  function buildConfigForm() {
+    var asItem = function(c) { return {value: c, label: c}; };
+    checkboxes(el('cfgColumns'), ROLLUP_DIMS.map(asItem), 'cfgcol');
+    checkboxes(el('cfgMarginals'), ROLLUP_DIMS.map(asItem), 'cfgmarg');
+    checkboxes(el('cfgMeasures'), ROLLUP_MEASURES.map(function(m) {
+      return {
+        value: m.agg,
+        label: m.name + ' — ' + m.agg,
+        disabled: !m.derivable,
+        title: m.derivable ? '' : m.reason
+      };
+    }), 'cfgmeas');
+
+    // Keep the two column lists disjoint as the operator clicks.
+    function exclusive(a, b) {
+      a.addEventListener('change', function(ev) {
+        if (!ev.target.checked) return;
+        Array.prototype.forEach.call(b.querySelectorAll('input'), function(i) {
+          if (i.value === ev.target.value) i.checked = false;
+        });
+      });
+    }
+    exclusive(el('cfgColumns'), el('cfgMarginals'));
+    exclusive(el('cfgMarginals'), el('cfgColumns'));
+  }
+
+  function fillConfigForm(d) {
+    el('cfgInterval').value = d.interval_s || '';
+    setChecked(el('cfgColumns'), d.columns || []);
+    setChecked(el('cfgMarginals'), d.marginals || []);
+    setChecked(el('cfgMeasures'), d.measures || []);
+  }
+
+  function saveConfig(body, resultId) {
+    var result = el(resultId);
+    result.textContent = '';
+    el('cfgErrors').innerHTML = '';
+    return postJSON('/sources/' + DS_PK + '/rollup/config/', body).then(function(d) {
+      if (!d.ok) {
+        showCmdResult(result, false, '✗ rejected');
+        el('cfgErrors').innerHTML = '<div class="action-result err"><ul style="margin:0 0 0 18px">'
+          + (d.errors || [d.error]).map(function(e) {
+              return '<li>' + esc(e) + '</li>'; }).join('')
+          + '</ul></div>';
+        return;
+      }
+      var msg = d.off ? '✓ pre-aggregation off'
+        : '✓ saved' + (d.invalidated && d.invalidated.length
+            ? ' — ' + d.invalidated.length + ' rollup(s) need a rebuild' : '');
+      showCmdResult(result, true, msg);
+      loadState();
+    }).catch(function(e) { showCmdResult(result, false, '✗ ' + e); });
+  }
+
+  on('cfgSaveBtn', 'click', function() {
+    saveConfig({
+      interval: el('cfgInterval').value || '3600',
+      columns: checked(el('cfgColumns')).join(','),
+      marginals: checked(el('cfgMarginals')).join(','),
+      measures: checked(el('cfgMeasures')).join(',')
+    }, 'result-config');
+  });
+
+  on('cfgOffBtn', 'click', function() {
+    if (!confirm('Turn pre-aggregation off? The tables and their rows stay — '
+                 + 'every chart simply reads fact again.')) return;
+    saveConfig({off: '1'}, 'result-config');
+  });
+
+  // ── Drop ────────────────────────────────────────────────────────────
+
+  on('rollupDropBtn', 'click', function() {
+    var btn = this, result = el('result-rollup-drop');
+    if (!confirm('Drop every rollup table of this datasource?')) return;
+    result.textContent = '';
+    btn.disabled = true;
+    postJSON('/sources/' + DS_PK + '/rollup/drop/', {}).then(function(d) {
+      if (d.ok) {
+        showCmdResult(result, true, '✓ dropped ' + (d.dropped || []).length + ' table(s)');
+        loadState();
+        return;
+      }
+      // The refusal that names a span is the one worth a second question:
+      // below the retention floor a rebuild cannot bring those buckets back.
+      if (d.unreconstructable && confirm(d.error + '\n\nDrop it anyway?')) {
+        return postJSON('/sources/' + DS_PK + '/rollup/drop/', {force: '1'})
+          .then(function(d2) {
+            showCmdResult(result, !!d2.ok,
+              d2.ok ? '✓ dropped ' + (d2.dropped || []).length + ' table(s)'
+                    : '✗ ' + d2.error);
+            loadState();
+          });
+      }
+      showCmdResult(result, false, '✗ ' + d.error);
+    }).catch(function(e) {
+      showCmdResult(result, false, '✗ ' + e);
+    }).finally(function() { btn.disabled = false; });
+  });
+
+  // ── Starting a spawned command ──────────────────────────────────────
+
+  function startRun(path, body, resultId) {
+    var result = el(resultId);
+    result.textContent = '';
+    postJSON('/sources/' + DS_PK + path, body).then(function(d) {
+      if (!d.ok) { showCmdResult(result, false, '✗ ' + d.error); return; }
+      showCmdResult(result, true, '✓ started');
+      lastRunId = null;
+      awaitingSince = Date.now();
+      startPoll();
+      pollStatus();
+    }).catch(function(e) { showCmdResult(result, false, '✗ ' + e); });
+  }
+
+  on('advRunBtn', 'click', function() {
+    startRun('/rollup/advise/', {
+      interval: el('advInterval').value,
+      window_buckets: el('advWindow').value,
+      target_factor: el('advTarget').value,
+      extrapolate_to: el('advExtrapolate').value
+    }, 'result-advise');
+  });
+
+  on('verRunBtn', 'click', function() {
+    startRun('/rollup/verify/', {
+      days: el('verDays').value,
+      interval: el('verInterval').value
+    }, 'result-verify');
+  });
+
+  on('buildFwdBtn', 'click', function() {
+    startRun('/rollup/build/', {}, 'result-build-fwd');
+  });
+
+  on('buildBackfillBtn', 'click', function() {
+    startRun('/rollup/build/', {
+      backfill: '1',
+      from_time: dtpBuildFrom.getUTCISO() || '',
+      batch_buckets: el('buildBatch').value,
+      max_batches: el('buildMaxBatches').value
+    }, 'result-build-backfill');
+  });
+
+  on('buildRebuildBtn', 'click', function() {
+    var span = state && state.unreconstructable;
+    var ask = 'Discard every rollup row and build again from fact?';
+    if (span) {
+      ask += '\n\n' + fmtLocal(span.from) + ' – ' + fmtLocal(span.to)
+        + ' exists only in the rollups — fact no longer has those rows, so a '
+        + 'rebuild cannot restore that span. It will be lost.';
+    }
+    if (!confirm(ask)) return;
+    startRun('/rollup/build/', {
+      rebuild: '1', backfill: '1', force: span ? '1' : '0'
+    }, 'result-build-rebuild');
+  });
+
+  // ── Status polling ──────────────────────────────────────────────────
+
+  var strip = el('rollupStrip');
+
+  function setStrip(cls, textContent) {
+    strip.className = 'etl-strip show ' + cls;
+    strip.textContent = textContent;
+  }
+
+  function renderProgress(run) {
+    if (!run) { el('rollupProgress').innerHTML =
+      '<div class="text-muted">Nothing running.</div>'; return; }
+    el('rollupProgress').innerHTML =
+      '<div><strong>' + esc(run.kind) + '</strong> since ' + fmtLocal(run.started_at)
+      + (run.pid ? ' · pid ' + run.pid : '') + '</div>'
+      + '<pre class="log-pane" style="margin-top:8px;white-space:pre-wrap">'
+      + esc(run.progress || 'no progress reported yet') + '</pre>';
+  }
+
+  function renderKill(run) {
+    var wrap = el('rollupKillWrap');
+    if (!run) { wrap.innerHTML = ''; return; }
+    if (wrap.dataset.forId === String(run.id)) return;
+    wrap.dataset.forId = String(run.id);
+    wrap.innerHTML = '<button class="btn btn-danger btn-sm" id="rollupKillBtn">Kill</button>';
+    el('rollupKillBtn').addEventListener('click', function() {
+      var force = this.dataset.armed === '1';
+      if (force && !confirm('Force-kill the rollup process?')) return;
+      var btn = this;
+      postJSON('/sources/' + DS_PK + '/rollup/kill/', force ? {force: '1'} : {})
+        .then(function(d) {
+          if (!d.ok) { alert(d.error); return; }
+          // A backfill stops at a batch boundary, so the first click is
+          // enough in the normal case; the second escalates.
+          btn.dataset.armed = '1';
+          btn.textContent = 'Force kill';
+          pollStatus();
+        });
+    });
+  }
+
+  function renderRuns(runs) {
+    if (!runs || !runs.length) {
+      el('rollupRuns').innerHTML = '<div class="text-muted">No runs yet.</div>';
+      return;
+    }
+    var html = '<table class="data-table"><thead><tr>'
+      + '<th>Kind</th><th>Status</th><th>Started</th><th>Finished</th>'
+      + '<th>Last progress</th><th>Log</th></tr></thead><tbody>';
+    runs.forEach(function(r) {
+      var badge = r.status === 'ok' ? 'badge-ok'
+                : r.status === 'running' ? 'badge-running' : 'badge-failed';
+      html += '<tr>'
+        + '<td>' + esc(r.kind) + '</td>'
+        + '<td><span class="badge ' + badge + '">' + esc(r.status) + '</span></td>'
+        + '<td class="text-mono text-muted">' + fmtLocal(r.started_at) + '</td>'
+        + '<td class="text-mono text-muted">' + (r.finished_at ? fmtLocal(r.finished_at) : '—') + '</td>'
+        + '<td class="text-muted">' + esc(r.error || r.progress || '—') + '</td>'
+        + '<td>' + (r.log_path
+            ? '<a href="#" class="rollup-log" data-path="' + esc(r.log_path) + '">log</a>'
+            : '—') + '</td>'
+        + '</tr>';
+    });
+    el('rollupRuns').innerHTML = html + '</tbody></table>';
+    // The spawned commands write the same etl-<slug>-*.log files the ETL Log
+    // sub-tab already tails, so this hands off there instead of growing a
+    // second tailer.
+    Array.prototype.forEach.call(
+      el('rollupRuns').querySelectorAll('a.rollup-log'), function(a) {
+        a.addEventListener('click', function(ev) {
+          ev.preventDefault();
+          openEtlLogFile(a.dataset.path);
+        });
+      });
+  }
+
+  function renderAdvise(entry) {
+    if (!entry || !entry.report) {
+      el('advReport').innerHTML = '';
+      return;
+    }
+    var r = entry.report;
+    var html = '<div class="card"><div class="card-header">'
+      + '<span class="card-title">&#128200; Measured ' + fmtLocal(entry.started_at) + '</span>'
+      + '</div><div class="card-body">';
+
+    if (r.warnings && r.warnings.length) {
+      html += '<div class="action-result warn" style="margin-bottom:12px"><ul style="margin:0 0 0 18px">'
+        + r.warnings.map(function(w) { return '<li>' + esc(w) + '</li>'; }).join('')
+        + '</ul></div>';
+    }
+    html += '<div class="dl-grid" style="margin-bottom:14px">'
+      + '<div class="text-muted">Window</div><div>' + fmtLocal(r.window_from)
+      + ' – ' + fmtLocal(r.window_to) + '</div>'
+      + '<div class="text-muted">Rows measured</div><div>' + fmtCount(r.rows_in_window)
+      + ' in ' + r.buckets_in_window + ' bucket(s)</div>'
+      + '<div class="text-muted">Rows/day</div><div>' + fmtCount(r.rows_per_day_assumed)
+      + (r.rows_per_day_assumed !== r.rows_per_day_measured
+         ? ' <span class="text-muted">(extrapolated from ' + fmtCount(r.rows_per_day_measured) + ')</span>'
+         : '') + '</div>'
+      + '</div>';
+
+    if (r.dims && r.dims.length) {
+      html += '<label class="form-label">Dimensions</label>'
+        + '<table class="data-table"><thead><tr><th>Column</th><th>Distinct</th>'
+        + '<th>Marginal cost</th><th>group_by hits</th></tr></thead><tbody>'
+        + r.dims.map(function(d) {
+            return '<tr><td class="text-mono">' + esc(d.column) + '</td>'
+              + '<td>' + fmtCount(d.distinct) + '</td>'
+              + '<td>' + (d.marginal_cost != null
+                  ? '×' + Number(d.marginal_cost).toFixed(2) : '—') + '</td>'
+              + '<td>' + (d.gb_hits || 0) + '</td></tr>';
+          }).join('')
+        + '</tbody></table>';
+    }
+
+    if (r.stages && r.stages.length) {
+      html += '<label class="form-label" style="margin-top:16px">Candidate column sets</label>'
+        + '<p style="margin:0 0 6px;color:var(--muted);font-size:12px">'
+        + 'Each line drops one more column. Picking a stage fills the Config form — '
+        + 'nothing is saved until you save it there.</p>'
+        + '<table class="data-table"><thead><tr><th>#</th><th>Columns</th>'
+        + '<th>Rows/day</th><th>Size/day</th><th>Factor</th><th></th></tr></thead><tbody>'
+        + r.stages.map(function(s, i) {
+            return '<tr><td>' + (i + 1) + '</td>'
+              + '<td>' + (s.columns || []).map(function(c) {
+                  return '<code>' + esc(c) + '</code>'; }).join(' ') + '</td>'
+              + '<td>' + fmtCount(s.rows_per_day) + '</td>'
+              + '<td>' + fmtBytes(s.bytes_per_day) + '</td>'
+              + '<td><strong>' + Number(s.factor || 0).toFixed(0) + '×</strong></td>'
+              + '<td><button class="btn btn-secondary btn-sm rollup-stage" '
+              + 'data-stage="' + i + '">Use these</button></td></tr>';
+          }).join('')
+        + '</tbody></table>';
+    }
+
+    if (r.measures && r.measures.length) {
+      html += '<label class="form-label" style="margin-top:16px">Measures</label>'
+        + '<table class="data-table"><thead><tr><th>Measure</th><th>Aggregate</th>'
+        + '<th>Derivable</th><th>Why not</th></tr></thead><tbody>'
+        + r.measures.map(function(m) {
+            return '<tr><td>' + esc(m.name) + '</td>'
+              + '<td class="text-mono">' + esc(m.agg) + '</td>'
+              + '<td>' + (m.derivable ? 'yes' : '<strong>no</strong>') + '</td>'
+              + '<td class="text-muted">' + esc(m.reason || '') + '</td></tr>';
+          }).join('')
+        + '</tbody></table>';
+    }
+    el('advReport').innerHTML = html + '</div></div>';
+
+    Array.prototype.forEach.call(
+      el('advReport').querySelectorAll('button.rollup-stage'), function(b) {
+        b.addEventListener('click', function() {
+          var stage = r.stages[parseInt(b.dataset.stage, 10)];
+          if (!stage) return;
+          // The stage names the core set; everything it dropped becomes a
+          // marginal candidate, which is the shape rollup_advise's own
+          // printed command line suggests.
+          el('cfgInterval').value = r.interval_s || 3600;
+          setChecked(el('cfgColumns'), stage.columns || []);
+          setChecked(el('cfgMarginals'), stage.dropped || []);
+          setChecked(el('cfgMeasures'), (r.measures || [])
+            .filter(function(m) { return m.derivable; })
+            .map(function(m) { return m.agg; }));
+          activateRollupSub('config');
+          showCmdResult(el('result-config'), true,
+            '↑ filled from the measurement — review, then save');
+        });
+      });
+  }
+
+  function renderVerify(entry) {
+    if (!entry || !entry.report) { el('verReport').innerHTML = ''; return; }
+    var r = entry.report;
+    var html = '<div class="card"><div class="card-header"><span class="card-title">'
+      + '&#128203; Verified ' + fmtLocal(entry.started_at) + '</span></div><div class="card-body">'
+      + '<div style="font-size:15px;margin-bottom:10px">'
+      + '<strong>' + r.passed + '</strong> passed · '
+      + '<strong>' + r.skipped + '</strong> skipped · '
+      + '<strong>' + r.failed + '</strong> failed'
+      + '</div>'
+      + '<p style="margin:0 0 12px;color:var(--muted);font-size:13px">'
+      + 'A skipped case is not a defect: it is a query the rollup cannot serve — a '
+      + 'percentile, a filter outside the column set, a window past what is built — '
+      + 'and the read path correctly answered it from <code>fact</code>.</p>';
+    if (r.untested_intervals && r.untested_intervals.length) {
+      html += '<div class="action-result warn" style="margin-bottom:12px">Interval(s) '
+        + r.untested_intervals.join(', ') + ' were not tested at all: the window is '
+        + 'narrower than one bucket. Widen it with Days.</div>';
+    }
+    if (r.failures && r.failures.length) {
+      html += '<table class="data-table"><thead><tr><th>Case</th><th>Via</th>'
+        + '<th>Difference</th></tr></thead><tbody>'
+        + r.failures.map(function(f) {
+            return '<tr><td>' + esc(f.label) + '</td>'
+              + '<td class="text-mono">' + esc(f.table) + '</td>'
+              + '<td class="text-mono">' + esc(f.diff) + '</td></tr>';
+          }).join('')
+        + '</tbody></table>';
+    }
+    el('verReport').innerHTML = html + '</div></div>';
+  }
+
+  function pollStatus() {
+    return getJSON('/sources/' + DS_PK + '/rollup/status/').then(function(d) {
+      if (!d.ok) return;
+      var runs = d.runs || [];
+      var live = runs.filter(function(r) { return r.status === 'running'; })[0];
+      renderRuns(runs);
+      renderProgress(live);
+      renderKill(live);
+      renderAdvise(d.advise);
+      renderVerify(d.verify);
+
+      if (live) {
+        awaitingSince = 0;
+        lastRunId = live.id;
+        setStrip('running', '● rollup ' + live.kind + ' running…'
+          + (live.progress ? ' ' + live.progress : ''));
+        startPoll();
+        return;
+      }
+      var last = runs[0];
+      if (awaitingSince) {
+        var appeared = last &&
+          Date.parse(last.started_at) >= awaitingSince - 5000;
+        if (appeared) {
+          // It ran and finished inside one poll interval. Nothing is pending
+          // any more, and the state it left behind is worth re-reading.
+          awaitingSince = 0;
+          lastRunId = null;
+          loadState();
+        } else if (Date.now() - awaitingSince < AWAIT_MS) {
+          setStrip('running', '● starting…');
+          startPoll();
+          return;
+        } else {
+          awaitingSince = 0;
+        }
+      }
+      stopPoll();
+      if (!last) { strip.className = 'etl-strip'; return; }
+      setStrip(last.status === 'ok' ? 'ok' : 'failed',
+        (last.status === 'ok' ? '✓ ' : '✗ ') + 'rollup ' + last.kind + ' '
+        + (last.status === 'ok' ? 'finished' : 'failed'));
+      // A run that has just ended changed the state the Status tab shows.
+      if (lastRunId && last.id === lastRunId) { lastRunId = null; loadState(); }
+    });
+  }
+
+  function startPoll() {
+    if (pollTimer) return;
+    pollTimer = setInterval(pollStatus, 3000);
+  }
+  function stopPoll() {
+    if (!pollTimer) return;
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+
+  // ── Sub-tabs ────────────────────────────────────────────────────────
+
+  var activeRollupSub = 'status';
+
+  function activateRollupSub(name) {
+    document.querySelectorAll('#rollupSubTabs .tab-btn').forEach(function(b) {
+      b.classList.toggle('active', b.dataset.sub === name);
+    });
+    document.querySelectorAll('.rollup-subpanel').forEach(function(p) {
+      p.classList.toggle('active', p.id === 'rollupsub-' + name);
+    });
+    activeRollupSub = name;
+  }
+  window.activateRollupSub = activateRollupSub;
+
+  document.querySelectorAll('#rollupSubTabs .tab-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() { activateRollupSub(btn.dataset.sub); });
+  });
+
+  on('rollupRefreshBtn', 'click', function() { loadState(); pollStatus(); });
+
+  var dtpBuildFrom = new DateTimePicker(document.getElementById('buildFrom'),
+                                        {onChange: function() {}});
+
+  // Lazy: the panel costs three meta queries and a size scan, and most visits
+  // to this page never open it. The poll only runs while the tab is showing —
+  // rollupTabLeft() below is what source.html's tab switcher calls.
+  var loaded = false;
+  window.rollupTabEntered = function() {
+    if (!loaded) {
+      loaded = true;
+      buildConfigForm();
+      loadState();
+    }
+    pollStatus();
+  };
+  window.rollupTabLeft = stopPoll;
+})();
+</script>

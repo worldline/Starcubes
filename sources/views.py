@@ -5,6 +5,7 @@ No Django ORM — starcubes_meta is owned by the migration scripts, not Django.
 """
 from __future__ import annotations
 
+import dataclasses
 import json as _json
 import os
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,12 @@ from core.alarm import (check_no_grouped_filters, measure_value_expr,
 from core.query import (build_filter_tree, grouped_label, grouped_token,
                         MEASURE_FUNCS, slugify_group_set,
                         validate_filter_tree)
+from core.rollup import (ROLLUP_FUNCS, drop_rollup_tables,
+                         ensure_rollup_tables,
+                         last_ok_hwm, read_rollup_states, rollup_extent,
+                         rollup_specs, spec_hash, unreconstructable_span,
+                         validate_config, write_rollup_state)
+from core import rollup_run
 from core.source import Source, _get_cached_engine
 
 from . import accounts
@@ -454,6 +461,17 @@ def _build_source_context(pk: int) -> dict:
         "idx_methods_json": _json.dumps(INDEX_METHODS),
         "graph_styles_json": _json.dumps(GRAPH_STYLES),
         "measure_aggs_json": _json.dumps(measure_aggs),
+        # What the Rollup tab's Config pickers offer. Narrowed here rather
+        # than in the template so the picker cannot present a column or a
+        # measure that core.rollup.validate_config would then refuse: only
+        # dimension columns can be rolled up, and only the four summable
+        # aggregate forms — quantile is carried through with the reason
+        # attached, because an operator looking for a percentile needs to be
+        # told why it is absent rather than left to wonder.
+        "rollup_dims_json": _json.dumps(
+            [fc["name"] for fc in fact_cols
+             if fc.get("role") in ("dimension", "auto-dimension")]),
+        "rollup_measures_json": _json.dumps(_rollup_measure_choices(measures)),
         "current_source_id": pk,
         "current_source_name": ds["name"],
     }
@@ -1304,6 +1322,33 @@ def etl_forever_status(request, pk: int):
     except Exception as exc:
         return JsonResponse({"error": str(exc)}, status=500)
 
+
+def _rollup_measure_choices(measures) -> list[dict]:
+    """The measure catalogue as the Rollup Config picker needs it.
+
+    `count(*)` is left out: it is materialised by every rollup unconditionally
+    and is not a valid `rollup_measures` entry — offering it would be offering
+    a choice `validate_config` then rejects. Everything else is judged by
+    `ROLLUP_FUNCS`, the same tuple the validator uses, so the picker and the
+    validator cannot drift apart. A form that cannot be pre-aggregated is
+    still listed, disabled, with the reason: an operator looking for a
+    percentile needs to be told why it is missing rather than left to hunt.
+    """
+    out = []
+    for m in measures:
+        agg = (m["agg"] or "").strip()
+        if not agg or agg == "count(*)":
+            continue
+        func = agg.split("(", 1)[0]
+        derivable = func in ROLLUP_FUNCS
+        out.append({
+            "name": m["name"], "agg": agg, "derivable": derivable,
+            "reason": "" if derivable else (
+                "percentiles do not sum — ladder styles always read fact"
+                if func == "quantile" else
+                f"{func}() cannot be pre-aggregated"),
+        })
+    return out
 
 def _load_source(pk: int):
     """Load a Source object for ETL command views."""
@@ -4428,3 +4473,404 @@ def profile_apply(request, pk: int):
     return JsonResponse({"ok": True, "applied": True, "diff": diff,
                          "warnings": warnings, "profile": profile.name},
                         json_dumps_params={"default": str})
+
+
+# ── Rollup (pre-aggregation) ────────────────────────────────────────────────
+#
+# The split between what runs here and what gets spawned is not a style
+# choice. uwsgi's harakiri kills a worker at 120s and takes its other
+# in-flight requests with it, so `rollup_advise` (one exact pass over a day of
+# fact), `rollup_build --backfill` (hours) and `rollup_verify` (a matrix of
+# chart queries, half of them against fact) go out as detached subprocesses
+# the way an ETL run does. Reading state, saving the configuration and
+# dropping the tables finish in seconds and stay here.
+#
+# `rollup_drop` the *command* is deliberately not spawned: it calls input()
+# for its confirmation, and a spawned process has no stdin. The view calls
+# `drop_rollup_tables` directly and does the confirming in the browser.
+
+def _rollup_busy_response(pk: int):
+    """409 if a rollup run is already going for this datasource, else None.
+
+    Reaps rows whose process is gone first — a crashed run must not lock the
+    buttons out forever.
+    """
+    meta = _meta_engine()
+    rollup_run.reap_stale(meta, pk)
+    live = rollup_run.running_run(meta, pk)
+    if live:
+        return JsonResponse(
+            {"ok": False,
+             "error": f"a rollup {live['kind']} is already running"},
+            status=409)
+    return None
+
+
+def _spawn_rollup(pk: int, command: str, extra_args: list[str]):
+    """Spawn one rollup management command, ETL-style.
+
+    Reuses `spawn_etl_subprocess` unchanged: it takes an arbitrary argv, and
+    the per-run log file it opens is already served by `etl_log_tail`, so the
+    rollup tab links into the ETL Log sub-tab instead of growing a second
+    tailer.
+    """
+    ds = _load_datasource(pk)
+    cmd = [_PYTHON_EXE, "manage.py", command, "--name", ds["name"]] + extra_args
+    _proc, log_path = _spawn_etl_subprocess(cmd, os.environ.copy(),
+                                            datasource_name=ds["name"])
+    return JsonResponse({"ok": True, "status": "started",
+                         "log_path": log_path,
+                         "log_file": os.path.basename(log_path) if log_path else None})
+
+
+def _rollup_table_sizes(source) -> dict:
+    """`{table: {rows, size, bytes}}` for this datasource's rollup tables.
+
+    Same source as the Storage tab (`pg_stat_user_tables`), narrowed to the
+    rollup_ prefix — a rollup's size against fact's is the number the whole
+    configuration is chosen for, and making the operator switch tabs to see it
+    defeats the point.
+    """
+    out: dict = {}
+    with source.dest_engine().begin() as conn:
+        # Summed over the partition tree, not read off the parent: fact and
+        # every rollup are range-partitioned, and both pg_total_relation_size
+        # and n_live_tup on a partitioned parent are 0. The Storage tab gets
+        # away with the parent row because it lists every partition as its
+        # own line; here the whole point is one number per rollup.
+        rows = conn.execute(text("""
+            SELECT parent.relname AS tablename,
+                   COALESCE(SUM(s.n_live_tup), 0) AS approx_rows,
+                   pg_size_pretty(COALESCE(
+                       SUM(pg_total_relation_size(pt.relid)), 0)) AS total_size,
+                   COALESCE(SUM(pg_total_relation_size(pt.relid)), 0) AS total_bytes
+              FROM pg_class parent
+              JOIN pg_namespace ns ON ns.oid = parent.relnamespace
+              CROSS JOIN LATERAL pg_partition_tree(parent.oid) pt
+              LEFT JOIN pg_stat_user_tables s ON s.relid = pt.relid
+             WHERE ns.nspname = :schema
+               AND parent.relkind IN ('r', 'p')
+               AND NOT parent.relispartition
+               AND (parent.relname = 'fact'
+                    OR parent.relname LIKE 'rollup!_%' ESCAPE '!')
+             GROUP BY parent.relname
+        """), {"schema": source.schema_name}).mappings().all()
+    for r in rows:
+        # SUM() over bigints hands back a Decimal, which JsonResponse's
+        # default=str would ship as a quoted string the JS then cannot format.
+        out[r["tablename"]] = {"rows": int(r["approx_rows"] or 0),
+                               "size": r["total_size"],
+                               "bytes": int(r["total_bytes"] or 0)}
+    return out
+
+
+@_login_required_json
+def rollup_state(request, pk: int):
+    """Configuration plus per-table build state — what `rollup_config --show`
+    prints, as JSON, with the sizes and the danger span added.
+
+    Read-only and login-gated like every other status endpoint, so polling it
+    works for any signed-in user while the mutations above stay admin-only.
+    """
+    try:
+        source, meta = _load_source(pk)
+        states = read_rollup_states(meta, source.id)
+        sizes = _rollup_table_sizes(source)
+        specs = []
+        for spec in rollup_specs(source):
+            st = states.get(spec.name)
+            want = spec_hash(spec)
+            if st is None:
+                status = "not built"
+            elif st.spec_hash != want:
+                status = "stale"
+            elif st.built_through is None:
+                status = "empty"
+            else:
+                status = "usable"
+            size = sizes.get(spec.name) or {}
+            specs.append({
+                "name": spec.name,
+                "columns": list(spec.columns),
+                "measures": list(spec.measures),
+                "is_marginal": spec.is_marginal,
+                "status": status,
+                "built_from": st.built_from if st else None,
+                "built_through": st.built_through if st else None,
+                "rows_built": st.rows_built if st else 0,
+                "rows": size.get("rows"),
+                "size": size.get("size"),
+                "bytes": size.get("bytes"),
+            })
+
+        span = unreconstructable_span(source, states)
+        oldest, newest = rollup_extent(states)
+        fact = sizes.get("fact") or {}
+        return JsonResponse({
+            "ok": True,
+            "interval_s": source.rollup_interval_s,
+            "columns": list(source.rollup_columns),
+            "marginals": list(source.rollup_marginals),
+            "measures": list(source.rollup_measures),
+            "specs": specs,
+            "errors": validate_config(source),
+            "extent": {"oldest": oldest, "newest": newest},
+            "retention_floor": getattr(source, "retention_floor", None),
+            # The span the rollups hold but fact no longer does. Everything
+            # dangerous about this feature lives here: a rebuild reads fact,
+            # so below this line a drop or a rebuild cannot come back.
+            "unreconstructable": ({"from": span[0], "to": span[1]}
+                                  if span else None),
+            "fact": {"rows": fact.get("rows"), "size": fact.get("size"),
+                     "bytes": fact.get("bytes")},
+            "hwm": last_ok_hwm(meta, source.id),
+        }, json_dumps_params={"default": str})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_admin_required_json
+def rollup_config_save(request, pk: int):
+    """Write the configuration, mirroring `rollup_config`'s handle().
+
+    Validation runs against a *copy* of the Source, exactly as the command
+    does: a configuration that `validate_config` rejects must never reach the
+    datasource row, or the read path would be looking at a spec nothing can
+    build.
+    """
+    try:
+        source, meta = _load_source(pk)
+
+        def _list(field):
+            raw = request.POST.get(field)
+            if raw is None:
+                return None
+            return [p.strip() for p in raw.split(",") if p.strip()]
+
+        if request.POST.get("off") == "1":
+            interval = 0
+        else:
+            interval = request.POST.get("interval")
+            interval = int(interval) if interval else source.rollup_interval_s
+
+        columns = _list("columns")
+        marginals = _list("marginals")
+        measures = _list("measures")
+        columns = source.rollup_columns if columns is None else columns
+        marginals = source.rollup_marginals if marginals is None else marginals
+        measures = source.rollup_measures if measures is None else measures
+
+        if interval and not (columns or marginals):
+            return JsonResponse(
+                {"ok": False,
+                 "errors": ["pick at least one column or one marginal"]},
+                status=400)
+
+        probe = dataclasses.replace(
+            source, rollup_interval_s=interval, rollup_columns=columns,
+            rollup_marginals=marginals, rollup_measures=measures)
+        errors = validate_config(probe)
+        if errors:
+            return JsonResponse({"ok": False, "errors": errors}, status=400)
+
+        with meta.begin() as conn:
+            conn.execute(text("""
+                UPDATE starcubes_meta.datasource
+                   SET rollup_interval_s = :iv,
+                       rollup_columns    = CAST(:cols AS text[]),
+                       rollup_marginals  = CAST(:marg AS text[]),
+                       rollup_measures   = CAST(:meas AS text[])
+                 WHERE id = :id
+            """), {"id": pk, "iv": interval,
+                   "cols": "{" + ",".join(columns) + "}",
+                   "marg": "{" + ",".join(marginals) + "}",
+                   "meas": "{" + ",".join(measures) + "}"})
+
+        created = []
+        invalidated = []
+        if interval:
+            created = ensure_rollup_tables(probe, source.dest_engine(),
+                                           quiet=True)
+            states = read_rollup_states(meta, pk)
+            for spec in rollup_specs(probe):
+                st = states.get(spec.name)
+                if st is None or st.spec_hash != spec_hash(spec):
+                    # A hash change makes the stored rows describe a
+                    # different shape. Clearing the bounds is what sends the
+                    # read path back to fact until a build re-establishes them
+                    # — slower, never wrong.
+                    write_rollup_state(meta, pk, spec,
+                                       built_from=None, built_through=None)
+                    if st is not None:
+                        invalidated.append(spec.name)
+        return JsonResponse({"ok": True, "created": created,
+                             "invalidated": invalidated,
+                             "off": not interval})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_admin_required_json
+def rollup_advise_start(request, pk: int):
+    """Spawn `rollup_advise`. Read-only, so no datasource lock is involved."""
+    busy = _rollup_busy_response(pk)
+    if busy is not None:
+        return busy
+    try:
+        args = []
+        for field, flag in (("interval", "--interval"),
+                            ("window_buckets", "--window-buckets"),
+                            ("extrapolate_to", "--extrapolate-to"),
+                            ("target_factor", "--target-factor")):
+            val = (request.POST.get(field) or "").strip()
+            if val:
+                args += [flag, val]
+        return _spawn_rollup(pk, "rollup_advise", args)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_admin_required_json
+def rollup_build_start(request, pk: int):
+    """Spawn `rollup_build`.
+
+    The only rollup command that takes the datasource advisory lock, and it
+    holds it for the whole run. Refusing here with the ETL's own busy check
+    turns "blocked for hours on a lock" into a message that names the reason.
+    """
+    busy = _rollup_busy_response(pk) or _etl_busy_response(pk)
+    if busy is not None:
+        return busy
+    try:
+        args = []
+        if request.POST.get("backfill") == "1":
+            args.append("--backfill")
+        if request.POST.get("rebuild") == "1":
+            args.append("--rebuild")
+        if request.POST.get("force") == "1":
+            args.append("--force")
+        for field, flag in (("from_time", "--from"),
+                            ("batch_buckets", "--batch-buckets"),
+                            ("max_batches", "--max-batches")):
+            val = (request.POST.get(field) or "").strip()
+            if val:
+                args += [flag, val]
+        return _spawn_rollup(pk, "rollup_build", args)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_admin_required_json
+def rollup_verify_start(request, pk: int):
+    """Spawn `rollup_verify`. Read-only: it only asks the same question twice."""
+    busy = _rollup_busy_response(pk)
+    if busy is not None:
+        return busy
+    try:
+        args = []
+        for field, flag in (("days", "--days"), ("interval", "--interval")):
+            val = (request.POST.get(field) or "").strip()
+            if val:
+                args += [flag, val]
+        return _spawn_rollup(pk, "rollup_verify", args)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@_login_required_json
+def rollup_run_status(request, pk: int):
+    """Recent runs plus the newest advise/verify report.
+
+    The reports are fetched separately from the history rows: an advise report
+    carries every dimension and every ladder stage, and repeating it on twenty
+    history rows would make this poll far heavier than the thing it polls.
+    """
+    try:
+        meta = _meta_engine()
+        rollup_run.reap_stale(meta, pk)
+        return JsonResponse({
+            "ok": True,
+            "runs": rollup_run.recent_runs(meta, pk),
+            "advise": rollup_run.last_report(meta, pk, "advise"),
+            "verify": rollup_run.last_report(meta, pk, "verify"),
+        }, json_dumps_params={"default": str})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_admin_required_json
+def rollup_kill(request, pk: int):
+    """SIGTERM the running rollup command; `force=1` escalates to SIGKILL.
+
+    A build is interruptible by construction — every batch has committed and
+    moved `built_from`, so what exists is a valid rollup over a shorter range.
+    That is why this needs no confirmation dance beyond the second click.
+    """
+    try:
+        meta = _meta_engine()
+        live = rollup_run.running_run(meta, pk)
+        if not live:
+            return JsonResponse({"ok": False, "error": "No rollup running"},
+                                status=404)
+        pid = live["pid"]
+        if not pid or not _pid_alive(pid):
+            rollup_run.reap_stale(meta, pk)
+            return JsonResponse({"ok": True, "signal": None, "pid": pid})
+        force = request.POST.get("force") == "1"
+        try:
+            if force:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            else:
+                os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            return JsonResponse({"ok": False, "error": "Permission denied"},
+                                status=500)
+        if force:
+            # SIGKILL leaves no chance to close the row out, so this does it.
+            rollup_run.finish_run(meta, live["id"], "failed",
+                                  error="killed by user (force)")
+        return JsonResponse({"ok": True, "signal": "KILL" if force else "TERM",
+                             "pid": pid})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_admin_required_json
+def rollup_drop_tables(request, pk: int):
+    """Drop the rollup tables. Refuses the unreconstructable span without force.
+
+    Above `retention_floor` a rollup is a cache and this is fully reversible.
+    Below it, fact no longer holds the rows a rebuild would read, so the
+    aggregates are the only copy that exists — which is why the refusal names
+    the span rather than offering a checkbox.
+    """
+    busy = _rollup_busy_response(pk)
+    if busy is not None:
+        return busy
+    try:
+        source, meta = _load_source(pk)
+        states = read_rollup_states(meta, source.id)
+        span = unreconstructable_span(source, states)
+        if span and request.POST.get("force") != "1":
+            oldest, floor = span
+            return JsonResponse({
+                "ok": False,
+                "unreconstructable": {"from": oldest, "to": floor},
+                "error": (
+                    f"The rollups hold {oldest:%Y-%m-%d %H:%M} .. "
+                    f"{floor:%Y-%m-%d %H:%M}, below the retention floor. "
+                    f"fact no longer has those rows, so nothing can rebuild "
+                    f"that span once it is dropped."),
+            }, status=409, json_dumps_params={"default": str})
+        dropped = drop_rollup_tables(source, source.dest_engine(), meta)
+        return JsonResponse({"ok": True, "dropped": dropped})
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})

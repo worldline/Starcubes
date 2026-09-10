@@ -26,6 +26,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from sqlalchemy import text
 
+from core import rollup_run
 from core.query import LADDER_STYLES, timeseries_multibar
 from core.rollup import (floor_to_bucket, measure_expr, pick_rollup,
                          read_rollup_states, rollup_specs)
@@ -83,93 +84,135 @@ class Command(BaseCommand):
                      else [3600, 86400])
         cases = list(self._cases(source, intervals, window))
 
-        # One deliberately misaligned window per interval, alongside the
-        # aligned matrix. `pick_rollup` tests the window against the *bucket*
-        # width, not against the chart interval, so a day-bin request starting
-        # at 06:00 UTC is served and produces a partial first and last bin.
-        # The chart never asks that way (its blocks are calendar-aligned), but
-        # a hand-written URL, a bookmark or query_multibar can, and the two
-        # paths have to agree there too.
-        cases += [dict(c, offset_s=3600,
-                       label=c["label"] + " [misaligned +1h]")
-                  for c in cases if c["interval"] == 86400
-                  and c["group_by"] in (None, "response")
-                  and c["measure"] is None]
+        rollup_run.install_abort_handler()
+        run_id = rollup_run.start_run(
+            meta, source.id, "verify",
+            args={k: options[k] for k in ("interval", "days", "verbose")})
+        try:
+            # One deliberately misaligned window per interval, alongside the
+            # aligned matrix. `pick_rollup` tests the window against the *bucket*
+            # width, not against the chart interval, so a day-bin request starting
+            # at 06:00 UTC is served and produces a partial first and last bin.
+            # The chart never asks that way (its blocks are calendar-aligned), but
+            # a hand-written URL, a bookmark or query_multibar can, and the two
+            # paths have to agree there too.
+            cases += [dict(c, offset_s=3600,
+                           label=c["label"] + " [misaligned +1h]")
+                      for c in cases if c["interval"] == 86400
+                      and c["group_by"] in (None, "response")
+                      and c["measure"] is None]
 
-        self.stdout.write(
-            f"{source.name}: {len(cases)} case(s) over "
-            f"[{window[0]:%Y-%m-%d %H:%M} .. {window[1]:%Y-%m-%d %H:%M})")
+            self.stdout.write(
+                f"{source.name}: {len(cases)} case(s) over "
+                f"[{window[0]:%Y-%m-%d %H:%M} .. {window[1]:%Y-%m-%d %H:%M})")
 
-        passed = skipped = failed = 0
-        # Per interval, so a run whose window was too narrow to hold a single
-        # bucket of some interval says so. Without this, `--days 1` silently
-        # skips every day-bin case and still reports "0 failed", which reads
-        # like a complete pass over a matrix that was half untested.
-        tested_intervals: set[int] = set()
-        for case in cases:
-            t_from, t_to = self._align(window, case["interval"])
-            off = case.get("offset_s")
-            if off:
-                t_from += timedelta(seconds=off)
-                t_to += timedelta(seconds=off)
-            if t_to <= t_from:
-                skipped += 1
-                continue
-            tested_intervals.add(case["interval"])
-            graph_style = source.graph_style_for(case["measure"] or "count(*)")
-            if graph_style in LADDER_STYLES:
-                skipped += 1
-                continue
+            passed = skipped = failed = 0
+            # Collected as well as printed: the GUI shows this matrix, and a
+            # failure the operator has to act on must survive the log file it was
+            # printed into.
+            failures: list[dict] = []
+            done = 0
+            # Per interval, so a run whose window was too narrow to hold a single
+            # bucket of some interval says so. Without this, `--days 1` silently
+            # skips every day-bin case and still reports "0 failed", which reads
+            # like a complete pass over a matrix that was half untested.
+            tested_intervals: set[int] = set()
+            for case in cases:
+                done += 1
+                t_from, t_to = self._align(window, case["interval"])
+                off = case.get("offset_s")
+                if off:
+                    t_from += timedelta(seconds=off)
+                    t_to += timedelta(seconds=off)
+                if t_to <= t_from:
+                    skipped += 1
+                    continue
+                tested_intervals.add(case["interval"])
+                graph_style = source.graph_style_for(case["measure"] or "count(*)")
+                if graph_style in LADDER_STYLES:
+                    skipped += 1
+                    continue
 
-            spec = pick_rollup(
-                source, states,
-                group_by=case["group_by"], filter_tree=case["filter_tree"],
-                measure=case["measure"], graph_style=graph_style,
-                interval=case["interval"], t_from=t_from, t_to=t_to,
-                ladder_styles=LADDER_STYLES)
-            if spec is None:
-                skipped += 1
-                if options["verbose"]:
-                    self.stdout.write(f"  skip  {case['label']}")
-                continue
+                spec = pick_rollup(
+                    source, states,
+                    group_by=case["group_by"], filter_tree=case["filter_tree"],
+                    measure=case["measure"], graph_style=graph_style,
+                    interval=case["interval"], t_from=t_from, t_to=t_to,
+                    ladder_styles=LADDER_STYLES)
+                if spec is None:
+                    skipped += 1
+                    if options["verbose"]:
+                        self.stdout.write(f"  skip  {case['label']}")
+                    continue
 
-            common = dict(
-                group_by=case["group_by"] or "",
-                t_from=t_from, t_to=t_to, interval=case["interval"],
-                filter_tree=case["filter_tree"] or None,
-                measure=case["measure"], series_label="source_id",
-                graph_style=graph_style,
-            )
-            on_fact = timeseries_multibar(source, **common)
-            on_roll = timeseries_multibar(
-                source, **common,
-                rollup_table=spec.name,
-                rollup_value_expr=measure_expr(case["measure"], spec))
+                common = dict(
+                    group_by=case["group_by"] or "",
+                    t_from=t_from, t_to=t_to, interval=case["interval"],
+                    filter_tree=case["filter_tree"] or None,
+                    measure=case["measure"], series_label="source_id",
+                    graph_style=graph_style,
+                )
+                on_fact = timeseries_multibar(source, **common)
+                on_roll = timeseries_multibar(
+                    source, **common,
+                    rollup_table=spec.name,
+                    rollup_value_expr=measure_expr(case["measure"], spec))
 
-            diff = self._compare(on_fact["data"], on_roll["data"])
-            if diff is None:
-                passed += 1
-                if options["verbose"]:
-                    self.stdout.write(
-                        f"  ok    {case['label']}  via {spec.name}")
-            else:
-                failed += 1
-                self.stdout.write(self.style.ERROR(
-                    f"  FAIL  {case['label']}  via {spec.name}\n"
-                    f"        {diff}"))
+                diff = self._compare(on_fact["data"], on_roll["data"])
+                if diff is None:
+                    passed += 1
+                    if options["verbose"]:
+                        self.stdout.write(
+                            f"  ok    {case['label']}  via {spec.name}")
+                else:
+                    failed += 1
+                    failures.append({"label": case["label"], "table": spec.name,
+                                     "diff": diff})
+                    self.stdout.write(self.style.ERROR(
+                        f"  FAIL  {case['label']}  via {spec.name}\n"
+                        f"        {diff}"))
+                rollup_run.progress(
+                    meta, run_id,
+                    f"{done}/{len(cases)} cases — "
+                    f"{passed} passed, {skipped} skipped, {failed} failed")
 
-        self.stdout.write("")
-        untested = [iv for iv in intervals if iv not in tested_intervals]
-        if untested:
-            self.stdout.write(self.style.WARNING(
-                f"  interval(s) {', '.join(str(i) for i in untested)} were not "
-                f"tested at all: the window is narrower than one bucket. "
-                f"Widen it with --days."))
-        line = f"{passed} passed, {skipped} skipped (fact fallback), {failed} failed"
-        if failed:
-            self.stdout.write(self.style.ERROR(line))
-            raise SystemExit(1)
-        self.stdout.write(self.style.SUCCESS(line))
+            self.stdout.write("")
+            untested = [iv for iv in intervals if iv not in tested_intervals]
+            if untested:
+                self.stdout.write(self.style.WARNING(
+                    f"  interval(s) {', '.join(str(i) for i in untested)} were not "
+                    f"tested at all: the window is narrower than one bucket. "
+                    f"Widen it with --days."))
+            line = f"{passed} passed, {skipped} skipped (fact fallback), {failed} failed"
+            # The per-case updates stop at the last case that actually ran a
+            # query, so a matrix ending in skips would leave the row reading
+            # like it stalled part-way. This is the closing count.
+            rollup_run.progress(meta, run_id, f"{len(cases)} cases — {line}")
+            # `ok` even with failures: the command ran to completion and the
+            # answer it produced is the report. A `failed` row means the verify
+            # itself broke down, which is a different thing to look at.
+            rollup_run.finish_run(meta, run_id, "ok", report={
+                "passed": passed, "skipped": skipped, "failed": failed,
+                "cases": len(cases), "failures": failures,
+                "intervals": intervals, "untested_intervals": untested,
+                "window_from": window[0], "window_to": window[1],
+            })
+            if failed:
+                self.stdout.write(self.style.ERROR(line))
+                raise SystemExit(1)
+            self.stdout.write(self.style.SUCCESS(line))
+        except KeyboardInterrupt:
+            rollup_run.finish_run(meta, run_id, "failed",
+                                  error="killed by user")
+            raise
+        except SystemExit:
+            # The failure exit below is the command's own verdict, not a
+            # breakdown: the row is already closed as 'ok' with the matrix
+            # on it, and re-closing it would overwrite that with an error.
+            raise
+        except Exception as exc:
+            rollup_run.finish_run(meta, run_id, "failed", error=str(exc))
+            raise
 
     # ── matrix ──────────────────────────────────────────────────────────
 

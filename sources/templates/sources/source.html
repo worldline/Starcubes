@@ -40,6 +40,7 @@
     <button class="tab-btn expert-only" data-tab="indices">Indices ({{ indices|length }})</button>
     <button class="tab-btn expert-only" data-tab="storage">Storage</button>
     <button class="tab-btn expert-only" data-tab="etl">ETL</button>
+    <button class="tab-btn expert-only" data-tab="rollup">Rollup</button>
     {% endif %}
     <button class="tab-btn" data-tab="alarms">Alarms (<span id="alarmTabCount">{{ alarm_count }}</span>)</button>
     <button class="tab-btn" data-tab="firings">Firings</button>
@@ -835,6 +836,8 @@
 {% endif %}
 
 <!-- Alarms tab -->
+{% if expert_allowed %}{% include "sources/_rollup_panel.html" %}{% endif %}
+
 {% include "sources/_alarms_panel.html" %}
 
 {% comment %}
@@ -1006,6 +1009,15 @@ function activateTab(btn) {
     etlLogActivate();
   } else {
     etlLogStopPoll();
+  }
+  // Same arrangement one tab over: the Rollup panel polls a run's progress
+  // and must not keep doing it from a tab nobody is looking at. Guarded
+  // because the panel is superuser-only markup — on a Basic page the hooks
+  // do not exist.
+  if (btn.dataset.tab === 'rollup') {
+    if (window.rollupTabEntered) window.rollupTabEntered();
+  } else if (window.rollupTabLeft) {
+    window.rollupTabLeft();
   }
 }
 
@@ -2858,6 +2870,7 @@ function sortTable(th) {
 })();
 </script>
 {% include "sources/_alarms_js.html" %}
+{% if expert_allowed %}{% include "sources/_rollup_js.html" %}{% endif %}
 <script>
 // --- Detail level (Basic / Expert) ---
 // Only the visibility of already-rendered panels. What a non-superuser may

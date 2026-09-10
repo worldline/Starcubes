@@ -24,6 +24,7 @@ from django.core.management.base import BaseCommand
 from core.preflight import _check_indices
 from core.rollup import interval_label
 from core.rollup_advise import advise
+from core import rollup_run
 from core.source import Source, _get_cached_engine
 
 
@@ -89,6 +90,16 @@ class Command(BaseCommand):
         dest = source.dest_engine()
         as_json = options["json"]
 
+        # Recorded even for a shell-started run: the GUI reads this
+        # table, and an advise the operator ran by hand is exactly the
+        # report they will want to look at from a browser afterwards.
+        rollup_run.install_abort_handler()
+        run_id = rollup_run.start_run(
+            meta, source.id, "advise",
+            args={k: options[k] for k in
+                  ("interval", "window_buckets", "extrapolate_to",
+                   "target_factor", "stage")})
+
         # Missing indices make every measurement here scan the whole partition
         # instead of the window, which is both slow and misleading: the
         # operator would be comparing a rollup against a fact table in its
@@ -107,14 +118,31 @@ class Command(BaseCommand):
                 f"         run `manage.py create_indices --name {source.name}` "
                 f"first.\n"))
 
-        report = advise(
-            source, dest, meta,
-            interval_s=options["interval"],
-            window_buckets=options["window_buckets"],
-            extrapolate_to=options["extrapolate_to"],
-            progress=None if as_json else (
-                lambda m: self.stdout.write(f"  … {m}")),
-        )
+        # One callback, two consumers: the terminal (suppressed under
+        # --json, which must emit nothing but the report) and the run row the
+        # GUI polls. The measurement has no other progress to offer.
+        def say(message: str) -> None:
+            if not as_json:
+                self.stdout.write(f"  … {message}")
+            rollup_run.progress(meta, run_id, message)
+
+        try:
+            report = advise(
+                source, dest, meta,
+                interval_s=options["interval"],
+                window_buckets=options["window_buckets"],
+                extrapolate_to=options["extrapolate_to"],
+                progress=say,
+            )
+        except KeyboardInterrupt:
+            rollup_run.finish_run(meta, run_id, "failed",
+                                  error="killed by user")
+            raise
+        except Exception as exc:
+            rollup_run.finish_run(meta, run_id, "failed", error=str(exc))
+            raise
+        rollup_run.finish_run(meta, run_id, "ok",
+                              report=dataclasses.asdict(report))
 
         if as_json:
             self.stdout.write(json.dumps(dataclasses.asdict(report),

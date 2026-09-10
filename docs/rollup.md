@@ -193,6 +193,19 @@ sequence is deliberately staggered.
 5. `manage.py rollup_build --name <ds> --backfill`
 6. From here the ETL hook advances it after every load.
 
+The same five steps are the five sub-tabs of the **Rollup tab** on
+`/sources/<pk>/manage/` — Status, Advise, Config, Build, Verify — in that
+order, and the Advise report's ladder carries a button per stage that fills
+the Config form with it. The GUI is a second front end on these commands, not
+a second implementation: `advise`, `build` and `verify` are spawned as
+detached subprocesses (they run for minutes to hours, and a web request
+cannot), so a run started from either side looks the same from the other.
+`starcubes_meta.rollup_run` is where they say so — one row per run, with the
+`Advice` and the verify matrix stored as JSON, which is what lets a
+measurement outlive the terminal it was printed in. See
+[`docs/sources-app.md`](sources-app.md) for the endpoints and the two traps
+(`rollup_drop` prompts on stdin; `rollup_build` holds the datasource lock).
+
 `manage.py rollup_config --show` prints the configuration and each table's
 state (`usable`, `empty`, `STALE (config changed)`, `not built`).
 

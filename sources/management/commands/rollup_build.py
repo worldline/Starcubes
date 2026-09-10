@@ -35,6 +35,7 @@ from django.core.management.base import BaseCommand
 from sqlalchemy import text
 
 from core.preflight import datasource_lock
+from core import rollup_run
 from core.rollup import (RollupState, build_window, final_through,
                          floor_to_bucket, last_ok_hwm, read_rollup_states,
                          refresh_rollups, rollup_specs, spec_hash,
@@ -53,6 +54,11 @@ def _fmt(n: float) -> str:
 
 class Command(BaseCommand):
     help = "Fill the pre-aggregation tables for a datasource."
+
+    # Set by handle() before any _say(); the helpers below run only from
+    # there, but a None run_id is a no-op in core.rollup_run either way.
+    _meta = None
+    _run_id = None
 
     def add_arguments(self, parser):
         parser.add_argument("--name", default=None)
@@ -99,6 +105,36 @@ class Command(BaseCommand):
         dest = source.dest_engine()
         iv = int(source.rollup_interval_s)
 
+        # Started before the lock on purpose: `datasource_lock` raises when an
+        # ETL already holds it, and "refused because the datasource was busy"
+        # is exactly the outcome the history should carry.
+        self._meta = meta
+        rollup_run.install_abort_handler()
+        self._run_id = rollup_run.start_run(
+            meta, source.id, "build",
+            args={k: options[k] for k in
+                  ("backfill", "rebuild", "t_from", "batch_buckets",
+                   "max_batches", "force")})
+        try:
+            self._build(source, dest, meta, specs, iv, dsn, options)
+        except KeyboardInterrupt:
+            # Inside the backfill loop this never fires — _backfill treats an
+            # interrupt as a clean stop, because every batch has committed and
+            # what exists is a valid rollup over a shorter range. This is a
+            # kill anywhere else: the forward pass, the rebuild's discard, or
+            # while waiting for the datasource lock.
+            rollup_run.finish_run(self._meta, self._run_id, "failed",
+                                  error="killed by user")
+            self.stderr.write("killed by user")
+            raise SystemExit(1)
+        except Exception as exc:
+            rollup_run.finish_run(self._meta, self._run_id, "failed",
+                                  error=str(exc))
+            raise
+        rollup_run.finish_run(self._meta, self._run_id, "ok")
+        self.stdout.write(f"{source.name}: done")
+
+    def _build(self, source, dest, meta, specs, iv, dsn, options) -> None:
         with datasource_lock(dsn, source.id, holder="rollup_build"):
             hwm = last_ok_hwm(meta, source.id)
             through = final_through(source, hwm, iv)
@@ -133,7 +169,7 @@ class Command(BaseCommand):
             # the backfill would have no upper anchor to walk down from.
             fwd = refresh_rollups(source, dest, meta, hwm=hwm, quiet=True)
             for b in fwd["built"]:
-                self.stdout.write(
+                self._say(
                     f"  forward  {b['rollup']:<24} +{_fmt(b['rows']):>12} rows "
                     f"[{b['from']:%Y-%m-%d %H:%M} .. {b['through']:%Y-%m-%d %H:%M})")
             if not fwd["built"]:
@@ -142,9 +178,17 @@ class Command(BaseCommand):
             if options["backfill"] or options["rebuild"]:
                 self._backfill(source, dest, meta, specs, iv, through, options)
 
-        self.stdout.write(f"{source.name}: done")
-
     # ── helpers ─────────────────────────────────────────────────────────
+
+    def _say(self, line: str) -> None:
+        """Print a progress line and put it on the run row.
+
+        A backfill works backwards through the whole history one batch at a
+        time and can run for hours. Without the line on the row, the only
+        thing separating slow progress from a hung process is the log file.
+        """
+        self.stdout.write(line)
+        rollup_run.progress(self._meta, self._run_id, line.strip())
 
     def _discard(self, source, dest, meta, specs) -> None:
         """Empty the tables and forget the bounds, keeping the tables.
@@ -242,16 +286,17 @@ class Command(BaseCommand):
                         built_through=built_through, rows_built=rows_built)
                 n_batches += 1
                 done = (through - lo_batch).total_seconds()
-                self.stdout.write(
+                self._say(
                     f"  backfill [{lo_batch:%Y-%m-%d %H:%M} .. "
                     f"{hi_batch:%Y-%m-%d %H:%M})  +{_fmt(rows):>12} rows  "
                     f"{100.0 * done / total:5.1f}%")
         except KeyboardInterrupt:
             # Every batch has already committed and moved built_from, so what
             # exists is a valid rollup over a shorter range. Nothing to undo.
-            self.stdout.write(self.style.WARNING(
-                f"\n  backfill interrupted after {n_batches} batch(es). "
-                f"What was built is usable; re-run to continue."))
+            msg = (f"backfill interrupted after {n_batches} batch(es). "
+                   f"What was built is usable; re-run to continue.")
+            self.stdout.write(self.style.WARNING(f"\n  {msg}"))
+            rollup_run.progress(self._meta, self._run_id, msg)
             return
         self.stdout.write(
             f"  backfill {n_batches} batch(es) in "

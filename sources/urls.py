@@ -57,6 +57,18 @@ urlpatterns = [
     path("<int:pk>/etl/audit-id-details/",              views.etl_audit_id_details,  name="etl_audit_id_details"),
     path("<int:pk>/etl/backfill/",                      views.etl_backfill,          name="etl_backfill"),
     path("<int:pk>/cache/clear/",                       views.cache_clear,           name="cache_clear"),
+
+    # Rollup (pre-aggregation). advise/build/verify are spawned as detached
+    # subprocesses — they run for minutes to hours and would hit uwsgi's
+    # harakiri. state/config/drop finish inside the request.
+    path("<int:pk>/rollup/state/",                      views.rollup_state,          name="rollup_state"),
+    path("<int:pk>/rollup/config/",                     views.rollup_config_save,    name="rollup_config_save"),
+    path("<int:pk>/rollup/advise/",                     views.rollup_advise_start,   name="rollup_advise_start"),
+    path("<int:pk>/rollup/build/",                      views.rollup_build_start,    name="rollup_build_start"),
+    path("<int:pk>/rollup/verify/",                     views.rollup_verify_start,   name="rollup_verify_start"),
+    path("<int:pk>/rollup/status/",                     views.rollup_run_status,     name="rollup_run_status"),
+    path("<int:pk>/rollup/kill/",                       views.rollup_kill,           name="rollup_kill"),
+    path("<int:pk>/rollup/drop/",                       views.rollup_drop_tables,    name="rollup_drop_tables"),
     # Fact columns CRUD (JSON)
     path("<int:pk>/fact-columns/<int:fc_id>/estimate-cardinality/", views.estimate_cardinality, name="fc_estimate_cardinality"),
     path("<int:pk>/fact-columns/add/",                  views.fc_add,    name="fc_add"),

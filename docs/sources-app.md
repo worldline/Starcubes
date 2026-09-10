@@ -94,7 +94,7 @@ The `/sources/` UI splits along three axes:
 | Any user          | `/sources/<pk>/`              | The datasource page at the remembered detail level. Basic = Basics (read-only) + Group Dims, Measures, Alarms, Firings — the last three full CRUD |
 | Any user          | `/sources/alarms/firings/`    | Global firing-episode overview (`?show=open` for the live breaches) |
 | Any user          | `/sources/<pk>/?tab=firings`  | The same overview scoped to one datasource (`&show=open` likewise) |
-| Superuser         | `/sources/<pk>/manage/`       | The same page forced to Expert: 11 tabs, adding Fact Columns, Dimensions, Dim Data, Indices, Storage and ETL (itself sub-tabbed into Run / Maintenance / Schema / Audit / History / Log) |
+| Superuser         | `/sources/<pk>/manage/`       | The same page forced to Expert: 12 tabs, adding Fact Columns, Dimensions, Dim Data, Indices, Storage, ETL (sub-tabbed into Run / Maintenance / Schema / Audit / History / Log) and Rollup (sub-tabbed into Status / Advise / Config / Build / Verify) |
 | Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
 | Superuser         | `/sources/profiles/`          | Profile catalogue + upload (replaces the modal that used to live on `list.html`) |
 | Logged-in user    | `/sources/me/`                | Own profile, password change, alarm-channel opt-in (email/XMPP), query history    |
@@ -174,8 +174,9 @@ Notes:
   (Basic: Basics, Group Dims, Measures, Alarms, Firings). Basics is read-only;
   Group Dims, Measures and Alarms are editable by any signed-in user — that is
   the point of the page, and their endpoints are login-only.
-- `GET /sources/<pk>/manage/` — the same page forced to Expert (11 tabs; ETL
-  run / audit / history / log are sub-tabs of ETL) (superuser only)
+- `GET /sources/<pk>/manage/` — the same page forced to Expert (12 tabs; ETL
+  run / audit / history / log are sub-tabs of ETL, and the pre-aggregation's
+  five commands are sub-tabs of Rollup) (superuser only)
 - `GET/POST /sources/<pk>/edit/` — edit scalar fields (superuser only)
 - `POST /sources/<pk>/delete/` — delete (CASCADE in DB) (superuser only)
 
@@ -297,6 +298,33 @@ crashed/orphaned sessions are revived.
   History and the live monitor all work unchanged. Guarded by the same
   "already running / forever active" 409 check as `etl/run/`
   (`_etl_busy_response`, shared between the two views).
+
+### JSON: rollup (pre-aggregation)
+The five `rollup_*` management commands, split by how long they run. See
+[`docs/rollup.md`](rollup.md) for what the numbers mean and
+[the gotcha below](#gotchas) for why the split is not a style choice.
+- `GET  .../rollup/state/` — the configuration plus per-table build state:
+  what `rollup_config --show` prints, as JSON, with the table sizes
+  (summed over the partition tree, not read off the parent) and
+  `unreconstructable_span` added. Login-only, like every status endpoint.
+- `POST .../rollup/config/` — `interval`, `columns`, `marginals`, `measures`
+  (comma-separated), or `off=1`. Validates against a `dataclasses.replace`
+  copy of the `Source` before writing, exactly as `rollup_config` does, and
+  returns `{ok: false, errors: [...]}` from `validate_config` on rejection.
+  Then `ensure_rollup_tables` and, for every spec whose hash changed, a
+  `write_rollup_state` with both bounds cleared.
+- `POST .../rollup/advise/` — spawns `rollup_advise`
+- `POST .../rollup/build/` — spawns `rollup_build`; `backfill`, `rebuild`,
+  `force`, `from_time`, `batch_buckets`, `max_batches`
+- `POST .../rollup/verify/` — spawns `rollup_verify`; `days`, `interval`
+- `GET  .../rollup/status/` — the last 20 `rollup_run` rows plus the newest
+  successful `advise` and `verify` report. The reports are fetched separately
+  from the history rows on purpose: an advise report carries every dimension
+  and every ladder stage, and repeating it twenty times would make this poll
+  heavier than what it polls.
+- `POST .../rollup/kill/` — SIGTERM the running command, `force=1` for SIGKILL
+- `POST .../rollup/drop/` — `drop_rollup_tables`. Refuses a span below
+  `retention_floor` with 409 and the span named, unless `force=1`.
 
 ### JSON: schema
 - `POST .../create-fact/` — create the fact table + initial partitions
@@ -629,6 +657,39 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   per-filename byte offset so re-fetches are incremental; a `truncated`
   response (the server-side `core/etl.py:_bound_log_size` shrank the file)
   resets to offset 0 and clears the pane instead of appending garbage.
+- **Rollup tab: three commands run out of process, two run in it.**
+  `docker/uwsgi.ini` sets `harakiri = 120`, which kills the whole worker
+  *process* and takes its other in-flight requests with it. `rollup_advise`
+  (one exact pass over a window of `fact`), `rollup_build --backfill` (hours)
+  and `rollup_verify` (a matrix of chart queries, half of them against `fact`)
+  therefore go out through `spawn_etl_subprocess` — the same detached-spawn
+  path an ETL run uses, argv and all — while `rollup_config`, `rollup_drop`
+  and the state read stay inside the request. Two further traps behind that:
+    - **`rollup_drop` the command calls `input()`** (`rollup_drop.py:75`) for
+      its confirmation. A spawned process has no stdin, so it would hang. The
+      view calls `drop_rollup_tables()` directly and confirms in the browser.
+    - **`rollup_build` holds the datasource advisory lock for the whole run**
+      (`holder="rollup_build"`), so it collides with an ETL. Its view runs
+      `_etl_busy_response` as well as the rollup's own busy check, which turns
+      "blocked on a lock" into a message that names the reason. `advise` and
+      `verify` are read-only and take no lock.
+- **A killed rollup command closes its own row** — `install_abort_handler`
+  in `core/rollup_run.py` turns SIGTERM/SIGINT into a `KeyboardInterrupt`, the
+  same trick `etl_run.py:_abort_signal_handler` uses. Without it the default
+  disposition kills the command outright, `finish_run` never happens, and the
+  row is stuck on `running`: nothing waits on these children, so the pid
+  lingers as a **zombie** and `core/utils.py:_pid_alive` — `os.kill(pid, 0)`,
+  the only portable liveness test — reports it alive forever. `reap_stale`
+  additionally reads `/proc/<pid>/stat` to tell a zombie from a live process,
+  but that is the backstop; the handler is the fix.
+- **`.action-result` is `display:none` without a modifier.** Only `.ok`,
+  `.err`, `.banner` and (since the Rollup tab) `.warn` make it visible. A
+  banner written with the class alone renders into the DOM and is simply
+  never seen — which is exactly how the retention-floor notice first shipped.
+- **Rollup and fact sizes are summed over `pg_partition_tree`**, not read
+  off the parent row: both are range-partitioned, and `pg_total_relation_size`
+  and `n_live_tup` on a partitioned parent are 0. The Storage tab gets away
+  with the parent because it lists every partition as its own line.
 - **Profile-handoff query params**: `source.html` reads
   `?apply=<slug>` and `?save-profile=1` once its profile IIFE has wired
   `saveDialog` / `applyDialog`. The catalogue page can therefore deep-link
