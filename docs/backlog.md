@@ -161,3 +161,98 @@ Three items below are cross-referenced from it.
   `create_indices` builds foreign keys only for `primary_dimensions()`, while
   several fact columns can share one dim table — a repair has to cover every
   column pointing at the table, or the non-primary ones stay broken.
+
+- **`starcubes_meta.datasource` grows a column per tuning knob.** The table
+  is at **35 columns**, and every new per-source parameter adds one. Counted
+  honestly, though, the `ALTER TABLE` is the cheap part. A new parameter
+  (measured on `max_run_s`, commits `371b5dc` + `4f0c8d3`) repeats its own
+  name at **eight** sites: the per-step migration, the mirror block in
+  `migrations/starcubes_meta.sql`, the `SELECT` list *and* the dataclass
+  field in `core/source.py`, the `UPDATE SET` line plus its bind parameter in
+  `sources/views.py` (and often the `INSERT` too), the `form-group` block in
+  `edit.html`, sometimes `new.html`, the `_SOURCE_TEXT_FIELDS` /
+  `_SOURCE_INT_FIELDS` tuples in `core/profile.py`, and the docs.
+
+  A key/value table (`datasource_id, key, value` — keyed on the id, not
+  `schema_name`, so the `ON DELETE CASCADE` and the existing joins survive)
+  removes the first two sites and half the third: roughly **a quarter** of
+  the per-parameter work. The other three quarters are the form field, the
+  validation, the UPDATE mapping and the profile export, none of which the
+  schema change touches. `app_config` (migration 0031, resolved by
+  `core/config.py`) is the precedent for the KV half and shows the pattern
+  works — including "row absent = default", defined once in Python.
+
+  Only **23** of the 35 columns are eligible. Seven are identity/structure
+  (`id`, `name`, `schema_name`, `source_dialect`, `source_dsn`,
+  `created_at`, `updated_at`) and five carry DB semantics a KV row cannot
+  express or should not hold: `is_default` (partial unique index),
+  `cache_epoch` (hot `UPDATE … RETURNING` counter), and `retention_floor` /
+  `dedupe_from` / `dim_refreshed_at`, which are runtime *state* written
+  mid-run, not configuration.
+
+  The costs, so nobody rediscovers them: types collapse to `text`, so
+  `interval_ladder int[]`, `bar_pixel_target real`, the timestamps and the
+  booleans all need parsing on read, and the three CHECK constraints
+  (`partition_period`, the `schema_name` regex, `wallclock_lag_check`) move
+  into application code. About eight read sites need a pivot instead of a
+  column reference — `core/etl.py` (5×), `core/housekeeping.py`,
+  `core/preflight.py`, `core/pipeline_alarm.py`, `sources/alarm_notify.py`,
+  `sources/views.py`. The templates, happily, need nothing: `_load_datasource`
+  (`sources/views.py:140`, `:3793`) is a `SELECT *` feeding the template
+  context, so merging the KV rows into that dict keeps `{{ ds.max_run_s }}`
+  working unchanged.
+
+  Three shapes, evaluated:
+
+  * **A — KV table only.** 1–2 days. Buys two SQL blocks per parameter, pays
+    with type safety. A bad trade; recorded so it is not proposed again.
+  * **B — a parameter registry in Python, columns stay.** One declarative
+    table (name, type, default, validator, label, hint, profile-exportable)
+    that `Source.load`, the `UPDATE`, the form rendering and the profile
+    export are *generated* from. A new parameter becomes one registry row
+    plus the one-line `ALTER`. **~1 day, ~75% of the benefit, no data
+    migration, types and CHECKs intact.**
+  * **C — B plus KV for the 23 knobs.** One more day for the unpivot
+    `INSERT … SELECT`, the `DROP COLUMN`s, the pivot sites, `seed_example.py`
+    and the files in `profiles/`. Afterwards a parameter costs exactly one
+    registry row and the mirror-block contract enforced by
+    `check_migration_mirror` stops growing.
+
+  Build **B, leave C open**: B is a pure Python restructuring, reversible,
+  and it makes the remaining one-line `ALTER` easy to price honestly. If it
+  still grates afterwards, C is a mechanical follow-up because every read
+  site already goes through the registry by then.
+
+## Grouped-dimension merge sums averages and extremes
+
+`core/query.py`'s `group_by_grouped` branch merges per-index rows into group
+names with `d[gname] = d.get(gname, 0) + v`. That is correct for `count(*)`
+and `sum()`, and wrong for the other three `MEASURE_FUNCS`: it adds the
+*averages* of the group members, and adds their minima and maxima instead of
+taking the extreme of the extremes. The example catalogue contains exactly
+this combination (`Avg stay | avg(stay) | multibar`).
+
+Predates pre-aggregation and lives on the `fact` path; `core/rollup.py`
+reproduces it deliberately so `rollup_verify`'s equivalence comparison stays
+meaningful. Fixing it means changing both paths in one commit: on `fact`
+project `sum(col)`/`count(col)` instead of `avg(col)` and merge weighted, and
+merge `min`/`max` with `min()`/`max()` instead of `+`. The rollup path is then
+the easier of the two, since it already stores `sum_<col>` and `n`.
+
+Not reproducible on the example datasource as it stands — no `dim_group_set`
+is defined there, so the branch cannot be reached without creating one first.
+
+## The missing-index warning has no trigger outside an ETL run
+
+U10 (`core/preflight._check_indices`) reports a fact table missing its indices
+and names the command that fixes it, but preflight only runs as part of a
+load. The state right after the initial load is *by definition* the one
+without indices (they are dropped for the load), and the check that would
+notice runs at the start of the *next* load. A datasource loaded once and then
+left alone never reports it — which is how `payments` sat at 3.9M rows over
+~2500 hours with no index on `create_time` and a chart query 25x slower than
+it needed to be.
+
+Calling U10 from `run_housekeeping` as well would close it: housekeeping is
+periodic, already collects warnings into `report["warnings"]`, and the check
+is read-only.

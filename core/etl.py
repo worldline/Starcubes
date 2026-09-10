@@ -1834,6 +1834,19 @@ def _raise_retention_floor(source: Source, meta_engine,
             "   SET retention_floor = greatest("
             "         coalesce(retention_floor, :f), :f) "
             " WHERE id = :ds"), {"ds": source.id, "f": floor})
+
+    # The rollups are deliberately *not* clamped here. Their rows were
+    # computed from the raw data while it existed, so they stay correct after
+    # disposal -- and at roughly two orders of magnitude smaller than `fact`,
+    # keeping them is close to free. Aggregates outliving the rows they came
+    # from is the point, not an accident: retention can be aggressive on
+    # `fact` while the chart keeps years of counts.
+    #
+    # The consequence is that below `retention_floor` a rollup is no longer a
+    # cache but the *only* copy. `rollup_drop` and `rollup_build --rebuild`
+    # know this and refuse to destroy that span without --force, and
+    # `chart_meta` widens the offered range to reach it.
+
     if not quiet:
         logger.info("%s: retention floor now %s", source.name, floor)
 
@@ -2063,6 +2076,18 @@ def delete_fact_from(source: Source, dest_engine, from_time: datetime, *,
         _arm_dedupe(source, meta_engine, from_time, quiet=quiet)
         rewind_highwatermark(source, meta_engine, from_time,
                              reason="delete_fact_from", quiet=quiet)
+        # The rollups have to forget the same span. A rewind, not an
+        # invalidation: the stale buckets simply fall outside
+        # [built_from, built_through) until the next ETL hook rebuilds them
+        # from the reloaded rows, so no rebuild has to be scheduled and
+        # nothing below the rewind point is disturbed.
+        try:
+            from .rollup import rewind_rollup_state
+            rewind_rollup_state(meta_engine, source.id, from_time)
+        except Exception:
+            logger.exception("%s: could not rewind the rollups to %s -- run "
+                             "`manage.py rollup_build --rebuild`",
+                             source.name, from_time)
     bump_cache_epoch(meta_engine, source.id)
     if not quiet:
         logger.info("%s: deleted %d rows from %s", source.name, n, from_time)

@@ -27,6 +27,8 @@ from core.query import (build_chart_sql, build_chart_sql_rendered,
                         list_transactions, resolve_group_set,
                         split_grouped_col, timeseries_multibar,
                         timeseries_quantiles)
+from core.rollup import (measure_expr, pick_rollup, read_rollup_states,
+                         rollup_extent)
 from core.schema import UNKNOWN_SOURCE_ID
 from core.source import Source, _get_cached_engine
 from core.utils import _parse_dt
@@ -307,6 +309,24 @@ def plot_json(request):
                 graph_style=graph_style,
             )
         else:
+            # Pre-aggregation, after the cache miss and before the query is
+            # built: a rollup that covers this request answers it from far
+            # fewer rows. `pick_rollup` returning None is the normal case and
+            # not an error — the read path then reads `fact`, which is always
+            # correct. Skipped entirely when the datasource has no rollup
+            # configured, so the common installation pays no extra round trip.
+            rollup_table = rollup_value_expr = None
+            if source.rollup_interval_s:
+                spec = pick_rollup(
+                    source, read_rollup_states(meta, source.id),
+                    group_by=group_by_raw, filter_tree=filter_tree,
+                    measure=measure, graph_style=graph_style,
+                    interval=interval, t_from=t_from, t_to=t_to,
+                    ladder_styles=LADDER_STYLES)
+                if spec is not None:
+                    rollup_table = spec.name
+                    rollup_value_expr = measure_expr(measure, spec)
+
             plot = timeseries_multibar(
                 source,
                 group_by=group_by,
@@ -321,6 +341,8 @@ def plot_json(request):
                 group_by_groups=group_by_groups,
                 group_counts=group_counts,
                 graph_style=graph_style,
+                rollup_table=rollup_table,
+                rollup_value_expr=rollup_value_expr,
             )
         if cache_key is not None:
             put_cached_plot(meta, cache_key=cache_key,
@@ -611,7 +633,17 @@ def api_source_meta(request):
         # retired. Clamp the advertised extent to the retention floor, or the
         # chart offers a range where fact is empty on purpose and a user
         # reads it as data loss.
+        #
+        # Rollups are the exception, and the reason this is not a plain clamp
+        # any more: retention deliberately leaves them alone, so below the
+        # floor they hold counts that are still correct — computed while the
+        # raw rows existed. The extent therefore reaches to whichever is
+        # older, and `rollup_only_below` tells the chart where the answers
+        # get thinner: counts and breakdowns over the rollup's columns still
+        # work there, percentiles, drill-down and filters on columns outside
+        # it do not.
         wm = dict(wm)
+        rollup_only_below = None
         if source.retention_floor is not None and wm["lo"] is not None:
             floor = source.retention_floor
             if floor.tzinfo is None:
@@ -619,13 +651,25 @@ def api_source_meta(request):
             lo = wm["lo"]
             if lo.tzinfo is None:
                 lo = lo.replace(tzinfo=timezone.utc)
-            wm["lo"] = max(lo, floor)
+            limit = floor
+            if source.rollup_interval_s:
+                oldest, _newest = rollup_extent(
+                    read_rollup_states(_meta_engine(), source.id))
+                if oldest is not None and oldest < floor:
+                    limit = oldest
+                    rollup_only_below = int(floor.timestamp())
+            wm["lo"] = max(lo, limit)
 
         return JsonResponse({
             "id":                       source.id,
             "name":                     source.name,
             "schema_name":              source.schema_name,
             "partition_column":         source.partition_column,
+            # Unix seconds below which only the rollups answer, or null.
+            # Everything under it still has counts and breakdowns over the
+            # rollup's columns; percentiles, drill-down and filters on other
+            # columns return nothing there, because fact is empty on purpose.
+            "rollup_only_below":        rollup_only_below,
             "fact_columns":             fact_cols,
             "dimensions":               dimensions,
             "dim_group_sets":           dim_group_sets,

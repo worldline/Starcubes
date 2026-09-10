@@ -105,14 +105,23 @@ def _prev_period(dt: datetime, period: str) -> datetime:
     raise ValueError(f"unknown partition_period {period!r}")
 
 
-def _partition_name(period: str, dt: datetime) -> str:
+def _partition_name(period: str, dt: datetime, prefix: str = "fact") -> str:
+    """Partition name for `dt` under `period`.
+
+    `prefix` is the partitioned table's own name. It defaults to "fact"
+    because that was the only partitioned table for a long time; the rollup
+    tables (core/rollup.py) are ranged on the same periods and reuse this so
+    both live on one naming contract. Note that `_parse_partition_name` only
+    reads the fact ones — nothing needs to parse a rollup partition name back
+    into a date.
+    """
     if period == "month":
-        return f"fact_y{dt.year}m{dt.month:02d}"
+        return f"{prefix}_y{dt.year}m{dt.month:02d}"
     if period == "week":
         iso_y, iso_w, _ = dt.isocalendar()
-        return f"fact_y{iso_y}w{iso_w:02d}"
+        return f"{prefix}_y{iso_y}w{iso_w:02d}"
     if period == "day":
-        return f"fact_y{dt.year}m{dt.month:02d}d{dt.day:02d}"
+        return f"{prefix}_y{dt.year}m{dt.month:02d}d{dt.day:02d}"
     raise ValueError(f"unknown partition_period {period!r}")
 
 
@@ -748,14 +757,19 @@ def read_dimensions(source: Source, dest_engine
     return frames, unknowns
 
 
-def list_fact_partitions(source: Source, dest_engine) -> list[str]:
-    """Return names of all fact child partitions, oldest first.
+def list_fact_partitions(source: Source, dest_engine,
+                         table: str = "fact") -> list[str]:
+    """Return names of all child partitions of ``{schema}.{table}``, oldest first.
 
     Queries pg_inherits + pg_class for child tables of ``{schema}.fact``.
     All three naming conventions (``fact_yYYYYmMM``, ``fact_yIIIIwWW``,
     ``fact_yYYYYmMMdDD``) sort chronologically via plain string order
     within a single partition_period; mixing periods on one source is
     not supported.
+
+    ``table`` names the partitioned parent, defaulting to the fact table.
+    The rollup tables (core/rollup.py) are ranged on the same periods with
+    the same name suffixes, so they read their partitions through here too.
     """
     schema = source.schema_name
     with dest_engine.connect() as conn:
@@ -765,9 +779,9 @@ def list_fact_partitions(source: Source, dest_engine) -> list[str]:
             "  JOIN pg_class parent ON i.inhparent = parent.oid "
             "  JOIN pg_class child  ON i.inhrelid = child.oid "
             "  JOIN pg_namespace ns ON parent.relnamespace = ns.oid "
-            " WHERE ns.nspname = :s AND parent.relname = 'fact' "
+            " WHERE ns.nspname = :s AND parent.relname = :t "
             " ORDER BY child.relname"
-        ), {"s": schema}).scalars().all()
+        ), {"s": schema, "t": table}).scalars().all()
     return list(rows)
 
 
@@ -826,7 +840,10 @@ def _to_naive_local(dt: datetime) -> datetime:
 
 def ensure_partitions_for(source: Source, dest_engine, start: datetime, end: datetime,
                           *, back: int = 1, forward: int = 1,
-                          quiet: bool = False) -> list[str]:
+                          quiet: bool = False,
+                          table: str = "fact",
+                          unlogged: bool = True,
+                          require_existing: bool = True) -> list[str]:
     """Create every partition covering [start, end] plus a back/forward buffer.
 
     Unlike ``create_future_partitions(n)``, which appends *n* periods past
@@ -873,9 +890,15 @@ def ensure_partitions_for(source: Source, dest_engine, start: datetime, end: dat
     """
     schema = source.schema_name
     period = source.partition_period
-    existing = set(list_fact_partitions(source, dest_engine))
-    if not existing:
-        raise RuntimeError(f"{schema}.fact has no partitions — run create_fact first")
+    existing = set(list_fact_partitions(source, dest_engine, table=table))
+    if not existing and require_existing:
+        # For `fact` an empty partition list means create_fact never ran, and
+        # creating partitions under that assumption would paper over it. A
+        # rollup table legitimately starts with none — `ensure_rollup_tables`
+        # creates the parent and then calls this to populate it, so it passes
+        # require_existing=False.
+        raise RuntimeError(
+            f"{schema}.{table} has no partitions — run create_fact first")
 
     cur = _floor_to_period(_to_naive_local(start), period)
     for _ in range(back):
@@ -895,12 +918,13 @@ def ensure_partitions_for(source: Source, dest_engine, start: datetime, end: dat
                     f"{_MAX_ENSURE_PARTITIONS} partitions for window "
                     f"[{start}, {end}] at period {period!r} — check the "
                     f"high watermark / partition_period configuration")
-            name = _partition_name(period, cur)
+            name = _partition_name(period, cur, prefix=table)
             nxt = _next_period(cur, period)
             if name not in existing:
                 conn.execute(text(
-                    f"CREATE UNLOGGED TABLE IF NOT EXISTS {schema}.{name} "
-                    f"PARTITION OF {schema}.fact "
+                    f"CREATE {'UNLOGGED ' if unlogged else ''}TABLE "
+                    f"IF NOT EXISTS {schema}.{name} "
+                    f"PARTITION OF {schema}.{table} "
                     f"FOR VALUES FROM ('{cur}') TO ('{nxt}')"
                 ))
                 created.append(name)

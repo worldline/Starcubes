@@ -361,6 +361,30 @@ def run_housekeeping(source: Source, meta_engine, dest_engine, *,
                         {"index": ix, "ranges": int(n),
                          "ms": int((time.monotonic() - t) * 1000)})
 
+    # Pre-aggregation repair. The ETL hook is what normally advances the
+    # rollups; this closes the gap left by a run that failed before reaching
+    # it, or by a datasource loaded by something other than `etl_run`. Also
+    # ANALYZEs the rollup parents — a table the planner has no statistics for
+    # gets read with a nested loop where it wanted a hash, and the whole point
+    # of the rollup is that the planner picks well on it.
+    # Guarded like every other step: a rollup problem must not cost the report.
+    if source.rollup_interval_s:
+        try:
+            from .rollup import last_ok_hwm, refresh_rollups, rollup_specs
+            hwm = last_ok_hwm(meta_engine, source.id)
+            rep = refresh_rollups(source, dest_engine, meta_engine, hwm=hwm)
+            report["rollup"] = {"rows": rep["rows"],
+                                "built": [b["rollup"] for b in rep["built"]],
+                                "skipped": rep["skipped"]}
+            with dest_engine.connect().execution_options(
+                    isolation_level="AUTOCOMMIT") as conn:
+                for spec in rollup_specs(source):
+                    conn.execute(text(f"ANALYZE {schema}.{spec.name}"))
+        except Exception as exc:
+            logger.exception("%s: rollup maintenance failed", source.name)
+            report["warnings"].append(
+                {"code": "rollup_failed", "message": str(exc)})
+
     runtime_ms = int((time.monotonic() - t0) * 1000)
     report["ran_at"] = datetime.now(timezone.utc).isoformat()
     report["runtime_ms"] = runtime_ms

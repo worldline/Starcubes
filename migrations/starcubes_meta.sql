@@ -1171,3 +1171,54 @@ COMMENT ON COLUMN starcubes_meta.datasource.dim_refresh_interval_s IS
   'Seconds between dimension imports. 0 = every run (the default). Throttling costs freshness: a new value in a *regular* dimension maps to __unknown__ until the next refresh, which is a visibly wrong series in the chart for up to one interval. Auto-dimensions are unaffected, they resolve during the extract. --import-dims and the GUI button always force an import.';
 COMMENT ON COLUMN starcubes_meta.datasource.dim_refreshed_at IS
   'When import_dimensions last actually ran, for dim_refresh_interval_s to count from. NULL = never, so the first run always imports.';
+
+
+-- 0038_rollup.sql — pre-aggregation. Every chart request re-aggregates the
+-- raw rows today; query_cache only helps an exactly repeated one. A rollup is
+-- a *column set*, not a cube: the base aggregation at bucket granularity over
+-- a chosen set of dimension columns, out of which every group_by and every
+-- filter falls at query time. The core set and each marginal are the same
+-- mechanism, and pick_rollup takes the narrowest spec covering the query.
+-- spec_hash makes a reconfiguration degrade to fact rather than return wrong
+-- numbers, and built_from/built_through let a backfill that runs for hours be
+-- useful while it is still running -- it works backwards, so the newest
+-- windows get fast first. Coarsening the column set is a GROUP BY over the
+-- small table; refining needs a rebuild from fact. Mirror block; see
+-- migrations/0038_rollup.sql for the semantics.
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS rollup_interval_s int    NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS rollup_columns    text[] NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS rollup_marginals  text[] NOT NULL DEFAULT '{}',
+    ADD COLUMN IF NOT EXISTS rollup_measures   text[] NOT NULL DEFAULT '{}';
+
+COMMENT ON COLUMN starcubes_meta.datasource.rollup_interval_s IS
+  'Bucket width of the pre-aggregation in seconds; 0 = off (the default). Must divide every chart interval it is meant to serve, so 3600 covers hour and day bins while 86400 covers only day bins. Changing it invalidates every rollup of this datasource (it is part of the spec hash) and needs a rebuild.';
+COMMENT ON COLUMN starcubes_meta.datasource.rollup_columns IS
+  'Dimension fact columns held in the core rollup. A chart query is served from it only when its group_by and *all* of its filter columns are in this set -- anything else falls back to fact. Sized with `manage.py rollup_advise`: one high-cardinality column can cost more than all the others together.';
+COMMENT ON COLUMN starcubes_meta.datasource.rollup_marginals IS
+  'Dimension fact columns that get their own single-column rollup instead of a place in rollup_columns. Serves an unfiltered breakdown on a column too expensive for the core set. A marginal is not a second mechanism -- it is a rollup whose column set has one member, and pick_rollup chooses the narrowest spec that covers the query.';
+COMMENT ON COLUMN starcubes_meta.datasource.rollup_measures IS
+  'Aggregation forms materialised beside the mandatory count(*), as they appear in starcubes_meta.measure.agg (sum(col), avg(col), min(col), max(col)). quantile(col) is rejected: percentiles do not sum, so ladder styles can never be served from a rollup. Cheap to add in storage terms, but adding one needs a rebuild because the raw values are gone.';
+
+CREATE TABLE IF NOT EXISTS starcubes_meta.rollup_state (
+    datasource_id int  NOT NULL REFERENCES starcubes_meta.datasource(id)
+                       ON DELETE CASCADE,
+    rollup_name   text NOT NULL,
+    spec_hash     text NOT NULL,
+    built_from    timestamptz,
+    built_through timestamptz,
+    rows_built    bigint      NOT NULL DEFAULT 0,
+    last_built_at timestamptz,
+    PRIMARY KEY (datasource_id, rollup_name)
+);
+
+COMMENT ON TABLE starcubes_meta.rollup_state IS
+  'Build state of one pre-aggregation table. Rows are created by manage.py rollup_config and maintained by rollup_build and the ETL hook. Dropping them is harmless as long as fact still covers the same span -- the rollup is purely additive in the read path, so without state every query simply reads fact again. Below datasource.retention_floor it is not: fact no longer holds those rows and no rebuild can restore them.';
+COMMENT ON COLUMN starcubes_meta.rollup_state.rollup_name IS
+  'Table name inside the datasource schema, e.g. rollup_1h for the core set or rollup_1h_merch_cat for a marginal.';
+COMMENT ON COLUMN starcubes_meta.rollup_state.spec_hash IS
+  'sha256 over the sorted column list, measure list and bucket width. A mismatch against the live datasource configuration marks the rollup unusable, which is how a configuration change degrades to fact instead of returning wrong numbers.';
+COMMENT ON COLUMN starcubes_meta.rollup_state.built_from IS
+  'Oldest bucket held. The backfill works backwards and pushes this down, so the newest windows become fast first. NULL = nothing built. Retention deliberately does not raise it: rollup rows were computed while the raw data existed and stay correct after disposal, so aggregates outlive the rows they came from -- which is the point, not an accident. Below datasource.retention_floor the rollup is therefore the *only* copy, so rollup_drop and rollup_build --rebuild refuse that span without --force and the tables belong in the backup.';
+COMMENT ON COLUMN starcubes_meta.rollup_state.built_through IS
+  'Exclusive upper bound of the finished buckets, advanced by the ETL hook once a bucket falls below hwm - late_arrival_overlap_s. Rewound in place when a repair rewinds the watermark, which is what makes historical mutation a rewind rather than an invalidation.';

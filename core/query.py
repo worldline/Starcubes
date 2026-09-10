@@ -234,6 +234,37 @@ def _filter_fanout(dims_by_fact: dict) -> dict[str, list[str]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
+def filter_target_columns(fact_col: str, dims_by_fact: dict) -> list[str]:
+    """The fact columns a filter on `fact_col` actually reads.
+
+    Three tokens resolve differently and `_filter_sql` below encodes all
+    three: a grouped token (`<col>:grouped:<slug>`) only ever touches its real
+    column, a filter-group name fans out to every member column, and anything
+    else is itself.
+
+    Extracted so `core.rollup.pick_rollup` can ask the same question without
+    building SQL. Keeping the two on one implementation is the point: a rollup
+    chosen against a different column set than the WHERE clause reads would
+    filter on a column the table does not have — a hard error at best, and at
+    worst a silently unfiltered chart.
+    """
+    real_col, _slug, is_grouped = split_grouped_col(fact_col)
+    if is_grouped:
+        return [real_col]
+    return _filter_fanout(dims_by_fact).get(fact_col) or [fact_col]
+
+
+def filter_tree_columns(nodes: list[dict], dims_by_fact: dict) -> set[str]:
+    """Every fact column a filter tree reads, children included."""
+    out: set[str] = set()
+    for node in nodes or []:
+        col = (node.get("row") or {}).get("col")
+        if col:
+            out.update(filter_target_columns(col, dims_by_fact))
+        out |= filter_tree_columns(node.get("children") or [], dims_by_fact)
+    return out
+
+
 def build_filter_tree(flat_rows: list[dict]) -> list[dict]:
     """Stack-parse flat filter rows into the nested tree `_build_where` takes.
 
@@ -349,7 +380,7 @@ def _filter_sql(
             clause = f"({clause} OR f.{real_col} != ALL(:{other_param}))"
         return (f"NOT ({clause})" if negate else clause), params
 
-    cols = _filter_fanout(dims_by_fact).get(fact_col) or [fact_col]
+    cols = filter_target_columns(fact_col, dims_by_fact)
     flt_dim = dims_by_fact.get(cols[0])
 
     if op in ("starts_with", "starts_not_with", "contains", "not_contains"):
@@ -531,9 +562,21 @@ def build_chart_sql(
     measure_col: Optional[str] = None,
     series_label: str = "source_id",
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
+    rollup_table: Optional[str] = None,
+    rollup_value_expr: Optional[str] = None,
 ) -> tuple[str, dict, dict[int, str], dict[str, str]]:
     """Build the same SQL string `timeseries_multibar` / `timeseries_quantiles`
     execute, without running it.
+
+    `rollup_table` / `rollup_value_expr` redirect the statement at a
+    pre-aggregation table (see `core/rollup.py`). Only two things change: the
+    relation in the FROM clause, and the aggregate producing `v` — the filter
+    SQL, the joins, the slot expression and the grouped-dimension handling are
+    identical, because a rollup carries the same column names as `fact`. The
+    two arrive pre-resolved rather than as a `RollupSpec` on purpose: it keeps
+    this module free of any import from `core.rollup`, which imports *this*
+    one for `filter_tree_columns`. Both are ignored for ladder styles, which
+    can never read a rollup.
 
     Returns ``(sql, params, index_to_group, group_colors)``. The two dicts are
     the same Python-side state the multibar path uses to merge per-index rows
@@ -655,7 +698,13 @@ def build_chart_sql(
             f"ORDER BY 1, 2")
         return sql, params, index_to_group, group_colors
 
-    if measure is None:
+    if rollup_value_expr:
+        # Pre-aggregated: the value comes from the rollup's stored aggregates
+        # (sum(n) for a count, sum(sum_col) for a sum, and so on). Already
+        # cast where it needs to be, so no second cast here.
+        value_expr = rollup_value_expr
+        value_cast = ""
+    elif measure is None:
         value_expr = "count(*)"
         value_cast = "::bigint"
     else:
@@ -669,7 +718,7 @@ def build_chart_sql(
         f"        / :interval)::bigint AS slot, "
         f"  {series_expr} AS series, "
         f"  {value_expr}{value_cast} AS v "
-        f"FROM {schema}.fact f "
+        f"FROM {schema}.{rollup_table or 'fact'} f "
         f"{joins}"
         f"WHERE {' AND '.join(where_parts)} "
         f"GROUP BY 1, 2"
@@ -1094,6 +1143,8 @@ def timeseries_multibar(
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
     group_counts: Optional[dict[str, int]] = None,
     graph_style: str = "multibar",
+    rollup_table: Optional[str] = None,
+    rollup_value_expr: Optional[str] = None,
 ) -> dict:
     """Build the multibar plot dict for `timeseries.js`.
 
@@ -1182,6 +1233,8 @@ def timeseries_multibar(
         filter_groups=filter_groups,
         series_label=series_label,
         group_by_groups=group_by_groups,
+        rollup_table=rollup_table,
+        rollup_value_expr=rollup_value_expr,
     )
     # Read the slot base back out of the bind params rather than recomputing
     # it — that keeps the plot's `interval_start` identical by construction to

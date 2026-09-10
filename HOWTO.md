@@ -29,6 +29,7 @@ Guide to using the starcubes GUI and configuring datasources. See the
   - [Fact column fields](#fact-column-fields)
   - [Dimension fields](#dimension-fields)
   - [Index fields](#index-fields)
+- [Pre-aggregation (rollups)](#pre-aggregation-rollups)
 - [Chart GUI](#chart-gui)
   - [Source tabs](#source-tabs)
   - [Control bar](#control-bar)
@@ -884,6 +885,129 @@ To drop all indices (e.g. before a bulk re-load), click **Drop All Indices**
 and type the datasource name to confirm.
 
 ---
+
+---
+
+## Pre-aggregation (rollups)
+
+Every chart request aggregates fact rows anew. For the resolutions that span
+weeks and months that is the slowest thing the system does, and pre-aggregation
+removes it: a rollup table holds hourly (or daily) counts already grouped by a
+chosen set of dimension columns, and the chart reads that instead.
+
+Off by default. Turning it on is a deliberate sequence, and it is deliberately
+*not* something to do right after the first load — which dimensions carry your
+charts and which measures you actually use only becomes visible in use.
+
+### 1. Measure first
+
+```
+manage.py rollup_advise --name <datasource>
+```
+
+Prints, per dimension column, how many distinct values it has, its **marginal
+cost** (what including it multiplies the rollup by) and how often it has been
+used as a breakdown. Then a ladder of candidate column sets with rows/day, size
+and speed-up factor, and finally which of your measures a rollup could serve.
+
+Read the marginal cost column first. One high-cardinality dimension routinely
+costs more than all the others together — on the example schema a merchant
+category column alone accounted for a factor of six.
+
+Two flags matter:
+
+- `--target-factor N` (default 20) — the suggestion is the **widest** column
+  set that still reaches this factor, i.e. the most coverage for the size you
+  asked for.
+- `--extrapolate-to <rows_per_hour>` — only if the current volume is not what
+  you are sizing for. On a datasource already carrying its real load, leave it
+  off; the measurement is the answer.
+
+If it warns about missing indices, run `manage.py create_indices` first.
+Without them every measurement scans whole partitions and the factors come out
+flattering.
+
+### 2. Configure
+
+```
+manage.py rollup_config --name <datasource> --interval 3600 \
+    --columns response,txn_type,card_type --marginals merch_cat \
+    --measures 'sum(amount),avg(stay)'
+```
+
+- `--columns` — the core set. A chart query is served from the rollup when its
+  breakdown **and every column it filters on** are in this set.
+- `--marginals` — columns too expensive for the core set that still get their
+  own small single-column rollup, so an *unfiltered* breakdown on them stays
+  fast. Only a filter on them falls back.
+- `--measures` — beside `count(*)`, which is always there. Measures are cheap
+  (they widen the row, they do not multiply it), so take everything derivable.
+  **Percentiles can never be pre-aggregated** — quantile measures always read
+  the fact table.
+
+`--show` prints the current configuration and each table's state, `--off`
+disables it without dropping anything.
+
+### 3. Build
+
+```
+manage.py rollup_build --name <datasource> --backfill
+```
+
+Works backwards from the present in batches. That matters on a large history:
+the newest windows become fast first, so the run is useful long before it
+finishes. Each batch commits, so Ctrl-C leaves a smaller but entirely valid
+rollup and re-running continues where it stopped.
+
+From here every ETL run advances it automatically.
+
+### Rollups outlive retention
+
+If you set `retention_periods`, the fact partitions age out but **the rollups
+are left alone**. That is deliberate: their counts were computed while the raw
+rows existed and stay correct, and at roughly a hundredth of the size keeping
+them is nearly free. Retention can be aggressive on the fact table while the
+chart keeps years of history.
+
+Below the retention floor the chart therefore still draws counts and
+breakdowns over the rollup's columns — with a note in the status line saying
+so — while percentiles, drill-down into transactions and filters on columns
+outside the rollup return nothing, because those read the fact table.
+
+Two things follow that are worth knowing before you rely on it:
+
+- **Back up the rollup tables.** The fact table is deliberately unbacked
+  (it can be reloaded from the source); a rollup below the floor cannot.
+- **`rollup_drop` and `rollup_build --rebuild` refuse that span** and tell you
+  what they would destroy. `--force` overrides, and there is no way back.
+
+### Changing your mind
+
+Safe at any time. A changed configuration no longer matches what the stored
+rows were built under, so the chart quietly goes back to the fact table until
+you rebuild — slower, never wrong.
+
+```
+manage.py rollup_build --name <datasource> --rebuild
+```
+
+is what a changed column or measure list needs. Note the asymmetry: **removing
+a dimension is cheap** (it re-aggregates the small rollup table), **adding one
+is not** (it re-reads the whole fact table). When in doubt start wider and
+narrow later.
+
+`manage.py rollup_drop` removes the tables entirely; charts simply go back to
+reading fact.
+
+### Checking it
+
+```
+manage.py rollup_verify --name <datasource>
+```
+
+Runs a matrix of chart queries against both the fact table and the rollup and
+compares the results cell by cell. Cases the rollup cannot serve count as
+*skipped* — that is the fallback working, not a fault.
 
 ## Chart GUI
 

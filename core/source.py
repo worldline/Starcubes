@@ -303,6 +303,13 @@ class Source:
     wallclock_lag_s: int = 0          # absolute visibility deadline in source wall-clock seconds
     retention_floor: Optional[datetime] = None  # rows below this were disposed
                                       # of on purpose; core/audit.py clamps to it
+    # Pre-aggregation. See core/rollup.py and docs/rollup.md; `rollup_state`
+    # is deliberately *not* here — it changes on every load, while everything
+    # in a Source is configuration that only an operator edits.
+    rollup_interval_s: int = 0        # bucket width in seconds; 0 = off
+    rollup_columns: list[str] = field(default_factory=list)    # core column set
+    rollup_marginals: list[str] = field(default_factory=list)  # one-column rollups
+    rollup_measures: list[str] = field(default_factory=list)   # agg forms beside count(*)
 
     @classmethod
     def load(cls, meta_engine, dest_dsn: str, name_or_id) -> "Source":
@@ -320,6 +327,8 @@ class Source:
                 f"       late_arrival_overlap_s, watermark_fact_expr, "
                 f"       watermark_lag_s, wallclock_lag_s, "
                 f"       retention_floor, "
+                f"       rollup_interval_s, rollup_columns, "
+                f"       rollup_marginals, rollup_measures, "
                 f"       is_default "
                 f"  FROM starcubes_meta.datasource WHERE {key_sql}"
             ), {"k": name_or_id}).mappings().first()

@@ -25,6 +25,7 @@ from core.housekeeping import housekeeping_due, run_housekeeping
 from core.etl import import_fact, truncate_last_partition, delete_fact_from, \
                       clear_etl_history, set_highwatermark, EtlAborted
 from core.preflight import DatasourceLocked
+from core.rollup import last_ok_hwm, refresh_rollups
 from core.schema import import_dimensions, refresh_dim_counts, \
                         create_future_partitions, vacuum_analyze_fact
 from core.source import Source, _get_cached_engine
@@ -34,6 +35,13 @@ from sources.alarm_notify import dispatch_transitions
 
 
 _stopping = False
+
+# Cap on how many buckets one post-load rollup refresh may build. A
+# datasource that has been idle for months would otherwise turn its first run
+# back into an hours-long aggregation inside the load loop; the remainder
+# follows on the next run, and `manage.py rollup_build --backfill` is the way
+# to catch up deliberately. 168 = one week of hourly buckets.
+_ROLLUP_MAX_BUCKETS = 168
 
 
 def _signal_handler(signum, frame):
@@ -386,6 +394,29 @@ class Command(BaseCommand):
                     except Exception:
                         log.exception("%s: alarm notification failed, "
                                       "continuing", source.name)
+
+                # Pre-aggregation: advance the rollups over whatever became
+                # final with this run's watermark. After the alarms because
+                # alarms are latency-sensitive and this is not, before
+                # housekeeping so retention finds the rollups consistent with
+                # the fact rows it is about to drop. Own try/except for the
+                # same reason as the two phases around it: the rollup is an
+                # optimisation, and a broken one must cost speed, not a load.
+                # Unlike housekeeping this runs in one-shot mode too — it is
+                # not a scheduled chore but the other half of the load, and a
+                # rollup that only advanced in forever mode would sit stale
+                # for every hand-run datasource.
+                if source.rollup_interval_s:
+                    try:
+                        rep = refresh_rollups(source, source.dest_engine(),
+                                              meta, hwm=last_ok_hwm(meta, source.id),
+                                              max_buckets=_ROLLUP_MAX_BUCKETS)
+                        if rep["rows"]:
+                            log.info("%s: rollup +%d rows across %d table(s)",
+                                     source.name, rep["rows"], len(rep["built"]))
+                    except Exception:
+                        log.exception("%s: rollup refresh failed, continuing",
+                                      source.name)
 
                 # Housekeeping: the periodic work that does not belong
                 # inside a load. The forever loop is the only scheduler this

@@ -523,6 +523,11 @@
               border-top: 1px solid var(--info-border); min-height: 16px;
               text-align: left; }
   #info.err { color: var(--info-err-color); }
+  /* Marks a viewport reaching below the retention floor, where the rollups
+     still answer but the fact table is empty on purpose. Its own span rather
+     than part of #info-text, which setInfo() rewrites on every fetch. */
+  #rollup-notice { margin-left: 10px; opacity: .85; }
+  #rollup-notice:not(:empty)::before { content: '\2022'; margin-right: 10px; opacity: .5; }
   /* While chart data loads, the *unloaded* (right-hand) portion of the
      status line is tinted to flag missing data; the loaded portion keeps
      the normal background. As blocks arrive the tint recedes left-to-right,
@@ -1194,7 +1199,7 @@
   </div>
 </div>
 <div id="wrap"><canvas id="chart"></canvas><div id="loading-overlay">Loading…</div></div>
-<div id="info"><span id="info-text"></span></div>
+<div id="info"><span id="info-text"></span><span id="rollup-notice"></span></div>
 <div id="drill-modal" class="fpanel">
   <div id="drill-header" class="fpanel-header">
     <div id="drill-header-info"></div>
@@ -3214,6 +3219,23 @@ legendCopy.addEventListener('click', async () => {
 });
 
 
+// Below `rollup_only_below` the fact table was retired on purpose and only
+// the rollups answer. The numbers there are correct — they were computed
+// while the raw rows existed — but the questions that still work are fewer:
+// counts and breakdowns over the rollup's columns, not percentiles, not
+// drill-down, not filters on columns the rollup does not carry. Saying so is
+// what keeps a legitimately empty ladder plot from reading as data loss.
+function updateRollupNotice(bounds) {
+  const el = document.getElementById('rollup-notice');
+  if (!el) return;
+  const below = currentMeta && currentMeta.rollup_only_below;
+  if (!below || !bounds || bounds.tmin == null) { el.textContent = ''; return; }
+  const from = Math.floor(bounds.tmin / 1000);   // tmin/tmax are epoch ms
+  el.textContent = from < below
+    ? `pre-aggregated before ${fmtEpoch(below)} — counts only, no drill-down`
+    : '';
+}
+
 function updateLegend() {
   if (!ts || !currentMeta) return;
   legendSelected.clear();
@@ -3230,6 +3252,7 @@ function updateLegend() {
   const seriesMap = new Map(); // key → { name, total }
   const data = ts.getActiveData ? ts.getActiveData() : (ts.getData ? ts.getData() : []);
   const bounds = ts.getRenderBounds ? ts.getRenderBounds() : null;
+  updateRollupNotice(bounds);
   const groupBy = starcubesParams.group_by || '';
   const groupByName = gbColumn(groupBy);
   // avg() measures are not additive: summing per-slot means is meaningless, so
