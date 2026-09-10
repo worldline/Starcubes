@@ -256,3 +256,69 @@ it needed to be.
 Calling U10 from `run_housekeeping` as well would close it: housekeeping is
 periodic, already collects warnings into `report["warnings"]`, and the check
 is read-only.
+
+## Day boundaries are UTC, and they should be local
+
+A day bin in the chart is a *UTC* day. For a reader in Berlin it runs 02:00 to
+02:00 local time, so "Monday's transactions" is not what anyone means by
+Monday. The same goes for the week and month blocks. This is wrong in the only
+sense that matters — it does not answer the question the user is asking — and
+it has been wrong since the first chart.
+
+It is not, however, an oversight that can be fixed with an offset. Three
+things hold it in place, and they are worth knowing before anyone estimates
+the work.
+
+**A local day is not a constant number of seconds.** Across a DST transition
+it is 23 or 25 hours. Everything in the current design assumes a bin is a
+fixed width: `build_chart_sql` numbers slots as
+`floor((epoch(pc) - interval_start) / interval)`, `core/cache.make_cache_key`
+normalises `interval_start` the same way, and `is_cacheable` tests
+`t_to % interval`. None of that survives a variable-width bin; the slot
+expression would have to become `date_trunc('day', pc AT TIME ZONE :tz)` and
+the slot key would stop being an integer offset.
+
+**The chart converts slots back to time linearly.** `chart.html` computes
+`plot.interval_start + plot.interval * (maxSlot + 1)` in two places to derive
+the data extent. With bins of unequal width that arithmetic is simply wrong,
+and the fix is not local to those two lines — the whole `{interval_start,
+interval, slot}` transport shape assumes uniformity.
+
+**timeseries.js is UTC-internally.** The rendering library — an external npm
+package, `@hgruber/timeseries.js` — places its axis ticks with `getUTCDay`,
+`getUTCFullYear`, `getUTCDate` and `toISOString`. Even with a corrected
+backend the axis would still label UTC days. That dependency has to move
+first, or move with us.
+
+Where the decision currently sits, so the count is honest: `interval_start`
+and the slot expression in `core/query.py`; `make_cache_key` and
+`is_cacheable` in `core/cache.py`; `_bucket_expr`, `floor_to_bucket` and
+`pick_rollup`'s conditions 1 and 2 in `core/rollup.py`; `utcWindowContaining`
+(six window kinds), `enumerateNaturalBlocks` and the `fetchRange` snap in
+`chart.html`; the two extent computations above; and the tick placement inside
+the library. Roughly a dozen sites across five files plus one dependency.
+
+**What pre-aggregation changes.** It does not make this worse today — hourly
+buckets carry local days perfectly well, since the aggregation happens at
+query time and a local day is a whole number of hours. But it adds a way to
+make it *much* worse: configuring `rollup_interval_s = 86400` materialises UTC
+days, and then a correction is a full rebuild — and below `retention_floor`,
+where fact no longer has the rows, it is not possible at all. `docs/rollup.md`
+says so at the point of decision.
+
+One caveat even for hourly buckets: they carry local day boundaries only in
+zones whose offset is a whole hour. At +05:30 or +05:45 a local day begins at
+18:30 or 18:15 UTC, mid-bucket, and correcting the boundary there would need
+1800-second buckets.
+
+**What keeps the door open**, in rough order of how much it buys:
+
+1. Do not materialise day buckets. 3600 (or finer) keeps the correction a
+   query-time change rather than a rebuild.
+2. Keep `retention_periods` conservative enough that a rebuild from `fact` is
+   still possible, or accept that history stays on UTC days forever.
+3. Treat `interval` as "the width the caller asked for" and not as an
+   invariant of the data, wherever a new feature can afford to.
+
+The longer this waits the more sites accumulate, which is the actual argument
+for writing it down now rather than the severity of the bug.
