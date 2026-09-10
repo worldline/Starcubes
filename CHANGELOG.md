@@ -12,6 +12,65 @@ committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
 [`docs/releases.md`](docs/releases.md).
 
+## [2.0.0-alpha.6] — 2026-09-10
+
+### Added
+
+- **The fact table is pre-aggregated, and the charts read from it.** Every
+  chart request used to re-aggregate raw rows, and the query cache only ever
+  helped a query someone had already asked — the first look at any window
+  paid the full scan. A datasource can now keep hourly rollup tables beside
+  its fact table: one row per bucket per combination of a chosen set of
+  dimension columns, plus narrower marginals. The chart picks the narrowest
+  rollup that covers the question and falls back to `fact` when none does, so
+  nothing has to be configured for the charts to keep working. On the example
+  data the reference query drops from 1073 ms to 44 ms, and the whole HTTP
+  read path from 1360 ms to 105 ms, against a rollup a tenth the size of the
+  fact table. Off by default.
+- **The rollup has a tab, not just a shell prompt.** Its column set is not a
+  setting you type once — it is measured, then narrowed, in a loop of advise,
+  configure, build, verify — and every number feeding that loop (fact size,
+  measure catalogue, dimension cardinalities, ETL history) already lives in
+  the browser. The new **Rollup** tab runs the whole loop: **Advise** measures
+  a real window and offers a ladder of column sets with the space each would
+  cost, a click fills the config form from the stage you pick, **Build**
+  backfills, **Verify** answers a matrix of chart queries from both the
+  rollup and `fact` and compares them, and **Drop** removes the tables. The
+  three long-running ones are spawned as detached processes on the ETL's own
+  machinery and report progress into a run history, so a run started from a
+  shell shows up in the GUI exactly like one started from a button — a web
+  request cannot hold them (uwsgi kills a worker at 120 s).
+- **Five `manage.py` commands for the same thing without a browser:**
+  `rollup_advise`, `rollup_config`, `rollup_build`, `rollup_verify`,
+  `rollup_drop`.
+
+### Changed
+
+- **Aggregates outlive the rows they were computed from.** Retention
+  deliberately does not clamp a rollup: its numbers were correct when they
+  were computed and stay correct after the raw rows are disposed of, and at
+  two orders of magnitude smaller, keeping them is close to free. The price
+  is that below the retention floor the rollup is the only copy — so
+  `rollup_drop` and `rollup_build --rebuild` refuse that span unless forced,
+  the chart offers the wider range the rollup can still answer, and marks
+  where the answers get thinner: counts yes, percentiles and drill-down no.
+- **Reconfiguring a rollup degrades to `fact` rather than lying.** The stored
+  configuration is hashed; rows built under a different shape are never read,
+  so a changed column set costs a rebuild instead of returning numbers
+  computed under the old one. Percentiles are rejected at configuration time
+  for the same reason — they do not sum, so a rollup can never serve them.
+- Two additive, idempotent migrations (`0038`, `0039`) apply themselves at
+  start; nothing an operator has to do by hand.
+
+### Fixed
+
+- Written down at last: **a day bin is a UTC day**, so for a reader in Berlin
+  it runs 02:00 to 02:00 and "Monday's transactions" is not Monday. Wrong
+  since the first chart, and not fixable with an offset — the backlog entry
+  names the dozen sites across five files that hold it at UTC. Pre-aggregation
+  does not worsen it, but it adds a way to cement it, which is why hourly
+  buckets are the default and day buckets are not.
+
 ## [2.0.0-alpha.5] — 2026-09-08
 
 ### Changed
