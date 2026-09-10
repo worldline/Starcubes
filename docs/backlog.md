@@ -322,3 +322,54 @@ zones whose offset is a whole hour. At +05:30 or +05:45 a local day begins at
 
 The longer this waits the more sites accumulate, which is the actual argument
 for writing it down now rather than the severity of the bug.
+
+## The partial dim indexes exclude the wrong row
+
+`core/schema.py:326` creates one btree per dimension FK column as
+`... USING btree(<col>) WHERE <col> != 1`. The intent is to keep the single
+most frequent value out of the index — the `__unknown__` sentinel, which
+`_ensure_unknown_row` inserts as the catch-all for source values missing from
+the dim at import time.
+
+The predicate hardcodes `1`, but nothing pins the sentinel to that index. It
+is a `SMALLSERIAL`, so it lands on 1 only when the dim table was created
+empty and the sentinel went in first. With `inline_values`
+(`core/schema.py:268`) or on import of an already-populated dim
+(`core/schema.py:632`) it is inserted *after* the real rows and gets whatever
+number is next.
+
+Measured on `payments`, the one real datasource — the sentinel is on `1` in
+**none** of its eleven dimensions:
+
+| dim table | `__unknown__` at | what `index = 1` actually is |
+|---|---:|---|
+| `app_loc`, `db_loc` | 4 | `-1` (source NULL) |
+| `sec_type` | 22 | `-1` |
+| `issuer` | 31 | `-1` |
+| `txn_origin` | 41 | `-1` |
+| `peer` | 51 | `-1` |
+| `card_type` | 112 | `-1` |
+| `cncy_code` | 140 | `008` — **a real currency code** |
+| `txn_type` | 318 | `-1` |
+| `merch_cat` | 965 | `-1` |
+| `response` | 1273 | `-1` |
+
+Correctness is unaffected — a partial index can never hide rows, the planner
+simply declines to use it where the predicate does not hold. What is lost is
+the intent. In ten of the eleven the index excludes the `-1` NULL row instead
+of the sentinel, which may well be the better exclusion (whether it is
+depends on which value the fact table actually carries more of — worth
+measuring before changing anything). The eleventh is the one that is plainly
+wrong: every query filtering `cncy_code = '008'` is excluded from its own
+index.
+
+The fix is to resolve the sentinel's index at DDL time rather than assume it,
+which means `create_indices` has to read the dim table first — cheap, but it
+turns an index creation into something with a data dependency, and the
+existing indexes do not rebuild themselves. Whether it is worth a rebuild on
+an existing install is the open question; on a fresh one it is nearly free.
+
+Found while measuring bitmap-index feasibility — see
+[`bitmap-indexes.md`](bitmap-indexes.md) §6.2, which is also where the
+argument lives for why one very frequent value is the case a bitmap index
+would handle best.

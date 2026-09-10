@@ -64,6 +64,13 @@ branch — **`master` is the only long-lived branch.**
   tables, how their column set is chosen and measured, what they can never
   serve. Read when editing `core/rollup.py`, `core/rollup_advise.py`, the
   `rollup_*` management commands, or the rollup branch in `viz/views.py`.
+- **[`docs/bitmap-indexes.md`](docs/bitmap-indexes.md)** — research note: could
+  PostgreSQL have a persistent bitmap index, and would a fact table gain from
+  one. Measured, with the answer being mostly no (B-tree deduplication since
+  PG 13 already banks 3.2× for free; the remaining win needs physically
+  clustered data). Read before proposing an index-level change, and for §6,
+  which is what the repo does today and where the partial-index defect in
+  the backlog came from.
 - **[`docs/backlog.md`](docs/backlog.md)** — known unfinished work. Read when
   planning new work or assessing scope.
 - **[`docs/releases.md`](docs/releases.md)** — the git tag *is* the version
