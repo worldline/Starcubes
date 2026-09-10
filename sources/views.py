@@ -3523,15 +3523,14 @@ def dim_data(request, pk: int):
         source = Source.load(_meta_engine(), dest_dsn=settings.STARCUBES_POSTGRES_DSN,
                              name_or_id=pk)
         dims = []
-        with source.dest_engine().begin() as conn:
-            for d in source.primary_dimensions():
-                if not d.dim_table:
-                    continue
-                dims.append({
-                    "dim_table": d.dim_table,
-                    "fact_column": d.fact_column,
-                    "inline": bool(d.inline_values),
-                })
+        for d in source.primary_dimensions():
+            if not d.dim_table:
+                continue
+            dims.append({
+                "dim_table": d.dim_table,
+                "fact_column": d.fact_column,
+                "inline": bool(d.inline_values),
+            })
         return JsonResponse({"ok": True, "dims": dims},
                             json_dumps_params={"default": str})
     except Exception as exc:

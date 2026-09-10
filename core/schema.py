@@ -725,8 +725,8 @@ def read_dimensions(source: Source, dest_engine
     is the row inserted by _ensure_unknown_row — used as the fallback when a
     chunk value isn't in the mapping.
     """
-    frames: Dict[str, dict] = {}
-    unknowns: Dict[str, int] = {}
+    frames: dict[str, dict] = {}
+    unknowns: dict[str, int] = {}
     schema = source.schema_name
     with dest_engine.begin() as conn:
         for d in source.primary_dimensions():

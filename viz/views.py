@@ -20,8 +20,7 @@ from sqlalchemy import text
 from core import adhoc
 from core.cache import (get_cached_plot, is_cacheable, make_cache_key,
                         put_cached_plot)
-from core.query import (build_chart_sql, build_chart_sql_rendered,
-                           build_chart_legend_sql, build_chart_legend_sql_rendered,
+from core.query import (build_chart_legend_sql_rendered,
                         build_filter_tree, build_group_by_indices, drill_down,
                         grouped_label, grouped_token, LADDER_STYLES,
                         list_transactions, resolve_group_set,
@@ -874,7 +873,6 @@ def chart_sql(request):
 
         group_by_raw = q.get("group_by", "")
         measure      = q.get("measure") or None
-        interval     = int(q.get("interval", "60"))
         series_label = q.get("series_label", "source_id")
         t_from = _parse_dt(q["from"])
         t_to   = _parse_dt(q["to"])

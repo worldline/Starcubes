@@ -666,7 +666,6 @@ def build_chart_sql(
         series_expr = f"f.{group_by}::text"
 
     epoch_from = int(t_from.timestamp())
-    epoch_to   = int(t_to.timestamp())
     interval_start = (epoch_from // interval) * interval
 
     where_parts, flt_params = _build_where(

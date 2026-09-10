@@ -31,7 +31,6 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import sqlalchemy
 from sqlalchemy import text
-from sqlalchemy.dialects.postgresql import JSONB
 from tqdm import tqdm
 
 from .cache import bump_cache_epoch
@@ -39,7 +38,7 @@ from .preflight import (acquire_datasource_lock, blocking_message,
                         datasource_lock, relation_exists,
                         release_datasource_lock, run_preflight)
 from .schema import (UNKNOWN_SOURCE_ID, ensure_partitions_for, import_dimensions,
-                     read_dimensions, refresh_dim_counts)
+                     read_dimensions)
 from .source import Source
 from .utils import tail_file
 
