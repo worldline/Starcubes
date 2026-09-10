@@ -7,7 +7,9 @@ from core.source import _get_cached_engine
 
 
 def topbar_sources(request):
-    if not request.path.startswith("/sources/"):
+    # The help pages render in sources/base.html too, and a nav bar with no
+    # source tabs on them would read as "this install has no datasources".
+    if not request.path.startswith(("/sources/", "/help/")):
         return {"topbar_sources": []}
     try:
         with _get_cached_engine(settings.STARCUBES_POSTGRES_DSN).begin() as conn:

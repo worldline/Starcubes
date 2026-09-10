@@ -1,0 +1,467 @@
+/* ============================================================================
+   The help section (/help/) — prose layout for the rendered Markdown.
+
+   Built entirely on the custom properties sources/base.html defines, which
+   is what makes the theme toggle carry these pages for free: nothing here
+   names a colour that is not a var(), so [data-theme="dark"] flips the whole
+   section without a second set of rules. The only exception is the syntax
+   highlighting at the bottom, where Pygments needs literal colours — those
+   come in two blocks, the dark one gated on the theme attribute.
+
+   The one thing this file overrides rather than inherits is the width of
+   .page: prose wants a measure of ~70 characters, not the 1200px a table of
+   ETL runs wants.
+   ============================================================================ */
+
+.help-layout {
+  display: grid;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 40px;
+  align-items: start;
+  padding-top: 24px;
+}
+
+/* ── sidebar ──────────────────────────────────────────────────────────────── */
+
+.help-side {
+  position: sticky;
+  top: 60px;                      /* clears the 44px nav plus a little air */
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  padding-right: 8px;
+  font-size: 13px;
+}
+
+.help-side-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  margin: 22px 0 8px;
+}
+.help-side-title:first-child { margin-top: 0; }
+
+.help-side a {
+  display: block;
+  padding: 4px 10px;
+  margin-left: -10px;
+  border-radius: 5px;
+  color: var(--muted);
+  text-decoration: none;
+  line-height: 1.45;
+}
+.help-side a:hover { color: var(--fg); background: var(--bg2); }
+.help-side a.current {
+  color: var(--tab-active-fg, var(--accent));
+  background: var(--tab-active-bg, var(--bg2));
+  font-weight: 600;
+}
+
+/* In-page contents. The indent is what separates an H3 from its H2 — there
+   is no second mechanism, since the list is flat by design. */
+.help-toc a { font-size: 12.5px; padding: 3px 10px; }
+.help-toc a.d1 { padding-left: 24px; }
+.help-toc a.active { color: var(--fg); font-weight: 600; }
+
+.help-back {
+  display: inline-flex; align-items: center; gap: 5px;
+  margin-bottom: 16px; font-size: 12.5px;
+  color: var(--muted); text-decoration: none;
+}
+.help-back:hover { color: var(--fg); }
+
+/* ── search ───────────────────────────────────────────────────────────────── */
+
+.help-search { position: relative; margin-bottom: 18px; }
+.help-search input {
+  width: 100%; box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--input-border, var(--border));
+  border-radius: 6px;
+  background: var(--input-bg, var(--bg));
+  color: var(--fg);
+  font: inherit; font-size: 13px;
+}
+.help-search input:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(74,127,212,0.2);
+}
+
+.help-results { margin-top: 10px; }
+.help-results:empty { display: none; }
+.help-result { margin-bottom: 12px; }
+.help-result-doc {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); margin-bottom: 3px;
+}
+.help-result a {
+  display: block; padding: 3px 10px; margin-left: -10px;
+  font-size: 12.5px; line-height: 1.4; color: var(--muted);
+  border-radius: 5px; text-decoration: none;
+}
+.help-result a:hover { background: var(--bg2); color: var(--fg); }
+.help-result mark {
+  background: var(--badge-running-bg, #fffbeb);
+  color: var(--badge-running-fg, #92400e);
+  padding: 0 2px; border-radius: 2px;
+}
+.help-empty { font-size: 12.5px; color: var(--muted); padding: 4px 0; }
+
+/* ── the document itself ──────────────────────────────────────────────────── */
+
+.help-doc {
+  max-width: 74ch;
+  font-size: 15px;
+  line-height: 1.68;
+  color: var(--fg);
+}
+
+.help-doc h1, .help-doc h2, .help-doc h3, .help-doc h4 {
+  line-height: 1.3;
+  scroll-margin-top: 64px;        /* so an anchor jump clears the fixed nav */
+}
+.help-doc h1 { font-size: 28px; font-weight: 650; margin: 0 0 20px; letter-spacing: -.01em; }
+.help-doc h2 {
+  font-size: 21px; font-weight: 620; margin: 44px 0 14px;
+  padding-bottom: 7px; border-bottom: 1px solid var(--border);
+}
+.help-doc h3 { font-size: 16.5px; font-weight: 620; margin: 30px 0 10px; }
+.help-doc h4 { font-size: 14.5px; font-weight: 620; margin: 24px 0 8px; color: var(--muted); }
+
+.help-doc p { margin: 0 0 16px; }
+.help-doc ul, .help-doc ol { margin: 0 0 16px; padding-left: 26px; }
+.help-doc li { margin-bottom: 6px; }
+.help-doc li > ul, .help-doc li > ol { margin: 6px 0 0; }
+.help-doc strong { font-weight: 640; }
+.help-doc hr { border: none; border-top: 1px solid var(--border); margin: 36px 0; }
+
+.help-doc a { color: var(--accent); text-decoration: none; }
+.help-doc a:hover { text-decoration: underline; }
+/* The corpus links by filename constantly — [`docs/rollup.md`](…) — and the
+   code box around the label is enough to hide that it is a link at all.
+   Carry the accent into the box and tint its border to match. */
+.help-doc a code {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--tab-active-bg, var(--bg2));
+}
+
+/* The heading anchor the toc extension emits. Present but invisible until
+   the heading is hovered, so a reader can grab a link to a section without
+   a row of hash marks down the page. */
+.help-doc .headerlink {
+  margin-left: 8px; opacity: 0; color: var(--muted);
+  font-weight: 400; text-decoration: none;
+}
+.help-doc h1:hover .headerlink, .help-doc h2:hover .headerlink,
+.help-doc h3:hover .headerlink, .help-doc h4:hover .headerlink { opacity: .55; }
+.help-doc .headerlink:hover { opacity: 1 !important; text-decoration: none; }
+
+.help-doc blockquote {
+  margin: 0 0 16px; padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--border); color: var(--muted);
+}
+
+.help-doc img {
+  max-width: 100%; height: auto;
+  border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 2px 10px var(--shadow);
+  margin: 6px 0;
+}
+/* The README centres its logo and its tagline with align="center". */
+.help-doc p[align="center"] { text-align: center; }
+.help-doc p[align="center"] img { border: none; box-shadow: none; }
+
+/* ── code ─────────────────────────────────────────────────────────────────── */
+
+.help-doc code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .88em;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  /* Inline code here is often a full env var name or a URL, neither of which
+     has a break opportunity — on a phone one of them is wider than the
+     screen and pushes the whole page sideways. */
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+.help-doc pre {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;               /* long SQL must scroll, not widen the page */
+  margin: 0 0 18px;
+  line-height: 1.55;
+}
+.help-doc pre code {
+  background: none; border: none; padding: 0; font-size: 12.8px;
+}
+.help-doc .codehilite { margin: 0 0 18px; }
+.help-doc .codehilite pre { margin: 0; }
+
+/* LICENSE and THIRD-PARTY-NOTICES: plain text, wrapped rather than scrolled —
+   they are prose in a <pre>, not code. */
+.help-doc pre.plaintext {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12.5px;
+}
+
+/* ── tables ───────────────────────────────────────────────────────────────── */
+/* The corpus leans on these hard — HOWTO.md alone is ~176 table rows — and
+   several are far wider than the measure, hence the scroll container. */
+
+.help-table-wrap { overflow-x: auto; margin: 0 0 18px; }
+.help-doc table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.help-doc th, .help-doc td {
+  border: 1px solid var(--border);
+  padding: 7px 11px;
+  text-align: left;
+  vertical-align: top;
+}
+.help-doc th { background: var(--bg2); font-weight: 620; }
+.help-doc tbody tr:nth-child(even) td { background: var(--bg2); }
+.help-doc td code { white-space: nowrap; }
+
+/* ── index page ───────────────────────────────────────────────────────────── */
+
+.help-hero { padding: 32px 0 8px; max-width: 62ch; }
+.help-hero h1 { font-size: 30px; font-weight: 650; margin: 0 0 10px; letter-spacing: -.01em; }
+.help-hero p { margin: 0; color: var(--muted); font-size: 15px; line-height: 1.6; }
+
+.help-group { margin-top: 40px; }
+.help-group-head { margin-bottom: 14px; }
+.help-group-head h2 {
+  font-size: 12px; font-weight: 650; text-transform: uppercase;
+  letter-spacing: .07em; color: var(--accent); margin: 0 0 4px;
+}
+.help-group-head p { margin: 0; font-size: 13.5px; color: var(--muted); }
+
+.help-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
+  gap: 14px;
+}
+.help-card {
+  display: block;
+  padding: 15px 17px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg);
+  color: var(--fg);
+  text-decoration: none;
+  transition: border-color .12s, box-shadow .12s, transform .12s;
+}
+.help-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 14px var(--shadow);
+  transform: translateY(-1px);
+  text-decoration: none;
+}
+.help-card-title { font-size: 15px; font-weight: 620; margin-bottom: 5px; }
+.help-card-blurb { font-size: 13px; line-height: 1.5; color: var(--muted); }
+
+/* ── narrow viewports ─────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  /* sources/base.html indents .page by --tabs-left (~94px) so a table lines
+     up under the nav's first source tab. Prose has nothing to line up with,
+     and on a phone that indent is a quarter of the screen. Only help pages
+     load this file, so the override cannot reach another page. */
+  .page { padding-left: 16px; }
+  .help-layout { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .help-side {
+    position: static; max-height: none; overflow: visible;
+    padding-bottom: 22px; margin-bottom: 22px;
+    border-bottom: 1px solid var(--border);
+  }
+  /* The in-page contents is the long half and the one a reader on a phone
+     scrolls past rather than uses; the document list stays. */
+  .help-toc-block { display: none; }
+  .help-doc { font-size: 15.5px; max-width: none; }
+}
+
+/* ── syntax highlighting (Pygments) ───────────────────────────────────────── */
+/* Generated with `HtmlFormatter(style=…).get_style_defs('.codehilite')` and
+   pasted, rather than served from a second stylesheet: two static files that
+   must both be collected is more moving parts than the ~160 lines are worth.
+   Light first, then the dark set gated on the theme attribute — the same
+   order and mechanism the rest of the app's CSS uses. */
+
+pre { line-height: 125%; }
+td.linenos .normal { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: inherit; background-color: transparent; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #000000; background-color: #ffffc0; padding-left: 5px; padding-right: 5px; }
+.codehilite .hll { background-color: #ffffcc }
+/* Background comes from the theme, not from Pygments — a hard-coded #f8f8f8
+   would be the one light patch on a dark page. */
+.codehilite { background: var(--bg2); }
+.codehilite .c { color: #3D7B7B; font-style: italic } /* Comment */
+/* Pygments flags anything it cannot lex as an error, and this corpus writes
+   elisions into its examples — "SELECT a, b, …, count(*)". A red box around
+   a deliberate ellipsis reads as a mistake in the documentation, so the
+   marker is neutralised in both themes rather than styled. */
+.codehilite .err { border: none } /* Error */
+.codehilite .k { color: #008000; font-weight: bold } /* Keyword */
+.codehilite .o { color: #666 } /* Operator */
+.codehilite .ch { color: #3D7B7B; font-style: italic } /* Comment.Hashbang */
+.codehilite .cm { color: #3D7B7B; font-style: italic } /* Comment.Multiline */
+.codehilite .cp { color: #9C6500 } /* Comment.Preproc */
+.codehilite .cpf { color: #3D7B7B; font-style: italic } /* Comment.PreprocFile */
+.codehilite .c1 { color: #3D7B7B; font-style: italic } /* Comment.Single */
+.codehilite .cs { color: #3D7B7B; font-style: italic } /* Comment.Special */
+.codehilite .gd { color: #A00000 } /* Generic.Deleted */
+.codehilite .ge { font-style: italic } /* Generic.Emph */
+.codehilite .ges { font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.codehilite .gr { color: #E40000 } /* Generic.Error */
+.codehilite .gh { color: #000080; font-weight: bold } /* Generic.Heading */
+.codehilite .gi { color: #008400 } /* Generic.Inserted */
+.codehilite .go { color: #717171 } /* Generic.Output */
+.codehilite .gp { color: #000080; font-weight: bold } /* Generic.Prompt */
+.codehilite .gs { font-weight: bold } /* Generic.Strong */
+.codehilite .gu { color: #800080; font-weight: bold } /* Generic.Subheading */
+.codehilite .gt { color: #04D } /* Generic.Traceback */
+.codehilite .kc { color: #008000; font-weight: bold } /* Keyword.Constant */
+.codehilite .kd { color: #008000; font-weight: bold } /* Keyword.Declaration */
+.codehilite .kn { color: #008000; font-weight: bold } /* Keyword.Namespace */
+.codehilite .kp { color: #008000 } /* Keyword.Pseudo */
+.codehilite .kr { color: #008000; font-weight: bold } /* Keyword.Reserved */
+.codehilite .kt { color: #B00040 } /* Keyword.Type */
+.codehilite .m { color: #666 } /* Literal.Number */
+.codehilite .s { color: #BA2121 } /* Literal.String */
+.codehilite .na { color: #687822 } /* Name.Attribute */
+.codehilite .nb { color: #008000 } /* Name.Builtin */
+.codehilite .nc { color: #00F; font-weight: bold } /* Name.Class */
+.codehilite .no { color: #800 } /* Name.Constant */
+.codehilite .nd { color: #A2F } /* Name.Decorator */
+.codehilite .ni { color: #717171; font-weight: bold } /* Name.Entity */
+.codehilite .ne { color: #CB3F38; font-weight: bold } /* Name.Exception */
+.codehilite .nf { color: #00F } /* Name.Function */
+.codehilite .nl { color: #767600 } /* Name.Label */
+.codehilite .nn { color: #00F; font-weight: bold } /* Name.Namespace */
+.codehilite .nt { color: #008000; font-weight: bold } /* Name.Tag */
+.codehilite .nv { color: #19177C } /* Name.Variable */
+.codehilite .ow { color: #A2F; font-weight: bold } /* Operator.Word */
+.codehilite .w { color: #BBB } /* Text.Whitespace */
+.codehilite .mb { color: #666 } /* Literal.Number.Bin */
+.codehilite .mf { color: #666 } /* Literal.Number.Float */
+.codehilite .mh { color: #666 } /* Literal.Number.Hex */
+.codehilite .mi { color: #666 } /* Literal.Number.Integer */
+.codehilite .mo { color: #666 } /* Literal.Number.Oct */
+.codehilite .sa { color: #BA2121 } /* Literal.String.Affix */
+.codehilite .sb { color: #BA2121 } /* Literal.String.Backtick */
+.codehilite .sc { color: #BA2121 } /* Literal.String.Char */
+.codehilite .dl { color: #BA2121 } /* Literal.String.Delimiter */
+.codehilite .sd { color: #BA2121; font-style: italic } /* Literal.String.Doc */
+.codehilite .s2 { color: #BA2121 } /* Literal.String.Double */
+.codehilite .se { color: #AA5D1F; font-weight: bold } /* Literal.String.Escape */
+.codehilite .sh { color: #BA2121 } /* Literal.String.Heredoc */
+.codehilite .si { color: #A45A77; font-weight: bold } /* Literal.String.Interpol */
+.codehilite .sx { color: #008000 } /* Literal.String.Other */
+.codehilite .sr { color: #A45A77 } /* Literal.String.Regex */
+.codehilite .s1 { color: #BA2121 } /* Literal.String.Single */
+.codehilite .ss { color: #19177C } /* Literal.String.Symbol */
+.codehilite .bp { color: #008000 } /* Name.Builtin.Pseudo */
+.codehilite .fm { color: #00F } /* Name.Function.Magic */
+.codehilite .vc { color: #19177C } /* Name.Variable.Class */
+.codehilite .vg { color: #19177C } /* Name.Variable.Global */
+.codehilite .vi { color: #19177C } /* Name.Variable.Instance */
+.codehilite .vm { color: #19177C } /* Name.Variable.Magic */
+.codehilite .il { color: #666 } /* Literal.Number.Integer.Long */
+/* dark */
+pre { line-height: 125%; }
+td.linenos .normal { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+span.linenos { color: #6e7681; background-color: #0d1117; padding-left: 5px; padding-right: 5px; }
+td.linenos .special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+span.linenos.special { color: #e6edf3; background-color: #6e7681; padding-left: 5px; padding-right: 5px; }
+[data-theme="dark"] .codehilite .hll { background-color: #6e7681 }
+[data-theme="dark"] .codehilite { background: var(--bg2); color: #E6EDF3 }
+[data-theme="dark"] .codehilite .c { color: #8B949E; font-style: italic } /* Comment */
+[data-theme="dark"] .codehilite .err { color: inherit } /* Error */
+[data-theme="dark"] .codehilite .esc { color: #E6EDF3 } /* Escape */
+[data-theme="dark"] .codehilite .g { color: #E6EDF3 } /* Generic */
+[data-theme="dark"] .codehilite .k { color: #FF7B72 } /* Keyword */
+[data-theme="dark"] .codehilite .l { color: #A5D6FF } /* Literal */
+[data-theme="dark"] .codehilite .n { color: #E6EDF3 } /* Name */
+[data-theme="dark"] .codehilite .o { color: #FF7B72; font-weight: bold } /* Operator */
+[data-theme="dark"] .codehilite .x { color: #E6EDF3 } /* Other */
+[data-theme="dark"] .codehilite .p { color: #E6EDF3 } /* Punctuation */
+[data-theme="dark"] .codehilite .ch { color: #8B949E; font-style: italic } /* Comment.Hashbang */
+[data-theme="dark"] .codehilite .cm { color: #8B949E; font-style: italic } /* Comment.Multiline */
+[data-theme="dark"] .codehilite .cp { color: #8B949E; font-weight: bold; font-style: italic } /* Comment.Preproc */
+[data-theme="dark"] .codehilite .cpf { color: #8B949E; font-style: italic } /* Comment.PreprocFile */
+[data-theme="dark"] .codehilite .c1 { color: #8B949E; font-style: italic } /* Comment.Single */
+[data-theme="dark"] .codehilite .cs { color: #8B949E; font-weight: bold; font-style: italic } /* Comment.Special */
+[data-theme="dark"] .codehilite .gd { color: #FFA198; background-color: #490202 } /* Generic.Deleted */
+[data-theme="dark"] .codehilite .ge { color: #E6EDF3; font-style: italic } /* Generic.Emph */
+[data-theme="dark"] .codehilite .ges { color: #E6EDF3; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+[data-theme="dark"] .codehilite .gr { color: #FFA198 } /* Generic.Error */
+[data-theme="dark"] .codehilite .gh { color: #79C0FF; font-weight: bold } /* Generic.Heading */
+[data-theme="dark"] .codehilite .gi { color: #56D364; background-color: #0F5323 } /* Generic.Inserted */
+[data-theme="dark"] .codehilite .go { color: #8B949E } /* Generic.Output */
+[data-theme="dark"] .codehilite .gp { color: #8B949E } /* Generic.Prompt */
+[data-theme="dark"] .codehilite .gs { color: #E6EDF3; font-weight: bold } /* Generic.Strong */
+[data-theme="dark"] .codehilite .gu { color: #79C0FF } /* Generic.Subheading */
+[data-theme="dark"] .codehilite .gt { color: #FF7B72 } /* Generic.Traceback */
+[data-theme="dark"] .codehilite .g-Underline { color: #E6EDF3; text-decoration: underline } /* Generic.Underline */
+[data-theme="dark"] .codehilite .kc { color: #79C0FF } /* Keyword.Constant */
+[data-theme="dark"] .codehilite .kd { color: #FF7B72 } /* Keyword.Declaration */
+[data-theme="dark"] .codehilite .kn { color: #FF7B72 } /* Keyword.Namespace */
+[data-theme="dark"] .codehilite .kp { color: #79C0FF } /* Keyword.Pseudo */
+[data-theme="dark"] .codehilite .kr { color: #FF7B72 } /* Keyword.Reserved */
+[data-theme="dark"] .codehilite .kt { color: #FF7B72 } /* Keyword.Type */
+[data-theme="dark"] .codehilite .ld { color: #79C0FF } /* Literal.Date */
+[data-theme="dark"] .codehilite .m { color: #A5D6FF } /* Literal.Number */
+[data-theme="dark"] .codehilite .s { color: #A5D6FF } /* Literal.String */
+[data-theme="dark"] .codehilite .na { color: #E6EDF3 } /* Name.Attribute */
+[data-theme="dark"] .codehilite .nb { color: #E6EDF3 } /* Name.Builtin */
+[data-theme="dark"] .codehilite .nc { color: #F0883E; font-weight: bold } /* Name.Class */
+[data-theme="dark"] .codehilite .no { color: #79C0FF; font-weight: bold } /* Name.Constant */
+[data-theme="dark"] .codehilite .nd { color: #D2A8FF; font-weight: bold } /* Name.Decorator */
+[data-theme="dark"] .codehilite .ni { color: #FFA657 } /* Name.Entity */
+[data-theme="dark"] .codehilite .ne { color: #F0883E; font-weight: bold } /* Name.Exception */
+[data-theme="dark"] .codehilite .nf { color: #D2A8FF; font-weight: bold } /* Name.Function */
+[data-theme="dark"] .codehilite .nl { color: #79C0FF; font-weight: bold } /* Name.Label */
+[data-theme="dark"] .codehilite .nn { color: #FF7B72 } /* Name.Namespace */
+[data-theme="dark"] .codehilite .nx { color: #E6EDF3 } /* Name.Other */
+[data-theme="dark"] .codehilite .py { color: #79C0FF } /* Name.Property */
+[data-theme="dark"] .codehilite .nt { color: #7EE787 } /* Name.Tag */
+[data-theme="dark"] .codehilite .nv { color: #79C0FF } /* Name.Variable */
+[data-theme="dark"] .codehilite .ow { color: #FF7B72; font-weight: bold } /* Operator.Word */
+[data-theme="dark"] .codehilite .pm { color: #E6EDF3 } /* Punctuation.Marker */
+[data-theme="dark"] .codehilite .w { color: #6E7681 } /* Text.Whitespace */
+[data-theme="dark"] .codehilite .mb { color: #A5D6FF } /* Literal.Number.Bin */
+[data-theme="dark"] .codehilite .mf { color: #A5D6FF } /* Literal.Number.Float */
+[data-theme="dark"] .codehilite .mh { color: #A5D6FF } /* Literal.Number.Hex */
+[data-theme="dark"] .codehilite .mi { color: #A5D6FF } /* Literal.Number.Integer */
+[data-theme="dark"] .codehilite .mo { color: #A5D6FF } /* Literal.Number.Oct */
+[data-theme="dark"] .codehilite .sa { color: #79C0FF } /* Literal.String.Affix */
+[data-theme="dark"] .codehilite .sb { color: #A5D6FF } /* Literal.String.Backtick */
+[data-theme="dark"] .codehilite .sc { color: #A5D6FF } /* Literal.String.Char */
+[data-theme="dark"] .codehilite .dl { color: #79C0FF } /* Literal.String.Delimiter */
+[data-theme="dark"] .codehilite .sd { color: #A5D6FF } /* Literal.String.Doc */
+[data-theme="dark"] .codehilite .s2 { color: #A5D6FF } /* Literal.String.Double */
+[data-theme="dark"] .codehilite .se { color: #79C0FF } /* Literal.String.Escape */
+[data-theme="dark"] .codehilite .sh { color: #79C0FF } /* Literal.String.Heredoc */
+[data-theme="dark"] .codehilite .si { color: #A5D6FF } /* Literal.String.Interpol */
+[data-theme="dark"] .codehilite .sx { color: #A5D6FF } /* Literal.String.Other */
+[data-theme="dark"] .codehilite .sr { color: #79C0FF } /* Literal.String.Regex */
+[data-theme="dark"] .codehilite .s1 { color: #A5D6FF } /* Literal.String.Single */
+[data-theme="dark"] .codehilite .ss { color: #A5D6FF } /* Literal.String.Symbol */
+[data-theme="dark"] .codehilite .bp { color: #E6EDF3 } /* Name.Builtin.Pseudo */
+[data-theme="dark"] .codehilite .fm { color: #D2A8FF; font-weight: bold } /* Name.Function.Magic */
+[data-theme="dark"] .codehilite .vc { color: #79C0FF } /* Name.Variable.Class */
+[data-theme="dark"] .codehilite .vg { color: #79C0FF } /* Name.Variable.Global */
+[data-theme="dark"] .codehilite .vi { color: #79C0FF } /* Name.Variable.Instance */
+[data-theme="dark"] .codehilite .vm { color: #79C0FF } /* Name.Variable.Magic */
+[data-theme="dark"] .codehilite .il { color: #A5D6FF } /* Literal.Number.Integer.Long */

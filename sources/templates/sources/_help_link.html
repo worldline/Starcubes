@@ -1,0 +1,24 @@
+{% comment %}
+A small "?" that opens the help page for whatever card it sits in.
+
+    {% include "sources/_help_link.html" with slug="rollup" %}
+    {% include "sources/_help_link.html" with slug="alarm" anchor="severity" %}
+
+`slug` is a key from core.docs.HELP_DOCS — `check_help_docs` verifies that
+every slug used in a template exists, so a renamed document fails the check
+instead of shipping a dead link. Opens in a new tab on purpose: the operator
+is usually mid-configuration and should not lose the form they are filling in.
+
+Put it INSIDE the .card-title span, not after it: .card-header is a flex row
+with space-between, so a sibling gets pushed to the far edge on a card whose
+header holds nothing else, and lands somewhere in the middle on one that
+does. Inside the title it sits in the same place on every card.
+
+The styles live in sources/base.html next to .card-header, because that is
+where the alignment they depend on is decided.
+{% endcomment %}
+<a class="help-hint" title="Open the documentation for this"
+   href="{% url 'viz:help_page' slug %}{% if anchor %}#{{ anchor }}{% endif %}"
+   target="_blank" rel="noopener">
+  <svg class="ic" aria-hidden="true"><use href="#ic-help-circle"></use></svg>
+</a>

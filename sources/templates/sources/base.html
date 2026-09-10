@@ -691,12 +691,31 @@ html[data-mode="basic"] .expert-only { display: none; }
   font-family: inherit;
 }
 .dtp-label input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(74,127,212,0.2); }
+/* The "?" from sources/_help_link.html — sized to the text it follows and
+   quiet until hovered, so a card header reads as a heading, not a toolbar. */
+.help-hint {
+  display: inline-flex; align-items: center;
+  margin-left: 7px; color: var(--muted);
+  opacity: .6; text-decoration: none; font-size: 15px;
+  vertical-align: middle;
+}
+.help-hint:hover { opacity: 1; color: var(--accent); }
+
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { text-decoration: underline; }
 .sort-indicator { font-size: 10px; margin-left: 2px; }
 th.sortable.asc .sort-indicator::after { content: ' ▲'; }
 th.sortable.desc .sort-indicator::after { content: ' ▼'; }
 </style>
+{% comment %}
+  A page's own stylesheet goes here, not in {% templatetag openblock %} block
+  content {% templatetag closeblock %}: in the head there is no flash of
+  unstyled content, and being *after* the block above is what lets a page
+  override a shell rule it needs to (the help section drops .page's
+  --tabs-left indent on narrow viewports). prepaint is the wrong end for
+  that — it runs before these rules, so the shell would win.
+{% endcomment %}
+{% block extra_css %}{% endblock %}
 </head>
 <body>
 {% include "viz/_icons.html" %}

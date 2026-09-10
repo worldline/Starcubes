@@ -61,6 +61,16 @@
     text-decoration: none; font-size: 13px; font-weight: 500;
   }
   .about-slides:hover { background: var(--accent-hover, var(--accent)); }
+  .about-actions {
+    display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+  }
+  /* Secondary of the two: same shape, no fill, so the pair reads as one
+     primary action and one alternative rather than two competing buttons. */
+  .about-slides--ghost {
+    background: none; color: var(--accent);
+    border: 1px solid var(--border);
+  }
+  .about-slides--ghost:hover { background: var(--bg2); }
   .about-facts {
     width: 100%; margin: 20px 0 0; border-collapse: collapse;
     font-size: 12px; text-align: left;
@@ -93,9 +103,15 @@
       of what happens in it — one container, one Postgres, one login.
     </p>
 
-    <a class="about-slides" href="{% url 'viz:slides' %}" target="_blank" rel="noopener">
-      Open the slide deck &rarr;
-    </a>
+    <div class="about-actions">
+      <a class="about-slides" href="{% url 'viz:help_index' %}">
+        Help &amp; documentation
+      </a>
+      <a class="about-slides about-slides--ghost" href="{% url 'viz:slides' %}"
+         target="_blank" rel="noopener">
+        Open the slide deck &rarr;
+      </a>
+    </div>
 
     <table class="about-facts">
       {% if about.build_ref %}
@@ -128,11 +144,16 @@
       requires its copyright notice to be shipped with the software. The
       bundle is minified and carries no banner, so this dialog and the
       LICENSE the jsbuilder stage copies next to it are where an operator
-      can actually see it. Full text in THIRD-PARTY-NOTICES.
+      can actually see it. Both licence texts are now served in full under
+      /help/ as well, which is the first time they are readable from inside
+      a running container — see core/docs.py.
     {% endcomment %}
     <div class="about-footer">
-      starcubes &middot; MIT License &middot; &copy; 2026 Worldline<br>
-      timeseries.js &middot; MIT License &middot; &copy; 2022&ndash;2026 Holger Gruber
+      starcubes &middot; <a href="{% url 'viz:help_page' 'license' %}">MIT License</a>
+      &middot; &copy; 2026 Worldline<br>
+      timeseries.js &middot;
+      <a href="{% url 'viz:help_page' 'third-party-notices' %}">MIT License</a>
+      &middot; &copy; 2022&ndash;2026 Holger Gruber
     </div>
   </div>
 </div>

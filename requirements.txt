@@ -10,3 +10,8 @@ mozilla-django-oidc==5.0.2
 pyyaml==6.0.3
 # sources/alarm_notify.py sends alarm notifications as an XMPP bot account.
 slixmpp==1.17.0
+# core/docs.py renders the repo's Markdown for the /help/ section; pygments is
+# what codehilite highlights fenced blocks with (the stylesheet for it is
+# baked into viz/static/viz/help.css).
+markdown==3.10.3
+pygments==2.19.1

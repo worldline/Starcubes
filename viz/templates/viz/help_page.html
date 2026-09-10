@@ -1,0 +1,62 @@
+{% extends "sources/base.html" %}
+{% load static %}
+
+{% comment %}
+One rendered document. The body arrives as HTML from `core.docs` and is
+printed with |safe: it is the project's own Markdown from the repo, not
+user input, and its links and image sources have already been rewritten
+onto the routes this app serves.
+
+The sidebar carries two lists — the other documents in this document's
+group, and this document's own headings (two levels, flattened by
+`viz.help._flatten_toc`).
+{% endcomment %}
+
+{% block title %}starcubes — {{ doc.title }}{% endblock %}
+
+{% block extra_css %}<link rel="stylesheet" href="{% static 'viz/help.css' %}">{% endblock %}
+
+{% block content %}
+
+<div class="help-layout">
+  <aside class="help-side">
+    <a class="help-back" href="{% url 'viz:help_index' %}">
+      <svg class="ic" aria-hidden="true"><use href="#ic-chevron-down"></use></svg>
+      All help
+    </a>
+
+    <div class="help-search">
+      <input type="search" id="help-q" placeholder="Search…"
+             autocomplete="off" spellcheck="false">
+      <div class="help-results" id="help-results"></div>
+    </div>
+
+    <div class="help-side-title">{{ doc.group }}</div>
+    {% for d in group_docs %}
+      <a href="{% url 'viz:help_page' d.slug %}"
+         {% if d.slug == doc.slug %}class="current"{% endif %}>{{ d.title }}</a>
+    {% endfor %}
+
+    {% if toc %}
+    <div class="help-toc-block">
+      <div class="help-side-title">On this page</div>
+      <nav class="help-toc" id="help-toc">
+        {% for t in toc %}
+          <a class="d{{ t.depth }}" href="#{{ t.id }}">{{ t.name }}</a>
+        {% endfor %}
+      </nav>
+    </div>
+    {% endif %}
+  </aside>
+
+  <article class="help-doc" id="help-doc">
+    {{ content|safe }}
+  </article>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script src="{% static 'viz/help_search.js' %}"></script>
+<script src="{% static 'viz/help_page.js' %}"></script>
+{% endblock %}

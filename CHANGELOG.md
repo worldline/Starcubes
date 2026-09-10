@@ -12,6 +12,29 @@ committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
 [`docs/releases.md`](docs/releases.md).
 
+### Added
+
+- **The documentation is in the app, at `/help/`.** Every Markdown file the
+  project ships — this changelog, the README, the how-to and all of `docs/` —
+  is rendered at request time and cross-linked, so a question that arises
+  mid-configuration is answered without leaving the GUI. Reachable from the
+  main menu in both page shells, from the About dialog, from the login page
+  (it needs no account) and from a `?` on the cards it explains. Search is
+  over the whole corpus and links straight to the matching section.
+
+  The files stay the single source of truth: `core/docs.py` reads them from
+  the repo, rewrites their relative links and screenshots onto URLs the app
+  serves, and caches on mtime. `manage.py check_help_docs` verifies that
+  every link, anchor, image and template slug still resolves.
+
+  Two things came with it. `LICENSE` and `THIRD-PARTY-NOTICES` are now
+  readable from a running container, which is where the MIT notice
+  `timeseries.js` obliges us to ship has been invisible until now. And
+  `.dockerignore` no longer drops the documentation from the image — its
+  `*.md` never matched a subdirectory, so what it actually excluded was the
+  four repo-root files, while every `docs/*.md` and the per-app `CLAUDE.md`
+  shipped. Both halves of that are fixed.
+
 ## [2.0.0-alpha.6] — 2026-09-10
 
 ### Added

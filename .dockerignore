@@ -12,6 +12,21 @@ staticfiles/
 # /slides, and viz.views.slides streams repo-root presentation.html plus
 # its assets under presentation/.
 *.md
+# ...and so is the documentation: /help/ renders these files at request time
+# (core/docs.py), so an image without them serves a help section of 404s
+# while a developer's checkout works perfectly.
+#
+# Mind the matching rule, which is not glob-in-a-shell: `*` does not cross a
+# `/`, so the `*.md` above only ever caught the four repo-root files. That is
+# why docs/*.md has always been in the image (needs no exception here — the
+# one below is documentation of intent, not a functional line) and why the
+# per-app CLAUDE.md files were too, until the explicit `**` pattern. Verified
+# by building a throwaway context and listing the layer.
+**/CLAUDE.md
+!README.md
+!HOWTO.md
+!CHANGELOG.md
+!docs/*.md
 .dockerignore
 Dockerfile_orig
 __pycache__

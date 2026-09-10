@@ -1,0 +1,55 @@
+{% extends "sources/base.html" %}
+{% load static %}
+
+{% comment %}
+The help landing page. Extends the sources shell across apps — established
+practice here, and the reason these pages get the nav, the theme pre-paint,
+the icon sprite and the About dialog without duplicating any of them.
+
+Everything on this page comes from `core.docs.grouped_docs()`; there is no
+per-document markup to keep in sync with the registry.
+{% endcomment %}
+
+{% block title %}starcubes — Help{% endblock %}
+
+{% block extra_css %}<link rel="stylesheet" href="{% static 'viz/help.css' %}">{% endblock %}
+
+{% block content %}
+
+<div class="help-hero">
+  <h1>Help</h1>
+  <p>
+    Everything starcubes ships as documentation, rendered from the project's
+    own files — so what you read here is what the version you are running
+    was built from.
+  </p>
+</div>
+
+<div class="help-search" style="max-width:420px;margin-top:22px">
+  <input type="search" id="help-q" placeholder="Search the documentation…"
+         autocomplete="off" spellcheck="false">
+  <div class="help-results" id="help-results"></div>
+</div>
+
+{% for group, blurb, docs in groups %}
+<section class="help-group">
+  <div class="help-group-head">
+    <h2>{{ group }}</h2>
+    {% if blurb %}<p>{{ blurb }}</p>{% endif %}
+  </div>
+  <div class="help-cards">
+    {% for doc in docs %}
+    <a class="help-card" href="{% url 'viz:help_page' doc.slug %}">
+      <div class="help-card-title">{{ doc.title }}</div>
+      <div class="help-card-blurb">{{ doc.blurb }}</div>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endfor %}
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script src="{% static 'viz/help_search.js' %}"></script>
+{% endblock %}

@@ -63,6 +63,17 @@ Users*, My Profile). The toggle button, the logout form and (chart only)
   <span class="menu-label" id="{{ theme_label_id|default:'nav-theme-label' }}">Dark theme</span>
 </button>
 <div class="menu-sep"></div>
+{% comment %}
+Help sits below the separator, with About rather than with the tabs above
+it: the block above mirrors _global_tabs.html row for row, and /help/ is
+not a sources page and has no tab there. Putting it up top would break that
+correspondence — which is the one thing the comment at the head of this
+file asks the next editor not to do.
+{% endcomment %}
+<a class="menu-item" role="menuitem" href="{% url 'viz:help_index' %}">
+  <svg class="ic" aria-hidden="true"><use href="#ic-help-circle"></use></svg>
+  <span class="menu-label">Help</span>
+</a>
 <button class="menu-item" role="menuitem" type="button" id="about-open">
   <svg class="ic" aria-hidden="true"><use href="#ic-info"></use></svg>
   <span class="menu-label">About starcubes</span>

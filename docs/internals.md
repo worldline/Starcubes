@@ -39,12 +39,16 @@ datasource lives as metadata rows in `starcubes_meta`, editable from a GUI).
     [`source-profiles.md`](source-profiles.md).
   - `utils.py` — shared helpers (`_parse_dt`, `_pid_alive`, `tail_file`,
     `format_pks`).
+  - `docs.py` — the help section's registry and renderer: which Markdown
+    files `/help/` serves, and the link rewriting that turns their
+    repo-relative links and images into URLs this app answers.
 - `starcubes/` — the Django project: settings, URLs, WSGI, the custom Postgres
   backend package, `RequireLoginMiddleware`, and the optional Keycloak/OIDC
   auth backend.
 - `sources/` — datasource CRUD, the ETL monitor, alarms and firings. See
   [`sources-app.md`](sources-app.md).
-- `viz/` — the chart page, its JSON endpoints and the vendored
+- `viz/` — the chart page, its JSON endpoints, the slide deck, the help
+  section at `/help/` (`help.py`, on top of `core/docs.py`) and the vendored
   `@hgruber/timeseries.js`. See [`chart-app.md`](chart-app.md) and
   [`chart-rendering.md`](chart-rendering.md).
 - `migrations/` — numbered, idempotent SQL migrations plus the consolidated
