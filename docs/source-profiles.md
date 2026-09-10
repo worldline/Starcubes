@@ -206,6 +206,13 @@ datasource is skipped at write time.
 
 It is a **replace**, not a merge: what the profile does not define, the
 datasource loses. `name`, `schema_name` and `source_dsn` are never touched.
+
+**Alarms are deliberately not in a profile.** They are operating state over
+a datasource that already exists, not part of what a datasource *is* — and
+because Apply is a replace over `_CHILD_TABLES`, an `alarm` entry there
+would take `alarm_history` and `alarm_firing` with it through
+`ON DELETE CASCADE` on every apply. They have a backup file of their own;
+see **Export and import** in [`docs/alarm.md`](alarm.md).
 The same ETL interlock as `etl/run/` applies — a 409 while a run or a
 forever session is active.
 

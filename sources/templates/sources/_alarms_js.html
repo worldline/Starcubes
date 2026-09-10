@@ -955,6 +955,116 @@
     });
   });
 
+  // --- Backup: export / import -------------------------------------------
+  // Export is a plain link — the endpoint answers with an attachment, so it
+  // needs no script. The import posts the file twice: once without
+  // `confirm` for the plan the operator reads, then once with it. The file
+  // stays in the input between the two rather than being cached in a
+  // variable, so what is applied is what was planned.
+  //
+  // The plan is worth showing rather than a count: an import is an upsert
+  // on the alarm name, so "changed" and "left alone" are different answers
+  // and only the file's author can say which one was meant.
+  var importFile   = document.getElementById('alarmImportFile');
+  var importResult = document.getElementById('alarmImportResult');
+  var importBtn    = document.getElementById('alarmImportBtn');
+
+  function importPost(confirmIt) {
+    var fd = new FormData();
+    fd.append('file', importFile.files[0]);
+    if (confirmIt) fd.append('confirm', 'true');
+    return postJSON('{% url "sources:alarms_import" ds.id %}', fd);
+  }
+
+  function importLine(mark, colour, text, detail) {
+    return '<div style="font-size:12px;margin:2px 0">'
+      + '<span style="display:inline-block;width:14px;color:' + colour + '">'
+      + mark + '</span>' + esc(text)
+      + (detail ? ' <span class="text-muted">(' + esc(detail) + ')</span>' : '')
+      + '</div>';
+  }
+
+  function renderImportReport(d) {
+    importResult.hidden = false;
+    if (!d.ok && !d.report) {
+      importResult.innerHTML = '<div style="color:var(--danger);font-size:12px">'
+        + esc(d.error || 'Import failed') + '</div>';
+      return;
+    }
+    var r = d.report, html = '', writable = 0;
+    html += '<div style="font-weight:600;margin-bottom:6px">'
+      + (r.applied ? 'Imported' : 'Import plan') + '</div>';
+    (r.datasources || []).forEach(function(sec) {
+      (sec.added || []).forEach(function(n) {
+        writable++; html += importLine('+', 'var(--success)', n, 'new'); });
+      (sec.changed || []).forEach(function(c) {
+        writable++;
+        html += importLine('~', 'var(--accent)', c.name,
+                           Object.keys(c.deltas || {}).sort().join(', ')); });
+      (sec.unchanged || []).forEach(function(n) {
+        html += importLine('=', 'var(--muted)', n, 'unchanged'); });
+      (sec.skipped || []).forEach(function(sk) {
+        html += importLine('!', 'var(--warn)', sk.name, sk.reason); });
+    });
+    (r.skipped_datasources || []).forEach(function(sk) {
+      html += importLine('!', 'var(--warn)', sk.datasource, sk.reason);
+    });
+    (r.errors || []).forEach(function(e) {
+      html += importLine('×', 'var(--danger)', e.alarm, e.error);
+    });
+    if (!writable && !(r.errors || []).length && !r.applied) {
+      html += '<div class="text-muted" style="font-size:12px;margin-top:4px">'
+        + 'Nothing to write — this datasource already matches the file.'
+        + '</div>';
+    }
+    (r.warnings || []).forEach(function(w) {
+      html += '<div style="font-size:11px;color:var(--warn);margin-top:2px">'
+        + esc(w) + '</div>';
+    });
+    if (!r.applied && writable && !(r.errors || []).length) {
+      html += '<button type="button" class="btn btn-primary btn-sm" '
+        + 'id="alarmImportApply" style="margin-top:10px">Apply import</button>'
+        + ' <button type="button" class="btn btn-secondary btn-sm" '
+        + 'id="alarmImportCancel" style="margin-top:10px">Cancel</button>';
+    }
+    importResult.innerHTML = html;
+
+    var apply = document.getElementById('alarmImportApply');
+    if (apply) apply.addEventListener('click', function() {
+      apply.disabled = true;
+      apply.textContent = 'Applying…';
+      importPost(true).then(function(d2) {
+        renderImportReport(d2);
+        // The tables are what the import changed, so re-read them rather
+        // than patching rows from the report.
+        refresh();
+      }).catch(function(e) {
+        importResult.innerHTML = '<div style="color:var(--danger)">'
+          + esc(String(e)) + '</div>';
+      });
+    });
+    var cancel = document.getElementById('alarmImportCancel');
+    if (cancel) cancel.addEventListener('click', function() {
+      importFile.value = '';
+      importResult.hidden = true;
+      importResult.innerHTML = '';
+    });
+  }
+
+  if (importBtn) importBtn.addEventListener('click', function() {
+    importFile.click();
+  });
+  if (importFile) importFile.addEventListener('change', function() {
+    if (!importFile.files.length) return;
+    importResult.hidden = false;
+    importResult.innerHTML =
+      '<div class="text-muted" style="font-size:12px">Reading…</div>';
+    importPost(false).then(renderImportReport).catch(function(e) {
+      importResult.innerHTML = '<div style="color:var(--danger)">'
+        + esc(String(e)) + '</div>';
+    });
+  });
+
   var incoming = readIncomingContext();
   var wantNew  = new URLSearchParams(location.search).get('new-alarm');
   // ?new-alarm=1 (the bell) means "write one now"; a context on its own (the

@@ -42,15 +42,14 @@ from core.preflight import run_preflight
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user, history_list_user
 from core.audit import audit_id_details, audit_ids, audit_window
+from core.alarm_io import (MAX_ALARM_FILE_BYTES, AlarmIOError,
+                           dump_alarms, parse_alarms_text)
 from core.profile import (ProfileError, delete_profile, dump_profile,
                           iter_profiles, load_profile, profile_origin,
                           profile_path, save_profile, validate_profile_name,
                           MAX_PROFILE_BYTES)
-from core.alarm import (check_no_grouped_filters, measure_value_expr,
-                        normalize_context_rows, resolve_context_labels)
-from core.query import (build_filter_tree, grouped_label, grouped_token,
-                        MEASURE_FUNCS, slugify_group_set,
-                        validate_filter_tree)
+from core.alarm import normalize_context_rows
+from core.query import (grouped_label, grouped_token, slugify_group_set)
 from core.rollup import (ROLLUP_FUNCS, drop_rollup_tables,
                          ensure_rollup_tables,
                          last_ok_hwm, read_rollup_states, rollup_extent,
@@ -64,6 +63,12 @@ from sources.profile_store import (delete_profile_children,
                                    insert_default_pipeline_alarms,
                                    insert_profile_children,
                                    update_datasource_scalars)
+from sources.alarm_store import (AlarmImportError, collect_alarms,
+                                 import_alarms)
+from sources.alarm_fields import (PIPELINE_CONDITIONS, alarm_row_to_dict,
+                                  check_alarm_context, check_alarm_notify,
+                                  context_labels, parse_alarm_fields,
+                                  parse_context_field)
 from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
                                spawn_etl_subprocess as _spawn_etl_subprocess,
                                log_dir as _log_dir, slugify_ds as _slugify_ds)
@@ -2073,408 +2078,42 @@ def measure_delete(request, pk: int, measure_id: int):
 # them, unlike the six historical-mutation endpoints above.
 # ---------------------------------------------------------------------------
 
-# Comparison operators accepted by starcubes_meta.alarm.cond_op's CHECK
-# constraint — the DB enforces it, but validating here gives a friendlier
-# 400 than a Postgres exception bubbling up through the generic except.
-_ALARM_OPS = {">", "<", "=", ">=", "<="}
-# The pipeline conditions, keyed by code → the label the GUI shows. Read from
-# core so the list cannot drift from the evaluator or from the CHECK
-# constraint that backs it.
-PIPELINE_CONDITIONS = {c.code: c.title
-                       for c in _PIPELINE_CONDS.values()}
+# The field parsing and the two semantic checks live in
+# sources/alarm_fields.py, so the alarm import can put a rule through the
+# very same validation a form save does — one truth about what a valid
+# alarm is, instead of two that drift. What stays here are the wrappers
+# that turn their (error, fields, status) tuples back into the JSON bodies
+# these endpoints have always returned.
 
-# Notification channels — every value `alarm.notify_channels` accepts.
-# email/xmpp/pagerduty dispatch via sources/alarm_notify.py; `log` is no
-# longer selectable (the episode row plus the evaluator's log line are
-# always on, core/alarm.py) but is silently dropped from submitted lists
-# because legacy rows may still store it; `slack` stays reserved without a
-# transport — see docs/backlog.md.
-_ALARM_CHANNELS = {"email", "xmpp", "slack", "pagerduty"}
-
-# PagerDuty trigger severities an alarm.severity may carry (CHECK constraint
-# alarm_severity_check mirrors this set in the DB). NULL/absent = fall back
-# to STARCUBES_PAGERDUTY_SEVERITY at dispatch time.
-_ALARM_SEVERITIES = {"critical", "error", "warning", "info"}
-
-# Filter ops an alarm context row may carry — the same six the chart
-# serializes (core.query._VALID_OPS).
-_ALARM_CONTEXT_OPS = {"in", "not_in", "starts_with", "starts_not_with",
-                      "contains", "not_contains"}
-
-
-def _parse_context_field(raw_ctx):
-    """Parse the `context` POST field → (rows, error_message).
-
-    `None` rows with no error means the field was absent, which the edit
-    path reads as "keep the stored context". Shared by the alarm CRUD and
-    the duplicate lookup so the accepted shape — and the wording that
-    rejects it — cannot drift between them.
-    """
-    if raw_ctx is None:
-        return None, None
-    raw = raw_ctx.strip()
-    if not raw:
-        return [], None
-    try:
-        parsed = _json.loads(raw)
-    except ValueError:
-        return None, "context must be a JSON array of filter rows"
-    if not isinstance(parsed, list) or not all(
-            isinstance(r, dict) and isinstance(r.get("col"), str)
-            and r.get("op") in _ALARM_CONTEXT_OPS
-            and isinstance(r.get("vals"), list)
-            and all(isinstance(v, (str, int)) for v in r["vals"])
-            for r in parsed):
-        return None, ("context rows must be "
-                      "{col, op, vals[, andOr, indent]} "
-                      f"with op one of {sorted(_ALARM_CONTEXT_OPS)}")
-    return parsed, None
-
-
-def _parse_alarm_fields(request, *,
-                        rule_kind: str | None = None
-                        ) -> tuple[dict, dict]:
-    """Validate POST fields for an alarm and return (values, errors).
-
-    Both alarms_list (which builds an HTML row) and the add/edit endpoints
-    call this so the validation lives in one place. ``errors`` keys are
-    field names; values are short user-facing messages. ``values`` carries
-    the typed-and-clamped payload to feed straight into an INSERT/UPDATE.
-
-    ``context`` arrives as a JSON string (the chart's flat filter rows) —
-    FormData-compatible for both callers. Absent on edit means "keep the
-    stored context" (the inline editor never sends it — a filter expression
-    is not inline-editable); an explicit empty array means a global alarm.
-    Semantic validation (col/measure resolution) happens afterwards in
-    `_validate_alarm_context`, which needs the Source.
-    """
-    values: dict = {
-        "datasource_id": None,
-        "name": "",
-        "comment": None,
-        "context_rows": None,
-        "measure": "count(*)",
-        "cond_op": ">",
-        "threshold": 0.0,
-        "window_s": 300,
-        "notify_channels": [],
-        "notify_email_recipients": [],
-        "notify_xmpp_recipients": [],
-        "enabled": True,
-        "rule_kind": "threshold",
-        "condition": None,
-    }
-    errors: dict = {}
-
-    # A pipeline alarm watches ETL state, not fact rows, so measure,
-    # window_s and the context are meaningless for it. Skipping their
-    # branches rather than letting the defaults through is the point: a
-    # pipeline row silently acquiring measure='count(*)', window_s=300 would
-    # be indistinguishable from a threshold row that had been mis-saved.
-    # On an edit the caller passes the *stored* kind: an alarm's kind is not
-    # editable, and the inline row editor does not send the field at all —
-    # letting it default to 'threshold' there would rewrite a pipeline row's
-    # measure and window_s on every save.
-    rule_kind_from_post = rule_kind is None
-    rule_kind = (rule_kind
-                 or (request.POST.get("rule_kind") or "threshold").strip())
-    if rule_kind not in ("threshold", "pipeline"):
-        errors["rule_kind"] = "rule_kind must be threshold or pipeline"
-        rule_kind = "threshold"
-    values["rule_kind"] = rule_kind
-    is_pipeline = rule_kind == "pipeline"
-    if is_pipeline and "condition" in request.POST:
-        condition = (request.POST.get("condition") or "").strip()
-        if condition not in PIPELINE_CONDITIONS:
-            errors["condition"] = (f"condition must be one of "
-                                   f"{sorted(PIPELINE_CONDITIONS)}")
-        else:
-            values["condition"] = condition
-    elif is_pipeline and rule_kind_from_post:
-        # Creating a pipeline alarm without naming its condition is not a
-        # keep-stored case, it is an incomplete form.
-        errors["condition"] = (f"condition is required; one of "
-                               f"{sorted(PIPELINE_CONDITIONS)}")
-
-    name = (request.POST.get("name") or "").strip()
-    if not name:
-        errors["name"] = "name is required"
-    elif len(name) > 200:
-        errors["name"] = "name is too long (max 200 characters)"
-    else:
-        values["name"] = name
-
-    comment = (request.POST.get("comment") or "").strip()
-    if len(comment) > 10000:
-        errors["comment"] = "comment is too long (max 10000 characters)"
-    else:
-        values["comment"] = comment or None
-
-    cond_op = (request.POST.get("cond_op") or ">").strip()
-    if cond_op not in _ALARM_OPS:
-        errors["cond_op"] = f"cond_op must be one of {sorted(_ALARM_OPS)}"
-    else:
-        values["cond_op"] = cond_op
-
-    try:
-        values["threshold"] = float(request.POST.get("threshold") or 0)
-    except (TypeError, ValueError):
-        errors["threshold"] = "threshold must be a number"
-
-    if not is_pipeline:
-        try:
-            window_s = int(request.POST.get("window_s") or 300)
-            if window_s <= 0:
-                errors["window_s"] = "window_s must be > 0"
-            else:
-                values["window_s"] = window_s
-        except (TypeError, ValueError):
-            errors["window_s"] = "window_s must be an integer"
-
-    # Syntactic measure check — the semantic column check needs the Source
-    # and lives in _validate_alarm_context. quantile(col) is rejected here:
-    # it is not a scalar a threshold can compare against.
-    if not is_pipeline:
-        measure = (request.POST.get("measure")
-                   or "count(*)").strip() or "count(*)"
-        m = re.match(r"(\w+)\((\w+)\)$", measure)
-        if (measure != "count(*)" and not m
-                and not re.match(r"^\w+$", measure)):
-            errors["measure"] = ("measure must be count(*), a column, or "
-                                 "func(col) with func in sum/avg/min/max")
-        elif m and m.group(1) not in MEASURE_FUNCS:
-            errors["measure"] = (f"measure function {m.group(1)!r} is not "
-                                 f"comparable; choose from count(*), "
-                                 f"{sorted(MEASURE_FUNCS)} or a bare column")
-        else:
-            values["measure"] = measure
-
-    if not is_pipeline and "context" in request.POST:
-        rows, ctx_err = _parse_context_field(request.POST.get("context"))
-        if ctx_err:
-            errors["context"] = ctx_err
-        else:
-            values["context_rows"] = rows
-
-    # Channels arrive as checkbox values (one entry per checked box), a CSV
-    # string, or a mix of both — getlist covers every shape at once.
-    channels = []
-    for chunk in request.POST.getlist("notify_channels"):
-        channels.extend(c.strip() for c in str(chunk).split(",") if c.strip())
-    channels = [c for c in channels if c]
-    # `log` is always on (not dispatched any more); drop it silently so a
-    # legacy alarm whose stored array still carries it survives an edit.
-    channels = [c for c in channels if c != "log"]
-    bad = [c for c in channels if c not in _ALARM_CHANNELS]
-    if bad:
-        errors["notify_channels"] = (f"unknown channel(s) {bad}; allowed: "
-                                     f"{sorted(_ALARM_CHANNELS)}")
-    else:
-        values["notify_channels"] = channels
-
-    # The two recipient arrays: `getlist` (a <select multiple> contributes
-    # one entry per selected option) or a CSV string — both shapes arrive
-    # from different callers, so accept both like notify_channels does.
-    for field in ("notify_email_recipients", "notify_xmpp_recipients"):
-        if field not in request.POST:
-            # Absent = "not part of this form" — keep the stored value on
-            # edit. Only the explicit field drives a change.
-            values[field] = None
-            continue
-        ids: list[int] = []
-        ok = True
-        for chunk in request.POST.getlist(field):
-            for piece in str(chunk).split(","):
-                piece = piece.strip()
-                if not piece:
-                    continue
-                try:
-                    ids.append(int(piece))
-                except ValueError:
-                    errors[field] = f"{field} must be user ids"
-                    ok = False
-                    break
-            if not ok:
-                break
-        if ok:
-            values[field] = sorted(set(ids))
-
-    # PagerDuty severity: optional per-alarm override. Absent or empty =
-    # "fall back to the global STARCUBES_PAGERDUTY_SEVERITY at dispatch".
-    # Validated against the same four values the DB CHECK constraint
-    # (alarm_severity_check, migration 0032) accepts.
-    sev = (request.POST.get("severity") or "").strip().lower()
-    if sev and sev not in _ALARM_SEVERITIES:
-        errors["severity"] = (f"severity must be one of "
-                              f"{sorted(_ALARM_SEVERITIES)}")
-    else:
-        values["severity"] = sev or None
-
-    # Checkbox semantics, but only when the field was actually submitted:
-    # an absent "enabled" means "not part of this form" (the add form used
-    # to omit it entirely), not "disabled". Present-but-empty is the
-    # unchecked box that saveRow sends.
-    if "enabled" in request.POST:
-        values["enabled"] = request.POST.get("enabled") in ("on", "true", "1")
-
-    return values, errors
-
-
-def _alarm_row_to_dict(row) -> dict:
-    """One starcubes_meta.alarm row → JSON-safe dict.
-
-    Kept separate from the SELECTs so list/add/edit can all render the
-    same shape (the editor reads it back the same way the list does).
-    context_filter arrives already decoded (psycopg2 turns jsonb into a
-    Python list). eval_end is the evaluator's runtime HWM marker, not user
-    configuration — it is deliberately left out.
-    """
-    return {
-        "id": row.id,
-        "datasource_id": row.datasource_id,
-        "name": row.name,
-        "rule_kind": row.rule_kind,
-        "condition": row.condition,
-        "context_filter": row.context_filter,
-        "comment": row.comment,
-        "measure": row.measure,
-        "cond_op": row.cond_op,
-        "threshold": float(row.threshold),
-        "window_s": row.window_s,
-        "notify_channels": list(row.notify_channels or []),
-        "notify_email_recipients": list(row.notify_email_recipients or []),
-        "notify_xmpp_recipients": list(row.notify_xmpp_recipients or []),
-        "severity": row.severity,
-        "enabled": bool(row.enabled),
-        "created_at": row.created_at.isoformat() if row.created_at else None,
-        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
-    }
-
-
-def _context_labels(pk: int, contexts) -> dict:
-    """{filter_column: {source_id: name}} for a set of alarm contexts.
-
-    A context stores dimension ids; the names live in the dim tables and are
-    resolved for display only (see core.alarm.resolve_context_labels). Purely
-    cosmetic, so every failure degrades to raw ids: the alarm list has to
-    render even when the fact database is unreachable or a dim table has not
-    been created yet.
-    """
-    if not any(contexts):
-        return {}
-    try:
-        source = Source.load(_meta_engine(),
-                             dest_dsn=settings.STARCUBES_POSTGRES_DSN,
-                             name_or_id=pk)
-        return resolve_context_labels(source, contexts)
-    except Exception:
-        return {}
+def _alarm_check_response(error, fields, status):
+    """(error, fields, status) from sources/alarm_fields → JsonResponse|None."""
+    if error is None:
+        return None
+    payload = {"ok": False, "error": error}
+    if fields:
+        payload["fields"] = fields
+    # status 0 means "no explicit code" — the engine-level failure the old
+    # code reported as a plain ok:false with HTTP 200.
+    return (JsonResponse(payload, status=status) if status
+            else JsonResponse(payload))
 
 
 def _validate_alarm_context(pk: int, values: dict):
-    """Semantically validate an alarm's context + measure against the Source.
-
-    The stored expression is only as trustworthy as its write-time
-    validation: this resolves every filter col through the same rules the
-    chart uses (core.query.validate_filter_tree), forbids grouped tokens
-    (user-editable group sets would silently change the alarm's meaning),
-    and checks the measure column. Returns a 400/404 JsonResponse on
-    failure, else None. Callers pass the value of `values["context_rows"]`
-    inside — None means "not submitted" (edit keeps the stored context) and
-    skips context validation; the measure check always runs.
-
-    A pipeline alarm has neither a measure nor a context, so there is
-    nothing here to check — and skipping the whole function also removes
-    `Source.load` from its save path, which matters: a rule that watches an
-    ETL must not become uneditable because the source database it watches
-    is unreachable.
-    """
-    if values.get("rule_kind") == "pipeline":
-        return None
-    try:
-        source = Source.load(_meta_engine(),
-                             dest_dsn=settings.STARCUBES_POSTGRES_DSN, name_or_id=pk)
-    except LookupError:
-        return JsonResponse({"ok": False, "error":
-            f"datasource {pk} not found"}, status=404)
-    try:
-        measure_value_expr(source, values["measure"])
-        if values["context_rows"] is not None:
-            tree = build_filter_tree(values["context_rows"])
-            check_no_grouped_filters(tree)
-            validate_filter_tree(source, tree)
-    except ValueError as exc:
-        return JsonResponse({"ok": False, "error": str(exc),
-                             "fields": {"context": str(exc)}}, status=400)
-    return None
+    """Semantic context/measure check for the CRUD endpoints."""
+    return _alarm_check_response(*check_alarm_context(
+        _meta_engine(), settings.STARCUBES_POSTGRES_DSN, pk, values))
 
 
 def _validate_alarm_notify(pk: int, values: dict):
-    """Semantic validation of the notify fields — the counterpart to
-    `_validate_alarm_context`, called after it by alarm_add/alarm_edit.
+    """Semantic notify-field check for the CRUD endpoints."""
+    return _alarm_check_response(*check_alarm_notify(
+        _meta_engine(), pk, values))
 
-    Checks the selected user ids exist (`int[]` cannot carry a foreign key,
-    so dangling ids are refused at save time instead), and enforces the
-    channel/recipient pairing rules server-side:
-    - `email` channel ⇒ at least one recipient with an e-mail address chosen
-      (existence was just proven; the address itself may still be NULL on
-      the account — caught at dispatch time with a WARNING).
-    - `xmpp` channel ⇒ at least one XMPP recipient chosen.
-    - `pagerduty` channel ⇒ the datasource has a routing key.
-    Returns a 400 JsonResponse on failure, else None.
-    """
-    email_ids = values.get("notify_email_recipients")
-    xmpp_ids = values.get("notify_xmpp_recipients")
-    channels = values["notify_channels"]
 
-    # An absent recipient field (None) means "not part of this form" — the
-    # inline row editor sends channels only. The pairing rules then apply to
-    # the stored value, which satisfied them at its own save time; `alarm_edit`
-    # re-checks them against the effective (submitted-or-stored) value after
-    # loading the old row.
-    if "email" in channels and email_ids is not None and not email_ids:
-        return JsonResponse({"ok": False, "error":
-            "email channel selected but no e-mail recipient chosen",
-            "fields": {"notify_email_recipients":
-                       "choose at least one recipient"}}, status=400)
-    if "xmpp" in channels and xmpp_ids is not None and not xmpp_ids:
-        return JsonResponse({"ok": False, "error":
-            "xmpp channel selected but no XMPP recipient chosen",
-            "fields": {"notify_xmpp_recipients":
-                       "choose at least one recipient"}}, status=400)
-
-    ids = sorted(set(email_ids or []) | set(xmpp_ids or []))
-    try:
-        with _meta_engine().begin() as conn:
-            if ids:
-                found = {r[0] for r in conn.execute(text(
-                    "SELECT id FROM starcubes_meta.auth_user "
-                    " WHERE id = ANY(:ids)"
-                ), {"ids": ids}).all()}
-                missing = [i for i in ids if i not in found]
-                if missing:
-                    return JsonResponse({"ok": False, "error":
-                        f"unknown user id(s) {missing} — the recipients are "
-                        f"the login users, maintained on the settings page",
-                        "fields": {"notify_email_recipients":
-                                   "unknown user"}}, status=400)
-            if "pagerduty" in channels:
-                has_key = conn.execute(text(
-                    "SELECT 1 FROM starcubes_meta.datasource "
-                    " WHERE id = :ds AND pagerduty_routing_key IS NOT NULL"
-                ), {"ds": pk}).scalar()
-                if not has_key:
-                    return JsonResponse({"ok": False, "error":
-                        "pagerduty channel selected but this datasource has "
-                        "no PagerDuty integration key configured (set it on "
-                        "the source edit page)",
-                        "fields": {"notify_channels":
-                                   "no PagerDuty integration key on this "
-                                   "datasource"}}, status=400)
-    except Exception as exc:
-        return JsonResponse({"ok": False, "error": str(exc)})
-    return None
-
+def _context_labels(pk: int, contexts) -> dict:
+    """Context ids → names for this datasource's alarm list."""
+    return context_labels(_meta_engine(), settings.STARCUBES_POSTGRES_DSN,
+                          pk, contexts)
 
 @require_POST
 @_login_required_json
@@ -2536,7 +2175,7 @@ def alarms_list(request, pk: int):
                 " WHERE a.datasource_id = :ds "
                 " ORDER BY a.name"
             ), {"ds": pk}).mappings().all()
-        alarms = [_alarm_row_to_dict(r) for r in rows]
+        alarms = [alarm_row_to_dict(r) for r in rows]
         # has_open_episode is the one field that is not column data — pass
         # it through on top of the shared shape so the Alarms tab can badge
         # rows with an open firing episode.
@@ -2577,7 +2216,7 @@ def alarm_match_context(request, pk: int):
     both: the tab filters the duplicate hint down to the form's measure
     client-side instead of asking again on every measure change.
     """
-    rows, ctx_err = _parse_context_field(request.POST.get("context") or "")
+    rows, ctx_err = parse_context_field(request.POST.get("context") or "")
     if ctx_err:
         return JsonResponse({"ok": False, "error": ctx_err,
                              "fields": {"context": ctx_err}}, status=400)
@@ -2619,7 +2258,7 @@ def alarm_add(request, pk: int):
     a row without provenance should not exist. context_rows is a list of
     flat filter rows; an empty list is stored as NULL (global alarm).
     """
-    values, errors = _parse_alarm_fields(request)
+    values, errors = parse_alarm_fields(request.POST)
     if errors:
         return JsonResponse({"ok": False, "error":
             "; ".join(f"{k}: {v}" for k, v in errors.items()),
@@ -2679,8 +2318,8 @@ def alarm_add(request, pk: int):
                 "  (alarm_id, kind, username, old_row, new_row) "
                 "VALUES (:aid, 'created', :user, NULL, CAST(:new AS jsonb))"
             ), {"aid": row.id, "user": request.user.get_username(),
-                "new": _json.dumps(_alarm_row_to_dict(row))})
-        return JsonResponse({"ok": True, "alarm": _alarm_row_to_dict(row)})
+                "new": _json.dumps(alarm_row_to_dict(row))})
+        return JsonResponse({"ok": True, "alarm": alarm_row_to_dict(row)})
     except sqlalchemy.exc.IntegrityError:
         # UNIQUE (datasource_id, name) — friendly name rather than the raw
         # constraint text.
@@ -2713,7 +2352,7 @@ def alarm_edit(request, pk: int, alarm_id: int):
         return JsonResponse({"ok": False, "error": "alarm not found"},
                             status=404)
 
-    values, errors = _parse_alarm_fields(request, rule_kind=stored_kind)
+    values, errors = parse_alarm_fields(request.POST, rule_kind=stored_kind)
     if errors:
         return JsonResponse({"ok": False, "error":
             "; ".join(f"{k}: {v}" for k, v in errors.items()),
@@ -2819,9 +2458,9 @@ def alarm_edit(request, pk: int, alarm_id: int):
                 "VALUES (:aid, 'updated', :user, "
                 "        CAST(:old AS jsonb), CAST(:new AS jsonb))"
             ), {"aid": alarm_id, "user": request.user.get_username(),
-                "old": _json.dumps(_alarm_row_to_dict(old)),
-                "new": _json.dumps(_alarm_row_to_dict(row))})
-        return JsonResponse({"ok": True, "alarm": _alarm_row_to_dict(row)})
+                "old": _json.dumps(alarm_row_to_dict(old)),
+                "new": _json.dumps(alarm_row_to_dict(row))})
+        return JsonResponse({"ok": True, "alarm": alarm_row_to_dict(row)})
     except sqlalchemy.exc.NoResultFound:
         return JsonResponse({"ok": False, "error":
             f"alarm {alarm_id} not found for datasource {pk}"}, status=404)
@@ -2951,6 +2590,105 @@ def _episode_rule(r) -> str:
         return f"{label} {r['cond_op']} {r['threshold']:g}"
     return (f"{r['measure']} {r['cond_op']} "
             f"{r['threshold']:g} ({fmt_window_s(r['window_s'])})")
+
+
+# ---------------------------------------------------------------------------
+# Alarm export / import
+#
+# Alarms are the one curated configuration an installation keeps only in its
+# database, so they get a backup of their own. Not a section of the source
+# profile: a profile describes what a datasource *is* and applies to an empty
+# schema, while an alarm is operating state over a datasource that already
+# exists — and profile_apply is a *replace*, which would take alarm_history
+# and alarm_firing with it through ON DELETE CASCADE. See core/alarm_io.py.
+#
+# Login-only, like the rest of the alarm CRUD: an import is no more powerful
+# than the repeated editing any signed-in user may already do. There is no
+# ETL interlock for the same reason alarm_edit has none — writing rule rows
+# collides with no running load.
+# ---------------------------------------------------------------------------
+
+def _alarms_yaml(datasource_ids=None) -> str:
+    """Serialise alarms to export YAML. ``None`` takes every datasource."""
+    dsn = settings.STARCUBES_POSTGRES_DSN
+    return dump_alarms(
+        collect_alarms(_meta_engine(), dsn, datasource_ids=datasource_ids),
+        exported_at=datetime.now(timezone.utc).replace(
+            microsecond=0).isoformat())
+
+
+def _alarms_attachment(yaml_text: str, stem: str) -> HttpResponse:
+    """The YAML as a download, under a filename derived safely from ``stem``."""
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", stem).strip("-") or "alarms"
+    day = datetime.now(timezone.utc).strftime("%Y%m%d")
+    response = HttpResponse(yaml_text, content_type="application/x-yaml")
+    response["Content-Disposition"] = (
+        f'attachment; filename="alarms-{safe}-{day}.yaml"')
+    return response
+
+
+@_login_required_json
+def alarms_export(request, pk: int):
+    """Stream one datasource's alarms as a .yaml attachment."""
+    ds = _load_datasource(pk)
+    return _alarms_attachment(_alarms_yaml([pk]), ds["name"])
+
+
+@_login_required_json
+def alarms_export_all(request):
+    """Stream every datasource's alarms as one .yaml attachment."""
+    return _alarms_attachment(_alarms_yaml(), "all")
+
+
+@require_POST
+@_login_required_json
+def alarms_import(request, pk: int):
+    """Two-phase alarm import, the same shape as profile_apply.
+
+    Without ``confirm`` nothing is written and the answer is the plan:
+    what would be created, changed, left alone and skipped, plus every
+    warning. With ``confirm=true`` the writes land in one transaction.
+
+    The file arrives as an upload (``file``) or as text in ``content``, so
+    the same endpoint serves the dialog and a scripted POST.
+    """
+    upload = request.FILES.get("file")
+    if upload is not None:
+        if upload.size > MAX_ALARM_FILE_BYTES:
+            return JsonResponse({"ok": False, "error":
+                f"file is larger than "
+                f"{MAX_ALARM_FILE_BYTES // (1024 * 1024)} MB"}, status=400)
+        try:
+            raw = upload.read().decode("utf-8")
+        except UnicodeDecodeError:
+            return JsonResponse({"ok": False, "error":
+                "the file is not UTF-8 text"}, status=400)
+    else:
+        raw = request.POST.get("content") or ""
+    if not raw.strip():
+        return JsonResponse({"ok": False, "error":
+            "choose an alarm export file"}, status=400)
+
+    try:
+        entries = parse_alarms_text(raw)
+    except AlarmIOError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=400)
+
+    confirm = request.POST.get("confirm") in ("on", "true", "1")
+    try:
+        report = import_alarms(_meta_engine(),
+                               settings.STARCUBES_POSTGRES_DSN, entries,
+                               username=request.user.get_username(),
+                               datasource_id=pk, confirm=confirm)
+    except AlarmImportError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)}, status=404)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+    # A file whose rules could not be read is a 400 even on the dry run —
+    # there is nothing to confirm, and the report says which rule.
+    status = 400 if report["errors"] else 200
+    return JsonResponse({"ok": not report["errors"], "report": report},
+                        status=status)
 
 
 def _firing_episodes(show: str = "all", ds: int | None = None):

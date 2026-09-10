@@ -12,6 +12,9 @@ urlpatterns = [
     # collision with the <int:pk>/alarms/ routes, whose int converter only
     # matches digits.
     path("alarms/firings/",                            views.alarm_firings_page, name="alarm_firings"),
+    # Every datasource's alarms in one backup file. Literal path like
+    # alarms/firings/ above, so it cannot collide with <int:pk>/alarms/.
+    path("alarms/export/",                             views.alarms_export_all, name="alarms_export_all"),
     # The alarm-notification address book (every login user with the two
     # addresses the alarm forms select from). Literal path, like
     # alarms/firings/, so it cannot collide with the <int:pk>/ routes.
@@ -102,6 +105,10 @@ urlpatterns = [
     path("<int:pk>/alarms/<int:alarm_id>/delete/",      views.alarm_delete,    name="alarm_delete"),
     path("<int:pk>/alarms/<int:alarm_id>/history/",     views.alarm_history,   name="alarm_history"),
     path("<int:pk>/alarms/<int:alarm_id>/firings/",     views.alarm_firings,   name="alarm_firings"),
+    # Backup and restore for this datasource's alarms. Import is two-phase
+    # (dry-run diff, then confirm), like <int:pk>/profile/apply/.
+    path("<int:pk>/alarms/export/",                     views.alarms_export,   name="alarms_export"),
+    path("<int:pk>/alarms/import/",                     views.alarms_import,   name="alarms_import"),
     # Schema actions (JSON)
     path("<int:pk>/create-fact/",                      views.create_fact_table,    name="create_fact_table"),
     path("<int:pk>/sync-schema/",                      views.sync_schema_view,     name="sync_schema"),

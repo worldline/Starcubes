@@ -240,4 +240,40 @@
       </div>
     </div>
   </div>
+  {% comment %}
+    Backup — one card for both tables, because a backup is of the
+    datasource's alarms, not of one kind of them. Deliberately not part of
+    the source profile: a profile applies to an empty schema and its Apply
+    is a replace, which would take alarm_history and alarm_firing with it
+    through ON DELETE CASCADE. See docs/alarm.md.
+  {% endcomment %}
+  <div class="card" style="margin-top:16px">
+    <div class="card-header">
+      <span class="card-title">Backup{% include "sources/_help_link.html" with slug="alarm" %}</span>
+      <span class="text-muted" style="font-size:12px">
+        Save this datasource's alarm rules to a file, or restore them from one.
+        Import matches on the alarm name: a rule already here is updated, one
+        the file does not name is left alone, and firing history survives either way.
+      </span>
+    </div>
+    <div class="card-body" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <a class="btn btn-secondary btn-sm" id="alarmExportBtn"
+         href="{% url 'sources:alarms_export' ds.id %}">&#8595; Export alarms</a>
+      <button type="button" class="btn btn-secondary btn-sm" id="alarmImportBtn">&#8593; Import alarms&hellip;</button>
+      {% comment %}
+        The file input is the button's target, kept out of the layout so the
+        card shows two buttons rather than a bare "Browse…" control.
+      {% endcomment %}
+      <input type="file" id="alarmImportFile" accept=".yaml,.yml,text/yaml,application/x-yaml" hidden>
+      <span class="text-muted" style="font-size:11px;margin-left:auto">
+        Recipients travel as usernames; ids mean nothing on another installation.
+      </span>
+    </div>
+    {% comment %}
+      The dry-run report. Filled by _alarms_js.html, which posts the file
+      once without `confirm` to get this plan and a second time with it.
+    {% endcomment %}
+    <div class="card-body" id="alarmImportResult" hidden
+         style="border-top:1px solid var(--border)"></div>
+  </div>
 </div>

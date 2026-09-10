@@ -374,3 +374,151 @@ like every other user-visible string. A channel selected but not configured
 (unset env vars, a user without an address, a missing routing key) is
 skipped with a WARNING and counted as an error; it never fails the ETL.
 `slack` stays reserved vocabulary without a transport.
+## Export and import
+
+Alarms are the one curated configuration an installation keeps only in its
+database, so they get a backup file of their own:
+
+```
+manage.py alarm_export --name payments --out alarms.yaml
+manage.py alarm_export --all --out alarms-all.yaml     # stdout without --out
+manage.py alarm_import alarms.yaml                     # dry run
+manage.py alarm_import alarms.yaml --confirm
+```
+
+The same two operations sit on the Alarms tab as a **Backup** card
+(`↓ Export alarms` / `↑ Import alarms…`), and the import there is
+two-phase: the file is posted once without `confirm` to produce the plan
+the operator reads, then once with it.
+
+### Why this is not part of the source profile
+
+A profile describes what a datasource *is* and applies to an empty schema.
+An alarm is operating state *over* a datasource that already exists: it
+hangs off `datasource_id`, names dimension values by id, and names its
+recipients as `auth_user` ids — none of which exist when a profile is
+rolled out.
+
+The mechanical reason is sharper. `profile_apply` is a **replace**: it
+deletes every child row in `sources/profile_store.py:_CHILD_TABLES` and
+re-inserts the profile's. An `alarm` entry there would make every Apply
+Profile take `alarm_history` and `alarm_firing` with it through
+`ON DELETE CASCADE`. That list is deliberately left alone.
+
+### What travels
+
+Configuration only — `name`, `rule_kind`, `condition`, `measure`,
+`cond_op`, `threshold`, `window_s`, `context_filter`, `comment`,
+`enabled`, `severity`, `notify_channels` and the two recipient lists.
+
+Not `id`, not `datasource_id` (the datasource travels as its **name**, in
+the header), not `created_at`/`updated_at`, and above all not `eval_end`,
+for the same reason the history snapshots leave it out: it is the
+evaluator's runtime high-watermark, not something a user configured.
+`alarm_history` and `alarm_firing` do not travel either — an upsert leaves
+the target's own intact.
+
+A pipeline rule is written without `measure`, `window_s` and
+`context_filter`. Those columns carry defaults it never reads, and
+exporting them would make the row indistinguishable from a threshold rule
+that had been mis-saved.
+
+`log` is dropped on the way out. It stopped being a selectable channel
+long ago (the episode row and the evaluator's log line are always on);
+legacy rows still store it, and carrying it would export a channel nobody
+can choose.
+
+### The file
+
+```yaml
+format: starcubes-alarms/1
+exported_at: 2026-09-10T12:00:00Z
+datasources:
+  - datasource: payments
+    alarms:
+      - name: Peer 9999 stalled
+        rule_kind: threshold
+        measure: count(*)
+        cond_op: "<"
+        threshold: 1
+        window_s: 300
+        enabled: true
+        severity: critical
+        notify_channels: [email, pagerduty]
+        notify_email_recipients: [alice, bob]
+        notify_xmpp_recipients: []
+        context_filter:
+          - {col: peer_id, op: in, vals: ["9999"], andOr: and, indent: 0}
+        context_labels:
+          peer_id: {"9999": "acme-gw-1"}
+```
+
+Unlike a profile, the file carries an explicit `format:` header. It has no
+catalogue filename to be recognised by, so it says what it is and an
+upload of the wrong YAML is refused rather than half-parsed.
+
+`context_filter` is copied **verbatim** — it is exactly the flat filter
+rows `chart.html:gatherParams()` serialises and the jsonb column already
+stores.
+
+`context_labels` is the one derived block, and it is documentation plus a
+check, never configuration: the context stores dimension **ids**, and a
+`dim_index` is an import position rather than a stable identifier — the
+caveat [`docs/source-profiles.md`](source-profiles.md) records for
+`group_dims.members` applies here word for word. The importer re-resolves
+the ids and **warns** when the name no longer matches; it never writes the
+labels back.
+
+### Import semantics
+
+**Upsert on `(datasource_id, name)`, never a replace.** A rule already
+present is updated and keeps its `eval_end`, its history and its firing
+episodes; a rule the file does not name is left alone. Replacing would
+cascade the history away, and a restore that destroys the operating record
+is not a restore. Upsert is also the only thing that works on a fresh
+datasource, which already carries the two default pipeline alarms from
+`insert_default_pipeline_alarms`: a file naming them updates them instead
+of colliding with the unique index.
+
+Only added and changed rules are written, so a second import moves no
+`updated_at` and writes no `alarm_history` row. Every write still records
+its snapshot with the importing account's username, exactly like a form
+save.
+
+**A malformed file writes nothing at all**, `--confirm` or not: a bad
+`format:` header, a `window_s` of 0, a `<col>:grouped:<slug>` filter
+column. The grouped-token ban is checked without loading the Source,
+precisely so the tolerant branch below cannot let one through.
+
+**A rule that merely does not fit this installation is skipped, not
+fatal**, and named in the report with its reason:
+
+| situation | what happens |
+|---|---|
+| recipient username has no account | dropped, warned; the channel goes too if it loses its last recipient |
+| `pagerduty` selected, datasource has no routing key | channel dropped, warned |
+| measure or filter column not in the target schema | rule skipped, warned |
+| the datasource cannot be `Source.load`ed yet | context left unverified, warned, rule imported |
+| stored rule is a different `rule_kind` | rule skipped — an alarm cannot change its kind |
+| exported `context_labels` name no longer matches | warned; ids are imported unchanged |
+
+The asymmetry is deliberate. What is wrong about *the file* refuses
+everything; what is wrong about *this installation* is reported and worked
+around. Refusing a whole backup because one rule references a column
+dropped since it was taken would make it unrestorable exactly when it is
+needed — and a freshly rebuilt installation whose source is not connected
+yet is the ordinary case for a restore, not the exception.
+
+The CLI import is a dry run by default and prints the same plan the GUI
+renders: `+` created, `~` changed (with the fields), `=` untouched, `!`
+skipped.
+
+### Files
+
+| File | Role |
+|------|------|
+| `core/alarm_io.py` | the file format: `dump_alarms`, `parse_alarms_text`, the size cap |
+| `sources/alarm_store.py` | reading, username resolution, the diff and the upsert |
+| `sources/alarm_fields.py` | the field validation, shared with the CRUD — one truth about a valid alarm |
+| `sources/management/commands/alarm_export.py` / `alarm_import.py` | the CLI |
+| `sources/templates/sources/_alarms_panel.html` | the Backup card |

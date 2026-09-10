@@ -14,6 +14,31 @@ runs through further pre-release tags — see
 
 ### Added
 
+- **Alarms can be backed up and restored.** `manage.py alarm_export` writes a
+  datasource's rules — or every datasource's — to a YAML file, and
+  `manage.py alarm_import` reads one back; the Alarms tab carries the same
+  pair as a **Backup** card, where the import shows its plan before it
+  writes anything. Recipients travel as usernames rather than `auth_user`
+  ids, which mean nothing outside the installation that issued them.
+
+  The file holds configuration only: no ids, no `eval_end`, no firing
+  history. The import is an **upsert on the alarm name**, never a replace,
+  so a restored rule keeps the episodes and the change history it already
+  had, and a rule the file does not name is left where it is. A second
+  import writes nothing at all.
+
+  This is not part of the source profile, and not only because an alarm is
+  operating state rather than structure: Apply Profile is a replace over
+  the child tables, so an `alarm` entry there would cascade
+  `alarm_history` and `alarm_firing` away on every apply.
+
+  A malformed file is refused whole; a rule that merely does not fit this
+  installation — a deleted recipient account, a missing PagerDuty key, a
+  column the schema no longer has — is skipped with a warning, because a
+  backup that cannot be restored after one rule went stale is not worth
+  having. The alarm field validation moved to `sources/alarm_fields.py`
+  so an imported rule passes through exactly the checks a form save does.
+
 - **The documentation is in the app, at `/help/`.** Every Markdown file the
   project ships — this changelog, the README, the how-to and all of `docs/` —
   is rendered at request time and cross-linked, so a question that arises

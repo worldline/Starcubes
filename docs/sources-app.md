@@ -93,6 +93,7 @@ The `/sources/` UI splits along three axes:
 | Any user          | `/sources/`                   | List of datasources with last-run status       |
 | Any user          | `/sources/<pk>/`              | The datasource page at the remembered detail level. Basic = Basics (read-only) + Group Dims, Measures, Alarms, Firings — the last three full CRUD |
 | Any user          | `/sources/alarms/firings/`    | Global firing-episode overview (`?show=open` for the live breaches) |
+| Any user          | `/sources/alarms/export/`     | Every datasource's alarm rules as one backup file (`.yaml` attachment) |
 | Any user          | `/sources/<pk>/?tab=firings`  | The same overview scoped to one datasource (`&show=open` likewise) |
 | Superuser         | `/sources/<pk>/manage/`       | The same page forced to Expert: 12 tabs, adding Fact Columns, Dimensions, Dim Data, Indices, Storage, ETL (sub-tabbed into Run / Maintenance / Schema / Audit / History / Log) and Rollup (sub-tabbed into Status / Advise / Config / Build / Verify) |
 | Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
@@ -491,6 +492,27 @@ been changed.
 - `POST .../alarms/<alarm_id>/history/` — change history, newest first.
 - `POST .../alarms/<alarm_id>/firings/` — firing episodes, newest first
   (`open: true` while `closed_at` is NULL).
+- `GET  .../alarms/export/` — this datasource's alarm rules as a `.yaml`
+  attachment; `GET /sources/alarms/export/` is the same for every
+  datasource at once.
+- `POST .../alarms/import/` — restore rules from an export file (`file`
+  upload or `content` text). Two-phase like `profile/apply/`: without
+  `confirm` it answers with the plan (`added`/`changed`/`unchanged`/
+  `skipped` per datasource, plus `warnings`), with `confirm=true` it
+  writes them in one transaction. An **upsert on the alarm name**, never a
+  replace — `alarm_history` and `alarm_firing` survive an update, which a
+  replace would cascade away. A malformed file is a 400 and writes
+  nothing; a rule that does not fit this installation (unknown recipient,
+  no PagerDuty key, a column the schema no longer has) is skipped with a
+  warning rather than failing the restore. See
+  [`docs/alarm.md`](alarm.md).
+
+The field validation these endpoints share lives in
+`sources/alarm_fields.py`, not in `views.py`: the alarm import runs a rule
+through the very same `parse_alarm_fields` a form save does, so there is
+one truth about what a valid alarm is. `views.py` keeps two thin wrappers
+that turn its `(error, fields, status)` tuples back into the JSON bodies
+these endpoints have always sent.
 
 `name` is unique per datasource (DB enforces). `window_s` must be `> 0`
 (CHECK constraint). `cond_op` is one of `>`, `>=`, `<`, `<=`, `=`
