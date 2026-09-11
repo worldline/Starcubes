@@ -479,7 +479,7 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.measure (
     name          text NOT NULL,
     agg           text NOT NULL,
     graph_style   text NOT NULL DEFAULT 'multibar'
-        CHECK (graph_style IN ('multibar', 'multiline', 'multipoint',
+        CHECK (graph_style IN ('multibar', 'multiline', 'multipoint', 'multistep',
                                'quantile-bands', 'quantile-steps',
                                'quantile-steps-open', 'error-bars', 'candlestick')),
     is_default    boolean NOT NULL DEFAULT false,
@@ -490,8 +490,8 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.measure (
 
 -- Widen the graph_style CHECK on databases created before 'quantile-bands'
 -- (and before 'multipoint'/'multiline' / 'quantile-steps' / 'error-bars' /
--- 'candlestick'). Keyed on the newest value so earlier widenings still get
--- upgraded.
+-- 'candlestick' / 'multistep'). Keyed on the newest value so earlier
+-- widenings still get upgraded.
 DO $$
 DECLARE cdef text;
 BEGIN
@@ -501,11 +501,11 @@ BEGIN
       JOIN pg_namespace n ON n.oid = t.relnamespace
      WHERE n.nspname = 'starcubes_meta' AND t.relname = 'measure'
        AND c.conname = 'measure_graph_style_check';
-    IF cdef IS NOT NULL AND position('candlestick' in cdef) = 0 THEN
+    IF cdef IS NOT NULL AND position('multistep' in cdef) = 0 THEN
         ALTER TABLE starcubes_meta.measure DROP CONSTRAINT measure_graph_style_check;
         ALTER TABLE starcubes_meta.measure
             ADD CONSTRAINT measure_graph_style_check
-            CHECK (graph_style IN ('multibar', 'multiline', 'multipoint',
+            CHECK (graph_style IN ('multibar', 'multiline', 'multipoint', 'multistep',
                                    'quantile-bands', 'quantile-steps',
                                    'quantile-steps-open', 'error-bars', 'candlestick'));
     END IF;

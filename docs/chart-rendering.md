@@ -88,6 +88,13 @@ docs/backlog.md.
   `quantile-steps` opts in with the same key (step shape, like bands, is
   contiguous); `error-bars` and `candlestick` are bin-local and do not opt in.
   Multibar bars are discrete so they do not need this.
+  **`multistep` needs no coalesce either.** The simple family's one
+  step-based style draws on the library's `multiline` renderer with
+  `plot.step = 'after'` (`core/query.py:SIMPLE_PLOT_STEP`), and `traceRun`
+  extends an after-step run by exactly one `binW` past its last slot — which
+  lands on the x of the next block's first slot, so the staircase is
+  continuous across fetch-block margins, where a plain polyline leaves the
+  one-slot hole described above.
 
 ## Drawing consequences
 

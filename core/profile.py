@@ -78,7 +78,7 @@ _VALID_INDEX_METHODS = {"brin", "btree", "hash"}
 # ``measure.graph_style`` — keep aligned with ``sources/views.py:GRAPH_STYLES``
 # and the CHECK constraint on ``starcubes_meta.measure``.
 _VALID_GRAPH_STYLES = {
-    "multibar", "multiline", "multipoint",
+    "multibar", "multiline", "multipoint", "multistep",
     "quantile-bands", "quantile-steps", "quantile-steps-open",
     "error-bars", "candlestick",
 }

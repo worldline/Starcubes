@@ -90,7 +90,7 @@ DIALECTS = ["oracle", "postgresql", "mysql", "mssql"]
 PG_TYPES = ["smallint", "bigint", "integer", "timestamptz", "text", "real", "double precision", "boolean"]
 ROLES = ["time", "measure", "dimension", "auto-dimension", "pk"]
 INDEX_METHODS = ["brin", "btree", "hash"]
-GRAPH_STYLES = ["multibar", "multiline", "multipoint",
+GRAPH_STYLES = ["multibar", "multiline", "multipoint", "multistep",
                 "quantile-bands", "quantile-steps", "quantile-steps-open",
                 "error-bars", "candlestick"]
 

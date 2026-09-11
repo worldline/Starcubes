@@ -76,6 +76,25 @@ def _ladder_plot_type(graph_style: str) -> tuple[str, bool]:
     return graph_style, True
 
 
+# graph_style → plot["step"] for the simple family. `multistep` is the only
+# style that is not passed through to the library verbatim: it renders on the
+# library's `multiline` renderer with the step-after flag, where each bin
+# holds its value across the bin it represents (the run extends one `binW`
+# past its last slot, which is exactly the next fetch block's first slot —
+# so the staircase bridges fetch-block margins without a `coalesce` entry,
+# where a plain polyline leaves a one-bin gap there).
+SIMPLE_PLOT_STEP = {"multistep": "after"}
+
+
+def _simple_plot_type(graph_style: str) -> str:
+    """Map a starcubes `graph_style` to the library plot type (simple family).
+
+    Like `_ladder_plot_type`, for the styles that read a scalar per slot.
+    `multistep` is the only indirection — everything else IS its lib type.
+    """
+    return "multiline" if graph_style == "multistep" else graph_style
+
+
 def _parse_measure(measure: str) -> tuple[str, str]:
     """Parse 'avg(stay)' → ('avg', 'stay'), 'stay' → ('sum', 'stay')."""
     m = re.match(r'(\w+)\((\w+)\)$', measure)
@@ -635,7 +654,7 @@ def build_chart_sql(
     if group_by_none:
         series_expr = "'(all)'"
     elif graph_style not in LADDER_STYLES and group_by_groups and group_dim and group_dim.dim_table:
-        # multibar / multiline / multipoint — Python-side merge path.
+        # multibar / multiline / multipoint / multistep — Python-side merge path.
         group_by_grouped = True
         for idx, (gname, gcolor) in group_by_groups.items():
             index_to_group[idx] = gname
@@ -1309,7 +1328,10 @@ def timeseries_multibar(
     # waterfall) plot each series independently, so the extent is the
     # individual series values. The chart recomputes the visible y-range per
     # type too, but a correct min/max keeps the off-screen fallback right.
-    if graph_style in ("multiline", "multipoint", "stackarea", "waterfall"):
+    # `multistep` draws on the library's multiline renderer but is un-stacked
+    # like multiline, so it belongs in this branch too.
+    if graph_style in ("multiline", "multipoint", "multistep",
+                       "stackarea", "waterfall"):
         vals = [v for slot in data.values() for v in slot.values()]
         v_min = min(vals) if vals else 0
         v_max = max(vals) if vals else 0
@@ -1318,7 +1340,7 @@ def timeseries_multibar(
         v_max = max(slot_totals.values()) if slot_totals else 0
 
     plot: dict = {
-        "type":           graph_style,
+        "type":           _simple_plot_type(graph_style),
         "interval_start": interval_start,
         "interval_end":   epoch_to,
         "interval":       interval,
@@ -1329,6 +1351,10 @@ def timeseries_multibar(
     }
     if name is not None:
         plot["name"] = name
+
+    step = SIMPLE_PLOT_STEP.get(graph_style)
+    if step:
+        plot["step"] = step
 
     if group_colors:
         plot["series_colors"] = group_colors

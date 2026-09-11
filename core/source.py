@@ -30,7 +30,7 @@ _oracle_client_initialized = False
 # spelling mapped to `quantile-steps` with `connect=False` in `query._ladder_plot_type`.
 _VALID_GRAPH_STYLES = frozenset({
     # simple / non-ladder renderers
-    "multibar", "multiline", "multipoint", "stackarea", "waterfall",
+    "multibar", "multiline", "multipoint", "multistep", "stackarea", "waterfall",
     # ladder renderers (one entry per distinct plot the library can draw)
     "quantile-bands", "quantile-steps", "quantile-steps-open",
     "error-bars", "candlestick",

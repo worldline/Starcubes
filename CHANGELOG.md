@@ -7,6 +7,17 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **New `graph_style` `multistep` for simple measures.** A simple
+  measurement (count/avg/min/max/sum) can now be drawn as a staircase —
+  each bin holds its value across the bin it represents, rendered by the
+  library's `multiline` renderer with the step-after flag it has carried
+  since 0.10. No library change and no coalesce registration needed: an
+  after-step run extends one bin past its last slot, which is exactly where
+  the next fetch block begins, so the staircase stays continuous at
+  fetch-block margins (where a plain polyline leaves a one-bin gap).
+
 ### Changed
 
 - **The copy-chart-SQL button serves its statement from the rollup when the

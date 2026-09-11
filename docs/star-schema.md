@@ -98,10 +98,12 @@ behaviour of the ETL that *populates* it lives in
   measurements in the chart's measure dropdown. `agg` is an aggregation
   expression — the literal `count(*)` or `func(col)` (func ∈ sum/avg/min/max/
   quantile, col a `role='measure'` fact column). `name` is the dropdown label;
-  `graph_style` picks the `timeseries.js` plot type. The ten accepted values
-  fall into two families:
+  `graph_style` picks the `timeseries.js` plot type. The eleven accepted
+  values fall into two families:
     - **Simple family** (one scalar per slot/series): `'multibar'`,
-      `'multiline'`, `'multipoint'`, `'stackarea'` (stacked filled bands,
+      `'multiline'`, `'multipoint'`, `'multistep'` (multiline drawn as a
+      staircase, each bin holding its value across the bin it represents),
+      `'stackarea'` (stacked filled bands,
       sums visible series per slot), `'waterfall'` (cumulative bars; each
       starts where the last ended).
     - **Ladder family** (one percentile array per slot/series, fed by

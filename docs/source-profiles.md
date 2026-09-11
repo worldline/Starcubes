@@ -164,8 +164,8 @@ measures:
 ```
 
 `method` ∈ {`brin`, `btree`, `hash`}; `graph_style` ∈ {`multibar`,
-`multiline`, `multipoint`, `quantile-bands`, `quantile-steps`,
-`quantile-steps-open`, `error-bars`, `candlestick`} — the same eight the
+`multiline`, `multipoint`, `multistep`, `quantile-bands`, `quantile-steps`,
+`quantile-steps-open`, `error-bars`, `candlestick`} — the same nine the
 `CHECK` on `starcubes_meta.measure` allows. `percentiles` is a
 comma-separated string (e.g. `"5,25,50,75,95"`) or `null`.
 
