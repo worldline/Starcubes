@@ -7,6 +7,18 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The copy-chart-SQL button serves its statement from the rollup when the
+  chart is.** The copied SQL used to read `fact` unconditionally, even when
+  the chart displayed the same numbers from `rollup_1h_…`. It now routes
+  through the same `pick_rollup` conditions as the chart's own data path,
+  and the status line names the table it reads. Its time window is also
+  snapped to whole bars, so the statement reproduces the legend totals
+  exactly — including the half-visible bars at the viewport edges. Quantile
+  graphs keep reading `fact` (percentiles do not fold from per-bucket
+  aggregates).
+
 Candidates live in [`docs/backlog.md`](docs/backlog.md), and nothing there is
 committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
