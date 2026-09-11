@@ -209,6 +209,12 @@ def plot_json(request):
         group_by_raw = q.get("group_by", "response")
         interval     = int(q.get("interval", "60"))
         measure      = q.get("measure") or None
+        # The catalog's identity is (datasource, name), not the agg form: two
+        # measures may share `quantile(stay)` and differ only in graph_style
+        # or rung ladder. The chart sends the display label alongside so the
+        # right row is resolved; absent (old bookmark, external caller) the
+        # agg-only match stands. See `Source.measure_row`.
+        measure_name = q.get("measure_name") or None
         series_label = q.get("series_label", "source_id")
         now          = datetime.now(timezone.utc)
         t_from = _parse_dt(q.get("from",
@@ -281,7 +287,7 @@ def plot_json(request):
         # Graph style comes from the measure catalog (keyed by the agg form;
         # count(*) when no measure is given). Falls back to multibar.
         agg_form = measure if measure else "count(*)"
-        graph_style = source.graph_style_for(agg_form)
+        graph_style = source.graph_style_for(agg_form, measure_name)
 
         # A ladder-style measure's agg is quantile(<col>) or extent(<col>);
         # the rung ladder comes from the measure catalog either way. Neither
@@ -291,7 +297,7 @@ def plot_json(request):
             return HttpResponseBadRequest(
                 f"{graph_style} measure needs a quantile(col) or "
                 f"extent(col) agg, got {agg_form!r}")
-        rungs = source.rungs_for(agg_form) if ladder else None
+        rungs = source.rungs_for(agg_form, measure_name) if ladder else None
 
         # Pre-aggregation, after the cache miss and before the query is
         # built: a rollup that covers this request answers it from far fewer
@@ -695,7 +701,7 @@ def api_source_meta(request):
                 "agg":         m.agg,
                 "graph_style": m.graph_style,
                 "is_default":  m.is_default,
-            } for m in source.measures],
+            } for m in source.measures],   # `name` is the row's identity — see measure_row
             "interval_ladder":          source.interval_ladder,
             "bar_pixel_target":          source.bar_pixel_target,
             "pk_format":                source.pk_format,
@@ -895,6 +901,10 @@ def chart_sql(request):
 
         group_by_raw = q.get("group_by", "")
         measure      = q.get("measure") or None
+        # Same disambiguation as plot_json — the legend has to resolve the
+        # same catalog row the chart drew, or the copied SQL is for the other
+        # measure of that agg.
+        measure_name = q.get("measure_name") or None
         series_label = q.get("series_label", "source_id")
         t_from = _parse_dt(q["from"])
         t_to   = _parse_dt(q["to"])
@@ -907,14 +917,14 @@ def chart_sql(request):
         # `measure_col` for ladder-style branches. `measure` is cleared only
         # *after* the rollup pick below, which still needs the agg form.
         agg_form = measure if measure else "count(*)"
-        graph_style = source.graph_style_for(agg_form)
+        graph_style = source.graph_style_for(agg_form, measure_name)
         ladder = parse_ladder_agg(agg_form) if graph_style in LADDER_STYLES else None
         if graph_style in LADDER_STYLES and ladder is None:
             return HttpResponseBadRequest(
                 f"{graph_style} needs quantile(col) or extent(col), "
                 f"got {agg_form!r}")
         ladder_kind, measure_col = ladder if ladder else (None, None)
-        rungs = source.rungs_for(agg_form) if ladder else None
+        rungs = source.rungs_for(agg_form, measure_name) if ladder else None
 
         # Multibar / quantile-bands :grouped — map dim index → group name.
         # Same shape plot_json builds (viz/views.py). The helper uses this

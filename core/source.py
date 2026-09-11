@@ -631,19 +631,45 @@ class Source:
     def pk_column(self) -> Optional[str]:
         return next((c.name for c in self.fact_columns if c.role == "pk"), None)
 
-    def graph_style_for(self, agg: str) -> str:
-        """Return the configured graph_style for a measure agg expression.
+    def measure_row(self, agg: str, name: Optional[str] = None) -> Optional["Measure"]:
+        """Resolve one catalog row from the chart's measure selection.
 
-        `agg` is the catalog form (``count(*)`` or ``func(col)``). Falls back
-        to 'multibar' when the source has no matching measure row, so a source
-        with an empty catalog keeps the historical behaviour.
+        The agg form alone does **not** identify a measure: the catalog's
+        uniqueness is ``UNIQUE (datasource_id, name)``, so an operator may
+        offer the same ``quantile(stay)`` twice under two names to get two
+        graph styles (or two rung ladders) out of one aggregation. Matching on
+        `agg` alone always returned the first such row, which is why every one
+        of those measures drew as whichever style happened to be configured
+        first.
+
+        `name` is the display label the chart sends alongside the agg
+        (``?measure_name=``). When it names a row, that row wins. Without it —
+        an old bookmark, an external caller, a management command — the
+        historical agg-only match stands, so a catalog with no duplicates
+        behaves exactly as before.
         """
+        if name:
+            for m in self.measures:
+                if m.name == name and m.agg == agg:
+                    return m
         for m in self.measures:
             if m.agg == agg:
-                return m.graph_style
-        return "multibar"
+                return m
+        return None
 
-    def rungs_for(self, agg: str) -> list:
+    def graph_style_for(self, agg: str, name: Optional[str] = None) -> str:
+        """Return the configured graph_style for a measure agg expression.
+
+        `agg` is the catalog form (``count(*)`` or ``func(col)``), `name` the
+        optional display label that disambiguates two rows sharing one agg —
+        see `measure_row`. Falls back to 'multibar' when the source has no
+        matching measure row, so a source with an empty catalog keeps the
+        historical behaviour.
+        """
+        m = self.measure_row(agg, name)
+        return m.graph_style if m else "multibar"
+
+    def rungs_for(self, agg: str, name: Optional[str] = None) -> list:
         """Return the rung ladder for a ladder-style measure agg.
 
         Two forms, picked by the agg's own prefix — the same discriminator the
@@ -656,7 +682,10 @@ class Source:
 
         Parses the matching measure row's `percentiles` column, which carries
         either form. A missing or unset row yields the respective default, so
-        a source whose catalog predates the column still draws.
+        a source whose catalog predates the column still draws. The row is
+        resolved through `measure_row`, so `name` picks between two catalog
+        entries sharing one agg — two ladders over the same column is exactly
+        the case that needs it.
 
         The parsing is duplicated here rather than imported from
         `core.query.normalize_rungs` for the same reason `_VALID_GRAPH_STYLES`
@@ -665,11 +694,8 @@ class Source:
         a ladder, while `normalize_rungs` *validates* one at the point of use.
         """
         is_extent = agg.startswith("extent(")
-        raw = None
-        for m in self.measures:
-            if m.agg == agg:
-                raw = m.percentiles
-                break
+        m = self.measure_row(agg, name)
+        raw = m.percentiles if m else None
         if is_extent:
             canonical = ["min", "avg", "max"]
             if not raw:

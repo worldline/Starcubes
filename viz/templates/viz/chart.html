@@ -2313,6 +2313,7 @@ async function fetchRange(from, to, interval, signal) {
   p.set('interval', interval);
   p.set('series_label', 'source_id');
   if (starcubesParams.measure) p.set('measure', starcubesParams.measure);
+  if (starcubesParams.measure_name) p.set('measure_name', starcubesParams.measure_name);
   for (const row of starcubesParams.filterRows || []) {
     let sep;
     if (row.op === 'not_in') sep = '!=';
@@ -2361,7 +2362,12 @@ async function fetchRange(from, to, interval, signal) {
   // plot type (e.g. count(*) multibar → avg(...) multiline); pushData only
   // trims overlapping blocks of the *same* type, so old-measure blocks of a
   // different type would otherwise stay overlaid. We evict them below.
-  plot._starcubesMeasure = starcubesParams.measure || '';
+  // The catalog *name* is part of the tag, not just the agg form: two
+  // measures over one quantile(col) differ precisely in plot type, and an
+  // agg-only tag would call the switch between them a no-op and keep the
+  // old bands on screen.
+  plot._starcubesMeasure = (starcubesParams.measure || '')
+                         + '\u0000' + (starcubesParams.measure_name || '');
   // Counts and sums are amounts accumulated over the bin, so the canvas may
   // divide them by the bin length to put both resolution tiers on one scale
   // (ts.setRateUnit). An avg/min/max/quantile is already per-unit — marking it
@@ -4416,6 +4422,7 @@ function saveSourceState(name) {
   const state = {
     group_by: form.elements.group_by.value,
     measure:  form.elements.measure.value || '',
+    measure_name: currentMeasureName(),
     filterRows: filterRows.map(r => ({
       id: r.id, column: r.column, op: r.op,
       andOr: r.andOr || 'and', indent: r.indent || 0,
@@ -4446,8 +4453,7 @@ function applySourceState(name) {
     if ([...gb.options].some(o => o.value === want)) gb.value = want;
   }
   if (state.measure !== undefined) {
-    const ms = form.elements.measure;
-    if ([...ms.options].some(o => o.value === state.measure)) ms.value = state.measure;
+    selectMeasure(state.measure, state.measure_name);
   }
   if (Array.isArray(state.filterRows)) {
     const validCols = new Set(getFilterColumns().map(c => c.name));
@@ -4481,6 +4487,30 @@ function buildOption(value, label) {
   return o;
 }
 
+// ── Measure selection: two options may share one value ───────────────
+// The measure dropdown's value is the agg form, and a catalog is free to
+// list the same agg twice under two names (two graph styles over one
+// quantile). `select.value = agg` then always lands on the first of them,
+// which is precisely the bug this pair exists to avoid: selection and
+// restoration go through the row's *name* whenever one is known, and fall
+// back to the plain value match when it is not (old bookmark, old
+// localStorage state, a catalog with no duplicates).
+
+function currentMeasureName() {
+  const ms = form.elements.measure;
+  const opt = ms.selectedOptions && ms.selectedOptions[0];
+  return (opt && opt.dataset.mname) || '';
+}
+
+function selectMeasure(value, name) {
+  const ms = form.elements.measure;
+  const opts = [...ms.options];
+  const byName = name ? opts.find(o => o.dataset.mname === name) : null;
+  const target = byName || opts.find(o => o.value === value);
+  if (target) ms.selectedIndex = opts.indexOf(target);
+  return !!target;
+}
+
 async function loadMeta(name) {
   const meta = await fetchJson(`${META_URL}?name=${encodeURIComponent(name)}`);
   currentMeta = meta;
@@ -4511,14 +4541,26 @@ async function loadMeta(name) {
   // Measure dropdown is driven by the source's measure catalog. The agg
   // 'count(*)' maps to an empty value so plot_json treats it as count.
   // Sources with no catalog rows fall back to the historical auto-list.
+  //
+  // The option *value* stays the agg form, because that is what ?measure=
+  // has always meant and what the alarm dialog and every bookmark carry.
+  // But the agg does not identify a catalog row — the table's uniqueness is
+  // (datasource, name), so two measures may both be quantile(stay) and
+  // differ only in graph_style or rung ladder. Each option therefore also
+  // carries `data-mname`, which rides along as ?measure_name= and is what
+  // the server resolves the row by. Without it the server matched the agg
+  // and always found the first row, so the second style never drew.
   const ms = form.elements.measure;
   ms.innerHTML = '';
   let measureDefault = '';
+  let measureDefaultName = '';
   if (meta.measures && meta.measures.length) {
     for (const m of meta.measures) {
       const val = m.agg === 'count(*)' ? '' : m.agg;
-      ms.appendChild(buildOption(val, m.name));
-      if (m.is_default) measureDefault = val;
+      const opt = buildOption(val, m.name);
+      opt.dataset.mname = m.name;
+      ms.appendChild(opt);
+      if (m.is_default) { measureDefault = val; measureDefaultName = m.name; }
     }
   } else {
     ms.appendChild(buildOption('', 'count(*)'));
@@ -4528,7 +4570,7 @@ async function loadMeta(name) {
           ms.appendChild(buildOption(`${fn}(${c.name})`, `${fn}(${c.name})`));
     }
   }
-  ms.value = measureDefault;
+  selectMeasure(measureDefault, measureDefaultName);
 
   // ── Build filter panel ────────────────────────────────────────────
   filterRows = [];
@@ -4558,11 +4600,16 @@ function applyUrlParams() {
   loadYAxisMode();
   // ?partialbins=0 likewise, so a link can show the plain full-width bar.
   loadPartialBins();
-  for (const k of ['name', 'group_by', 'measure']) {
+  for (const k of ['name', 'group_by']) {
     let v = params.get(k);
     if (k === 'group_by' && v != null) v = normalizeGbToken(v);
     if (v != null && form.elements[k]) form.elements[k].value = v;
   }
+  // ?measure= is the agg form and may match two options; ?measure_name= (which
+  // every URL this app builds now carries) picks between them. Set through the
+  // helper rather than by assigning .value, which always takes the first match.
+  const mParam = params.get('measure');
+  if (mParam != null) selectMeasure(mParam, params.get('measure_name'));
   setActiveSourceTab(form.elements.name.value);
   const f = params.get('from'), t = params.get('to');
   if (f && t) {
@@ -4638,6 +4685,7 @@ function gatherParams() {
     name:          form.elements.name.value,
     group_by:      form.elements.group_by.value,
     measure:       form.elements.measure.value || null,
+    measure_name:  currentMeasureName() || null,
     filterRows:    [],   // ordered list of {col, op, vals} for serialization
     filterGroups:  [],   // grouped: list of lists, OR within group, AND between groups
   };
@@ -4675,6 +4723,7 @@ function buildHistoryParams() {
     p.set('to',   new Date(currentViewport.tmax).toISOString());
   }
   if (starcubesParams.measure) p.set('measure', starcubesParams.measure);
+  if (starcubesParams.measure_name) p.set('measure_name', starcubesParams.measure_name);
   // Carried in the URL so a shared link reproduces the axis the sender saw.
   if (yAxisMode !== 'auto') p.set('yaxis', yAxisMode);
   if (!partialBins) p.set('partialbins', '0');

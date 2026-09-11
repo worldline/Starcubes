@@ -243,7 +243,8 @@ chart uses), and the throwaway instance was actively harmful: it passed no
 
 ## Per-source localStorage state
 
-`starcubes-state-{name}` stores `{ group_by, measure, filterRows, viewport }`.
+`starcubes-state-{name}` stores
+`{ group_by, measure, measure_name, filterRows, viewport }`.
 
 - `saveSourceState(name)` writes to localStorage (called before leaving a source)
 - `applySourceState(name)` reads and restores. Validates options exist before
@@ -627,9 +628,20 @@ stale results under a new title would mislead.
 ## History / URL
 
 `buildHistoryParams()` constructs `URLSearchParams` from `starcubesParams` +
-`currentViewport` (name, group_by, measure, filters with separators, andor,
-indent). Called by both `resetAndFetch` and the memory-restore path in
-`setActiveSource`.
+`currentViewport` (name, group_by, measure, measure_name, filters with
+separators, andor, indent). Called by both `resetAndFetch` and the
+memory-restore path in `setActiveSource`.
+
+**`measure` does not identify a measure; `measure_name` does.** The dropdown's
+option value is the agg form, because that is what `?measure=` has always
+meant. But the catalog is unique on `(datasource, name)`, so one agg may
+appear several times — `quantile(stay)` as bands, as steps, as error bars.
+Both the URL and the fetch therefore carry `measure_name`, and the server
+resolves the catalog row through `Source.measure_row(agg, name)`; without the
+parameter it falls back to the first agg match, which is what an old bookmark
+gets. Two options can share a value, so the selection helpers
+`selectMeasure(value, name)` / `currentMeasureName()` exist: assigning
+`select.value` would always land on the first of them.
 
 ## `ts.clearAll()`
 

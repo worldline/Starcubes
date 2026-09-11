@@ -37,6 +37,22 @@ Notable changes per release. Format follows
   the next fetch block begins, so the staircase stays continuous at
   fetch-block margins (where a plain polyline leaves a one-bin gap).
 
+### Fixed
+
+- **Two measures over the same aggregation now draw in their own graph
+  style.** The measure catalog's identity is `(datasource, name)`, so an
+  operator may list `quantile(stay)` several times to offer the same
+  percentiles as bands, as steps, as error bars. The chart sent only the agg
+  form, and the server resolved the catalog row by matching that string —
+  which always found the first row. Every one of those measures therefore
+  drew as whichever style happened to be configured first (and read that
+  row's `Percentiles` field too). The chart now sends the measure's name
+  alongside the agg (`?measure_name=`), and `Source.measure_row` resolves the
+  row by it; a request without the parameter — an old bookmark, an external
+  caller, `rollup_verify` — keeps the historical agg-only match, so a catalog
+  with no duplicates is unaffected. The dropdown, the shared link, the stored
+  per-source state and the copy-chart-SQL button all carry the name.
+
 ### Changed
 
 - **The copy-chart-SQL button serves its statement from the rollup when the
