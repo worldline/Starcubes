@@ -90,12 +90,13 @@ class Command(BaseCommand):
             args={k: options[k] for k in ("interval", "days", "verbose")})
         try:
             # One deliberately misaligned window per interval, alongside the
-            # aligned matrix. `pick_rollup` tests the window against the *bucket*
-            # width, not against the chart interval, so a day-bin request starting
-            # at 06:00 UTC is served and produces a partial first and last bin.
-            # The chart never asks that way (its blocks are calendar-aligned), but
-            # a hand-written URL, a bookmark or query_multibar can, and the two
-            # paths have to agree there too.
+            # aligned matrix. `pick_rollup` requires *both* window edges on a
+            # bucket boundary (rollup.py:688), so a day-bin request starting at
+            # 06:00 UTC is not served — the case comes back skipped, fact on
+            # both sides. The chart never asks that way (its blocks are
+            # calendar-aligned), but a hand-written URL, a bookmark or
+            # query_multibar can, and the skip proves the fallback is the
+            # expected answer there too.
             cases += [dict(c, offset_s=3600,
                            label=c["label"] + " [misaligned +1h]")
                       for c in cases if c["interval"] == 86400

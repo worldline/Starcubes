@@ -766,6 +766,8 @@ def build_chart_legend_sql(
     measure_col: Optional[str] = None,
     series_label: str = "source_id",
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
+    rollup_table: Optional[str] = None,
+    rollup_value_expr: Optional[str] = None,
 ) -> tuple[str, dict, dict[int, str], dict[str, str]]:
     """Build the per-series aggregate SQL that `updateLegend()` displays.
 
@@ -784,6 +786,16 @@ def build_chart_legend_sql(
     `series_label='index'` still opts out and yields the warehouse key.
     No slot projection is emitted, so the `interval` parameter is
     intentionally absent.
+
+    `rollup_table` / `rollup_value_expr` redirect the non-ladder statement
+    at a pre-aggregation table (see `core/rollup.py`), pre-resolved exactly
+    as for `build_chart_sql` so this module stays import-free from
+    `core.rollup`. Folding a per-slot rollup into a whole-window aggregate
+    per series is exact — `sum(n)` for a count, `sum(sum_col)` for a sum,
+    `sum(sum_col)/sum(cnt_col)` for the row-weighted mean this helper
+    already computes on `fact`, extremes of extremes for min/max. Only the
+    ladder branch is exempt: percentiles do not fold, so it always reads
+    `fact` whatever the caller passed.
     """
     if t_from.tzinfo is None or t_to.tzinfo is None:
         raise ValueError("t_from and t_to must be timezone-aware")
@@ -896,7 +908,16 @@ def build_chart_legend_sql(
             f"ORDER BY 1")
         return sql, params, index_to_group, group_colors
 
-    if measure is None:
+    if rollup_value_expr:
+        # Pre-aggregated: the value comes from the rollup's stored aggregates
+        # (sum(n) for a count, sum(sum_col) for a sum, the sum/cnt ratio for
+        # an avg — measure_expr emits it pre-cast, so no second cast here).
+        # Folding rollup rows over the whole window per series is exact for
+        # every additive measure; percentiles (ladder branch above) never
+        # reach this branch — they read fact unconditionally.
+        value_expr = rollup_value_expr
+        value_cast = ""
+    elif measure is None:
         # count(*): legend sums the per-slot count over the window, which
         # is mathematically identical to count(*) over the whole window.
         value_expr = "count(*)"
@@ -924,7 +945,7 @@ def build_chart_legend_sql(
         f"SELECT "
         f"  {series_expr} AS series, "
         f"  {value_expr}{value_cast} AS v "
-        f"FROM {schema}.fact f "
+        f"FROM {schema}.{rollup_table or 'fact'} f "
         f"{joins}"
         f"WHERE {' AND '.join(where_parts)} "
         f"GROUP BY 1 "
@@ -1102,6 +1123,8 @@ def build_chart_legend_sql_rendered(
     measure_col: Optional[str] = None,
     series_label: str = "source_id",
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
+    rollup_table: Optional[str] = None,
+    rollup_value_expr: Optional[str] = None,
 ) -> str:
     """Build the per-series cumulative SQL `updateLegend()` displays.
 
@@ -1122,6 +1145,8 @@ def build_chart_legend_sql_rendered(
         measure_col=measure_col,
         series_label=series_label,
         group_by_groups=group_by_groups,
+        rollup_table=rollup_table,
+        rollup_value_expr=rollup_value_expr,
     )
     return _inline_bind_params(sql, params)
 

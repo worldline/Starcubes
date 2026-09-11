@@ -864,6 +864,11 @@ def chart_sql(request):
     are inlined as literals so `adhoc.run_query → exec_driver_sql(sql)`
     can execute the result without substitution. We never run anything
     here.
+
+    Like `plot_json`, the statement may read a rollup instead of `fact`:
+    `pick_rollup` is consulted with the legend's own parameters and its
+    decision returned as the `table` field so the console status line can
+    name it.
     """
     try:
         source = _console_source(request)
@@ -905,7 +910,33 @@ def chart_sql(request):
         if gb_set and gb_set.groups:
             group_by_groups = _group_index_map(gb_set)
 
-        sql, _itg, _gc = None, None, None  # noqa: F841 — kept for symmetry w/ helper
+        # Same conditions as the chart's own data path (`plot_json`'s
+        # pick_rollup call): when they hold, the legend aggregate is exact
+        # from rollup rows — measure_expr's folding expressions are the
+        # whole-window counterparts of the per-slot ones build_chart_sql
+        # binds. Evaluated independently of what the chart's slot query
+        # received (a 15-min-slot chart against a 1-h rollup serves its
+        # bars from fact but its legend SQL from the rollup; the numbers
+        # are identical either way). The legend query has no slot width of
+        # its own, so interval gets the rollup's own width: condition 1
+        # (`interval % iv == 0`) becomes vacuous, and the ones that actually
+        # decide — both window edges on a bucket boundary, no ladder style,
+        # spec_hash, [built_from, built_through) coverage, measure_expr,
+        # column coverage of group_by + the filter tree — stay fully
+        # effective. A misaligned edge → None → fact: the correct fallback,
+        # not a bug to work around.
+        rollup_table = rollup_value_expr = None
+        if graph_style not in LADDER_STYLES and source.rollup_interval_s:
+            spec = pick_rollup(
+                source, read_rollup_states(_meta_engine(), source.id),
+                group_by=group_by_raw, filter_tree=filter_tree,
+                measure=measure, graph_style=graph_style,
+                interval=source.rollup_interval_s,
+                t_from=t_from, t_to=t_to)
+            if spec is not None:
+                rollup_table = spec.name
+                rollup_value_expr = measure_expr(measure, spec)
+
         # Inline every bind param as a literal so the statement is
         # self-contained — `exec_driver_sql(sql)` in the console path
         # does no parameter substitution. Use the legend-specific helper
@@ -921,8 +952,13 @@ def chart_sql(request):
             percentiles=percentiles, measure_col=measure_col,
             series_label=series_label,
             group_by_groups=group_by_groups,
+            rollup_table=rollup_table,
+            rollup_value_expr=rollup_value_expr,
         )
-        return JsonResponse({"ok": True, "sql": sql})
+        # `table` lets the console status line name what the statement
+        # reads, so a user sees which copy asked fact and which the rollup.
+        return JsonResponse({"ok": True, "sql": sql,
+                             "table": rollup_table or "fact"})
     except (ValueError, LookupError) as exc:
         # Same convention as query_run: user-side mistake → 200 + JSON.
         return JsonResponse({"ok": False, "error": str(exc)})

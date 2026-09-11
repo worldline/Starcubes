@@ -570,6 +570,31 @@ returns one row per series — `sum(col)`, `count(*)`, `avg(col)`,
 `[t_from, t_to)` window, matching what `updateLegend()` shows in the
 right-hand legend of the chart.
 
+**The window is the viewport snapped to bar edges, not the raw viewport.**
+`updateLegend()` counts a bar fully once it overlaps the render bounds — a
+bar only has to touch the viewport to be counted whole — and the underlying
+data is fetched in whole blocks anyway. The request therefore snaps
+`tmin`/`tmax` to the bar width before it is sent: `[floor(tmin/iv)*iv,
+ceil(tmax/iv)*iv)`. That is exactly the union of the bar spans the legend
+counts, so the SQL reproduces the legend totals exactly, including the
+half-visible bars at the edges. The same edge alignment is what
+`core.rollup.pick_rollup` requires, so the copied SQL and the chart's own
+data path agree on the rollup decision.
+
+**The statement may read a rollup table instead of `fact`.** The endpoint
+consults `pick_rollup` with the legend's own parameters and passes the
+result through, same conditions as the chart's data path: both window
+edges on a rollup bucket boundary, the measure derivable from stored
+aggregates (`count(*)`/`sum`/`avg`/`min`/`max` — quantiles can never be,
+so quantile graphs always read `fact`), group_by and every filtered
+column covered by the table's column set, and the window inside
+`[built_from, built_through)`. The status line names what the copied SQL
+reads — `copied chart SQL (rollup_1h_y2026m04)` or `copied chart SQL
+(fact)`. When a rollup is picked, `count(*)` becomes `sum(f.n)`,
+`avg(col)` the row-weighted `sum(sum_col)/NULLIF(sum(cnt_col), 0)` — the
+same mean the fact-side `avg(col)` computes, just folded from the
+per-bucket aggregates.
+
 **The series column carries the displayed label, not the transported key.**
 This is the one place `build_chart_legend_sql` deliberately departs from
 `build_chart_sql`. The plot path projects `source_id` (and, for `:grouped`,

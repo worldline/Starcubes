@@ -1326,7 +1326,7 @@
     </button>
     <button id="chart-sql" class="ibtn" type="button" disabled
             aria-label="Copy the chart's SQL into the editor"
-            data-tip="Copy the SQL behind&#10;the active chart legend">
+            data-tip="Copy the SQL behind&#10;the active chart legend&#10;(window snaps to bar edges;&#10;may read the rollup)">
       <svg class="ic" aria-hidden="true"><use href="#ic-bar-chart"></use></svg>
     </button>
     <button id="query-format" class="ibtn" type="button"
@@ -5580,18 +5580,33 @@ function formatSql(sql) {
   // dim name, or the group name for :grouped. We fetch plots with
   // series_label=source_id and translate here in _resolveDimName(), which a
   // statement pasted into the console cannot do.
+  //
+  // The request window is the viewport snapped to bar edges
+  // ([floor(tmin/iv)*iv, ceil(tmax/iv)*iv)): updateLegend() counts a bar
+  // fully once it overlaps the render bounds, so the union of the bar spans
+  // it counts is exactly this snapped window — the SQL thus reproduces the
+  // legend totals exactly, including half-visible edge bars. The same edge
+  // alignment is what pick_rollup requires, so the copied SQL and the
+  // chart's own data path agree on the rollup decision. (partialBins only
+  // rescales the drawing of the incomplete HWM bin — it changes no count.)
   chartSqlBtn.addEventListener('click', async () => {
     if (chartSqlBtn.disabled) return;
     gatherParams();
     const p = buildHistoryParams();
-    if (typeof currentInterval === 'number') p.set('interval', currentInterval);
+    if (typeof currentInterval === 'number' && currentViewport) {
+      p.set('interval', currentInterval);
+      const fromS = Math.floor(currentViewport.tmin / 1000 / currentInterval) * currentInterval;
+      const toS   = Math.ceil(currentViewport.tmax / 1000 / currentInterval) * currentInterval;
+      p.set('from', new Date(fromS * 1000).toISOString());
+      p.set('to',   new Date(toS   * 1000).toISOString());
+    }
     try {
       const data = await getJson(CHART_SQL_URL + '?' + p.toString());
       if (data.ok && typeof data.sql === 'string') {
         sqlBox.value = data.sql;
         sqlBox.focus();
         sqlBox.setSelectionRange(sqlBox.value.length, sqlBox.value.length);
-        setStatus('copied chart SQL');
+        setStatus(`copied chart SQL (${data.table || 'fact'})`);
       } else {
         setStatus(data.error || 'no SQL available', true);
       }
