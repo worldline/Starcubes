@@ -20,6 +20,7 @@ Guide to using the starcubes GUI and configuring datasources. See the
   - [Tab: Indices](#tab-indices)
   - [Tab: Storage](#tab-storage)
   - [Tab: ETL](#tab-etl)
+  - [Tab: Rollup](#tab-rollup)
   - [Editing and deleting a datasource](#editing-and-deleting-a-datasource)
 - [Source configuration reference](#source-configuration-reference)
   - [Identity fields](#identity-fields)
@@ -301,9 +302,9 @@ The datasource page has two detail levels, switched with the
 **[ Basic | Expert ]** control at the right-hand end of the tab bar.
 
 **Basic** shows the five tabs anyone signed in is meant to work with:
-Basics, Group Dims, Measures, Alarms and Firings. **Expert** adds the six
-an operator needs — Fact Columns, Dimensions, Dim Data, Indices, Storage
-and ETL — and fills out the Basics tab with the tuning fields.
+Basics, Group Dims, Measures, Alarms and Firings. **Expert** adds the seven
+an operator needs — Fact Columns, Dimensions, Dim Data, Indices, Storage,
+ETL and Rollup — and fills out the Basics tab with the tuning fields.
 
 The switch appears for administrators only; everyone else gets Basic and
 never sees a control that would lead nowhere. The choice is remembered in
@@ -493,7 +494,9 @@ Shows Postgres warehouse statistics for the datasource schema:
 
 Click column headers to sort. Partition tables (monthly fact partitions) have
 **Truncate** (empties the partition) and **Drop** (removes the partition
-entirely) action buttons.
+entirely) action buttons. The rollup tables (and their partitions, when the
+rollup is on) appear in this list alongside `fact` and the dim tables — the
+Rollup tab's Status sub-tab shows their sizes in context.
 
 **Indexes card**:
 
@@ -630,6 +633,75 @@ If a run stalls, this is the first place to look — every 30s (tunable via
 stage's throughput, the two internal queue depths, and whether each worker
 process is still alive. A worker that died shows up here with its full
 traceback even though the process itself exited silently otherwise.
+
+Rollup runs log here too — the **log** links in the Rollup tab's Recent runs
+jump into this sub-tab with the rollup command's file preselected.
+
+### Tab: Rollup
+
+The GUI front end to the [pre-aggregation workflow](#pre-aggregation-rollups)
+— five sub-tabs, one per step of that workflow, plus a status view. Expert
+level only. A rollup command and an ETL run share the same per-datasource
+slot: starting one while the other is running is refused.
+
+While a rollup command runs, a status strip inside the tab bar shows
+`● rollup <advise|build|verify> running…`, then `✓ … finished` or
+`✗ … failed`.
+
+#### Status
+
+The overview card: the current configuration (bucket width, core columns,
+marginals, measures, total rollup size and the reduction factor against
+fact), and a per-table list with *built from / built through* marks, rows,
+size and a status badge — hover for the meaning:
+
+| Badge | Meaning |
+|-------|---------|
+| `usable` | Serving the chart queries it covers |
+| `empty` | Configured, nothing built yet |
+| `not built` | No table state — run a build |
+| `stale` | The configuration changed since these rows were built; every chart reads fact until a rebuild |
+
+A banner appears when the stored configuration is not valid, and below the
+retention floor the warning that the named span exists only in the rollups —
+those tables belong in the backup.
+
+**Recent runs** lists the last `rollup_advise` / `rollup_build` /
+`rollup_verify` invocations, whether started from here or from a shell, with
+status, times and last progress or error. Each has a **log** link, which
+jumps into the ETL tab's Log sub-tab — rollup commands log to the same files
+as ETL runs (see [Log](#log)).
+
+#### Advise
+
+The measurement behind `rollup_advise`, as a form: interval, window buckets,
+target factor and — only if the current volume is not what you are sizing
+for — an extrapolation. The report shows the per-dimension marginal costs,
+the ladder of candidate column sets and the derivable measures;
+**Use these** on a ladder stage fills the Config form with that column set.
+
+#### Config
+
+Bucket width, the measures beside `count(*)`, the core columns and the
+marginals — the same decisions as `rollup_config`, with the pickers narrowed
+for you: non-derivable (percentile) measures are hidden, since they can never
+be pre-aggregated. **Save configuration** stores it (the rollups then need a
+rebuild), **Turn pre-aggregation off** disables it without dropping anything.
+The **Drop rollup tables** card removes them entirely — irreversible for
+spans below the retention floor, where the rollup is the only copy.
+
+#### Build
+
+**Build now** advances the rollup to the present, **Backfill history** works
+backwards from there in batches (stop-at timestamp, batch size, max
+batches), and **Rebuild** is what a changed configuration needs. A progress
+card follows the running build and offers Kill.
+
+#### Verify
+
+Runs the comparison matrix over the last N days at chosen intervals. The
+report counts *passed · skipped · failed* — a *skipped* case is a query the
+rollup cannot serve, which is the fallback working, not a fault.
 
 ### Editing and deleting a datasource
 
@@ -899,6 +971,10 @@ Off by default. Turning it on is a deliberate sequence, and it is deliberately
 *not* something to do right after the first load — which dimensions carry your
 charts and which measures you actually use only becomes visible in use.
 
+The same five steps are the sub-tabs of the datasource page's Rollup tab —
+see [Tab: Rollup](#tab-rollup). The CLI commands below do the same from a
+shell.
+
 ### 1. Measure first
 
 ```
@@ -970,9 +1046,12 @@ them is nearly free. Retention can be aggressive on the fact table while the
 chart keeps years of history.
 
 Below the retention floor the chart therefore still draws counts and
-breakdowns over the rollup's columns — with a note in the status line saying
-so — while percentiles, drill-down into transactions and filters on columns
-outside the rollup return nothing, because those read the fact table.
+breakdowns over the rollup's columns — the status line marks this with
+*pre-aggregated before … — counts only, no drill-down* — while percentiles,
+drill-down into transactions and filters on columns outside the rollup return
+nothing, because those read the fact table. The chart's advertised time range
+extends down to the rollup's oldest data, so the date picker offers the
+rollup-only history rather than cutting off at the retention floor.
 
 Two things follow that are worth knowing before you rely on it:
 
@@ -1216,6 +1295,12 @@ is a tool for trusted operators, not a public endpoint.
 
 **The action row** is five icon buttons — Run, Cancel, Chart SQL, Format and
 CSV — each of which names itself on hover.
+
+**Chart SQL** copies the SQL behind the active chart legend to the clipboard —
+the query the chart itself ran, with the window snapped to bar edges. When
+pre-aggregation serves the view it may read a rollup table instead of `fact`;
+the status line names the table it copied
+(`copied chart SQL (fact)` vs. `copied chart SQL (rollup_1h …)`).
 
 **Running and cancelling.** Press **Run** (▶) or `Ctrl`/`Cmd`+`Enter`. Plain
 `Enter` still inserts a newline, so multi-line SQL types normally. Nothing runs

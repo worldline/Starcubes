@@ -15,7 +15,9 @@
   the next install is one click.
 - **Built for volume.** The 3.9 million transactions in the screenshots
   below sit in 345 MB: smallint-keyed dimensions, range partitions, BRIN
-  on the time column, `COPY FROM` on the load path.
+  on the time column, `COPY FROM` on the load path. Optional
+  pre-aggregation keeps charts over months of history fast — and outlives
+  the raw rows once retention starts disposing of them.
 - **One self-hosted container.** No Airbyte, no dbt, no Superset — one image,
   one Postgres, one login.
 
@@ -127,6 +129,7 @@ And see what it costs you on disk, per table and per partition.
 | | Nested filters, grouped dimensions, drill-down to primary keys |
 | | Quantile bands, error bars, candlesticks for non-count measures |
 | | Server-side plot cache for frozen, past-only windows |
+| | Optional pre-aggregation — charts over months of history stay fast, and outlive retention |
 | | Read-only SQL console with history and CSV export |
 | **Operate** | Threshold alarms with firing episodes, evaluated by the ETL |
 | | Gap audit: bucket counts, PK set-diff, and per-id detail |
