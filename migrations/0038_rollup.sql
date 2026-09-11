@@ -55,7 +55,7 @@ COMMENT ON COLUMN starcubes_meta.datasource.rollup_columns IS
 COMMENT ON COLUMN starcubes_meta.datasource.rollup_marginals IS
   'Dimension fact columns that get their own single-column rollup instead of a place in rollup_columns. Serves an unfiltered breakdown on a column too expensive for the core set. A marginal is not a second mechanism -- it is a rollup whose column set has one member, and pick_rollup chooses the narrowest spec that covers the query.';
 COMMENT ON COLUMN starcubes_meta.datasource.rollup_measures IS
-  'Aggregation forms materialised beside the mandatory count(*), as they appear in starcubes_meta.measure.agg (sum(col), avg(col), min(col), max(col)). quantile(col) is rejected: percentiles do not sum, so ladder styles can never be served from a rollup. Cheap to add in storage terms, but adding one needs a rebuild because the raw values are gone.';
+  'Aggregation forms materialised beside the mandatory count(*), as they appear in starcubes_meta.measure.agg (sum(col), avg(col), min(col), max(col), extent(col)). quantile(col) is rejected: percentiles do not sum, so a percentile ladder can never be served from a rollup. extent(col) is accepted and is the one ladder form that can: its min/avg/max rungs each fold across buckets exactly. It stores four columns (sum_, cnt_, min_, max_) regardless of the measure rung list, which is what keeps that list editable without a rebuild. Cheap to add in storage terms, but adding one needs a rebuild because the raw values are gone.';
 
 -- rollup_state: one row per rollup table. The three columns that carry the
 -- whole lifecycle -- an operator configures late, backfills a large history

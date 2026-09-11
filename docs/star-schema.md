@@ -97,7 +97,7 @@ behaviour of the ETL that *populates* it lives in
 - **Measure** — a row in `starcubes_meta.measure`: the user-facing catalog of
   measurements in the chart's measure dropdown. `agg` is an aggregation
   expression — the literal `count(*)` or `func(col)` (func ∈ sum/avg/min/max/
-  quantile, col a `role='measure'` fact column). `name` is the dropdown label;
+  quantile/extent, col a `role='measure'` fact column). `name` is the dropdown label;
   `graph_style` picks the `timeseries.js` plot type. The eleven accepted
   values fall into two families:
     - **Simple family** (one scalar per slot/series): `'multibar'`,
@@ -106,17 +106,29 @@ behaviour of the ETL that *populates* it lives in
       `'stackarea'` (stacked filled bands,
       sums visible series per slot), `'waterfall'` (cumulative bars; each
       starts where the last ended).
-    - **Ladder family** (one percentile array per slot/series, fed by
-      `agg = quantile(col)` + `percentiles` ladder): `'quantile-bands'`,
+    - **Ladder family** (one rung *array* per slot/series): `'quantile-bands'`,
       `'quantile-steps'`, `'quantile-steps-open'`, `'error-bars'`,
       `'candlestick'`. All five read the same per-slot array; only the
       renderer differs (see [`docs/chart-rendering.md`](chart-rendering.md),
-      "Ladder plot types").
+      "Ladder plot types"). The family is a set of *shapes*, and **two agg
+      forms feed it** — the distinction matters, because it is what decides
+      whether a rollup can answer:
+        - `agg = quantile(col)` + an integer `percentiles` ladder. Computed
+          with `percentile_cont`, works with all five styles, and always
+          reads `fact`: percentiles do not fold.
+        - `agg = extent(col)` + a `min,avg,max` ladder (or `min,max`). A band
+          around the mean, restricted to the three band/step styles, and
+          servable from a rollup — each rung folds across buckets exactly.
+          See [`docs/rollup.md`](rollup.md).
   `Source.load` rejects any other `graph_style` value with a `ValueError`
   (see `_VALID_GRAPH_STYLES` in `core/source.py`); the whitelist is kept
   local to avoid the `query` → `source` → `query` circular import.
-  `percentiles` is a comma-separated ladder (`'25,50,75'` or `'5,25,50,75,95'`)
-  consumed by every ladder style.
+  `percentiles` is a comma-separated rung ladder consumed by every ladder
+  style, in one of two forms: integers (`'25,50,75'`, `'5,25,50,75,95'`) for a
+  `quantile(col)` agg, or a subset of `min,avg,max` for an `extent(col)` one.
+  `Source.rungs_for` resolves it; the agg↔graph_style pairing is enforced by
+  `sources.views._resolve_measure_fields` and `core.profile._parse_measure`,
+  not by a DB CHECK.
   One row may be `is_default`
   (partial unique index `ux_measure_default`). Distinct from
   `fact_column.role='measure'`, which stays the low-level "aggregatable +

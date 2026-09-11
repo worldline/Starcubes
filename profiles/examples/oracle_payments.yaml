@@ -126,7 +126,10 @@ fact_indices:
 
 # ---- measures ------------------------------------------------------------
 # (name, agg, graph_style, is_default, ordinal, percentiles-or-null)
-# One demo per ladder style so a fresh install shows every renderer.
+# One demo per ladder style so a fresh install shows every renderer, plus one
+# extent(stay) band — the other agg form that feeds those same renderers, and
+# the only ladder a rollup can serve (min/avg/max fold across buckets,
+# percentiles do not).
 
 measures:
   - {name: "Transaction count",            agg: "count(*)",       graph_style: multibar,            is_default: true,  ordinal: 1, percentiles: null}
@@ -138,3 +141,4 @@ measures:
   - {name: "Stay (quantile-steps-open)",   agg: "quantile(stay)", graph_style: quantile-steps-open, is_default: false, ordinal: 7, percentiles: "5,25,50,75,95"}
   - {name: "Stay (error-bars)",            agg: "quantile(stay)", graph_style: error-bars,          is_default: false, ordinal: 8, percentiles: "5,25,50,75,95"}
   - {name: "Stay (candlestick)",           agg: "quantile(stay)", graph_style: candlestick,         is_default: false, ordinal: 9, percentiles: "5,25,50,75,95"}
+  - {name: "Stay (min/avg/max band)",      agg: "extent(stay)",   graph_style: quantile-bands,      is_default: false, ordinal: 10, percentiles: "min,avg,max"}

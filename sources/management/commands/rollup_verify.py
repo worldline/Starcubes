@@ -27,7 +27,8 @@ from django.core.management.base import BaseCommand
 from sqlalchemy import text
 
 from core import rollup_run
-from core.query import LADDER_STYLES, timeseries_multibar
+from core.query import (EXTENT_STYLES, LADDER_STYLES, parse_ladder_agg,
+                        timeseries_ladder, timeseries_multibar)
 from core.rollup import (floor_to_bucket, measure_expr, pick_rollup,
                          read_rollup_states, rollup_specs)
 from core.source import Source, _get_cached_engine
@@ -130,7 +131,21 @@ class Command(BaseCommand):
                     continue
                 tested_intervals.add(case["interval"])
                 graph_style = source.graph_style_for(case["measure"] or "count(*)")
-                if graph_style in LADDER_STYLES:
+                # Branch on the **agg form**, not on the style. Two reasons:
+                # an extent(col) ladder is exactly what this command now has
+                # to prove, and `graph_style_for` falls back to 'multibar'
+                # when no catalog row matches the agg — so a rollup_measures
+                # entry the catalog does not mention would otherwise reach
+                # `timeseries_multibar`, whose `_parse_measure` rejects
+                # 'extent' outright and turns a config gap into a crash.
+                ladder = parse_ladder_agg(case["measure"] or "")
+                is_extent = bool(ladder) and ladder[0] == "extent"
+                # The style conjunct guards a profile-seeded extent+error-bars
+                # row the GUI validator would have refused: without it the
+                # ladder builder raises and a config error reads as a command
+                # failure.
+                if (graph_style in LADDER_STYLES
+                        and not (is_extent and graph_style in EXTENT_STYLES)):
                     skipped += 1
                     continue
 
@@ -150,14 +165,24 @@ class Command(BaseCommand):
                     group_by=case["group_by"] or "",
                     t_from=t_from, t_to=t_to, interval=case["interval"],
                     filter_tree=case["filter_tree"] or None,
-                    measure=case["measure"], series_label="source_id",
+                    series_label="source_id",
                     graph_style=graph_style,
                 )
-                on_fact = timeseries_multibar(source, **common)
-                on_roll = timeseries_multibar(
+                if is_extent:
+                    rungs = source.rungs_for(case["measure"])
+                    common |= dict(measure_col=ladder[1], rungs=rungs,
+                                   ladder_kind="extent")
+                    build = timeseries_ladder
+                else:
+                    rungs = None
+                    common["measure"] = case["measure"]
+                    build = timeseries_multibar
+                on_fact = build(source, **common)
+                on_roll = build(
                     source, **common,
                     rollup_table=spec.name,
-                    rollup_value_expr=measure_expr(case["measure"], spec))
+                    rollup_value_expr=measure_expr(
+                        case["measure"], spec, rungs=rungs))
 
                 diff = self._compare(on_fact["data"], on_roll["data"])
                 if diff is None:
@@ -349,11 +374,39 @@ class Command(BaseCommand):
                         f"(fact-only {sorted(set(sa) - set(sb))[:3]}, "
                         f"rollup-only {sorted(set(sb) - set(sa))[:3]})")
             for series in sa:
-                va, vb = float(sa[series] or 0), float(sb[series] or 0)
-                if va == vb:
+                va, vb = sa[series], sb[series]
+                # A ladder cell is a list of rungs, a scalar cell a number.
+                if isinstance(va, list) or isinstance(vb, list):
+                    if (not isinstance(va, list) or not isinstance(vb, list)
+                            or len(va) != len(vb)):
+                        return (f"slot {slot} series {series}: ladder shape "
+                                f"differs (fact {va!r}, rollup {vb!r})")
+                    for i, (x, y) in enumerate(zip(va, vb)):
+                        if not self._close(x, y):
+                            return (f"slot {slot} series {series} rung {i}: "
+                                    f"fact={x!r} rollup={y!r}")
                     continue
-                scale = max(abs(va), abs(vb), 1.0)
-                if abs(va - vb) / scale > _TOL:
+                if not self._close(va, vb):
                     return (f"slot {slot} series {series}: "
-                            f"fact={sa[series]!r} rollup={sb[series]!r}")
+                            f"fact={va!r} rollup={vb!r}")
         return None
+
+    def _close(self, x, y) -> bool:
+        """One tolerance rule, for a scalar cell and for a single rung alike.
+
+        A NULL is only equal to a NULL: on an extent ladder the avg rung is
+        NULL for a bin whose column was all-NULL, and fact-NULL vs. rollup-0.0
+        is a real derivation bug that must fail rather than round to equal.
+
+        `_TOL` is not widened for ladders and must not be. min/max fold
+        exactly (a min of mins is a lattice fold), and the avg rung is the
+        same `sum/count`-vs-`avg()` arithmetic the scalar avg cases have
+        always passed at this tolerance — only the summation *order* differs.
+        If it ever trips, that is information about the data, not noise.
+        """
+        if x is None or y is None:
+            return x is None and y is None
+        a, b = float(x), float(y)
+        if a == b:
+            return True
+        return abs(a - b) / max(abs(a), abs(b), 1.0) <= _TOL

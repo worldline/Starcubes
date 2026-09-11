@@ -43,13 +43,41 @@ docs/backlog.md.
 
 - **Ladder plot types (`quantile-bands`, `quantile-steps`, `quantile-steps-open`,
   `error-bars`, `candlestick`) are a distinct plot family, not multibar measures.**
-  A measure with one of these `graph_style` values and `agg='quantile(col)'`
-  routes `plot_json` to `core/query.timeseries_quantiles` (not
-  `timeseries_multibar`). The plot's `data[slot][series]` is a **list** of
-  `percentile_cont` values aligned to `plot['percentiles']` (the per-measure
-  ladder from `Source.quantiles_for`), not a scalar — every ladder style reads
-  the same shape and only differs in `plot["type"]` (and `plot["connect"]` for
-  `quantile-steps-open` → `False`, no risers). The library-side renderers:
+  A measure with one of these `graph_style` values routes `plot_json` to
+  `core/query.timeseries_ladder` (not `timeseries_multibar`). The plot's
+  `data[slot][series]` is a **list** aligned to `plot['percentiles']` (the
+  per-measure rung ladder from `Source.rungs_for`), not a scalar — every
+  ladder style reads the same shape and only differs in `plot["type"]` (and
+  `plot["connect"]` for `quantile-steps-open` → `False`, no risers).
+
+  **The family is defined by its shape, not by its source.** Two agg forms
+  feed it, and `core/query.parse_ladder_agg` is the one discriminator:
+
+  | agg | rungs | SQL | rollup |
+  |---|---|---|---|
+  | `quantile(col)` | integers, e.g. `5,25,50,75,95` | `percentile_cont(ARRAY[…]) WITHIN GROUP` | never — percentiles do not fold |
+  | `extent(col)` | `min,avg,max` (or `min,max`) | `ARRAY[min(col), avg(col), max(col)]` | yes, see [`docs/rollup.md`](rollup.md) |
+
+  `extent(col)` is restricted to `EXTENT_STYLES` — bands and steps only.
+  `error-bars` and `candlestick` read the ladder through `ladderPairs()` as
+  nested pairs around a centre, which is a claim about a distribution that
+  `[min, avg, max]` does not make (and a candle out of three rungs has
+  whiskers but no body). **`plot['percentiles']` may be a string array**: the
+  library has accepted that since 0.10 — `renderers.js:ladderPairs` documents
+  `[min, avg, max] -> {centre: 1, pairs: [[0,2]]}` as its first example, and
+  `tooltip.js:rungLabel` prints a token rung verbatim where it prints a
+  numeric one as `p50`. The plot key keeps the name `percentiles` for both
+  kinds — that is the library contract, and nothing server-side would catch
+  the break if it were renamed to match the Python parameter (`rungs`).
+
+  The one behavioural difference between the feeders: an extent rung can be
+  **NULL** where `percentile_cont` never was — the avg rung of a bin whose
+  column held only NULLs. `timeseries_ladder` carries it through as `None`
+  rather than coercing to `0.0` (a band reaching down to zero for a bin that
+  measured nothing), and the chart's legend skips such a slot instead of
+  adding zero into the mean.
+
+  The library-side renderers:
     - `quantile-bands` — shaded bands between consecutive percentile lines
       (darkest at the median).
     - `quantile-steps` — same lines, drawn as a step (default `connect=True`

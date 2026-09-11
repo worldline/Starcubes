@@ -10,7 +10,7 @@
   <div class="card">
     <div class="card-header">
       <span class="card-title">Measures</span>
-      <span style="margin-left:auto;font-size:12px;color:var(--muted)">Chart measure dropdown. <code>agg</code> is <code>count(*)</code> or func(measure column). <code>multiline</code> draws one line per group series, <code>multipoint</code> one dot per slot per series; <code>multistep</code> draws <code>multiline</code> as a staircase, each bin holding its value across the bin it represents; <code>multibar</code> stacks them. The five <em>ladder styles</em> (<code>quantile-bands</code>, <code>quantile-steps</code>, <code>quantile-steps-open</code>, <code>error-bars</code>, <code>candlestick</code>) need a <code>quantile(col)</code> agg and a <code>Percentiles</code> ladder (e.g. <code>5,25,50,75,95</code>); they all read the same per-bin percentile array, only the renderer differs — <code>quantile-steps</code> connects the rungs with risers (default), <code>quantile-steps-open</code> drops them; <code>error-bars</code> marks each pair symmetric around the median; <code>candlestick</code> draws a boxplot (outer pair = whiskers, inner pair = body, median tick).</span>
+      <span style="margin-left:auto;font-size:12px;color:var(--muted)">Chart measure dropdown. <code>agg</code> is <code>count(*)</code> or func(measure column). <code>multiline</code> draws one line per group series, <code>multipoint</code> one dot per slot per series; <code>multistep</code> draws <code>multiline</code> as a staircase, each bin holding its value across the bin it represents; <code>multibar</code> stacks them. The five <em>ladder styles</em> (<code>quantile-bands</code>, <code>quantile-steps</code>, <code>quantile-steps-open</code>, <code>error-bars</code>, <code>candlestick</code>) draw a whole array per bin instead of one value, and two agg forms feed them. <code>quantile(col)</code> with a percentile ladder (e.g. <code>5,25,50,75,95</code>) works with all five, and always reads the fact table — percentiles do not fold. <code>extent(col)</code> with a <code>min,avg,max</code> ladder (or just <code>min,max</code>) draws a band around the mean and works with <code>quantile-bands</code>/<code>quantile-steps</code>/<code>quantile-steps-open</code> only; it <em>can</em> be served from a rollup, so it stays fast at coarse resolutions and keeps working below the retention floor. Within each form the renderer is the only difference — <code>quantile-steps</code> connects the rungs with risers (default), <code>quantile-steps-open</code> drops them; <code>error-bars</code> marks each pair symmetric around the median; <code>candlestick</code> draws a boxplot (outer pair = whiskers, inner pair = body, median tick).</span>
     </div>
     <table class="data-table" id="measureTable">
       <thead>
@@ -53,7 +53,7 @@
           </td>
           <td>
             <span class="row-display text-mono">{{ m.percentiles|default:"—" }}</span>
-            <input class="row-edit cell-input" name="percentiles" value="{{ m.percentiles|default:'' }}" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick)">
+            <input class="row-edit cell-input" name="percentiles" value="{{ m.percentiles|default:'' }}" placeholder="5,25,50,75,95" title="The rung ladder for a ladder style: percentiles (5,25,50,75,95) for a quantile(col) agg, min,avg,max for an extent(col) one">
           </td>
           <td class="actions">
             <span class="row-display">
@@ -90,7 +90,7 @@
         </div>
         <div style="width:130px">
           <label class="form-label">Percentiles</label>
-          <input class="form-control" name="percentiles" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles (quantile-bands, quantile-steps, quantile-steps-open, error-bars, candlestick)">
+          <input class="form-control" name="percentiles" placeholder="5,25,50,75,95" title="The rung ladder for a ladder style: percentiles (5,25,50,75,95) for a quantile(col) agg, min,avg,max for an extent(col) one">
         </div>
         <div style="padding-top:18px"><label style="font-size:12px;color:var(--muted)"><input type="checkbox" name="is_default"> default</label></div>
         <div style="padding-top:18px"><button type="submit" class="btn btn-primary">Add</button></div>

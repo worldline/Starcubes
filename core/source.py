@@ -262,11 +262,15 @@ class Measure:
     aggregations and ``count(*)`` has no column at all.
     """
     name: str          # display label, e.g. "Transaction count"
-    agg: str           # 'count(*)' | 'sum(stay)' | 'avg(total)' | 'quantile(stay)'
+    # 'count(*)' | 'sum(stay)' | 'avg(total)' | 'quantile(stay)' | 'extent(stay)'
+    agg: str
     graph_style: str   # timeseries.js plot type; must be in _VALID_GRAPH_STYLES
     is_default: bool
     ordinal: int
-    percentiles: Optional[str] = None  # 'a,b,c' ladder for graph_style=quantile-bands
+    # The rung ladder for a ladder graph_style, in either of its two forms:
+    # '5,25,50,75,95' for a quantile(col) agg, 'min,avg,max' for an
+    # extent(col) one. Read through `Source.rungs_for`.
+    percentiles: Optional[str] = None
 
 
 @dataclass
@@ -639,18 +643,40 @@ class Source:
                 return m.graph_style
         return "multibar"
 
-    def quantiles_for(self, agg: str) -> list[int]:
-        """Return the percentile ladder for a quantile-bands measure agg.
+    def rungs_for(self, agg: str) -> list:
+        """Return the rung ladder for a ladder-style measure agg.
 
-        Parses the matching measure row's `percentiles` ('a,b,c'); falls back
-        to [5, 25, 50, 75, 95] when the row is missing or unset. Always sorted
-        ascending and de-duplicated.
+        Two forms, picked by the agg's own prefix — the same discriminator the
+        read path uses (`core.query._parse_ladder_agg`):
+
+        * ``quantile(col)`` → integer percentiles, sorted ascending and
+          de-duplicated. Falls back to ``[5, 25, 50, 75, 95]``.
+        * ``extent(col)``   → the tokens ``min``/``avg``/``max`` in canonical
+          order. Falls back to all three.
+
+        Parses the matching measure row's `percentiles` column, which carries
+        either form. A missing or unset row yields the respective default, so
+        a source whose catalog predates the column still draws.
+
+        The parsing is duplicated here rather than imported from
+        `core.query.normalize_rungs` for the same reason `_VALID_GRAPH_STYLES`
+        is duplicated: `query` imports `source`, so the reverse import would
+        close the cycle. This copy is deliberately permissive — it *resolves*
+        a ladder, while `normalize_rungs` *validates* one at the point of use.
         """
+        is_extent = agg.startswith("extent(")
         raw = None
         for m in self.measures:
             if m.agg == agg:
                 raw = m.percentiles
                 break
+        if is_extent:
+            canonical = ["min", "avg", "max"]
+            if not raw:
+                return canonical
+            toks = {t.strip().lower() for t in raw.split(",") if t.strip()}
+            picked = [r for r in canonical if r in toks]
+            return picked if len(picked) >= 2 else canonical
         if not raw:
             return [5, 25, 50, 75, 95]
         return sorted({int(tok) for tok in raw.split(",") if tok.strip()})

@@ -51,18 +51,54 @@ the slot expression a rollup looks like a thinner `fact`.
 
 ## What it can never serve
 
-**Percentiles.** They do not sum. Every `LADDER_STYLES` measure
-(`quantile-bands`, `quantile-steps`, `quantile-steps-open`, `error-bars`,
-`candlestick`) reads `fact` permanently, and `validate_config` rejects
-`quantile(col)` in `rollup_measures` rather than letting it half-work.
+**Percentiles.** They do not sum. A `quantile(col)` measure reads `fact`
+permanently, and `validate_config` rejects `quantile(col)` in
+`rollup_measures` rather than letting it half-work.
 
-Everything else derives: `count(*)` from `sum(n)`, `sum(col)` from
-`sum(sum_col)`, `avg(col)` from `sum(sum_col)/sum(cnt_col)` (correctly
-weighted across buckets), `min`/`max` from the stored extremes.
+Note what that sentence is *about*: the **agg form**, not the graph style.
+`LADDER_STYLES` — `quantile-bands`, `quantile-steps`, `quantile-steps-open`,
+`error-bars`, `candlestick` — is a set of *shapes*, and two agg forms draw
+into it. The other one is `extent(col)`, and it is served from here like any
+scalar, because each of its rungs folds:
+
+| Measure | Derived from |
+|---|---|
+| `count(*)` | `sum(n)` |
+| `sum(col)` | `sum(sum_col)` |
+| `avg(col)` | `sum(sum_col)/sum(cnt_col)` — correctly weighted across buckets |
+| `min(col)` / `max(col)` | the stored extremes |
+| `extent(col)` | `ARRAY[min(min_col), sum(sum_col)/sum(cnt_col), max(max_col)]` |
+| `quantile(col)` | — nothing. Always `fact`. |
 
 `cnt_col` is `count(col)` and not the row count — with a NULL in the column
 the two differ, and `avg` would be pulled toward zero by rows that never
 contributed a value.
+
+### The extent measure's four columns
+
+`extent(col)` materialises **all four** stored columns (`sum_`, `cnt_`,
+`min_`, `max_`) whatever its rung list says, and that is load-bearing rather
+than lazy. The rung list lives in `starcubes_meta.measure.percentiles`, i.e.
+in the measure *catalog* — deliberately not in `RollupSpec` and therefore not
+in `spec_hash`. Honouring it in `measure_columns` would mean that editing a
+measure from `min,max` to `min,avg,max` leaves the hash valid while the read
+path selects `sum_col`/`cnt_col` columns that were never created: a hard SQL
+error at chart time, not the graceful degradation to `fact` that every other
+reconfiguration gets.
+
+The alternative was putting the rung list into `spec_hash`, which would
+couple the spec to the measure catalog so that *any* catalog edit could stale
+a rollup. The chosen price is 16 bytes per row when the operator picked a
+two-rung ladder; what it buys is a rung list that is a pure presentation
+choice — freely editable, no rebuild, no hash involvement.
+
+**Why this is the interesting one.** A rollup's aggregates outlive the rows
+they came from (see *Historical mutation* below), so below `retention_floor`
+an `extent(col)` band still draws while a percentile ladder there is
+necessarily empty. It is also the only ladder whose min/max are honest at
+every resolution: each tier is its own `GROUP BY`, so the extremes come from
+the raw values — or from the stored extremes, which are the same numbers —
+never from the averages of a finer tier.
 
 ## Measures are cheap, dimensions are not
 
@@ -172,12 +208,16 @@ without `--force`. Two further consequences:
 
 * The rollup tables belong in the backup. `fact` is UNLOGGED and unbacked
   because it is reproducible from the source; below the floor a rollup is not.
-* Below the floor the answer depends on the question. Counts and breakdowns
-  over the rollup's columns work; percentiles, drill-down to transactions and
-  filters on columns outside the spec return nothing, because they read
-  `fact`. `chart_meta` reports `rollup_only_below` and the chart shows a
-  one-line note when the viewport reaches into that span, so a legitimately
-  empty ladder plot does not read as data loss.
+* Below the floor the answer depends on the question. Counts, breakdowns and
+  every derivable measure over the rollup's columns work — including an
+  `extent(col)` band, which is the reason that form is worth having;
+  percentiles, drill-down to transactions and filters on columns outside the
+  spec return nothing, because they read `fact`. `chart_meta` reports
+  `rollup_only_below` and the chart shows a one-line note when the viewport
+  reaches into that span, so a legitimately empty plot does not read as data
+  loss. The note names the missing percentiles only for a `quantile(col)`
+  measure (`updateRollupNotice`); for everything else it says no more than
+  "no drill-down", which is all that is actually gone.
 
 ## Lifecycle
 
@@ -271,7 +311,8 @@ plot_json
 
 `pick_rollup`'s seven conditions, cheapest rejection first: bucket width
 divides the interval; window on bucket boundaries; spec hash current and
-window inside `[built_from, built_through)`; not a ladder style; measure
+window inside `[built_from, built_through)`; not a *percentile* ladder (an
+`extent(col)` one passes — the gate is the agg form, not the style); measure
 derivable *and* materialised; group_by column (after `split_grouped_col`) in
 the spec; every column a filter reads in the spec — resolved through
 `filter_target_columns`, the helper `_filter_sql` itself uses, so the coverage

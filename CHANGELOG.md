@@ -9,6 +9,25 @@ Notable changes per release. Format follows
 
 ### Added
 
+- **`extent(col)` measures — min/avg/max bands that a rollup can serve.** A
+  second aggregation form for the ladder renderers: where `quantile(col)`
+  draws a percentile ladder, `extent(col)` draws a band from the bin's
+  minimum through its mean to its maximum, with the rungs chosen in the
+  measure's `Percentiles` field (`min,avg,max`, or `min,max` for a plain
+  envelope). Available for `quantile-bands`, `quantile-steps` and
+  `quantile-steps-open` — `error-bars` and `candlestick` read a ladder as
+  nested pairs around a centre, which min/avg/max is not.
+
+  The point is where the numbers come from. The extremes are re-derived at
+  every resolution from the raw values, never from the averages of a finer
+  tier — and because `min`, `max` and a count-weighted `avg` all fold across
+  buckets exactly, this is the **first ladder form a rollup can answer**.
+  Tick `extent(col)` in the Rollup tab's measure list and the band is served
+  from `rollup_1h_…` like any count, including below `retention_floor` where
+  the fact rows are gone and a percentile ladder is necessarily empty. No
+  change to `@hgruber/timeseries.js` was needed: it has accepted a string
+  rung ladder since 0.10.
+
 - **New `graph_style` `multistep` for simple measures.** A simple
   measurement (count/avg/min/max/sum) can now be drawn as a staircase —
   each bin holds its value across the bin it represents, rendered by the
@@ -28,7 +47,21 @@ Notable changes per release. Format follows
   snapped to whole bars, so the statement reproduces the legend totals
   exactly — including the half-visible bars at the viewport edges. Quantile
   graphs keep reading `fact` (percentiles do not fold from per-bucket
-  aggregates).
+  aggregates); `extent(col)` bands, added above, do fold and are served from
+  the rollup like any scalar measure.
+
+- **The pre-aggregation note below the retention floor no longer says "counts
+  only".** It never was only counts — every derivable measure works there —
+  and with `extent(col)` bands it would have been actively misleading. The
+  note now reports what is actually gone: drill-down for every measure, plus
+  the values themselves for a `quantile(col)` ladder.
+
+- **`manage.py rollup_verify` checks ladder measures instead of skipping
+  them.** `extent(col)` cases are now run against both `fact` and the rollup
+  and compared rung by rung; only `quantile(col)` is still skipped, since
+  there is nothing to compare it to. Its value comparison also stopped
+  treating a NULL as a zero — a fact-NULL against a rollup-0.0 is a real
+  derivation bug and now fails instead of rounding to equal.
 
 Candidates live in [`docs/backlog.md`](docs/backlog.md), and nothing there is
 committed to a release until it is listed here. The road to a final 2.0.0

@@ -24,7 +24,10 @@ slot expression work unchanged, because to them a rollup looks like a thinner
 measure expressions.
 
 **What a rollup can never serve:** percentiles. They do not sum, so every
-`LADDER_STYLES` measure stays on `fact` permanently.
+`quantile(col)` measure stays on `fact` permanently. Note this is a statement
+about the *agg form*, not about the ladder styles: an `extent(col)` measure
+draws with the same renderers but is built from min/avg/max, each of which
+folds across buckets exactly — so it is served from here like any scalar.
 
 No Django imports — callable from `core/` and from management commands the
 same way `core/query.py` is.
@@ -50,7 +53,12 @@ logger = logging.getLogger(__name__)
 # Aggregate forms a rollup can carry. `quantile` is deliberately absent and
 # must stay absent: percentile_cont over pre-aggregated buckets is not the
 # percentile of the underlying rows, and there is no correction for it.
-ROLLUP_FUNCS = ("sum", "avg", "min", "max")
+ROLLUP_FUNCS = ("sum", "avg", "min", "max", "extent")
+
+# The rungs an `extent(col)` ladder can carry, in canonical order. Mirrors
+# `core.query.EXTENT_RUNGS` — this module already imports from `core.query`,
+# but keeping the tuple local keeps the DDL side readable on its own.
+EXTENT_RUNGS = ("min", "avg", "max")
 
 # What `sum()` returns in Postgres, by input type. Getting this wrong is not
 # a rounding problem but an overflow one: sum(bigint) is numeric precisely
@@ -66,6 +74,7 @@ _SUM_TYPE = {
 }
 
 _MEASURE_RE = re.compile(r"^(\w+)\((\w+)\)$")
+_EXTENT_RE = re.compile(r"^extent\((\w+)\)$")
 
 
 # ── Specs ───────────────────────────────────────────────────────────────
@@ -223,6 +232,23 @@ def measure_columns(spec: RollupSpec, source: Source) -> dict[str, tuple[str, st
 
     `n` (the count) is not in here — it is mandatory and handled separately,
     because `count(*)` is not tied to any measure column.
+
+    **`extent(col)` materialises all four columns, whatever its rung list
+    says.** That is load-bearing, not laziness. The rung list lives in
+    `starcubes_meta.measure.percentiles`, i.e. in the measure *catalog* — it
+    is deliberately not part of `RollupSpec` and therefore not part of
+    `spec_hash`. Honouring it here (skipping `sum_`/`cnt_` for a `min,max`
+    ladder) would mean that editing a measure from `min,max` to `min,avg,max`
+    leaves the hash valid while the read path selects `sum_col`/`cnt_col`
+    columns that were never created: a hard SQL error at chart time, not the
+    graceful degradation to `fact` every other reconfiguration gets.
+
+    The two ways out were "always materialise all four" and "put the rung
+    list into `spec_hash`". The latter would couple the spec to the measure
+    catalog, so that *any* catalog edit could stale a rollup. This costs
+    16 bytes per row when the operator picked a two-rung ladder, and buys a
+    rung list that is a pure presentation choice: freely editable, no
+    rebuild, no hash involvement.
     """
     by_name = {c.name: c for c in source.fact_columns}
     out: dict[str, tuple[str, str]] = {}
@@ -234,23 +260,34 @@ def measure_columns(spec: RollupSpec, source: Source) -> dict[str, tuple[str, st
         fc = by_name.get(col)
         if fc is None or func not in ROLLUP_FUNCS:
             continue
-        if func in ("sum", "avg"):
+        if func in ("sum", "avg", "extent"):
             out[f"sum_{col}"] = (_SUM_TYPE.get(fc.pg_type, "numeric"),
                                  f"sum(f.{col})")
-        if func == "avg":
+        if func in ("avg", "extent"):
             # count(col), not the row count: with a NULL in the column the two
             # differ, and avg would be pulled toward zero by rows that never
             # contributed a value.
             out[f"cnt_{col}"] = ("bigint", f"count(f.{col})")
-        if func == "min":
+        if func in ("min", "extent"):
             out[f"min_{col}"] = (fc.pg_type, f"min(f.{col})")
-        if func == "max":
+        if func in ("max", "extent"):
             out[f"max_{col}"] = (fc.pg_type, f"max(f.{col})")
     return out
 
 
-def measure_expr(measure: Optional[str], spec: RollupSpec) -> Optional[str]:
+def measure_expr(measure: Optional[str], spec: RollupSpec, *,
+                 rungs: Optional[list] = None) -> Optional[str]:
     """The rollup-side expression producing the same value as `measure`.
+
+    A scalar for every additive form; for `extent(col)` an ``ARRAY[…]`` over
+    the stored extremes and the folded mean. That a *ladder* can come out of
+    this function at all is the whole point of the form: percentiles cannot,
+    min/avg/max can, and the read path does not otherwise care which it got —
+    `core.query.build_chart_sql` drops the string into its one value slot
+    either way. `rungs` selects and orders the array elements (None → the
+    canonical `EXTENT_RUNGS`) and is ignored for every other measure; the
+    caller resolves it from the measure catalog via `Source.rungs_for`, so
+    this module never has to reach into `source.measures`.
 
     Returns None when this rollup cannot answer for that measure, which is
     what condition 5 of `pick_rollup` tests. `f` is the rollup table alias,
@@ -273,6 +310,25 @@ def measure_expr(measure: Optional[str], spec: RollupSpec) -> Optional[str]:
         return f"min(f.min_{col})"
     if func == "max":
         return f"max(f.max_{col})"
+    if func == "extent":
+        # Every element cast to double precision, for the same reason the
+        # fact-side counterpart in `core.query.extent_value_expr` does it: the
+        # array needs one element type, and `percentile_cont` on the other
+        # ladder path yields double precision, so both feeders hand Python the
+        # same shape. The avg rung reuses the scalar `avg` expression above
+        # verbatim — reproducing its arithmetic rather than "improving" it is
+        # what keeps `rollup_verify`'s extent cases comparable to its
+        # long-standing avg cases.
+        parts = {
+            "min": f"min(f.min_{col})::double precision",
+            "avg": (f"(sum(f.sum_{col})::numeric / "
+                    f"NULLIF(sum(f.cnt_{col}), 0))::double precision"),
+            "max": f"max(f.max_{col})::double precision",
+        }
+        picked = [r for r in EXTENT_RUNGS if r in set(rungs or EXTENT_RUNGS)]
+        if len(picked) < 2:
+            return None
+        return "ARRAY[" + ", ".join(parts[r] for r in picked) + "]"
     return None
 
 
@@ -672,7 +728,9 @@ def pick_rollup(source: Source, states: dict[str, RollupState], *,
          bucket in half and silently drops or double-counts it
       3. the stored spec hash must match, and the window must lie inside
          [built_from, built_through)
-      4. no ladder style — percentiles do not sum
+      4. no *percentile* ladder — percentiles do not sum. An `extent(col)`
+         ladder passes: its rungs are min/avg/max, each of which folds across
+         buckets exactly, which is the entire reason that form exists
       5. the measure must be derivable *and* materialised in that spec
       6. the real group_by column must be in the spec
       7. every column a filter actually reads must be in the spec — resolved
@@ -687,7 +745,10 @@ def pick_rollup(source: Source, states: dict[str, RollupState], *,
         return None
     if int(t_from.timestamp()) % iv != 0 or int(t_to.timestamp()) % iv != 0:
         return None
-    if graph_style in ladder_styles:
+    # The gate is the agg form, not the style: `LADDER_STYLES` is a set of
+    # shapes and an `extent(col)` measure wears the same one. `measure_expr`
+    # (condition 5) then decides whether this particular spec materialised it.
+    if graph_style in ladder_styles and not _EXTENT_RE.match(measure or ""):
         return None
 
     dims_by_fact = {d.fact_column: d for d in source.dimensions}

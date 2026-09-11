@@ -83,6 +83,19 @@ _VALID_GRAPH_STYLES = {
     "error-bars", "candlestick",
 }
 
+# The ladder subsets of the above — the shapes that read a rung array per slot,
+# and the three of those an `extent(col)` agg may use. Duplicated from
+# `core.query.LADDER_STYLES` / `EXTENT_STYLES` for the same reason
+# `_VALID_GRAPH_STYLES` is: this module must stay importable without dragging
+# in the query builder.
+_LADDER_GRAPH_STYLES = {
+    "quantile-bands", "quantile-steps", "quantile-steps-open",
+    "error-bars", "candlestick",
+}
+_EXTENT_GRAPH_STYLES = {
+    "quantile-bands", "quantile-steps", "quantile-steps-open",
+}
+
 _VALID_PARTITION_PERIODS = {"day", "week", "month"}
 
 # ``source:`` keys that map 1:1 onto ``starcubes_meta.datasource`` columns.
@@ -670,6 +683,24 @@ def _parse_measure(profile: str, idx: int, raw: Any) -> Measure:
         raise ProfileError(
             f"profile {profile!r}: measures[{idx}].graph_style={graph_style!r} "
             f"is not one of {sorted(_VALID_GRAPH_STYLES)}")
+    # The agg↔graph_style pairing, mirroring `sources.views
+    # ._resolve_measure_fields`. Checked here and not only at `Source.load`
+    # because a profile is applied long before anything draws: without it a
+    # seed accepts a combination the GUI refuses, and the first symptom is a
+    # chart that 500s on one measure.
+    agg = str(raw.get("agg", ""))
+    is_extent = agg.startswith("extent(")
+    is_ladder_agg = is_extent or agg.startswith("quantile(")
+    if (graph_style in _LADDER_GRAPH_STYLES) != is_ladder_agg:
+        raise ProfileError(
+            f"profile {profile!r}: measures[{idx}] pairs "
+            f"graph_style={graph_style!r} with agg={agg!r}; a ladder style "
+            f"needs a quantile(col) or extent(col) agg and vice versa")
+    if is_extent and graph_style not in _EXTENT_GRAPH_STYLES:
+        raise ProfileError(
+            f"profile {profile!r}: measures[{idx}] cannot draw an extent(col) "
+            f"agg as {graph_style!r}; choose one of "
+            f"{sorted(_EXTENT_GRAPH_STYLES)}")
     try:
         return Measure(
             name=str(raw["name"]),

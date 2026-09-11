@@ -47,14 +47,16 @@ from .utils import format_pks
 
 MEASURE_FUNCS = {"sum", "avg", "min", "max"}
 
-# The five `measure.graph_style` values that read a percentile ladder from the
-# fact table. `quantile-steps-open` is a starcubes-only config value: the
-# library distinguishes it from `quantile-steps` via the `plot["connect"]`
+# The five `measure.graph_style` values that read a *rung array* per slot
+# instead of a scalar. `quantile-steps-open` is a starcubes-only config value:
+# the library distinguishes it from `quantile-steps` via the `plot["connect"]`
 # flag (False → freistehende Segmente ohne Riser).
 #
-# Every member requires `agg = quantile(col)` and a populated `percentiles`
-# ladder; the SQL is identical (one `percentile_cont(ARRAY[...])` per slot),
-# only `plot["type"]` (and sometimes `plot["connect"]`) differ between them.
+# This is a set of **shapes, not of sources** — the distinction matters, and
+# conflating the two is what used to make "ladder" mean "always reads fact".
+# Every member requires a ladder agg (`LADDER_AGGS`) and a populated rung
+# list; the SQL differs only in the one aggregate expression producing `qs`,
+# and `plot["type"]` (plus sometimes `plot["connect"]`) between the styles.
 LADDER_STYLES = frozenset({
     "quantile-bands",
     "quantile-steps",
@@ -62,6 +64,102 @@ LADDER_STYLES = frozenset({
     "error-bars",
     "candlestick",
 })
+
+# `LADDER_STYLES` is a set of *shapes*, not of sources. Two agg forms feed it:
+# `quantile(col)`, whose numbers come from `percentile_cont` over `fact` and
+# can never be pre-aggregated, and `extent(col)`, whose min/avg/max fold
+# exactly out of a rollup's stored aggregates. Keeping the two apart is what
+# lets a band outlive `retention_floor` where a percentile ladder cannot —
+# see `pick_rollup` and docs/rollup.md.
+LADDER_AGGS = ("quantile", "extent")
+
+# The rungs an `extent(col)` ladder can carry, in the canonical order they are
+# always emitted in. Ascending by construction, which is what keeps the
+# `vals[0]` / `vals[-1]` y-extent in `timeseries_ladder` valid without sorting
+# the values themselves.
+EXTENT_RUNGS = ("min", "avg", "max")
+
+# The ladder styles an `extent(col)` measure may use — a strict subset of
+# `LADDER_STYLES`. `error-bars` and `candlestick` stay reserved for real
+# percentile ladders: the nested pairs they draw carry a meaning a three-rung
+# min/avg/max band does not have (a candle out of min/avg/max has no body).
+EXTENT_STYLES = frozenset({
+    "quantile-bands",
+    "quantile-steps",
+    "quantile-steps-open",
+})
+
+
+def parse_ladder_agg(agg: Optional[str]) -> Optional[tuple[str, str]]:
+    """Parse a ladder measure's agg form into ``(kind, column)``.
+
+    ``'quantile(stay)' → ('quantile', 'stay')``,
+    ``'extent(stay)' → ('extent', 'stay')``, anything else → ``None``.
+
+    One parser for both kinds, because the shape they produce is identical and
+    only the source differs. The two call sites in `viz/views.py` (`plot_json`
+    and `chart_sql`) used to carry a hand-rolled `quantile\\((\\w+)\\)$` each;
+    they are deliberately mirrored copies of one dispatch, so the regex
+    belongs here rather than twice over there.
+    """
+    m = re.match(r"(quantile|extent)\((\w+)\)$", (agg or "").strip())
+    return (m.group(1), m.group(2)) if m else None
+
+
+def normalize_rungs(kind: str, rungs) -> list:
+    """Validate a ladder's rungs and put them in canonical ascending order.
+
+    Percentile ladders sort numerically. Extent ladders are ordered *by*
+    `EXTENT_RUNGS` rather than sorted — `'avg'` does not compare to `'min'` as
+    a string, and the drawing order is what the renderer reads off
+    `plot["percentiles"]`. Both come out ascending, which is the invariant
+    `timeseries_ladder` relies on when it takes the y-extent from the first
+    and last entry of each slot's array.
+
+    Raises ValueError on anything unusable; every ladder path funnels through
+    here so the message is the same wherever the bad ladder came from.
+    """
+    if kind == "extent":
+        toks = [str(t).strip().lower() for t in (rungs or []) if str(t).strip()]
+        bad = [t for t in toks if t not in EXTENT_RUNGS]
+        if bad:
+            raise ValueError(
+                f"extent rungs must be from {list(EXTENT_RUNGS)}, got {bad!r}")
+        seen = set(toks)
+        out = [r for r in EXTENT_RUNGS if r in seen]
+        if len(out) < 2:
+            raise ValueError(
+                f"an extent ladder needs at least two distinct rungs, "
+                f"got {rungs!r}")
+        return out
+    try:
+        pct = sorted({int(p) for p in (rungs or [])})
+    except (TypeError, ValueError):
+        # A token ladder handed to the percentile path — `int('min')` would
+        # raise here with a message about string literals that says nothing
+        # about the actual mistake, which is a `min,avg,max` list on a
+        # `quantile(col)` measure (or the reverse pairing in the catalog).
+        raise ValueError(
+            f"a quantile ladder takes integer percentiles, got {rungs!r}; "
+            f"the {list(EXTENT_RUNGS)} rungs belong to an extent(col) measure")
+    if not pct or any(not (0 < p < 100) for p in pct):
+        raise ValueError(
+            f"percentiles must be integers in (0, 100), got {rungs!r}")
+    return pct
+
+
+def extent_value_expr(rungs, col: str, *, alias: str = "f") -> str:
+    """The per-slot ``ARRAY`` expression for an `extent(col)` ladder over `fact`.
+
+    The rollup counterpart is `core.rollup.measure_expr`, which reads the
+    stored aggregates instead of the raw column but produces the same array in
+    the same rung order. Both cast every element to `double precision`: the
+    array needs one element type (`min(integer)` is integer while
+    `avg(integer)` is numeric), and that is also what `percentile_cont`
+    returns on the other ladder path, so the Python side sees one shape.
+    """
+    parts = ", ".join(f"{r}({alias}.{col})::double precision" for r in rungs)
+    return f"ARRAY[{parts}]"
 
 
 def _ladder_plot_type(graph_style: str) -> tuple[str, bool]:
@@ -577,25 +675,33 @@ def build_chart_sql(
     interval: int,
     filter_tree: Optional[list[dict]],
     filter_groups: Optional[list[list[dict]]] = None,
-    percentiles: Optional[list[int]] = None,
+    rungs: Optional[list] = None,
+    ladder_kind: Optional[str] = None,
     measure_col: Optional[str] = None,
     series_label: str = "source_id",
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
     rollup_table: Optional[str] = None,
     rollup_value_expr: Optional[str] = None,
 ) -> tuple[str, dict, dict[int, str], dict[str, str]]:
-    """Build the same SQL string `timeseries_multibar` / `timeseries_quantiles`
+    """Build the same SQL string `timeseries_multibar` / `timeseries_ladder`
     execute, without running it.
 
     `rollup_table` / `rollup_value_expr` redirect the statement at a
     pre-aggregation table (see `core/rollup.py`). Only two things change: the
-    relation in the FROM clause, and the aggregate producing `v` — the filter
-    SQL, the joins, the slot expression and the grouped-dimension handling are
-    identical, because a rollup carries the same column names as `fact`. The
-    two arrive pre-resolved rather than as a `RollupSpec` on purpose: it keeps
-    this module free of any import from `core.rollup`, which imports *this*
-    one for `filter_tree_columns`. Both are ignored for ladder styles, which
-    can never read a rollup.
+    relation in the FROM clause, and the aggregate producing the value — the
+    filter SQL, the joins, the slot expression and the grouped-dimension
+    handling are identical, because a rollup carries the same column names as
+    `fact`. The two arrive pre-resolved rather than as a `RollupSpec` on
+    purpose: it keeps this module free of any import from `core.rollup`, which
+    imports *this* one for `filter_tree_columns`. That contract is also what
+    carries the ladder's array expression — widening what the string may hold
+    costs nothing and needed no new import.
+
+    `ladder_kind` selects which feeder a `LADDER_STYLES` request uses:
+    `'quantile'` (percentile_cont over `fact`, never foldable) or `'extent'`
+    (min/avg/max, foldable and therefore rollup-servable). `rungs` is that
+    ladder's rung list — integers for the former, `EXTENT_RUNGS` tokens for
+    the latter.
 
     Returns ``(sql, params, index_to_group, group_colors)``. The two dicts are
     the same Python-side state the multibar path uses to merge per-index rows
@@ -697,19 +803,38 @@ def build_chart_sql(
     }
 
     if graph_style in LADDER_STYLES:
-        pct = sorted({int(p) for p in (percentiles or [])})
-        if not pct or any(not (0 < p < 100) for p in pct):
-            raise ValueError(
-                f"percentiles must be integers in (0, 100), got {percentiles!r}")
-        fractions = ",".join(f"{p / 100.0:g}" for p in pct)
+        kind = ladder_kind or "quantile"
+        rung_list = normalize_rungs(kind, rungs)
+        if kind == "extent":
+            if graph_style not in EXTENT_STYLES:
+                raise ValueError(
+                    f"graph_style={graph_style!r} cannot draw an extent "
+                    f"ladder; choose from {sorted(EXTENT_STYLES)}")
+            # `rollup_value_expr` already carries the ARRAY over the stored
+            # aggregates when a rollup was picked (core.rollup.measure_expr);
+            # otherwise aggregate the raw column.
+            rung_expr = rollup_value_expr or extent_value_expr(
+                rung_list, measure_col)
+        else:
+            if rollup_table or rollup_value_expr:
+                # Not reachable through `pick_rollup`, which refuses a
+                # percentile ladder outright — this catches a future caller
+                # that resolves the rollup before it knows the ladder kind.
+                # Percentiles of pre-aggregated buckets are not the
+                # percentiles of the rows, and there is no correction for it.
+                raise ValueError(
+                    "a percentile ladder can never read a rollup — "
+                    "percentiles do not fold; only extent(col) ladders may")
+            fractions = ",".join(f"{p / 100.0:g}" for p in rung_list)
+            rung_expr = (f"percentile_cont(ARRAY[{fractions}]) "
+                         f"WITHIN GROUP (ORDER BY f.{measure_col})")
         sql = (
             f"SELECT "
             f"  floor((extract(epoch from f.{pc}) - :interval_start) "
             f"        / :interval)::bigint AS slot, "
             f"  {series_expr} AS series, "
-            f"  percentile_cont(ARRAY[{fractions}]) "
-            f"    WITHIN GROUP (ORDER BY f.{measure_col}) AS qs "
-            f"FROM {schema}.fact f "
+            f"  {rung_expr} AS qs "
+            f"FROM {schema}.{rollup_table or 'fact'} f "
             f"{joins}"
             f"WHERE {' AND '.join(where_parts)} "
             f"GROUP BY 1, 2 "
@@ -781,7 +906,8 @@ def build_chart_legend_sql(
     t_to: datetime,
     filter_tree: Optional[list[dict]],
     filter_groups: Optional[list[list[dict]]] = None,
-    percentiles: Optional[list[int]] = None,
+    rungs: Optional[list] = None,
+    ladder_kind: Optional[str] = None,
     measure_col: Optional[str] = None,
     series_label: str = "source_id",
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
@@ -793,9 +919,12 @@ def build_chart_legend_sql(
     Returns ``(sql, params, index_to_group, group_colors)`` mirroring
     `build_chart_sql`. The result is one row per series — `count(*)`,
     `sum(col)`, `avg(col)` etc. summed or averaged over the entire half-open
-    time window `[t_from, t_to)`. For quantile-bands it is `percentile_cont`
-    over each series' full distribution (semantically the same median /
-    p25–p75 the legend shows after averaging per-slot percentiles).
+    time window `[t_from, t_to)`. For a percentile ladder it is
+    `percentile_cont` over each series' full distribution (semantically the
+    same median / p25–p75 the legend shows after averaging per-slot
+    percentiles — close, but an approximation of it). For an extent ladder it
+    is the min/avg/max over the window, which is not an approximation of
+    anything: those are the very numbers the per-slot arrays average to.
 
     `group_by_groups` and the `:grouped` dispatch select the same rows as
     `build_chart_sql`, but the series column carries the label the legend
@@ -812,9 +941,10 @@ def build_chart_legend_sql(
     `core.rollup`. Folding a per-slot rollup into a whole-window aggregate
     per series is exact — `sum(n)` for a count, `sum(sum_col)` for a sum,
     `sum(sum_col)/sum(cnt_col)` for the row-weighted mean this helper
-    already computes on `fact`, extremes of extremes for min/max. Only the
-    ladder branch is exempt: percentiles do not fold, so it always reads
-    `fact` whatever the caller passed.
+    already computes on `fact`, extremes of extremes for min/max. An
+    `extent(col)` ladder is built from exactly those folds and is exact for
+    the same reason. Only a *percentile* ladder is exempt: percentiles do not
+    fold, so it always reads `fact` and refuses a rollup outright.
     """
     if t_from.tzinfo is None or t_to.tzinfo is None:
         raise ValueError("t_from and t_to must be timezone-aware")
@@ -907,20 +1037,36 @@ def build_chart_legend_sql(
     params: dict = {**flt_params}
 
     if graph_style in LADDER_STYLES:
-        pct = sorted({int(p) for p in (percentiles or [])})
-        if not pct or any(not (0 < p < 100) for p in pct):
-            raise ValueError(
-                f"percentiles must be integers in (0, 100), got {percentiles!r}")
-        fractions = ",".join(f"{p / 100.0:g}" for p in pct)
-        # Single percentile_cont over each series' full distribution —
-        # semantically the per-series median / p25 / p75 the legend shows
-        # after averaging per-slot percentiles.
+        kind = ladder_kind or "quantile"
+        rung_list = normalize_rungs(kind, rungs)
+        if kind == "extent":
+            if graph_style not in EXTENT_STYLES:
+                raise ValueError(
+                    f"graph_style={graph_style!r} cannot draw an extent "
+                    f"ladder; choose from {sorted(EXTENT_STYLES)}")
+            # Unlike the percentile branch below, this one is *exact* over the
+            # whole window whichever relation it reads: min of mins, max of
+            # maxes, and a count-weighted mean are the same numbers the
+            # per-slot arrays average to. That is the same property that lets
+            # it read a rollup at all.
+            rung_expr = rollup_value_expr or extent_value_expr(
+                rung_list, measure_col)
+        else:
+            if rollup_table or rollup_value_expr:
+                raise ValueError(
+                    "a percentile ladder can never read a rollup — "
+                    "percentiles do not fold; only extent(col) ladders may")
+            fractions = ",".join(f"{p / 100.0:g}" for p in rung_list)
+            # Single percentile_cont over each series' full distribution —
+            # semantically the per-series median / p25 / p75 the legend shows
+            # after averaging per-slot percentiles.
+            rung_expr = (f"percentile_cont(ARRAY[{fractions}]) "
+                         f"WITHIN GROUP (ORDER BY f.{measure_col})")
         sql = (
             f"SELECT "
             f"  {series_expr} AS series, "
-            f"  percentile_cont(ARRAY[{fractions}]) "
-            f"    WITHIN GROUP (ORDER BY f.{measure_col}) AS qs "
-            f"FROM {schema}.fact f "
+            f"  {rung_expr} AS qs "
+            f"FROM {schema}.{rollup_table or 'fact'} f "
             f"{joins}"
             f"WHERE {' AND '.join(where_parts)} "
             f"GROUP BY 1 "
@@ -1102,7 +1248,8 @@ def build_chart_sql_rendered(
     interval: int,
     filter_tree: Optional[list[dict]],
     filter_groups: Optional[list[list[dict]]] = None,
-    percentiles: Optional[list[int]] = None,
+    rungs: Optional[list] = None,
+    ladder_kind: Optional[str] = None,
     measure_col: Optional[str] = None,
     series_label: str = "source_id",
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
@@ -1120,7 +1267,8 @@ def build_chart_sql_rendered(
         t_from=t_from, t_to=t_to, interval=interval,
         filter_tree=filter_tree,
         filter_groups=filter_groups,
-        percentiles=percentiles,
+        rungs=rungs,
+        ladder_kind=ladder_kind,
         measure_col=measure_col,
         series_label=series_label,
         group_by_groups=group_by_groups,
@@ -1138,7 +1286,8 @@ def build_chart_legend_sql_rendered(
     t_to: datetime,
     filter_tree: Optional[list[dict]],
     filter_groups: Optional[list[list[dict]]] = None,
-    percentiles: Optional[list[int]] = None,
+    rungs: Optional[list] = None,
+    ladder_kind: Optional[str] = None,
     measure_col: Optional[str] = None,
     series_label: str = "source_id",
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
@@ -1160,7 +1309,8 @@ def build_chart_legend_sql_rendered(
         t_from=t_from, t_to=t_to,
         filter_tree=filter_tree,
         filter_groups=filter_groups,
-        percentiles=percentiles,
+        rungs=rungs,
+        ladder_kind=ladder_kind,
         measure_col=measure_col,
         series_label=series_label,
         group_by_groups=group_by_groups,
@@ -1376,11 +1526,12 @@ def timeseries_multibar(
     return plot
 
 
-def timeseries_quantiles(
+def timeseries_ladder(
     source: Source,
     *,
     measure_col: str,
-    percentiles: list[int],
+    rungs: list,
+    ladder_kind: str = "quantile",
     group_by: str,
     t_from: datetime,
     t_to: datetime,
@@ -1393,21 +1544,31 @@ def timeseries_quantiles(
     group_by_groups: Optional[dict[int, tuple[str, str]]] = None,
     group_counts: Optional[dict[str, int]] = None,
     graph_style: str = "quantile-bands",
+    rollup_table: Optional[str] = None,
+    rollup_value_expr: Optional[str] = None,
 ) -> dict:
     """Build a ladder plot dict for `timeseries.js`.
 
     Like `timeseries_multibar`, but instead of one aggregate per slot/series it
-    computes a percentile ladder of `measure_col` per slot/series via Postgres
-    `percentile_cont`. The plot's `data[slot][series]` is a list of floats
-    aligned to the (sorted, ascending) `percentiles` ladder; the renderer draws
-    one line per percentile (and shades the bands between them for
-    ``quantile-bands``).
+    computes a whole *rung array* of `measure_col` per slot/series. The plot's
+    `data[slot][series]` is a list aligned to the (ascending) `rungs` ladder;
+    the renderer draws one line per rung (and shades the bands between them
+    for ``quantile-bands``).
+
+    Two feeders produce that array, selected by ``ladder_kind``:
+
+    * ``'quantile'`` — Postgres `percentile_cont` over `fact`. Percentiles do
+      not fold, so this one can never read a rollup.
+    * ``'extent'`` — `min`/`avg`/`max`, each of which folds across buckets
+      exactly. This one *can* read a rollup, via `rollup_table` /
+      `rollup_value_expr` exactly as `timeseries_multibar` does.
 
     ``graph_style`` selects one of the ladder styles in `LADDER_STYLES`:
     ``quantile-bands``, ``quantile-steps`` (+ ``-open`` → no risers),
     ``error-bars`` and ``candlestick``. All of them read the same per-slot
-    percentile array — only ``plot["type"]`` (and sometimes ``plot["connect"]``)
-    differs. See `_ladder_plot_type`.
+    array — only ``plot["type"]`` (and sometimes ``plot["connect"]``)
+    differs. See `_ladder_plot_type`. An extent ladder is restricted to
+    `EXTENT_STYLES`, the three that do not read the rungs as nested pairs.
 
     Series come from `group_by` exactly as in multibar: empty → a single
     "(all)" series; a plain dimension → one series per dim value; a grouped
@@ -1417,7 +1578,8 @@ def timeseries_quantiles(
     percentiles cannot be merged in Python the way counts are.
 
     Args mirror `timeseries_multibar`; `measure_col` is the numeric fact column
-    the percentiles are taken over and `percentiles` is the integer ladder.
+    the ladder is taken over and `rungs` is the ladder itself — integer
+    percentiles for ``'quantile'``, `EXTENT_RUNGS` tokens for ``'extent'``.
     """
     if t_from.tzinfo is None or t_to.tzinfo is None:
         raise ValueError("t_from and t_to must be timezone-aware")
@@ -1434,10 +1596,7 @@ def timeseries_quantiles(
             f"graph_style={graph_style!r} is not a ladder style; "
             f"choose from {sorted(LADDER_STYLES)}")
 
-    pct = sorted({int(p) for p in percentiles})
-    if not pct or any(not (0 < p < 100) for p in pct):
-        raise ValueError(
-            f"percentiles must be integers in (0, 100), got {percentiles!r}")
+    rung_list = normalize_rungs(ladder_kind, rungs)
 
     sql, params, _index_to_group, group_colors = build_chart_sql(
         source,
@@ -1447,10 +1606,13 @@ def timeseries_quantiles(
         t_from=t_from, t_to=t_to, interval=interval,
         filter_tree=filter_tree,
         filter_groups=filter_groups,
-        percentiles=pct,
+        rungs=rung_list,
+        ladder_kind=ladder_kind,
         measure_col=measure_col,
         series_label=series_label,
         group_by_groups=group_by_groups,
+        rollup_table=rollup_table,
+        rollup_value_expr=rollup_value_expr,
     )
     interval_start = int(params["interval_start"])
     epoch_to = int(t_to.timestamp())
@@ -1466,9 +1628,20 @@ def timeseries_quantiles(
     v_max = None
     for slot, series, qs in rows:
         slot = int(slot)
-        vals = [float(x) for x in qs]
+        # A rung can be NULL where `percentile_cont` never was: an extent
+        # ladder's avg rung is NULL for a bin whose column held only NULLs —
+        # `count(col) = 0` → `NULLIF(…, 0)` → NULL on the rollup, and `avg()`
+        # over no non-NULL row → NULL on `fact`. Carried through as None
+        # rather than coerced to 0.0, which would draw a band reaching down
+        # to zero for a bin that measured nothing at all.
+        vals = [None if x is None else float(x) for x in qs]
         data.setdefault(slot, {})[_safe_key(str(series))] = vals
-        lo, hi = vals[0], vals[-1]
+        present = [x for x in vals if x is not None]
+        if not present:
+            continue
+        # Still first-and-last: dropping NULLs out of an ascending ladder
+        # leaves it ascending.
+        lo, hi = present[0], present[-1]
         v_min = lo if v_min is None else min(v_min, lo)
         v_max = hi if v_max is None else max(v_max, hi)
 
@@ -1481,7 +1654,13 @@ def timeseries_quantiles(
         "count":          len(data),
         "min":            v_min if v_min is not None else 0,
         "max":            v_max if v_max is not None else 0,
-        "percentiles":    pct,
+        # The library's field is `percentiles` for *both* ladder kinds, and it
+        # accepts a string array — `renderers.js:ladderPairs` documents
+        # `[min, avg, max]` as its first example and `tooltip.js:rungLabel`
+        # prints a token rung verbatim where it prints a numeric one as `p50`.
+        # Do not rename this key to match the Python parameter: it is the
+        # library contract, and nothing server-side would catch the break.
+        "percentiles":    rung_list,
         "data":           data,
     }
     if not connect:

@@ -556,7 +556,7 @@ viewport that is not yet plotted. The server returns the SQL built by
 `core.query.build_chart_legend_sql_rendered` — a wrapper around
 `build_chart_legend_sql` (the legend-aligned counterpart of
 `build_chart_sql`, the helper that backs `timeseries_multibar` and
-`timeseries_quantiles`) that inlines every bind parameter as a literal
+`timeseries_ladder`) that inlines every bind parameter as a literal
 before returning: timestamps as `'YYYY-MM-DD HH:MM:SS+00'::timestamptz`,
 filter values as typed array literals (`ARRAY[…]::smallint[]` for
 pass-through / grouped columns, `ARRAY[…]::text[]` for dim-mapped
@@ -566,7 +566,7 @@ substitution (its own comment at `core/adhoc.py:277-280` spells out why),
 so without the inlining the Run button would fail with "A value is
 required for bind parameter …". The result is a self-contained SELECT that
 returns one row per series — `sum(col)`, `count(*)`, `avg(col)`,
-`min`/`max` (or `percentile_cont` for quantile-bands) over the entire
+`min`/`max` (or the rung array for a ladder measure) over the entire
 `[t_from, t_to)` window, matching what `updateLegend()` shows in the
 right-hand legend of the chart.
 
@@ -585,8 +585,9 @@ data path agree on the rollup decision.
 consults `pick_rollup` with the legend's own parameters and passes the
 result through, same conditions as the chart's data path: both window
 edges on a rollup bucket boundary, the measure derivable from stored
-aggregates (`count(*)`/`sum`/`avg`/`min`/`max` — quantiles can never be,
-so quantile graphs always read `fact`), group_by and every filtered
+aggregates (`count(*)`/`sum`/`avg`/`min`/`max`/`extent` — percentiles can
+never be, so a `quantile(col)` graph always reads `fact`; an `extent(col)`
+band folds exactly and is served like any scalar), group_by and every filtered
 column covered by the table's column set, and the window inside
 `[built_from, built_through)`. The status line names what the copied SQL
 reads — `copied chart SQL (rollup_1h_y2026m04)` or `copied chart SQL
@@ -839,7 +840,7 @@ numbers printed on the axis, over a 300 ms dissolve of the tick set.
   makes their bars the same height through the dissolve.
 - **Only additive measures are scaled.** `isExtensiveMeasure()` accepts
   `count(*)`, `sum(…)` and the bare-column form (`core/query._parse_measure`
-  reads that as `sum`); `avg`/`min`/`max`/`quantile` are already per-unit and
+  reads that as `sum`); `avg`/`min`/`max`/`quantile`/`extent` are already per-unit and
   are marked `plot.extensive = false` at push time, so the library leaves them
   at scale 1. Their axis label also drops the `/unit` suffix — "avg(stay)/h"
   would be a lie.

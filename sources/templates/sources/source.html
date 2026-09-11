@@ -1609,7 +1609,7 @@ function buildMeasureRow(pk, r) {
     rowCell(S[2], r, '<select class="row-edit cell-input" name="agg">' + aggOpts(r.agg) + '</select>') +
     rowCell(S[3], r, '<select class="row-edit cell-input" name="graph_style">' + graphStyleOpts(r.graph_style) + '</select>') +
     rowCell(S[4], r, '<input class="row-edit" type="checkbox" name="is_default" ' + (r.is_default ? 'checked' : '') + ' style="margin:4px">', ' style="text-align:center"') +
-    rowCell(S[5], r, '<input class="row-edit cell-input" name="percentiles" value="' + esc(r.percentiles || '') + '" placeholder="5,25,50,75,95" title="Used by all quantile/ladder styles">') +
+    rowCell(S[5], r, '<input class="row-edit cell-input" name="percentiles" value="' + esc(r.percentiles || '') + '" placeholder="5,25,50,75,95" title="Percentiles for a quantile(col) agg, min,avg,max for an extent(col) one">') +
     rowActions('measure', u.edit, u.del) + '</tr>';
 }
 

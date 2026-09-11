@@ -49,7 +49,8 @@ from core.profile import (ProfileError, delete_profile, dump_profile,
                           profile_path, save_profile, validate_profile_name,
                           MAX_PROFILE_BYTES)
 from core.alarm import normalize_context_rows
-from core.query import (grouped_label, grouped_token, slugify_group_set)
+from core.query import (EXTENT_STYLES, LADDER_STYLES, grouped_label,
+                        grouped_token, slugify_group_set)
 from core.rollup import (ROLLUP_FUNCS, drop_rollup_tables,
                          ensure_rollup_tables,
                          last_ok_hwm, read_rollup_states, rollup_extent,
@@ -429,9 +430,17 @@ def _build_source_context(pk: int) -> dict:
     # Valid agg expressions for the measure dropdown: count(*) plus
     # func(col) for every measure-role fact column.
     measure_cols = [c["name"] for c in fact_cols if c["role"] == "measure"]
-    measure_aggs = ["count(*)"] + [f"{fn}({c})"
-                                   for c in measure_cols
-                                   for fn in ("sum", "avg", "min", "max", "quantile")]
+    measure_aggs = ["count(*)"] + [
+        f"{fn}({c})"
+        for c in measure_cols
+        for fn in ("sum", "avg", "min", "max", "quantile", "extent")]
+    # The alarm forms offer a subset: a threshold compares against a scalar,
+    # and both ladder forms hand back an array. Filtered here rather than with
+    # a `{% if "quantile" not in a %}` in each of the two alarm templates —
+    # one rule, one place, and adding a third ladder form does not mean
+    # hunting for substring filters in the markup.
+    alarm_measure_aggs = [a for a in measure_aggs
+                          if not a.startswith(("quantile(", "extent("))]
 
     # Group dimensions, for the cache-clear dropdown: the chart sends exactly
     # these tokens as its group_by param.
@@ -459,6 +468,7 @@ def _build_source_context(pk: int) -> dict:
         "index_methods":    INDEX_METHODS,
         "graph_styles":     GRAPH_STYLES,
         "measure_aggs":     measure_aggs,
+        "alarm_measure_aggs": alarm_measure_aggs,
         "pipeline_conditions": [{"code": c, "title": t}
                                 for c, t in sorted(PIPELINE_CONDITIONS.items())],
         "pg_types_json":    _json.dumps(PG_TYPES),
@@ -1908,10 +1918,11 @@ def _validate_agg(agg: str, measure_cols: set[str]) -> str:
     """Validate/normalise a measure agg expression.
 
     Accepts the literal ``count(*)`` or ``func(col)`` where func is one of
-    sum/avg/min/max/quantile and col is a fact column with role='measure'.
-    ``quantile(col)`` is only meaningful with one of the ladder graph styles
-    (quantile-bands, quantile-steps, quantile-steps-open, error-bars,
-    candlestick); the pairing is enforced in `_resolve_measure_fields`.
+    sum/avg/min/max/quantile/extent and col is a fact column with
+    role='measure'. The two *ladder* forms — ``quantile(col)`` and
+    ``extent(col)`` — are only meaningful with a ladder graph style, and
+    ``extent(col)`` only with the subset that does not read its rungs as
+    nested pairs; both pairings are enforced in `_resolve_measure_fields`.
     """
     agg = (agg or "").strip()
     if agg == "count(*)":
@@ -1920,26 +1931,49 @@ def _validate_agg(agg: str, measure_cols: set[str]) -> str:
     if not m:
         raise ValueError(f"agg must be 'count(*)' or func(col), got {agg!r}")
     fn, col = m.group(1), m.group(2)
-    if fn not in ("sum", "avg", "min", "max", "quantile"):
+    if fn not in ("sum", "avg", "min", "max", "quantile", "extent"):
         raise ValueError(
-            f"unknown function {fn!r}; choose sum/avg/min/max/quantile")
+            f"unknown function {fn!r}; "
+            f"choose sum/avg/min/max/quantile/extent")
     if col not in measure_cols:
         raise ValueError(
             f"{col!r} is not a measure column; have {sorted(measure_cols)}")
     return agg
 
 
-def _validate_percentiles(s: str) -> str | None:
-    """Validate/normalise a percentile ladder string.
+def _validate_percentiles(s: str, *, kind: str = "quantile") -> str | None:
+    """Validate/normalise a rung ladder string, in either of its two forms.
 
-    Accepts a comma-separated list of integers in (0, 100); returns them
-    sorted ascending and de-duplicated as a comma string, or None when empty.
+    ``kind='quantile'`` accepts a comma-separated list of integers in
+    (0, 100), returned sorted ascending and de-duplicated.
+
+    ``kind='extent'`` accepts a subset of min/avg/max, returned in that
+    canonical order — not sorted, because 'avg' does not compare to 'min' as
+    a string and the order is what the renderer draws. At least two distinct
+    rungs: a one-rung ladder is a scalar wearing an array, and the renderer
+    draws nothing below two.
+
+    Returns None when empty, letting the caller apply its own default.
     """
     s = (s or "").strip()
     if not s:
         return None
+    toks = [t.strip() for t in s.split(",") if t.strip()]
+    if kind == "extent":
+        canonical = ("min", "avg", "max")
+        lowered = {t.lower() for t in toks}
+        bad = sorted(lowered - set(canonical))
+        if bad:
+            raise ValueError(
+                f"extent rungs must be from {list(canonical)}, got {bad}")
+        picked = [r for r in canonical if r in lowered]
+        if len(picked) < 2:
+            raise ValueError(
+                f"an extent ladder needs at least two distinct rungs, "
+                f"got {s!r}")
+        return ",".join(picked)
     try:
-        vals = sorted({int(tok) for tok in s.split(",") if tok.strip()})
+        vals = sorted({int(tok) for tok in toks})
     except ValueError:
         raise ValueError(f"percentiles must be comma-separated integers, got {s!r}")
     if not vals or any(not (0 < v < 100) for v in vals):
@@ -1950,30 +1984,44 @@ def _validate_percentiles(s: str) -> str | None:
 def _resolve_measure_fields(p, conn, pk: int) -> tuple[str, str, str | None]:
     """Validate (graph_style, agg, percentiles) for a measure create/edit.
 
-    Ladder styles (quantile-bands, quantile-steps, quantile-steps-open,
-    error-bars, candlestick) require a ``quantile(col)`` agg and carry a
-    percentile ladder (defaulting to 5,25,50,75,95); other styles store NULL
-    percentiles.
+    A ladder style needs a ladder agg and vice versa, but there are now two
+    ladder aggs feeding one set of shapes, so the rule is three-way:
+
+    * ``quantile(col)`` — any of the five ladder styles; rungs are integer
+      percentiles, default ``5,25,50,75,95``.
+    * ``extent(col)`` — only `EXTENT_STYLES`; rungs are min/avg/max,
+      default all three. `error-bars` and `candlestick` are excluded because
+      both read the ladder as nested pairs around a centre — a claim about a
+      distribution that a min/avg/max band does not make.
+    * anything else — a non-ladder style, and `percentiles` is stored NULL.
     """
     graph_style = p.get("graph_style", "multibar")
     if graph_style not in GRAPH_STYLES:
         raise ValueError(f"graph_style must be one of {GRAPH_STYLES}")
     agg = _validate_agg(p.get("agg", ""), _measure_columns(conn, pk))
     is_quantile = agg.startswith("quantile(")
-    is_ladder = graph_style in (
-        "quantile-bands", "quantile-steps", "quantile-steps-open",
-        "error-bars", "candlestick")
+    is_extent = agg.startswith("extent(")
+    is_ladder = graph_style in LADDER_STYLES
     if is_ladder:
-        if not is_quantile:
+        if not (is_quantile or is_extent):
             raise ValueError(
-                f"{graph_style} measures need a quantile(col) agg")
-        percentiles = _validate_percentiles(p.get("percentiles", "")) or "5,25,50,75,95"
+                f"{graph_style} measures need a quantile(col) or "
+                f"extent(col) agg")
+        if is_extent and graph_style not in EXTENT_STYLES:
+            raise ValueError(
+                f"extent(col) cannot be drawn as {graph_style!r}; choose one "
+                f"of {sorted(EXTENT_STYLES)} (error-bars and candlestick "
+                f"read the ladder as nested pairs, which min/avg/max is not)")
+        kind = "extent" if is_extent else "quantile"
+        default = "min,avg,max" if is_extent else "5,25,50,75,95"
+        percentiles = _validate_percentiles(
+            p.get("percentiles", ""), kind=kind) or default
     else:
-        if is_quantile:
+        if is_quantile or is_extent:
             raise ValueError(
-                f"quantile(col) agg requires a ladder graph_style "
-                f"(quantile-bands/quantile-steps/quantile-steps-open/"
-                f"error-bars/candlestick), got {graph_style!r}")
+                f"a {agg.split('(')[0]}(col) agg requires a ladder "
+                f"graph_style ({'/'.join(sorted(LADDER_STYLES))}), "
+                f"got {graph_style!r}")
         percentiles = None
     return graph_style, agg, percentiles
 

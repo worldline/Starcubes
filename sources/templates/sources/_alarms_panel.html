@@ -47,8 +47,8 @@
         <div><label class="form-label">Comment</label><input class="form-control" name="comment" placeholder="(optional)"></div>
         <div><label class="form-label">Measure</label>
           <select class="form-control" name="measure">
-            {# quantile(col) is not a scalar an alarm threshold can compare against #}
-            {% for a in measure_aggs %}{% if "quantile" not in a %}<option{% if a == 'count(*)' %} selected{% endif %}>{{ a }}</option>{% endif %}{% endfor %}
+            {# Ladder aggs are arrays, not scalars a threshold can compare against — filtered server-side #}
+            {% for a in alarm_measure_aggs %}<option{% if a == 'count(*)' %} selected{% endif %}>{{ a }}</option>{% endfor %}
           </select>
         </div>
         <div><label class="form-label">Cond</label>

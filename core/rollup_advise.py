@@ -268,6 +268,14 @@ def _measure_stats(source: Source) -> list[MeasureStat]:
             width = _TYPE_BYTES.get(_SUM_TYPE.get(fc.pg_type, "numeric"), 8)
             if func == "avg":
                 width += 8                # the separate count(col)
+        elif func == "extent":
+            # All four stored columns, always — see `measure_columns`, where
+            # the rung list is deliberately not allowed to decide what is
+            # materialised. So the widest measure form there is, and the one
+            # worth naming in the report rather than lumping in with min/max.
+            width = (_TYPE_BYTES.get(_SUM_TYPE.get(fc.pg_type, "numeric"), 8)
+                     + 8                                    # count(col)
+                     + 2 * _TYPE_BYTES.get(fc.pg_type, 8))  # min + max
         else:
             width = _TYPE_BYTES.get(fc.pg_type, 8)
         out.append(MeasureStat(m.name, agg, True,

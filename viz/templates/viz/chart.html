@@ -3222,18 +3222,28 @@ legendCopy.addEventListener('click', async () => {
 // Below `rollup_only_below` the fact table was retired on purpose and only
 // the rollups answer. The numbers there are correct — they were computed
 // while the raw rows existed — but the questions that still work are fewer:
-// counts and breakdowns over the rollup's columns, not percentiles, not
-// drill-down, not filters on columns the rollup does not carry. Saying so is
-// what keeps a legitimately empty ladder plot from reading as data loss.
+// aggregates over the rollup's columns, not drill-down and not filters on
+// columns the rollup does not carry. Saying so is what keeps a legitimately
+// empty plot from reading as data loss.
+//
+// What varies by measure is only whether the *value* is still computable, and
+// there is exactly one form for which it is not: a percentile ladder, which
+// does not fold and so has nothing to read down there. An extent(col) band
+// does fold and stays fully drawable, which is why this note asks the measure
+// rather than assuming "counts only" — that wording was already imprecise for
+// the sum/avg measures a rollup has always served.
 function updateRollupNotice(bounds) {
   const el = document.getElementById('rollup-notice');
   if (!el) return;
   const below = currentMeta && currentMeta.rollup_only_below;
   if (!below || !bounds || bounds.tmin == null) { el.textContent = ''; return; }
   const from = Math.floor(bounds.tmin / 1000);   // tmin/tmax are epoch ms
-  el.textContent = from < below
-    ? `pre-aggregated before ${fmtEpoch(below)} — counts only, no drill-down`
-    : '';
+  if (from >= below) { el.textContent = ''; return; }
+  // starcubesParams.measure *is* the agg form, so no /source-meta round trip.
+  const isPct = /^quantile\s*\(/i.test(starcubesParams.measure || '');
+  el.textContent = isPct
+    ? `pre-aggregated before ${fmtEpoch(below)} — percentiles unavailable here, no drill-down`
+    : `pre-aggregated before ${fmtEpoch(below)} — no drill-down`;
 }
 
 function updateLegend() {
@@ -3284,12 +3294,28 @@ function updateLegend() {
     let bandIdx = null;
     if (isLadder) {
       const ps = plot.percentiles || [];
-      const nearest = (target) => {
-        let bi = 0, bd = Infinity;
-        ps.forEach((v, i) => { const d = Math.abs(v - target); if (d < bd) { bd = d; bi = i; } });
-        return bi;
-      };
-      if (ps.length) bandIdx = { p50: nearest(50), p25: nearest(25), p75: nearest(75) };
+      // A ladder's rungs come in two forms: integer percentiles (fed by a
+      // quantile(col) measure) or the tokens min/avg/max (fed by extent(col)).
+      // They need different lookups — `Math.abs('min' - 50)` is NaN, and since
+      // `NaN < bd` is always false every rung would resolve to index 0, so the
+      // legend would quietly read "min (min–min)" rather than fail. The typeof
+      // test is the same discriminator the library's tooltip.js:rungLabel uses,
+      // so the two cannot drift apart.
+      if (ps.length && typeof ps[0] === 'number') {
+        const nearest = (target) => {
+          let bi = 0, bd = Infinity;
+          ps.forEach((v, i) => { const d = Math.abs(v - target); if (d < bd) { bd = d; bi = i; } });
+          return bi;
+        };
+        bandIdx = { mid: nearest(50), lo: nearest(25), hi: nearest(75) };
+      } else if (ps.length) {
+        // Server-side canonical order is min < avg < max, so the outermost
+        // pair is simply first and last — the same reading ladderPairs() hands
+        // the renderer. A two-rung 'min,max' ladder has no centre, and gets
+        // none invented: mid stays null.
+        const mid = ps.indexOf('avg');
+        bandIdx = { mid: mid >= 0 ? mid : null, lo: 0, hi: ps.length - 1 };
+      }
     }
     for (const [slotIdx, bars] of Object.entries(plot.data)) {
       const slotTime = start + Number(slotIdx) * step;
@@ -3301,12 +3327,25 @@ function updateLegend() {
       for (const [key, val] of Object.entries(bars)) {
         const entry = seriesMap.get(key) || { name: key, total: 0 };
         if (isLadder && bandIdx && Array.isArray(val)) {
-          // Sum the median and quartiles to average across visible slots.
-          const b = entry.band || (entry.band = { p50: 0, p25: 0, p75: 0, n: 0 });
-          b.p50 += val[bandIdx.p50];
-          b.p25 += val[bandIdx.p25];
-          b.p75 += val[bandIdx.p75];
-          b.n += 1;
+          // Sum the centre and the outer pair to average across visible slots.
+          // A rung can be null where percentile_cont never was: an extent
+          // ladder's avg is NULL for a bin whose column held only NULLs. `+=
+          // null` would add zero and drag the mean down, so a slot missing a
+          // rung it needs contributes nothing rather than contributing a lie.
+          const num = (i) => {
+            const x = val[i];
+            return (typeof x === 'number' && isFinite(x)) ? x : null;
+          };
+          const lo = num(bandIdx.lo), hi = num(bandIdx.hi);
+          const mid = bandIdx.mid == null ? null : num(bandIdx.mid);
+          if (lo !== null && hi !== null && (bandIdx.mid == null || mid !== null)) {
+            const b = entry.band || (entry.band = {
+              mid: 0, lo: 0, hi: 0, n: 0, hasMid: bandIdx.mid != null });
+            if (b.hasMid) b.mid += mid;
+            b.lo += lo;
+            b.hi += hi;
+            b.n += 1;
+          }
         } else if (isAvgMeasure) {
           // Accumulate sum + slot count; finalized to a mean below.
           entry.total += val;
@@ -3318,15 +3357,23 @@ function updateLegend() {
       }
     }
   }
-  // Finalize ladder-style legend values: "median (p25–p75)" from the mean of
-  // each percentile over the visible window; sort key is the typical median.
+  // Finalize ladder-style legend values from the mean of each rung over the
+  // visible window: "median (p25–p75)" for a percentile ladder, "avg
+  // (min–max)" for an extent one. The template is the same either way — the
+  // numbers carry the meaning and the rung names were never printed here.
+  // Sort key is the centre rung, or the band midpoint when there is none:
+  // with a two-rung min,max ladder that is the only ordering that is a
+  // function of what the row actually shows.
   const fmtNum = (x) => (x % 1 === 0 ? x.toLocaleString() : x.toFixed(1));
   for (const entry of seriesMap.values()) {
     if (entry.band && entry.band.n) {
       const b = entry.band;
-      const med = b.p50 / b.n, lo = b.p25 / b.n, hi = b.p75 / b.n;
-      entry.total = med;
-      entry.display = `${fmtNum(med)} (${fmtNum(lo)}–${fmtNum(hi)})`;
+      const lo = b.lo / b.n, hi = b.hi / b.n;
+      const mid = b.hasMid ? b.mid / b.n : (lo + hi) / 2;
+      entry.total = mid;
+      entry.display = b.hasMid
+        ? `${fmtNum(mid)} (${fmtNum(lo)}–${fmtNum(hi)})`
+        : `${fmtNum(lo)}–${fmtNum(hi)}`;
     } else if (isAvgMeasure && entry.avgN) {
       // Mean of per-slot averages over the visible window.
       entry.total = entry.total / entry.avgN;

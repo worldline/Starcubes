@@ -23,9 +23,9 @@ from core.cache import (get_cached_plot, is_cacheable, make_cache_key,
 from core.query import (build_chart_legend_sql_rendered,
                         build_filter_tree, build_group_by_indices, drill_down,
                         grouped_label, grouped_token, LADDER_STYLES,
-                        list_transactions, resolve_group_set,
-                        split_grouped_col, timeseries_multibar,
-                        timeseries_quantiles)
+                        list_transactions, parse_ladder_agg,
+                        resolve_group_set, split_grouped_col,
+                        timeseries_ladder, timeseries_multibar)
 from core.rollup import (measure_expr, pick_rollup, read_rollup_states,
                          rollup_extent)
 from core.schema import UNKNOWN_SOURCE_ID
@@ -283,18 +283,51 @@ def plot_json(request):
         agg_form = measure if measure else "count(*)"
         graph_style = source.graph_style_for(agg_form)
 
-        if graph_style in LADDER_STYLES:
-            # A ladder-style measure's agg is quantile(<col>); the percentile
-            # ladder comes from the measure catalog. percentile_cont isn't
-            # cacheable (is_cacheable already rejects non-count measures).
-            mq = re.match(r"quantile\((\w+)\)$", agg_form or "")
-            if not mq:
-                return HttpResponseBadRequest(
-                    f"{graph_style} measure needs a quantile(col) agg")
-            plot = timeseries_quantiles(
+        # A ladder-style measure's agg is quantile(<col>) or extent(<col>);
+        # the rung ladder comes from the measure catalog either way. Neither
+        # is cacheable (is_cacheable rejects every non-count measure).
+        ladder = parse_ladder_agg(agg_form) if graph_style in LADDER_STYLES else None
+        if graph_style in LADDER_STYLES and ladder is None:
+            return HttpResponseBadRequest(
+                f"{graph_style} measure needs a quantile(col) or "
+                f"extent(col) agg, got {agg_form!r}")
+        rungs = source.rungs_for(agg_form) if ladder else None
+
+        # Pre-aggregation, after the cache miss and before the query is
+        # built: a rollup that covers this request answers it from far fewer
+        # rows. `pick_rollup` returning None is the normal case and not an
+        # error — the read path then reads `fact`, which is always correct.
+        # Skipped entirely when the datasource has no rollup configured, so
+        # the common installation pays no extra round trip.
+        #
+        # This block sits *above* the ladder branch rather than inside the
+        # scalar one, because an extent ladder is served from here too. Only a
+        # percentile ladder skips it, and `pick_rollup` refuses that case
+        # itself — asking it is how the two stay on one rule.
+        rollup_table = rollup_value_expr = None
+        if source.rollup_interval_s:
+            spec = pick_rollup(
+                source, read_rollup_states(meta, source.id),
+                group_by=group_by_raw, filter_tree=filter_tree,
+                measure=measure, graph_style=graph_style,
+                interval=interval, t_from=t_from, t_to=t_to,
+                ladder_styles=LADDER_STYLES)
+            if spec is not None:
+                rollup_table = spec.name
+                rollup_value_expr = measure_expr(measure, spec, rungs=rungs)
+                if rollup_value_expr is None:
+                    # Declined after the pick — fall back to `fact` whole
+                    # rather than pointing the FROM at a rollup with no
+                    # expression to read out of it.
+                    rollup_table = None
+
+        if ladder:
+            ladder_kind, ladder_col = ladder
+            plot = timeseries_ladder(
                 source,
-                measure_col=mq.group(1),
-                percentiles=source.quantiles_for(agg_form),
+                measure_col=ladder_col,
+                rungs=rungs,
+                ladder_kind=ladder_kind,
                 group_by=group_by,
                 t_from=t_from,
                 t_to=t_to,
@@ -306,26 +339,10 @@ def plot_json(request):
                 group_by_groups=group_by_groups,
                 group_counts=group_counts,
                 graph_style=graph_style,
+                rollup_table=rollup_table,
+                rollup_value_expr=rollup_value_expr,
             )
         else:
-            # Pre-aggregation, after the cache miss and before the query is
-            # built: a rollup that covers this request answers it from far
-            # fewer rows. `pick_rollup` returning None is the normal case and
-            # not an error — the read path then reads `fact`, which is always
-            # correct. Skipped entirely when the datasource has no rollup
-            # configured, so the common installation pays no extra round trip.
-            rollup_table = rollup_value_expr = None
-            if source.rollup_interval_s:
-                spec = pick_rollup(
-                    source, read_rollup_states(meta, source.id),
-                    group_by=group_by_raw, filter_tree=filter_tree,
-                    measure=measure, graph_style=graph_style,
-                    interval=interval, t_from=t_from, t_to=t_to,
-                    ladder_styles=LADDER_STYLES)
-                if spec is not None:
-                    rollup_table = spec.name
-                    rollup_value_expr = measure_expr(measure, spec)
-
             plot = timeseries_multibar(
                 source,
                 group_by=group_by,
@@ -884,22 +901,20 @@ def chart_sql(request):
 
         filter_tree = _parse_filter_tree(q)
 
-        # Graph style / quantile routing — mirrors plot_json's dispatch
+        # Graph style / ladder routing — mirrors plot_json's dispatch
         # (viz/views.py around the agg_form + graph_style switch). The
-        # helper expects `measure=None` and explicit `percentiles` /
-        # `measure_col` for ladder-style branches (quantile-bands /
-        # quantile-steps / quantile-steps-open / error-bars / candlestick).
+        # helper expects `measure=None` and explicit `rungs` / `ladder_kind` /
+        # `measure_col` for ladder-style branches. `measure` is cleared only
+        # *after* the rollup pick below, which still needs the agg form.
         agg_form = measure if measure else "count(*)"
         graph_style = source.graph_style_for(agg_form)
-        measure_col = percentiles = None
-        if graph_style in LADDER_STYLES:
-            mq = re.match(r"quantile\((\w+)\)$", agg_form)
-            if not mq:
-                return HttpResponseBadRequest(
-                    f"{graph_style} needs quantile(col), got {agg_form!r}")
-            measure_col = mq.group(1)
-            percentiles = source.quantiles_for(agg_form)
-            measure = None
+        ladder = parse_ladder_agg(agg_form) if graph_style in LADDER_STYLES else None
+        if graph_style in LADDER_STYLES and ladder is None:
+            return HttpResponseBadRequest(
+                f"{graph_style} needs quantile(col) or extent(col), "
+                f"got {agg_form!r}")
+        ladder_kind, measure_col = ladder if ladder else (None, None)
+        rungs = source.rungs_for(agg_form) if ladder else None
 
         # Multibar / quantile-bands :grouped — map dim index → group name.
         # Same shape plot_json builds (viz/views.py). The helper uses this
@@ -920,22 +935,31 @@ def chart_sql(request):
         # are identical either way). The legend query has no slot width of
         # its own, so interval gets the rollup's own width: condition 1
         # (`interval % iv == 0`) becomes vacuous, and the ones that actually
-        # decide — both window edges on a bucket boundary, no ladder style,
-        # spec_hash, [built_from, built_through) coverage, measure_expr,
-        # column coverage of group_by + the filter tree — stay fully
-        # effective. A misaligned edge → None → fact: the correct fallback,
-        # not a bug to work around.
+        # decide — both window edges on a bucket boundary, no *percentile*
+        # ladder, spec_hash, [built_from, built_through) coverage,
+        # measure_expr, column coverage of group_by + the filter tree — stay
+        # fully effective. A misaligned edge → None → fact: the correct
+        # fallback, not a bug to work around.
         rollup_table = rollup_value_expr = None
-        if graph_style not in LADDER_STYLES and source.rollup_interval_s:
+        if source.rollup_interval_s:
             spec = pick_rollup(
                 source, read_rollup_states(_meta_engine(), source.id),
                 group_by=group_by_raw, filter_tree=filter_tree,
                 measure=measure, graph_style=graph_style,
                 interval=source.rollup_interval_s,
-                t_from=t_from, t_to=t_to)
+                t_from=t_from, t_to=t_to,
+                ladder_styles=LADDER_STYLES)
             if spec is not None:
                 rollup_table = spec.name
-                rollup_value_expr = measure_expr(measure, spec)
+                rollup_value_expr = measure_expr(measure, spec, rungs=rungs)
+                if rollup_value_expr is None:
+                    rollup_table = None
+
+        # Only now: the legend builder reads `measure_col` + `rungs` for a
+        # ladder and must not also see an agg form. Cleared after the pick,
+        # which needed it.
+        if ladder:
+            measure = None
 
         # Inline every bind param as a literal so the statement is
         # self-contained — `exec_driver_sql(sql)` in the console path
@@ -949,7 +973,7 @@ def chart_sql(request):
             measure=measure,
             t_from=t_from, t_to=t_to,
             filter_tree=filter_tree,
-            percentiles=percentiles, measure_col=measure_col,
+            rungs=rungs, ladder_kind=ladder_kind, measure_col=measure_col,
             series_label=series_label,
             group_by_groups=group_by_groups,
             rollup_table=rollup_table,

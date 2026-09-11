@@ -38,7 +38,7 @@
     breakdown there rather than sending a token the chart would drop.
   {% endcomment %}
   var GROUPABLE_COLS = [{% for d in dimensions %}"{{ d.fact_column|escapejs }}"{% if not forloop.last %}, {% endif %}{% endfor %}];
-  var MEASURE_AGGS = [{% for a in measure_aggs %}{% if "quantile" not in a %}"{{ a|escapejs }}"{% if not forloop.last %}, {% endif %}{% endif %}{% endfor %}];
+  var MEASURE_AGGS = [{% for a in alarm_measure_aggs %}"{{ a|escapejs }}"{% if not forloop.last %}, {% endif %}{% endfor %}];
   var COND_OPS = ['>', '<', '=', '>=', '<='];
 
   // 60 -> 1m, 300 -> 5m, 3600 -> 1h, 86400 -> 1d; anything else stays seconds.
