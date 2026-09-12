@@ -7,6 +7,8 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+## [2.0.0-alpha.8] — 2026-09-12
+
 ### Added
 
 - **Viewport history — Back/Forward buttons and keys `b`/`B`.** timeseries.js
