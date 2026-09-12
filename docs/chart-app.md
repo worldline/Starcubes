@@ -968,7 +968,7 @@ and `chart.html` never registered one. `initTs()` now calls
 `ts.setLegend({ toggle: toggleLegendPanel })`, so the key opens starcubes's own
 legend panel.
 
-The `c` key (and the Clamp button beside Follow) toggles outlier clamping,
+The `c` key (and the Clamp button in the right-hand button cluster) toggles outlier clamping,
 new in timeseries.js 0.10.6. The library exposes no callback for a clamp
 change, so the button keeps itself honest by reading `ts.getClampOutliers()`
 inside the `onViewportChange` tracker — `setClampOutliers()` redraws through

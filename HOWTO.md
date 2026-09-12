@@ -1123,10 +1123,11 @@ and on keyboard focus.
 | Measure | Aggregation: `count(*)` (default) or `sum`/`avg`/`min`/`max` of a measure column. |
 | From / To | Datetime fields defining the chart viewport. Type a value (`YYYY-MM-DD HH:MM`) and press Enter to commit and jump to the other field, or click the calendar icon in the field to pick one. |
 | Today / Yesterday / Week / Month | Quick ranges. Boundaries are local midnight, the end is exclusive, and the week starts on Monday. The chip stays highlighted only while the window matches it exactly — pan or zoom by any amount and it goes out. |
-| Legend | Opens the legend panel showing per-value totals. |
-| Follow | Toggles follow mode (seismograph-style auto-pan to "now"). The dot in the corner of the button pulses while it is on. |
+| Back / Forward | Step back / forward through the windows you have visited, browser-style — every pan, zoom or preset files the window it leaves. `b` / `B` from a focused chart do the same. |
+| Follow | Toggles follow mode (seismograph-style auto-pan to "now"; `f` from a focused chart). The dot in the corner of the button pulses while it is on. |
+| Legend | Opens the legend panel showing per-value totals (`l` from a focused chart). |
 | Clamp | Toggles outlier clamping (`c` does the same). One or a few extreme values can own the whole y-axis and squash the rest against zero; with clamping on the axis is rescaled from the bulk and the cut marks are topped with an arrowhead at the plot edge. Not remembered — off again on the next load. |
-| Query | Opens the ad-hoc SQL console over the chart (logged-in users only). See [Query console](#query-console). |
+| Query | Opens the ad-hoc SQL console over the chart (`q` does the same from anywhere on the page; logged-in users only). See [Query console](#query-console). |
 | Keys | Opens the keyboard-shortcut panel. `?` does the same from anywhere on the page. |
 | Config | Jumps to `/sources/<id>/` for the source whose tab is active (logged-in users only). |
 
@@ -1198,6 +1199,7 @@ bottom work anywhere except inside a text field.
 | `Shift`+`←` / `→` | One grid cell back / forward |
 | `↑` / `↓` | Zoom in / out, halving or doubling the window |
 | `Shift`+`↑` / `↓` | One cell narrower / wider |
+| `b` / `B` | Back / forward through the windows you have visited — the arrow keys and every calendar jump are recorded, so a stray `d` is undoable |
 
 **Calendar** (chart focused) — relative to the unit the *middle of the current
 window* falls in, not to the present
@@ -1232,6 +1234,7 @@ window* falls in, not to the present
 | Key | Action |
 |-----|--------|
 | `?` | Open / close the keyboard-shortcut panel |
+| `q` | Open / close the query console (logged-in users only) |
 | `Escape` | Close the front-most menu or panel |
 | `Enter` | In *from* / *to*: commit the value and jump to the other field |
 | `Ctrl`/`Cmd`+`Enter` | In the query console: run the statement |

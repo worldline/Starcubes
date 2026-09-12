@@ -9,11 +9,21 @@ Notable changes per release. Format follows
 
 ### Added
 
-- **Clamp outliers — new button right of Follow, new key `c`.** timeseries.js
+- **Viewport history — Back/Forward buttons and keys `b`/`B`.** timeseries.js
+  0.10.7 files every window a navigation leaves and lets you step back through
+  them, browser-style: the chart toolbar gains Back and Forward buttons in the
+  time row, right of the range chips (icon: corner arrow), the keyboard pair
+  `b`/`B` does the same from a focused chart. The keys panel lists them under
+  Navigation, and the Follow button moved out of the right-hand button cluster
+  into the time row beside them — Follow, too, is time navigation. All three
+  buttons name their shortcut in the tooltip (`Back (b)`, `Forward (B)`,
+  `Follow mode (f)`), as Clamp already did with `c`.
+
+- **Clamp outliers — new toolbar button, new key `c`.** timeseries.js
   0.10.6 adds outlier clamping (`clampOutliers`, `toggleClampOutliers()`): one
   or a few extreme values stop owning the whole y-axis, the axis is rescaled
   from the bulk and the cut marks get an arrowhead at the plot edge. The chart
-  toolbar gains a Clamp button beside Follow (icon: a vertical bar cut by two
+  toolbar gains a Clamp button (icon: a vertical bar cut by two
   oblique strokes), the keyboard key `c` does the same; the key that centred
   "now" moved from `c` to `n`, and the keys panel and the HOWTO keyboard tables
   say so. Clamping is session-only — off again on the next load.
@@ -48,6 +58,16 @@ Notable changes per release. Format follows
 
 ### Fixed
 
+- **The Clamp button now clamps the chart it advertises.** The timeseries.js
+  0.10.6 detection rule was narrower than its documentation: it looked for a
+  3× jump between neighbouring values *inside* the top 5 % of the visible
+  samples, so a dominant spike over a dense tail — every multi-series chart,
+  in practice — was never detected and the toggle visibly did nothing. The
+  fixed 0.10.7 rule measures the bulk below the top 5 % directly; on the
+  `payments` window the 1 h tier now clamps to the bulk (axis ~91 where it
+  read ~364 before), the minute tier stays untouched as it should. Bundled
+  with the next container build.
+
 - **Two measures over the same aggregation now draw in their own graph
   style.** The measure catalog's identity is `(datasource, name)`, so an
   operator may list `quantile(stay)` several times to offer the same
@@ -63,6 +83,15 @@ Notable changes per release. Format follows
   per-source state and the copy-chart-SQL button all carry the name.
 
 ### Changed
+
+- **Toolbar and shortcuts polish.** The range chips (Today, Week, Month) and
+  the Legend button name their keyboard shortcut in the tooltip (`t`, `w`,
+  `m`, `l`) — Yesterday has none and says so by having none; the query console
+  gains the shortcut `q` (page key like `?`, toggles the console from anywhere
+  outside a text field, logged-in users only; tooltip and the keys panel's
+  Page group say so). The from/to inputs lose the slack between the value and
+  the calendar icon — the input was sized for 16.5 characters where the
+  rendered 16-char value needs 15.6.
 
 - **The copy-chart-SQL button serves its statement from the rollup when the
   chart is.** The copied SQL used to read `fact` unconditionally, even when

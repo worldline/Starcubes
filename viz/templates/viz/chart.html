@@ -982,8 +982,11 @@
        what made the field two thirds wider than the value it holds. In ch,
        not em: the value is 16 chars of which 12 are digits, so em overshoots
        by several characters; ch tracks the digit width of whatever font
-       actually renders and hugs "YYYY-MM-DD HH:MM". */
-    width: 16.5ch; border: 0; background: none; outline: none; box-shadow: none;
+       actually renders. The 16-char value renders narrower than 16ch — the
+       uppercase Y/M/D are no wider than the digits in the UI font — so
+       15.6ch keeps a one-character gap to the calendar icon without ever
+       clipping "YYYY-MM-DD HH:MM". */
+    width: 14ch; border: 0; background: none; outline: none; box-shadow: none;
     padding: 0 2px 0 8px; font: inherit; color: inherit;
   }
   .dtp-open {
@@ -1139,21 +1142,37 @@
   {% comment %} Text, not icons: there is no symbol for "yesterday" that anyone reads
      without a tooltip, and four short words are quicker than four guesses. {% endcomment %}
   <div class="chip-group" id="range-presets" role="group" aria-label="Quick time ranges">
-    <button type="button" class="chip" data-range="today">Today</button>
-    <button type="button" class="chip" data-range="yesterday">Yesterday</button>
-    <button type="button" class="chip" data-range="week">Week</button>
-    <button type="button" class="chip" data-range="month">Month</button>
+    <button type="button" class="chip" data-range="today" data-tip="Today&#10;(t)">Today</button>
+    <button type="button" class="chip" data-range="yesterday" data-tip="Yesterday">Yesterday</button>
+    <button type="button" class="chip" data-range="week" data-tip="Week&#10;(w)">Week</button>
+    <button type="button" class="chip" data-range="month" data-tip="Month&#10;(m)">Month</button>
+  </div>
+  {% comment %}
+    Viewport history, new in timeseries.js 0.10.7: back()/forward() walk the
+    windows you have visited, browser-style — every navigation files the one it
+    leaves, stepping somewhere new discards the forward branch. b and B are the
+    keyboard twins, so the tooltips name them like the clamp button names c.
+  {% endcomment %}
+  <div class="ctrl-actions">
+    <button id="history-back" class="ibtn" type="button"
+            aria-label="Step back" data-tip="Back&#10;(b)" data-tip-align="end">
+      <svg class="ic" aria-hidden="true"><use href="#ic-back"></use></svg>
+    </button>
+    <button id="history-forward" class="ibtn" type="button"
+            aria-label="Step forward" data-tip="Forward&#10;(B)" data-tip-align="end">
+      <svg class="ic" aria-hidden="true"><use href="#ic-forward"></use></svg>
+    </button>
+    <button id="follow-toggle" class="ibtn" type="button"
+            aria-label="Follow mode" data-tip="Follow mode&#10;(f)" data-tip-align="end">
+      <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
+      <span id="follow-dot"></span>
+    </button>
   </div>
   <span class="ctrl-sep" aria-hidden="true"></span>
   <div class="ctrl-actions">
     <button id="legend-toggle" class="ibtn" type="button"
-            aria-label="Legend" data-tip="Legend" data-tip-align="end">
+            aria-label="Legend" data-tip="Legend&#10;(l)" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-list"></use></svg>
-    </button>
-    <button id="follow-toggle" class="ibtn" type="button"
-            aria-label="Follow mode" data-tip="Follow mode&#10;(seismograph)" data-tip-align="end">
-      <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
-      <span id="follow-dot"></span>
     </button>
     {% comment %}
       Outlier clamping, new in timeseries.js 0.10.6: one or a few extreme values
@@ -1166,8 +1185,14 @@
       <svg class="ic" aria-hidden="true"><use href="#ic-clamp"></use></svg>
     </button>
     {% if user.is_authenticated %}
+    {% comment %}
+      `q` opens and closes the console, as a page key like `?` — the canvas
+      keydown handler in timeseries.js binds no letters for panels and lets
+      `q` fall through to the document, so the wiring below can catch it.
+      Anonymous visitors get neither button nor key.
+    {% endcomment %}
     <button id="query-toggle" class="ibtn" type="button"
-            aria-label="Query console" data-tip="Query console" data-tip-align="end">
+            aria-label="Query console" data-tip="Query console&#10;(q)" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-terminal"></use></svg>
     </button>
     {% endif %}
@@ -1254,6 +1279,8 @@
         <dd>Zoom in / out, halving or doubling the window</dd>
         <dt><kbd>Shift</kbd><span class="keys-plus">+</span><kbd>&uarr;</kbd><kbd>&darr;</kbd></dt>
         <dd>One cell narrower / wider</dd>
+        <dt><kbd>b</kbd><kbd>B</kbd></dt>
+        <dd>Back / forward through the windows you have visited</dd>
       </dl>
     </div>
     <div class="keys-group">
@@ -1288,6 +1315,7 @@
       <div class="keys-group-title">Page</div>
       <dl class="keys-list">
         <dt><kbd>?</kbd></dt><dd>This panel</dd>
+        <dt><kbd>q</kbd></dt><dd>Open / close the query console</dd>
         <dt><kbd>Esc</kbd></dt><dd>Close the front-most menu or panel</dd>
         <dt><kbd>Enter</kbd></dt><dd>In <em>from</em> / <em>to</em>: commit and jump to the other field</dd>
         <dt><kbd>Ctrl</kbd><span class="keys-plus">/</span><kbd>&#8984;</kbd><span class="keys-plus">+</span><kbd>Enter</kbd></dt>
@@ -2972,6 +3000,20 @@ followToggle.addEventListener('click', () => {
     ts.stop();
   }
 });
+
+// ── Viewport history ─────────────────────────────────────────────────────
+// New in timeseries.js 0.10.7: back()/forward() walk the windows you have
+// visited, browser-style. Owned by timeseries.js like follow mode — the keys
+// b/B live in the canvas keydown handler, the buttons just call the same
+// methods. No grey-out: the library reports no history-changed callback, and
+// its own keys stay bound with an empty stack on purpose ("a chart with
+// nothing to step back to is not a misconfiguration"), so a no-op click is
+// the matching button behaviour. If the history is empty because the page
+// just loaded, that is the same no-op.
+const historyBack = document.getElementById('history-back');
+const historyForward = document.getElementById('history-forward');
+historyBack.addEventListener('click', () => { if (ts) ts.back(); });
+historyForward.addEventListener('click', () => { if (ts) ts.forward(); });
 
 // ── Outlier clamping toggle ──────────────────────────────────────────────
 // Owned by timeseries.js (0.10.6); the library's `c` key flips it too, and
@@ -5702,6 +5744,20 @@ function formatSql(sql) {
 
   // ── Wiring ────────────────────────────────────────────────────────────
   toggle.addEventListener('click', () => setOpen(!fpIsOpen(panel)));
+  // `q` toggles the console, a page key like `?`: the canvas keydown handler
+  // in timeseries.js binds no letter for panels and lets `q` fall through to
+  // the document, where this catches it. Same text-entry exclusion the `?`
+  // handler uses — a q typed into the SQL editor or the from/to fields stays
+  // a q. The IIFE returns above when panel or toggle are missing, so
+  // anonymous visitors get no key either.
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'q' || e.ctrlKey || e.metaKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+              t.tagName === 'SELECT' || t.isContentEditable)) return;
+    e.preventDefault();
+    setOpen(!fpIsOpen(panel));
+  });
   document.getElementById('query-close').addEventListener('click', () => setOpen(false));
   runBtn.addEventListener('click', runQuery);
   cancelBtn.addEventListener('click', cancelQuery);
