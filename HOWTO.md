@@ -1125,6 +1125,7 @@ and on keyboard focus.
 | Today / Yesterday / Week / Month | Quick ranges. Boundaries are local midnight, the end is exclusive, and the week starts on Monday. The chip stays highlighted only while the window matches it exactly — pan or zoom by any amount and it goes out. |
 | Legend | Opens the legend panel showing per-value totals. |
 | Follow | Toggles follow mode (seismograph-style auto-pan to "now"). The dot in the corner of the button pulses while it is on. |
+| Clamp | Toggles outlier clamping (`c` does the same). One or a few extreme values can own the whole y-axis and squash the rest against zero; with clamping on the axis is rescaled from the bulk and the cut marks are topped with an arrowhead at the plot edge. Not remembered — off again on the next load. |
 | Query | Opens the ad-hoc SQL console over the chart (logged-in users only). See [Query console](#query-console). |
 | Keys | Opens the keyboard-shortcut panel. `?` does the same from anywhere on the page. |
 | Config | Jumps to `/sources/<id>/` for the source whose tab is active (logged-in users only). |
@@ -1215,7 +1216,7 @@ window* falls in, not to the present
 |-----|------------------|
 | `f` | The right edge |
 | `p` | The left edge |
-| `c` | The middle |
+| `n` | The middle |
 | `F` / `P` | The same, but the window is stretched onto "now" first |
 
 **Display** (chart focused)
@@ -1224,6 +1225,7 @@ window* falls in, not to the present
 |-----|---------|
 | `l` | The legend panel |
 | `g` | Grid snapping for the arrow keys. Nothing moves when you press it — it changes what the *next* arrow press does. |
+| `c` | Outlier clamping. One or a few extreme values stop owning the whole y-axis: the axis is rescaled from the bulk and the cut marks get an arrowhead at the plot edge. The Clamp button in the control bar does the same. |
 
 **Page**
 

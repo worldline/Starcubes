@@ -9,6 +9,15 @@ Notable changes per release. Format follows
 
 ### Added
 
+- **Clamp outliers — new button right of Follow, new key `c`.** timeseries.js
+  0.10.6 adds outlier clamping (`clampOutliers`, `toggleClampOutliers()`): one
+  or a few extreme values stop owning the whole y-axis, the axis is rescaled
+  from the bulk and the cut marks get an arrowhead at the plot edge. The chart
+  toolbar gains a Clamp button beside Follow (icon: a vertical bar cut by two
+  oblique strokes), the keyboard key `c` does the same; the key that centred
+  "now" moved from `c` to `n`, and the keys panel and the HOWTO keyboard tables
+  say so. Clamping is session-only — off again on the next load.
+
 - **`extent(col)` measures — min/avg/max bands that a rollup can serve.** A
   second aggregation form for the ladder renderers: where `quantile(col)`
   draws a percentile ladder, `extent(col)` draws a band from the bin's

@@ -82,8 +82,15 @@ Three groups separated by `.ctrl-sep` hairlines, wrapping between groups
 rather than inside one:
 
 ```
-[group by ▾] [Filters] [measure ▾] │ [from 🗓] [to 🗓] [Today][Yesterday][Week][Month] │ [≡][~][>_][⌨][⚙]
+[group by ▾] [Filters] [measure ▾] │ [from 🗓] [to 🗓] [Today][Yesterday][Week][Month] │ [≡][~][⫽][>_][⌨][⚙]
 ```
+
+The last group is the icon buttons — Legend (≡), Follow (~), Clamp outliers
+(⫽), Query console (>_, logged-in only), Keyboard shortcuts (⌨) — then the
+three configuration links (Group Dims, Measures, Alarms bell, logged-in only).
+The Clamp button toggles outlier clamping (new in timeseries.js 0.10.6); the
+library has no callback for it, so the button re-syncs its active state from
+`ts.getClampOutliers()` inside the `onViewportChange` tracker.
 
 - **from / to** are the same `DateTimePicker` they always were — the class now
   lives in `sources/static/sources/datetimepicker.js`, shared with the sources
@@ -348,7 +355,7 @@ mislabelled with the new params and painted onto the just-cleared canvas.
 ## Query console
 
 A floating, resizable ad-hoc SQL panel, toggled by the terminal icon button
-that sits immediately right of Follow in `form#ctrl`. Its action row is five
+that sits right of the Clamp button in `form#ctrl`. Its action row is five
 `.ibtn`s — Run, Cancel, Chart SQL, Format, CSV — followed by `#query-status`
 and the `Ctrl+⏎` hint. Both button and panel are wrapped
 in `{% if user.is_authenticated %}` — anonymous visitors get neither, and the
@@ -952,7 +959,7 @@ INPUT/TEXTAREA/SELECT exclusion the Escape handler uses; the canvas's own
 keydown handler ignores `?` without calling `preventDefault`, so the key still
 arrives with the chart focused.
 
-Its content is generated from `timeseries.js`'s own key table
+Its content is a static copy of the library's key table
 (`doc/configuration.md`) and carries the footnote that makes the list honest:
 navigation, calendar, follow and display keys are bound to `canvas.onkeydown`
 by the library and only fire while the plot has focus. One of them, `l`, was
@@ -960,6 +967,14 @@ listed by the library but dead here — `ts.toggleLegend()` needs a controller,
 and `chart.html` never registered one. `initTs()` now calls
 `ts.setLegend({ toggle: toggleLegendPanel })`, so the key opens starcubes's own
 legend panel.
+
+The `c` key (and the Clamp button beside Follow) toggles outlier clamping,
+new in timeseries.js 0.10.6. The library exposes no callback for a clamp
+change, so the button keeps itself honest by reading `ts.getClampOutliers()`
+inside the `onViewportChange` tracker — `setClampOutliers()` redraws through
+`plotAll()`, which broadcasts the viewport, so that hook fires for both the
+button and the key. Clamping is session-only: the library default (`off`)
+applies on every load, nothing is persisted.
 
 All panels except the legend are user-resizable via CSS `resize: both` plus the
 browser-native grip in the bottom-right corner; the legend is width-only

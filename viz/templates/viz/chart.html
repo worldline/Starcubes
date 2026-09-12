@@ -1155,6 +1155,16 @@
       <svg class="ic" aria-hidden="true"><use href="#ic-activity"></use></svg>
       <span id="follow-dot"></span>
     </button>
+    {% comment %}
+      Outlier clamping, new in timeseries.js 0.10.6: one or a few extreme values
+      can own the whole y-axis so the bulk squashes against zero; with clamping
+      on the axis is rescaled from the bulk and the cut marks get an arrowhead at
+      the plot edge. Session-only by decision — see the wiring below.
+    {% endcomment %}
+    <button id="clamp-toggle" class="ibtn" type="button"
+            aria-label="Clamp outliers" data-tip="Clamp outliers&#10;(c)" data-tip-align="end">
+      <svg class="ic" aria-hidden="true"><use href="#ic-clamp"></use></svg>
+    </button>
     {% if user.is_authenticated %}
     <button id="query-toggle" class="ibtn" type="button"
             aria-label="Query console" data-tip="Query console" data-tip-align="end">
@@ -1261,7 +1271,7 @@
       <dl class="keys-list">
         <dt><kbd>f</kbd></dt><dd>Anchor now at the right edge</dd>
         <dt><kbd>p</kbd></dt><dd>Anchor now at the left edge</dd>
-        <dt><kbd>c</kbd></dt><dd>Anchor now in the middle</dd>
+        <dt><kbd>n</kbd></dt><dd>Anchor now in the middle</dd>
         <dt><kbd>F</kbd><kbd>P</kbd></dt>
         <dd>Same, but stretch the window onto now first</dd>
       </dl>
@@ -1271,6 +1281,7 @@
       <dl class="keys-list">
         <dt><kbd>l</kbd></dt><dd>Show / hide the legend</dd>
         <dt><kbd>g</kbd></dt><dd>Grid snapping for the arrow keys on / off</dd>
+        <dt><kbd>c</kbd></dt><dd>Clamp outliers on / off</dd>
       </dl>
     </div>
     <div class="keys-group">
@@ -2701,6 +2712,7 @@ function initTs() {
     init(_src, cb) {
       cb.onViewportChange((tmin, tmax, ppms) => {
         currentViewport = { tmin, tmax, ppms };
+        syncClampButton();   // no library callback — read the state back
         syncDateTimeInputs();
         updateLegend();
         autoFetch();
@@ -2754,6 +2766,12 @@ function initTs() {
 
   ts.onStop(() => followToggle.classList.remove('active'));
   ts.onFollow(() => followToggle.classList.add('active'));
+
+  // A fresh instance comes up with the library default (clamping off); the
+  // button has to follow, and the tracker's first broadcast may still be
+  // pending. Session-only: nothing is persisted across loads.
+  _clampUiOn = false;
+  if (clampToggle) clampToggle.classList.remove('active');
   attachBarTooltip();
   ts.onClickDataCallback((plot, n, key, value) => openDrillModal(plot, n, key, value));
   if (chartSqlBtn) chartSqlBtn.disabled = !currentMeta;
@@ -2936,6 +2954,7 @@ const legendSplitBtn = document.getElementById('legend-split');
 // this from the plots actually rendered so the click handler can gate Split.
 let legendStackable = false;
 const followToggle = document.getElementById('follow-toggle');
+const clampToggle = document.getElementById('clamp-toggle');
 let lastLegendRows = []; // [{ name, total }] in current display order, for CSV copy
 
 // ── Follow mode toggle ───────────────────────────────────────────────────
@@ -2952,6 +2971,29 @@ followToggle.addEventListener('click', () => {
   } else {
     ts.stop();
   }
+});
+
+// ── Outlier clamping toggle ──────────────────────────────────────────────
+// Owned by timeseries.js (0.10.6); the library's `c` key flips it too, and
+// it has NO callback. setClampOutliers() redraws through plotAll(), which
+// broadcasts the viewport — so the starcubes-tracker's onViewportChange is
+// the one hook that fires for both the button and the key, and
+// syncClampButton() reads the state back there. Session-only by decision:
+// the library default (clampOutliers: false) applies on every load, nothing
+// is written to localStorage and no constructor option is set.
+let _clampUiOn = false;
+function syncClampButton() {
+  if (!clampToggle) return;
+  const on = !!(ts && ts.getClampOutliers && ts.getClampOutliers());
+  if (on === _clampUiOn) return;
+  _clampUiOn = on;
+  clampToggle.classList.toggle('active', on);
+}
+clampToggle.addEventListener('click', () => {
+  if (!ts) return;
+  // toggleClampOutliers() returns the state now in force.
+  _clampUiOn = ts.toggleClampOutliers();
+  clampToggle.classList.toggle('active', _clampUiOn);
 });
 
 // ── Top-bar menu ─────────────────────────────────────────────────────────
