@@ -7,6 +7,24 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Every source connection now opens with its session clock on UTC.**
+  `SET TIME ZONE 'UTC'` on Postgres, `ALTER SESSION SET TIME_ZONE = 'UTC'`
+  on Oracle, `SET time_zone = '+00:00'` on MySQL, issued once per pooled
+  connection. This is a behaviour change for *existing* sources, not only
+  new ones: operator SQL in `import_query` or `source_expr` that depends on
+  the session clock (`CURRENT_DATE`, `LOCALTIMESTAMP`, a cast between a
+  naive and an aware timestamp) now sees UTC. For Oracle `DATE` and
+  `TIMESTAMP` columns — the example source's shape — it changes nothing:
+  those are naive and ignore the session zone. SQL Server has no session
+  time zone and is logged as such.
+
+  The reason is not tidiness. The engine has always asserted that source
+  timestamps are naive and hold UTC; the pin makes that true at the
+  connection instead of hoping for it, and it is what allows a
+  timezone-aware watermark column to work at all (below).
+
 ### Fixed
 
 - **The ETL load window is no longer Oracle-only, and no longer depends on
@@ -25,9 +43,18 @@ Notable changes per release. Format follows
   Oracle-and-Postgres-in-one-timezone installation never saw it, because
   the two errors cancelled.
 
-  A source whose watermark column is `timestamptz` is still not supported
-  and still fails silently; that is written up in `docs/backlog.md` as its
-  own item.
+- **A `timestamptz` watermark column no longer loses or duplicates rows.**
+  The load window binds its bounds as naive UTC; against a timezone-aware
+  column the database resolved that predicate with the session clock, so
+  the window slid by the session offset — 16665 duplicate rows before the
+  bind work, 16665 missing rows after it, on a 50000-row fixture. With the
+  source session pinned to UTC the same bind matches a naive and an aware
+  column alike: 50000 rows, no duplicates, in every combination of source
+  and warehouse session zone.
+
+  Where the session cannot be pinned — MSSQL has none — the new
+  `watermark_tz` preflight check blocks the run and names the column
+  instead of loading it on an unknown clock.
 
 - **The source cardinality estimate in the source editor read the wrong
   clock.** Its 24-hour window anchored on `SYSTIMESTAMP` / `NOW()` /

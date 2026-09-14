@@ -34,7 +34,7 @@ from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 
 from .schema import create_dim_tables, create_fact
-from .source import Source
+from .source import _SESSION_UTC_SQL, Source
 
 logger = logging.getLogger(__name__)
 
@@ -358,6 +358,88 @@ def _check_source_projection(source: Source, source_engine) -> dict:
                   extra=extra)
 
 
+def _check_watermark_tz(source: Source, source_engine) -> dict:
+    """Is the watermark column naive, the shape the load window binds against?
+
+    The window bounds go down as **naive UTC** (`core/etl.py:_as_naive_utc`),
+    because source timestamps are naive and hold UTC throughout this codebase
+    (`Source.source_now_sql`). Against a timezone-*aware* watermark column
+    that predicate is resolved by converting one side with the session clock,
+    so the whole window slides by the session offset — silently. Measured on
+    Postgres, session `Europe/Berlin`, `timestamptz` watermark: an
+    incremental run with nothing to do inserted 16665 duplicate rows.
+
+    `Source.source_engine` now pins every source session to UTC, which makes
+    a naive bind match a naive and an aware column alike — so on a dialect
+    that *can* be pinned this check has nothing left to refuse, and says so
+    rather than staying silent: "aware, but safe" is worth seeing in the
+    report. mssql has no session time zone at all (`AT TIME ZONE` is
+    per-expression), so there the configuration is refused outright.
+
+    The finding comes from the **value**, not from a type code:
+    `datetime.tzinfo` is what the driver decided, which is dialect-free and
+    needs no psycopg2 oid table.
+
+    One indexed `max()` — literally the query the engine already runs as its
+    default `watermark_max_query`. Deliberately *not* wrapped around
+    `import_query`: a full `max()` over that subquery is the slow shape
+    `core/etl.py:_source_min_watermark` already warns about, and no probe is
+    worth a table scan before every load.
+    """
+    if source_engine is None:
+        return _check("watermark_tz", CHECK_OK,
+                      "skipped — no source connection available")
+
+    wm = source.watermark_column
+    if source.watermark_max_query:
+        probe = source.watermark_max_query
+    elif source.base_table:
+        probe = f"SELECT max({wm}) FROM {source.base_table}"
+    else:
+        # import_query only. See the docstring: the probe is not worth what
+        # it would cost here, and the engine reads the same value moments
+        # later anyway.
+        return _check("watermark_tz", CHECK_OK,
+                      "skipped — needs base_table or watermark_max_query to "
+                      "probe the watermark cheaply")
+
+    try:
+        with source_engine.begin() as src:
+            value = src.execute(text(probe)).scalar()
+    except Exception as exc:
+        # Warn, never block. A query the source *rejects* is drift, and
+        # _check_source_projection is what blocks on that; reaching the same
+        # verdict from here would double the refusal for one cause.
+        return _check("watermark_tz", CHECK_WARN,
+                      f"could not read max({wm}) to check its time zone: "
+                      f"{exc}", error=str(exc))
+
+    if value is None:
+        return _check("watermark_tz", CHECK_OK,
+                      f"not checked — the source has no rows yet, so "
+                      f"max({wm}) says nothing about its type")
+    if getattr(value, "tzinfo", None) is None:
+        return _check("watermark_tz", CHECK_OK,
+                      f"{wm} reads as a naive timestamp — the shape the load "
+                      f"window binds against", watermark=wm, aware=False)
+
+    if source.source_dialect in _SESSION_UTC_SQL:
+        return _check("watermark_tz", CHECK_OK,
+                      f"{wm} is timezone-aware, and the {source.source_dialect} "
+                      f"source session is pinned to UTC — the window bounds "
+                      f"compare exactly", watermark=wm, aware=True,
+                      session_pinned=True)
+
+    return _check("watermark_tz", CHECK_BLOCK,
+                  f"{wm} is timezone-aware and the {source.source_dialect} "
+                  f"dialect has no session time zone to pin, so the load "
+                  f"window would be compared on an unknown clock and shift "
+                  f"rows in or out of it silently. Project the watermark as "
+                  f"a naive UTC value — through import_query or a view — and "
+                  f"point watermark_column at that.",
+                  watermark=wm, aware=True, session_pinned=False)
+
+
 def _check_watermark_tip(source: Source, dest_engine, meta_engine) -> dict:
     """U1 — the stored high watermark against the fact tip.
 
@@ -571,6 +653,7 @@ def run_preflight(source: Source, meta_engine, dest_engine, *,
     checks.append(_check_indices(source, dest_engine, meta_engine))
     checks.append(_check_warehouse_drift(source, dest_engine))
     checks.append(_check_source_projection(source, source_engine))
+    checks.append(_check_watermark_tz(source, source_engine))
     checks.append(_check_watermark_tip(source, dest_engine, meta_engine))
     checks.append(_check_data_staleness(source, meta_engine))
     checks.append(_check_alarm_windows(source, meta_engine))

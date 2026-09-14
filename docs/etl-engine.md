@@ -357,9 +357,16 @@ overlap can usually go to 0, which removes the PK check entirely.
   bound values go through.
 
   Naive rather than aware because source timestamps hold UTC and are naive
-  throughout (see `Source.source_now_sql` above). A source whose watermark
-  column is `timestamptz` therefore does *not* work — see
-  [`backlog.md`](backlog.md).
+  throughout (see `Source.source_now_sql` above). That leaves one question
+  the bind cannot answer on its own: against a timezone-*aware* watermark
+  column the database resolves the predicate by converting one side with
+  the **session** clock, so the window slides by the session offset. The
+  answer is not a second bind shape but
+  `core/source.py:_pin_session_utc` — every source connection is put on a
+  UTC session, under which the one naive bind matches a naive and an aware
+  column alike. `mssql` has no session time zone to pin, so there an aware
+  watermark is refused by the `watermark_tz` preflight check instead; see
+  [`etl-automation.md`](etl-automation.md).
 
   What stays dialect-dispatched, because a bind carries a value and never a
   syntax element: `FROM dual`, row caps (`ROWNUM` / `TOP` / `LIMIT`),

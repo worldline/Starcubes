@@ -86,11 +86,82 @@ def _get_cached_engine(dsn: str, connect_args: dict | None = None) -> sqlalchemy
 _bounded_engine_cache: dict = {}
 
 
-def _bounded_source_engine(dsn: str, dialect: str,
-                           timeout_ms: int) -> sqlalchemy.Engine:
-    """A source engine whose statements cannot run longer than `timeout_ms`.
+# How each dialect is told to put its session on UTC. A dialect absent from
+# this map has no session-level equivalent at all -- that is a property of
+# the product, not a gap here, and `_pin_session_utc` says so out loud.
+_SESSION_UTC_SQL: dict[str, str] = {
+    "postgresql": "SET TIME ZONE 'UTC'",
+    "oracle": "ALTER SESSION SET TIME_ZONE = 'UTC'",
+    "mysql": "SET time_zone = '+00:00'",
+}
 
-    A source that accepts the connection and then never answers blocks the
+
+def _pin_session_utc(engine: sqlalchemy.Engine, dialect: str) -> None:
+    """Put every connection this source engine opens on a UTC session clock.
+
+    The rest of this codebase already asserts that source timestamps are
+    naive and hold UTC -- `source_now_sql()` reads UTC explicitly rather
+    than trusting the session, `core/etl.py` binds its window bounds as
+    naive UTC, `core/audit.py` binds the same way, and the extract parses
+    with ``utc=True``. This makes that assertion true at the connection
+    instead of hoping for it.
+
+    It is not cosmetic. A predicate mixing a naive bind with a *timezone-
+    aware* watermark column is resolved by converting one side with the
+    session clock, so the whole window slides by the session offset. Measured
+    on Postgres, session `Europe/Berlin`, against a `timestamptz` watermark:
+    an incremental run with nothing to do re-extracted two hours it already
+    held and inserted 16665 duplicate rows. Under a UTC session the same bind
+    matches a naive and an aware column alike -- one setting, both shapes.
+
+    A connect event rather than a dialect-specific connect argument
+    (Postgres would take `-ctimezone=UTC` alongside its statement timeout)
+    because this is the one place that serves all four dialects; Oracle needs
+    an event either way, and two mechanisms for one rule drift apart.
+
+    **mssql has no session time zone.** `AT TIME ZONE` is per-expression
+    there, so nothing can be pinned and an aware watermark column stays
+    dangerous -- which is what `preflight._check_watermark_tz` blocks on.
+    Logged once per engine, the same courtesy the statement timeout extends.
+    """
+    stmt = _SESSION_UTC_SQL.get(dialect)
+    if stmt is None:
+        logger.warning(
+            "no session time zone can be set for the %s dialect — source "
+            "timestamps are read on whatever clock the session happens to "
+            "carry; a timezone-aware watermark column is refused by "
+            "preflight for this reason", dialect)
+        return
+
+    @event.listens_for(engine, "connect")
+    def _set_session_utc(dbapi_conn, _record):
+        # One statement per newly pooled connection. Not guarded the way the
+        # Oracle call_timeout is: a driver that cannot set its session clock
+        # cannot be trusted with the window either, and failing at connect
+        # time is far better than loading against an unknown clock.
+        cur = dbapi_conn.cursor()
+        try:
+            cur.execute(stmt)
+        finally:
+            cur.close()
+
+
+def _bounded_source_engine(dsn: str, dialect: str,
+                           timeout_ms: Optional[int]) -> sqlalchemy.Engine:
+    """The engine for a source database, session pinned to UTC.
+
+    Every source connection goes through here, including the untimed one:
+    `Source.source_engine()` used to hand that case to `_get_cached_engine`,
+    which is dialect-blind and — worse — shares its cache with
+    `dest_engine()`/the meta engine. A datasource whose `source_dsn` names
+    the same database as the warehouse (a legitimate shape, and the one a
+    Postgres-as-source test fixture takes) therefore got *one* engine for
+    both roles, so a source-only setting would have leaked onto the
+    warehouse. Routing both cases here gives the source its own cache, which
+    is what it should have had all along.
+
+    With `timeout_ms`, statements additionally cannot outrun that budget. A
+    source that accepts the connection and then never answers blocks the
     extract indefinitely: `pool_pre_ping` and `pool_timeout` bound the
     *checkout*, not the execution. There is no portable way to say this, so
     it is said per dialect, and a dialect with no equivalent says so out loud
@@ -105,20 +176,24 @@ def _bounded_source_engine(dsn: str, dialect: str,
       engine, because "unbounded" is a fact the operator should know rather
       than a detail to discover during an incident.
 
-    Cached like `_get_cached_engine`, keyed on the timeout too, so the ETL
-    does not build a pool per run.
+    `timeout_ms=None` means no budget was asked for — not that one was
+    wanted and could not be given, so it draws no warning.
+
+    Cached on `(dsn, dialect, timeout_ms)`, so the ETL does not build a pool
+    per run and a differing budget is naturally a different engine.
     """
     key = (dsn, dialect, timeout_ms)
     if key in _bounded_engine_cache:
         return _bounded_engine_cache[key]
 
     connect_args: dict = {}
-    if dialect == "postgresql":
-        connect_args = {"options": f"-cstatement_timeout={timeout_ms}"}
-    elif dialect not in ("oracle",):
-        logger.warning(
-            "no statement timeout is wired up for the %s dialect — source "
-            "statements in this run are unbounded", dialect)
+    if timeout_ms:
+        if dialect == "postgresql":
+            connect_args = {"options": f"-cstatement_timeout={timeout_ms}"}
+        elif dialect not in ("oracle",):
+            logger.warning(
+                "no statement timeout is wired up for the %s dialect — source "
+                "statements in this run are unbounded", dialect)
 
     engine = sqlalchemy.create_engine(
         dsn,
@@ -130,7 +205,8 @@ def _bounded_source_engine(dsn: str, dialect: str,
         pool_timeout=30,
     )
     _install_fork_safety(engine)
-    if dialect == "oracle":
+    _pin_session_utc(engine, dialect)
+    if timeout_ms and dialect == "oracle":
         @event.listens_for(engine, "connect")
         def _set_call_timeout(dbapi_conn, _record):
             # cx_Oracle/oracledb 7+. Guarded: an older driver simply has no
@@ -485,21 +561,21 @@ class Source:
     def source_engine(self, *,
                       statement_timeout_ms: int | None = None
                       ) -> sqlalchemy.Engine:
-        """Engine for the source database.
+        """Engine for the source database, session pinned to UTC.
 
         With `statement_timeout_ms` the engine is a *separate* cached pool
-        whose statements cannot outlive that budget. `_get_cached_engine`
-        keys on `(dsn, connect_args)`, so a differing timeout is naturally a
-        different engine — except for Oracle, where the setting is not a
-        connect argument at all and rides on a connect-event hook instead
-        (hence `_bounded_source_engine`).
+        whose statements cannot outlive that budget; `_bounded_source_engine`
+        keys on the timeout, so a differing budget is naturally a different
+        engine. Without it, the pool every other source caller shares.
 
-        Without it, the unbounded engine every other caller shares.
+        Both cases go through `_bounded_source_engine` — the untimed one used
+        to take `_get_cached_engine`, which knows no dialect and shares its
+        cache with `dest_engine()`. See that function's docstring for why
+        that mattered.
         """
-        if not statement_timeout_ms:
-            return _get_cached_engine(self.source_dsn)
-        return _bounded_source_engine(self.source_dsn, self.source_dialect,
-                                      int(statement_timeout_ms))
+        return _bounded_source_engine(
+            self.source_dsn, self.source_dialect,
+            int(statement_timeout_ms) if statement_timeout_ms else None)
 
     def dest_engine(self) -> sqlalchemy.Engine:
         return _get_cached_engine(
@@ -627,6 +703,12 @@ class Source:
 
         All four return a *naive* timestamp, matching how the watermark
         column itself is read.
+
+        `_pin_session_utc` now puts the session clock on UTC as well. That
+        does not make this expression redundant — it reads UTC whatever the
+        session says, which is the stronger guarantee, and mssql cannot be
+        pinned at all — but the two now agree instead of one compensating
+        for the other.
 
         Returns the bare expression -- callers that need it without a FROM
         clause (see `core/etl.py`, the watermark_max_query branch) must add

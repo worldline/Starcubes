@@ -139,7 +139,7 @@ never started a worker.
 GUI's **Preflight** button runs with `repair=False`, reports the same
 findings and changes nothing.
 
-Eight checks, in cost order:
+Nine checks, in cost order:
 
 | Check | Asks | Levels |
 |---|---|---|
@@ -148,9 +148,36 @@ Eight checks, in cost order:
 | `indices` | Are the indices and foreign keys `create_indices` would build present? | Warns, never blocks, **never builds** |
 | `warehouse_drift` | Does `fact` match the configured columns? (`sync_schema` dry run) | Blocks on a missing column or an unsafe type; warns on a safe widening or an orphan column |
 | `source_projection` | Does the source still project every fact column? (`WHERE 1=0`) | Blocks on a rejected query; warns on an unreachable source |
+| `watermark_tz` | Is the watermark column naive, the shape the load window binds against? (one indexed `max()`) | Blocks an aware column on a dialect whose session cannot be pinned to UTC; otherwise OK |
 | `watermark_tip` | Is the stored watermark standing above a fact tip that moved down? | Warns past `STARCUBES_HWM_GAP_WARN_S` |
 | `data_staleness` | `src_now − max_wm` against `max_data_lag_s` | Warns; a *negative* value is reported as a non-UTC watermark column |
 | `alarm_windows` | Do any alarm windows reach below the retention floor? | Warns, naming them |
+
+**Why the source session is pinned to UTC.** `Source.source_engine()` puts
+every source connection on a UTC session clock — `SET TIME ZONE 'UTC'`,
+`ALTER SESSION SET TIME_ZONE = 'UTC'`, `SET time_zone = '+00:00'`,
+installed as a connect event in `core/source.py:_pin_session_utc`. The rest
+of the engine already *asserts* that source timestamps are naive and hold
+UTC; this makes the assertion true at the connection instead of hoping for
+it, the same move `source_now_sql()` made when it stopped reading
+`LOCALTIMESTAMP`.
+
+It is not tidiness. The load window binds its bounds as naive UTC, and a
+predicate mixing a naive bind with a timezone-*aware* watermark column is
+resolved by converting one side with the session clock — so the window
+slides by the session offset, silently. Measured on Postgres, session
+`Europe/Berlin`, `timestamptz` watermark: an incremental run with nothing
+to do re-extracted two hours it already held and inserted 16665 duplicate
+rows; binding without the session pin lost the same 16665 instead. Under a
+UTC session the one bind matches a naive and an aware column alike, which
+is what `watermark_tz` reports as OK.
+
+`mssql` is the exception that keeps the check alive: SQL Server has no
+session time zone at all (`AT TIME ZONE` is per-expression), so an aware
+watermark there is refused rather than loaded on an unknown clock. The
+other residue is a naive column that does *not* hold UTC — no probe can see
+that, because a naive value carries no evidence about its zone, and N12
+(`src_now − max_wm`, the ETL History's "Data lag") stays the only detector.
 
 **Why the index check never builds.** There is no `CONCURRENTLY` anywhere in
 this repository, `create_indices` takes ACCESS EXCLUSIVE on the partitioned

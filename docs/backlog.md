@@ -59,28 +59,49 @@ Three items below are cross-referenced from it.
   `text(import_query)` on the Oracle example profile — full of
   `'YYYY-MM-DD HH24:MI:SS.FF3'` masks — yields no spurious binds.
 - **A `timestamptz` watermark column in the source silently loses or
-  duplicates rows.** Found while closing the item above; *not* fixed by it,
-  and it predates it. The engine's contract is that source timestamps are
-  naive and hold UTC (`Source.source_now_sql`, the `parse_dates={pc:
-  {"utc": True}}` in the extract, `_as_utc` throughout), so the window
-  bounds are bound as naive UTC. Against a `timestamptz` column Postgres
-  coerces that naive value using the *session* timezone, and the window
-  slides by the session offset. Measured on a Berlin session with an
-  otherwise identical 50000-row fixture:
+  duplicates rows** — closed by `core/source.py:_pin_session_utc`. Every
+  source connection is now put on a UTC session clock (`SET TIME ZONE
+  'UTC'` / `ALTER SESSION SET TIME_ZONE = 'UTC'` / `SET time_zone =
+  '+00:00'`, as a connect event). Three things worth keeping:
 
-  | watermark column | before the bind work | after |
-  |---|---|---|
-  | `timestamp` (in contract) | 50000 loaded, 0 duplicates | unchanged |
-  | `timestamptz` | 16665 **duplicate** rows on an incremental run that should have loaded 0 | 16665 rows **missing**, HWM advanced past them |
+  - **A preflight check would not have closed this, and that was the whole
+    question.** A check turns silent loss into a named refusal; the affected
+    source stays unusable until an operator rebuilds it. What *fixes* it is
+    the session pin, and the measurement is one line: a naive UTC bind
+    equals a `timestamptz` value under a UTC session and does not under
+    `Europe/Berlin`. The engine already asserted "source timestamps are
+    naive and hold UTC" everywhere; pinning makes that true at the
+    connection rather than hoped for — the same move `source_now_sql()`
+    made when it stopped reading `LOCALTIMESTAMP`.
+  - **The untimed source engine was sharing a cache with the warehouse.**
+    `Source.source_engine()` handed the no-timeout case to
+    `_get_cached_engine`, which is dialect-blind and keys on
+    `(dsn, connect_args)` — so a datasource whose `source_dsn` names the
+    same database as `dest_dsn` (a legitimate shape, and what a
+    Postgres-as-source fixture takes) got *one* engine for both roles, and
+    a source-only setting would have landed on the warehouse. Both cases go
+    through `_bounded_source_engine` now, which has its own cache.
+    `timeout_ms=None` means "none asked for" and draws no warning.
+  - **The pin is a connect event, not a connect argument**, although
+    Postgres would take `-ctimezone=UTC` alongside its statement timeout:
+    one place serves all four dialects, Oracle needs an event either way,
+    and two mechanisms for one rule drift apart.
 
-  Both are silent — nothing raises, nothing warns, and the second shape is
-  permanent loss. Two ways out, neither free: pick the bind's tzinfo from
-  the type the driver reports for `max(watermark_column)` (the signal is
-  already in hand at `core/etl.py`'s max-query read, but `--start/--end`
-  runs skip that read), or refuse the configuration — a preflight check
-  that sees an *aware* value come back for the watermark and blocks with
-  the column named, in the shape of `_check_source_projection`. The second
-  is much the smaller change and turns silent loss into a named refusal.
+  Measured, same 50000-row fixture, source session `Europe/Berlin`, the
+  warehouse session tried on both `Europe/Berlin` and `UTC`:
+
+  | watermark column | before the bind work | after it | with the pin |
+  |---|---|---|---|
+  | `timestamp` | 50000, 0 duplicates | unchanged | unchanged |
+  | `timestamptz` | 16665 **duplicates** | 16665 **missing** | 50000, 0 duplicates |
+
+  What the pin does **not** reach, and why `preflight._check_watermark_tz`
+  exists anyway: `mssql` has no session time zone (`AT TIME ZONE` is
+  per-expression), so an aware watermark there is blocked with the column
+  named instead of loaded on an unknown clock. And a naive column that does
+  not hold UTC remains invisible to any probe — a naive value carries no
+  evidence about its zone — leaving N12 (`src_now − max_wm`) the only
+  detector, as before.
 - **Test coverage.** No unit or integration tests for `core/etl.py`,
   `core/query.py`, or the three-stage multiprocessing pipeline. The
   `_resume_state` deduplication logic and `copy_from` path are especially
