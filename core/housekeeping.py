@@ -191,6 +191,50 @@ def _partition_sizes(source: Source, conn) -> list[dict]:
              "heap_bytes": int(r["heap_bytes"])} for r in rows]
 
 
+def _partition_correlation(source: Source, conn) -> dict[str, float]:
+    """Per-partition `pg_stats.correlation` for the partition column.
+
+    The number BRIN lives or dies by. A BRIN index stores min/max per page
+    range, so it only excludes a range when the column's physical order
+    tracks its value order; `docs/bitmap-indexes.md` measured the gap at
+    **141x** between clustered and scattered data. Correlation near 1.0 is
+    the append-only ideal this storage design assumes; a falling number is
+    the index quietly ceasing to help, and nothing else in the system says
+    so.
+
+    What lowers it is a **backfill**: it appends old timestamps to the end of
+    the partition's heap, so the trailing page ranges end up spanning a wide
+    min/max and become false positives for every query over the backfilled
+    span. The damage is bounded by the partition and proportional to the rows
+    inserted -- 37 rows are one page range, millions turn the tail of the
+    partition into a mixed region.
+
+    Worth stating because it is the obvious wrong answer: **REINDEX does not
+    repair this.** BRIN recomputes min/max from the same, unchanged heap and
+    arrives at the same ranges. Only physically rewriting the partition helps
+    (CLUSTER over a temporary B-tree -- BRIN cannot serve as a CLUSTER index
+    -- pg_repack, or rewriting it in sorted order).
+    `brin_summarize_new_values` above is a different concern entirely: it
+    makes new blocks indexed *at all*, and never makes a range narrower.
+
+    Read after the ANALYZE, because pg_stats is what ANALYZE writes. Silent
+    about partitions that have never been analysed -- an absent number is
+    honest, a stale one is not.
+    """
+    rows = conn.execute(text(
+        "SELECT s.tablename AS name, s.correlation "
+        "  FROM pg_stats s "
+        "  JOIN pg_class c     ON c.relname = s.tablename "
+        "  JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "                     AND n.nspname = s.schemaname "
+        "  JOIN pg_inherits i  ON i.inhrelid = c.oid "
+        "  JOIN pg_class p     ON p.oid = i.inhparent "
+        " WHERE s.schemaname = :s AND p.relname = 'fact' "
+        "   AND s.attname = :col AND s.correlation IS NOT NULL"
+    ), {"s": source.schema_name, "col": source.partition_column}).mappings().all()
+    return {r["name"]: float(r["correlation"]) for r in rows}
+
+
 def _retention_cutoff(source: Source, keep_periods: int) -> datetime:
     """The instant below which partitions may be disposed of.
 
@@ -360,6 +404,20 @@ def run_housekeeping(source: Source, meta_engine, dest_engine, *,
                     report["brin"].append(
                         {"index": ix, "ranges": int(n),
                          "ms": int((time.monotonic() - t) * 1000)})
+
+            # After the ANALYZE on purpose: pg_stats is what ANALYZE writes,
+            # and the sizes above were measured before it because they decide
+            # where the ANALYZE goes. Reading correlation there would report
+            # the previous run's number.
+            try:
+                corr = _partition_correlation(source, conn)
+            except Exception as exc:
+                report["warnings"].append(
+                    {"code": "correlation_failed", "message": str(exc)})
+            else:
+                for part in report["partitions"]:
+                    if part["name"] in corr:
+                        part["correlation"] = round(corr[part["name"]], 4)
 
     # Pre-aggregation repair. The ETL hook is what normally advances the
     # rollups; this closes the gap left by a run that failed before reaching

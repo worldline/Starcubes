@@ -31,6 +31,32 @@ Notable changes per release. Format follows
   recorded as failed with NULL counts, so the alarm cannot read a clean bill
   of health from a run that never saw the source.
 
+- **Per-partition `correlation` in the housekeeping report.** The number
+  BRIN lives or dies by, recorded alongside the partition sizes already
+  collected. Measured on a 50 000-row partition: a clean load gives 1.0000,
+  backfilling 8 000 old rows into it drops it to **0.2041**, `REINDEX`
+  leaves it there (0.2022), and only `CLUSTER` over a temporary B-tree
+  restores it. Written up in `docs/bitmap-indexes.md` — REINDEX not helping
+  is the obvious wrong answer, and it is wrong.
+
+### Changed
+
+- **Every source connection now opens with its session clock on UTC.**
+  `SET TIME ZONE 'UTC'` on Postgres, `ALTER SESSION SET TIME_ZONE = 'UTC'`
+  on Oracle, `SET time_zone = '+00:00'` on MySQL, issued once per pooled
+  connection. This is a behaviour change for *existing* sources, not only
+  new ones: operator SQL in `import_query` or `source_expr` that depends on
+  the session clock (`CURRENT_DATE`, `LOCALTIMESTAMP`, a cast between a
+  naive and an aware timestamp) now sees UTC. For Oracle `DATE` and
+  `TIMESTAMP` columns — the example source's shape — it changes nothing:
+  those are naive and ignore the session zone. SQL Server has no session
+  time zone and is logged as such.
+
+  The reason is not tidiness. The engine has always asserted that source
+  timestamps are naive and hold UTC; the pin makes that true at the
+  connection instead of hoping for it, and it is what allows a
+  timezone-aware watermark column to work at all (below).
+
 ### Fixed
 
 - **The ETL load window is no longer Oracle-only, and no longer depends on

@@ -194,7 +194,41 @@ What the repo actually does today (verified against `core/schema.py` and
    profile and emitted as `USING {method}` at `core/schema.py:308`. So this
    is a configuration question, not a development task.
 
-4. **Physical clustering is the only real lever.** The 141× gap between `r*`
+4. **A backfill costs correlation, and REINDEX does not give it back.**
+   Measured on a 50 000-row fact partition (`create_time`, BRIN):
+
+   | After | `pg_stats.correlation` |
+   |---|---|
+   | a clean append-only load | **1.0000** |
+   | backfilling 8 000 old rows into it | **0.2041** |
+   | `REINDEX` of that partition | 0.2022 — *unchanged* |
+   | `CLUSTER` over a temporary B-tree | **1.0000** |
+
+   The mechanism is the §6.4 lever seen from the other side. A backfill
+   appends old timestamps to the *end* of the partition's heap, so the
+   trailing page ranges end up spanning a wide min/max and become false
+   positives for every query over the backfilled span. REINDEX recomputes
+   min/max from the same, unchanged heap and arrives at the same ranges —
+   the correlation is a property of the physical layout, not of the index.
+   Only rewriting the heap helps, and BRIN cannot serve as a `CLUSTER`
+   index, so that means a temporary B-tree, `pg_repack`, or rewriting the
+   partition in sorted order.
+
+   `brin_summarize_new_values()` in the housekeeping is a different concern
+   and does not substitute: it makes newly written blocks indexed *at all*,
+   and never makes a range narrower.
+
+   The damage is bounded by the partition and proportional to the rows
+   inserted — 37 rows are one page range, millions turn the tail of the
+   partition into a mixed region. The housekeeping records `correlation` per
+   partition alongside the sizes it already collects, so the decay is a
+   number over time rather than a suspicion.
+
+   Note that a *targeted* backfill does not improve on this: it inserts the
+   same rows, because the window backfill already de-dupes against what fact
+   holds. What it saves is extract cost, not index damage.
+
+5. **Physical clustering is the only real lever.** The 141× gap between `r*`
    and `s*` is a property of the *data layout*, not of the index type.
    Loading a fact table in sort order — or `CLUSTER` — is what produces long
    runs, and it benefits BRIN and heap locality alike. For a clustered,
