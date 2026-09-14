@@ -131,6 +131,7 @@ class Command(BaseCommand):
                 source, dest, meta,
                 interval_s=options["interval"],
                 window_buckets=options["window_buckets"],
+                target_factor=options["target_factor"],
                 extrapolate_to=options["extrapolate_to"],
                 progress=say,
             )
@@ -177,17 +178,14 @@ class Command(BaseCommand):
           "requests —")
         w("   a breakdown used only with a measure shows as 0 here.)")
 
-        # The widest set reaching the target, i.e. the most coverage for the
-        # size asked for. Deliberately not "the biggest jump": the sharpest
-        # single gain is always near the end of the ladder, where the last
-        # load-bearing dimensions come out.
-        target = options["target_factor"]
+        # `recommended_stage` is computed in `advise` and travels in the
+        # report, so the Rollup tab marks the same line this does. `--stage`
+        # overrides the *display* only — the report keeps the recommendation.
+        target = report.target_factor
         if options["stage"] is not None:
             best_idx = max(0, min(options["stage"], len(report.stages) - 1))
         else:
-            best_idx = next(
-                (i for i, st in enumerate(report.stages) if st.factor >= target),
-                len(report.stages) - 1)
+            best_idx = report.recommended_stage
 
         w("")
         w("Candidate column sets")

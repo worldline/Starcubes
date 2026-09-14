@@ -676,9 +676,22 @@ as ETL runs (see [Log](#log)).
 
 The measurement behind `rollup_advise`, as a form: interval, window buckets,
 target factor and — only if the current volume is not what you are sizing
-for — an extrapolation. The report shows the per-dimension marginal costs,
-the ladder of candidate column sets and the derivable measures;
-**Use these** on a ladder stage fills the Config form with that column set.
+for — an extrapolation. The report heads with the bucket width, the measured
+density and the **saturation exponent α**, then shows the per-dimension
+marginal costs, the ladder of candidate column sets and the derivable
+measures; **Use these** on a ladder stage fills the Config form with that
+column set.
+
+The ladder line matching your target factor is tinted — it is the *widest*
+column set reaching it, the most coverage for the size you asked for, and it
+is the same line the command marks with `<<`. α says how strongly the
+distinct combinations saturate as a bucket fills; it is what the
+extrapolation projects with, so without one it is information only. When the
+window is too short to fit it, a note under the header says so and the
+extrapolation quietly does nothing — widen *Window (buckets)* and measure
+again. [The rollup reference](docs/rollup.md#the-saturation-exponent) has the
+arithmetic, and [Multi-tier rollups](docs/rollup.md#multi-tier-rollups) uses α to
+answer when a second bucket width would be worth having.
 
 #### Config
 

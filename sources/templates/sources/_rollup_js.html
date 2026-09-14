@@ -411,6 +411,17 @@
       });
   }
 
+  // Mirrors core.rollup.interval_label: the bucket width is the rollup
+  // table's identity, and the report has to name it the same way the table
+  // is named.
+  function ivLabel(sec) {
+    var n = Number(sec) || 0;
+    if (n % 86400 === 0) return (n / 86400) + 'd';
+    if (n % 3600 === 0) return (n / 3600) + 'h';
+    if (n % 60 === 0) return (n / 60) + 'm';
+    return n + 's';
+  }
+
   function renderAdvise(entry) {
     if (!entry || !entry.report) {
       el('advReport').innerHTML = '';
@@ -427,15 +438,36 @@
         + '</ul></div>';
     }
     html += '<div class="dl-grid" style="margin-bottom:14px">'
+      + '<div class="text-muted">Bucket width</div><div>' + esc(ivLabel(r.interval_s))
+      + ' <span class="text-muted">(' + fmtCount(r.interval_s) + ' s)</span></div>'
       + '<div class="text-muted">Window</div><div>' + fmtLocal(r.window_from)
       + ' – ' + fmtLocal(r.window_to) + '</div>'
       + '<div class="text-muted">Rows measured</div><div>' + fmtCount(r.rows_in_window)
       + ' in ' + r.buckets_in_window + ' bucket(s)</div>'
+      + '<div class="text-muted">Density</div><div>' + fmtCount(r.rows_per_bucket)
+      + ' rows/bucket</div>'
       + '<div class="text-muted">Rows/day</div><div>' + fmtCount(r.rows_per_day_assumed)
       + (r.rows_per_day_assumed !== r.rows_per_day_measured
          ? ' <span class="text-muted">(extrapolated from ' + fmtCount(r.rows_per_day_measured) + ')</span>'
          : '') + '</div>'
+      // Only meaningful with an extrapolation, which is why the hint says so
+      // rather than leaving a bare number no one can act on.
+      + '<div class="text-muted">Saturation α</div><div>'
+      + (r.saturation_exponent != null
+         ? '<strong>' + Number(r.saturation_exponent).toFixed(2) + '</strong>'
+           + ' <span class="text-muted">' + (r.rows_per_day_assumed !== r.rows_per_day_measured
+              ? '— the exponent the extrapolation above used'
+              : '— not used here: without an extrapolation the measurement is the answer')
+           + '</span>'
+         : '<span class="text-muted">not fitted — see the note below</span>')
+      + '</div>'
       + '</div>';
+
+    if (r.notes && r.notes.length) {
+      html += '<ul class="text-muted" style="margin:0 0 14px 18px;font-size:12px">'
+        + r.notes.map(function(n) { return '<li>' + esc(n) + '</li>'; }).join('')
+        + '</ul>';
+    }
 
     if (r.dims && r.dims.length) {
       html += '<label class="form-label">Dimensions</label>'
@@ -448,20 +480,41 @@
                   ? '×' + Number(d.marginal_cost).toFixed(2) : '—') + '</td>'
               + '<td>' + (d.gb_hits || 0) + '</td></tr>';
           }).join('')
-        + '</tbody></table>';
+        + '</tbody></table>'
+        + '<p style="margin:6px 0 0;color:var(--muted);font-size:12px">'
+        + 'group_by hits come from <code>query_cache</code>, which only holds '
+        + '<code>count(*)</code> requests — a breakdown used only with a measure '
+        + 'shows as 0 here.</p>';
     }
 
     if (r.stages && r.stages.length) {
+      // `recommended_stage` travels in the report so this marks the line
+      // `rollup_advise` prints `<<` against. Reports stored before that field
+      // existed simply have none, and then nothing is marked.
+      var best = (typeof r.recommended_stage === 'number') ? r.recommended_stage : -1;
       html += '<label class="form-label" style="margin-top:16px">Candidate column sets</label>'
         + '<p style="margin:0 0 6px;color:var(--muted);font-size:12px">'
-        + 'Each line drops one more column. Picking a stage fills the Config form — '
-        + 'nothing is saved until you save it there.</p>'
-        + '<table class="data-table"><thead><tr><th>#</th><th>Columns</th>'
+        + 'Each line drops one more column. Dropped columns become marginals, so an '
+        + '<em>unfiltered</em> breakdown on them stays fast — only a filter on one of '
+        + 'them falls back to <code>fact</code>. Picking a stage fills the Config form — '
+        + 'nothing is saved until you save it there.'
+        + (best >= 0 && r.target_factor
+           ? ' The marked line is the <em>widest</em> set reaching factor '
+             + Number(r.target_factor).toFixed(0) + ', i.e. the most coverage for the '
+             + 'size you asked for.'
+           : '')
+        + '</p>'
+        + '<table class="data-table"><thead><tr><th>#</th><th>Columns</th><th>Dropped</th>'
         + '<th>Rows/day</th><th>Size/day</th><th>Factor</th><th></th></tr></thead><tbody>'
         + r.stages.map(function(s, i) {
-            return '<tr><td>' + (i + 1) + '</td>'
+            return '<tr' + (i === best ? ' class="ctx-match"' : '') + '>'
+              + '<td>' + (i + 1) + '</td>'
               + '<td>' + (s.columns || []).map(function(c) {
                   return '<code>' + esc(c) + '</code>'; }).join(' ') + '</td>'
+              + '<td class="text-muted">' + ((s.dropped || []).length
+                  ? (s.dropped).map(function(c) {
+                      return '<code>' + esc(c) + '</code>'; }).join(' ')
+                  : '—') + '</td>'
               + '<td>' + fmtCount(s.rows_per_day) + '</td>'
               + '<td>' + fmtBytes(s.bytes_per_day) + '</td>'
               + '<td><strong>' + Number(s.factor || 0).toFixed(0) + '×</strong></td>'
@@ -474,11 +527,12 @@
     if (r.measures && r.measures.length) {
       html += '<label class="form-label" style="margin-top:16px">Measures</label>'
         + '<table class="data-table"><thead><tr><th>Measure</th><th>Aggregate</th>'
-        + '<th>Derivable</th><th>Why not</th></tr></thead><tbody>'
+        + '<th>Derivable</th><th>Bytes/row</th><th>Why not</th></tr></thead><tbody>'
         + r.measures.map(function(m) {
             return '<tr><td>' + esc(m.name) + '</td>'
               + '<td class="text-mono">' + esc(m.agg) + '</td>'
               + '<td>' + (m.derivable ? 'yes' : '<strong>no</strong>') + '</td>'
+              + '<td>' + (m.bytes_per_row ? '+' + m.bytes_per_row + ' B' : '—') + '</td>'
               + '<td class="text-muted">' + esc(m.reason || '') + '</td></tr>';
           }).join('')
         + '</tbody></table>';

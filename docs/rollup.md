@@ -49,6 +49,89 @@ The bucket column is **named after `source.partition_column`**. That is what
 keeps the query-builder change to three substitutions: to `_build_where` and
 the slot expression a rollup looks like a thinner `fact`.
 
+## Multi-tier rollups
+
+There is one bucket width per datasource. `rollup_interval_s` is a scalar,
+`rollup_specs` stamps it onto every spec it builds, and `pick_rollup` reads
+it from the `Source` rather than from the spec it is testing. A second tier —
+`rollup_1h` *and* `rollup_1d` — is not configurable today.
+
+Half the machinery is nevertheless already tier-aware: `RollupSpec.interval_s`
+exists, `spec_hash` covers it, and `interval_label` can name `d`/`h`/`m`/`s`
+tables. What is missing is the configuration and, less obviously, the pick
+rule.
+
+### When a second tier would pay
+
+The compaction a tier buys over the one below it, for a width ratio `f`
+(1h to 1d is `f = 24`), follows from the saturation exponent above:
+
+```
+factor = f ** (1 - alpha)
+```
+
+At `alpha = 0` a daily tier holds a 24th of the hourly rows. At `alpha = 1`
+it holds just as many, with a coarser time axis — pure waste. **Factor 10
+needs `alpha <= 0.28`.** That is the first thing to measure, and
+`rollup_advise` already prints it.
+
+Four more conditions, all of which have to hold:
+
+* **The tier below must still be big in the window people actually open.**
+  Rows scanned is buckets x combinations: at ~67k combinations/hour a month
+  costs ~48M rows and a tier is worth it; at the ~2.5k/hour of a narrow
+  column set the same month is 1.8M rows and already fast.
+* **The coarse views must really run at that interval.** `pick_rollup`'s
+  first condition is that the bucket width divides the chart interval, so a
+  daily tier serves `interval = 86400` and nothing else — 6h bins fall
+  straight back to the hourly tier.
+* **`query_cache` must not already cover it.** A month view is usually the
+  same request every time and hits the cache; a tier only improves its cold
+  start. Zooming and panning is where it pays, because no two windows repeat.
+* **The column axis must be exhausted first.** Dropping columns was measured
+  at 30x on the example schema, and `rollup_marginals` already implements
+  exactly that — a second tier on the *column* axis. The time axis can never
+  beat 24x. Narrow the columns before widening the buckets.
+
+The same arithmetic kills the other direction. A *finer* tier (`rollup_1m`)
+is `60 ** (1 - alpha)` times larger than the hourly one — around 17x at
+`alpha = 0.3`. It only pays when the fact-to-hourly factor is well above
+that: at the 338x of a narrow column set a minute tier still beats `fact` by
+~19x, while at the 12x of the full 14-dimension set the minute table would
+come out *larger than `fact` itself*.
+
+### What building it would take
+
+* A list of widths instead of a scalar, in `rollup_interval_s` and in
+  everything that reads it.
+* A cascading build: the daily tier is grouped from the hourly one, never
+  from `fact`. Coarsening is cheap — and it is the one thing that still
+  works below `retention_floor`, so `unreconstructable_span` would not apply
+  to the upper tier as long as the lower one survives.
+* Cascading invalidation: reconfiguring a tier has to stale every tier
+  derived from it, and `rewind_rollup_state` has to rewind them together.
+* A cost estimate in `pick_rollup` instead of `min(key=len(columns))`. With
+  two axes the ordering is no longer total: a wide daily spec can be cheaper
+  to scan than a narrow hourly one, and "narrowest wins" would pick the
+  slower table.
+
+### A month is not a bucket
+
+`rollup_interval_s` is epoch-aligned seconds. Months have no fixed length, so
+2592000 s drifts through the calendar and 604800 s puts week boundaries on a
+Thursday. `interval_label` would call it `30d`, which is what it would
+actually be.
+
+Nor is there a monthly bin to serve: `starcubesIntervalLadder = [1, 60, 3600,
+86400]` (`viz/templates/viz/chart.html`) stops at the day, and the chart bins
+by `Math.floor(epochSec / interval) * interval` — the same epoch arithmetic,
+with the same objection.
+
+None of which is a loss, because the month people ask for is a *viewport*,
+not a bin: a month-wide window drawn in daily bins, which is what the
+interval ladder already picks at that zoom. A daily tier would serve it
+exactly.
+
 ## What it can never serve
 
 **Percentiles.** They do not sum. A `quantile(col)` measure reads `fact`
@@ -261,6 +344,45 @@ small table. The same asymmetry the rollup itself exploits.
 Two densities give the saturation exponent: combination counts saturate, so a
 measurement at one density says little about another. Re-grouping the base
 table at 24x the bucket width is an observation at 24x the density.
+
+#### The saturation exponent
+
+The two observations give one number:
+
+```
+alpha = log(combos_coarse / combos_fine) / log(coarse_factor)
+```
+
+`combos_fine` is distinct tuples per bucket at the configured width,
+`combos_coarse` the same at `coarse_factor` (default 24) times that width.
+Read the ends:
+
+| alpha | means | a coarser bucket holds |
+|---|---|---|
+| 0 | fully saturated — every bucket already sees every combination | the same tuples as a fine one |
+| 1 | no saturation — each bucket brings tuples no other one had | the sum of its parts |
+
+Real schemas sit between, usually low: the combinations that occur at all
+tend to occur every hour.
+
+**What it is for.** Exactly one thing: `_project`, i.e. `--extrapolate-to`.
+Without an extrapolation alpha changes no number in the report — the
+measurement *is* the answer and the ladder is exact. It is reported anyway
+because it is the one figure that says how far the measurement can be
+carried to another volume, and because it answers the multi-tier question
+below.
+
+**When it is missing.** `advise` refuses to fit on too little evidence:
+fewer buckets than `coarse_factor`, or `combos_coarse <= combos_fine` (noise,
+not saturation). Then `saturation_exponent` is `None`, a note says so, and
+`--extrapolate-to` silently degrades to the identity. The fix is
+`--window-buckets`, large enough that the window holds at least
+`coarse_factor` of them.
+
+Only alpha is exported, not the two counts it came from — `combos_fine` and
+`combos_coarse` stay local to `advise`. It shows up in the CLI's `fit` line,
+in `--json`, in `starcubes_meta.rollup_run.report`, and in the Rollup tab's
+Advise report.
 
 `--extrapolate-to <rows_per_hour>` projects onto an expected future load. On a
 datasource already carrying its real volume, leave it alone — the measurement

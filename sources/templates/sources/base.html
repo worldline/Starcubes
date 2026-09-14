@@ -246,11 +246,12 @@ a.btn-icon { display: inline-block; text-decoration: none; }
 }
 .data-table tr:last-child td { border-bottom: none; }
 .data-table tr:hover td { background: var(--bg2); }
-/* Rows the page's current context belongs to — today the alarms watching the
-   chart filter that was carried in. Tinted rather than boxed, so a highlighted
-   row still reads as one row of the table; the accent bar on the first cell is
-   what survives when color-mix is not available. Placed after :hover so the
-   tint stays put while the pointer moves over it. */
+/* Rows the page's current context belongs to — the alarms watching the chart
+   filter that was carried in, and the rollup ladder stage `rollup_advise`
+   recommends. Tinted rather than boxed, so a highlighted row still reads as
+   one row of the table; the accent bar on the first cell is what survives
+   when color-mix is not available. Placed after :hover so the tint stays put
+   while the pointer moves over it. */
 .data-table tr.ctx-match > td {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }

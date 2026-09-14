@@ -73,6 +73,14 @@
             missing, or every measurement scans the whole partition and the speed-up
             factors come out optimistic.
           </p>
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            The report also names the <strong>saturation exponent &alpha;</strong>: how
+            strongly distinct combinations stop growing as a bucket fills &mdash; 0 means
+            a bucket already sees every combination there is, 1 that each one brings
+            tuples no other had. It is what <em>Extrapolate to</em> projects with, so
+            without an extrapolation it is information only, and the numbers below are
+            the exact measurement.{% include "sources/_help_link.html" with slug="rollup" anchor="the-saturation-exponent" %}
+          </p>
           <div class="form-row">
             <div>
               <label class="form-label">Bucket width (s)</label>

@@ -106,6 +106,8 @@ class Advice:
     rows_per_day_measured: float
     rows_per_day_assumed: float      # after --extrapolate-to, if given
     saturation_exponent: Optional[float]
+    target_factor: float = 0.0       # the reduction asked for
+    recommended_stage: int = 0       # index into `stages`, see `_recommend`
     dims: list[DimStat] = field(default_factory=list)
     stages: list[Stage] = field(default_factory=list)
     measures: list[MeasureStat] = field(default_factory=list)
@@ -289,6 +291,7 @@ def advise(source: Source, dest_engine, meta_engine, *,
            interval_s: int = 3600,
            window_buckets: int = 24,
            coarse_factor: int = 24,
+           target_factor: float = 20.0,
            extrapolate_to: Optional[float] = None,
            progress: Optional[Callable[[str], None]] = None) -> Advice:
     """Measure this datasource and return the numbers behind the decision.
@@ -296,6 +299,9 @@ def advise(source: Source, dest_engine, meta_engine, *,
     `interval_s` is the bucket width being considered, `window_buckets` how
     many of them to measure over (one day at hourly buckets), and
     `coarse_factor` the multiple used for the second density observation.
+    `target_factor` is the reduction the caller is after; it selects
+    `recommended_stage` and is carried in the report so every front end
+    marks the same line.
 
     `extrapolate_to` is rows per hour: pass it when the measured window is not
     representative of the load this is being sized for. On a datasource
@@ -421,12 +427,31 @@ def advise(source: Source, dest_engine, meta_engine, *,
         rows_per_day_measured=rows_per_day_measured,
         rows_per_day_assumed=rows_per_day_assumed,
         saturation_exponent=alpha,
+        target_factor=float(target_factor),
+        recommended_stage=_recommend(stages, target_factor),
         dims=dim_stats,
         stages=stages,
         measures=_measure_stats(source),
         warnings=warnings,
         notes=notes,
     )
+
+
+def _recommend(stages: list[Stage], target_factor: float) -> int:
+    """The stage a caller should start from: the *widest* set reaching the target.
+
+    Deliberately not "the biggest jump": the sharpest single gain is always
+    near the end of the ladder, where the last load-bearing dimensions come
+    out — picking it would recommend throwing away coverage nobody asked to
+    lose. Falls back to the narrowest stage when nothing reaches the target.
+
+    Lives here rather than in the CLI because the GUI renders the same ladder
+    from the stored report, and the rule has to be one rule.
+    """
+    if not stages:
+        return 0
+    return next((i for i, st in enumerate(stages) if st.factor >= target_factor),
+                len(stages) - 1)
 
 
 def _project(combos_at_measured: float, rows_measured: float,
