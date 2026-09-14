@@ -117,20 +117,47 @@ Three items below are cross-referenced from it.
   all, and duly hid one in `needed_lag_s` until it was read by hand. Any
   successor suite wants at least one source connection deliberately *not* on
   UTC.)
-- **Late arrivals beyond the overlap are only found on demand.** The Audit
-  tab has to be run by a human over a chosen window; nothing schedules it,
-  and nothing alerts on a gap. A periodic audit of the trailing N hours
-  (with the result stored per run) would close that. See
-  [`etl-automation.md`](etl-automation.md) — the same document covers why a
-  *total* standstill is invisible to both the audit and the alarms (U9).
-- **Backfill re-scans the window even when the exact ids are known.**
-  `audit_ids` names the missing rows, but `import_fact(backfill=True)` still
-  re-extracts the whole window and drops what it already has. For a sparse
-  gap (37 rows in an hour) a targeted `WHERE pk IN (…)` extract would be
-  orders of magnitude cheaper. The blocker is handing the id list to the
-  spawned subprocess — a CLI argument will not hold it, so it needs a temp
-  file or a `starcubes_meta` staging row — plus chunking the IN-list at 1000
-  for Oracle.
+- **Late arrivals beyond the overlap** and **backfill re-scanning a window
+  whose ids are known** — both closed, by one table. They read as two items
+  and were one: the first asked for a periodic audit "with the result stored
+  per run", the second named its blocker as "a `starcubes_meta` staging row"
+  for the id list. That is the same row. `starcubes_meta.audit_run`
+  (migration 0040) is written by `core/audit.py:run_audit` on
+  `datasource.audit_interval_s`, and read back by
+  `etl_run --backfill --audit-run <id>`. Worth keeping:
+
+  - **`gap_span` had been sitting in `core/audit.py` without a caller since
+    it was written.** It is the bridge between the two stages — counts first,
+    ids only over the buckets that disagree — and its absence is a fair
+    summary of why neither item moved: the cheap half and the exact half
+    existed, nothing joined them.
+  - **Measured, on a 37-row gap:** 45 source rows read by the targeted
+    backfill against 2439 by the window backfill over the *same* narrow span.
+    Stage two itself narrowed a seven-hour window to 17.5 minutes.
+  - **Two refusals are load-bearing.** Past `STARCUBES_BACKFILL_IDS_MAX`
+    (100 000) the run is `ids_truncated` and the targeted backfill refuses,
+    naming the window backfill: repairing part of a gap and reporting success
+    is worse than re-reading the window. And an audit whose *every* bucket
+    was unreadable is `failed` with NULL counts — `audit_window` answers one
+    unreadable bucket with `None` so the other 23 survive, but a run where
+    all of them failed compared nothing, and `ok`/`missing=0` would have let
+    the `audit_gap` alarm close a standing episode on a run that never saw
+    the source. That one was found by testing the failure path, not by
+    reading the code.
+  - **The de-dupe is narrowed, not dropped.** A targeted backfill asks which
+    of *those* ids are already in fact, against the PK index. Skipping it
+    would be wrong: a regular load may have picked some up between the audit
+    and the repair, and there is no unique index on `fact`.
+  - **It does not repair by itself.** The alarm (`audit_gap`, a new
+    `core/pipeline_alarm.py` condition, in the default set) notifies; the
+    repair is a gesture. `None` while no audit has run, never zero, so
+    `audit_interval_s` defaulting to off leaves the alarm quiet rather than
+    asserting health.
+
+  Still true, and unchanged by this: a *total* standstill remains invisible
+  to the audit (a stopped source has nothing to compare), which is U9's
+  territory — `max_data_lag_s` and the `data_stale` alarm. See
+  [`etl-automation.md`](etl-automation.md).
 - **Source schema drift guard** — closed by `core/preflight.py`. The
   `WHERE 1=0` probe runs before the worker pool starts and blocks the run
   with the offending column named, instead of failing mid-extract. What is

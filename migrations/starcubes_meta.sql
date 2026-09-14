@@ -1271,3 +1271,76 @@ COMMENT ON COLUMN starcubes_meta.rollup_run.report IS
   'advise: dataclasses.asdict of the Advice -- dimensions, candidate ladder, measures. verify: {passed, skipped, failed, failures[]}. build: NULL, its result is rollup_state. Skips in a verify report are not failures: a skip is the read path correctly falling back to fact.';
 COMMENT ON COLUMN starcubes_meta.rollup_run.progress IS
   'Last progress line emitted, with progress_at as its timestamp. A backfill runs for hours and moves built_from downwards batch by batch; without this the only visible difference between slow progress and a hung process is the log file.';
+
+-- 0040_audit_run.sql -- periodic audit history, and the staging row the
+-- targeted backfill reads. Two backlog items needed the same table: the
+-- periodic audit wanted "the result stored per run", and the targeted
+-- backfill's stated blocker was "a starcubes_meta staging row" for the id
+-- list. The audit produces exactly what the backfill consumes. The counts are
+-- columns rather than report fields because core/pipeline_alarm.py answers
+-- every condition with a number read from starcubes_meta alone; missing_ids
+-- is a capped jsonb array of strings, and past the cap ids_truncated sends
+-- the operator back to a window backfill rather than repairing half a gap and
+-- reporting success. See migrations/0040_audit_run.sql for the full rationale.
+
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS audit_interval_s int NOT NULL DEFAULT 0;
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS audit_window_s   int NOT NULL DEFAULT 0;
+
+COMMENT ON COLUMN starcubes_meta.datasource.audit_interval_s IS
+  'Seconds between periodic audits, checked by the forever loop. 0 = off, and off is the default -- unlike housekeeping_interval_s, because an audit reads the source and the warehouse over a window and is not free.';
+COMMENT ON COLUMN starcubes_meta.datasource.audit_window_s IS
+  'How far back a periodic audit looks. 0 means "fall back to the interval", so an operator who sets only the interval still gets a window that cannot leave a hole between consecutive runs.';
+
+CREATE TABLE IF NOT EXISTS starcubes_meta.audit_run (
+    id             serial PRIMARY KEY,
+    datasource_id  int  NOT NULL REFERENCES starcubes_meta.datasource(id)
+                        ON DELETE CASCADE,
+    trigger        text NOT NULL DEFAULT 'manual'
+        CHECK (trigger IN ('manual', 'forever')),
+    status         text NOT NULL
+        CHECK (status IN ('running', 'ok', 'failed')),
+    started_at     timestamptz NOT NULL DEFAULT now(),
+    finished_at    timestamptz,
+    window_start   timestamptz NOT NULL,
+    window_end     timestamptz NOT NULL,
+    source_rows    bigint,
+    fact_rows      bigint,
+    missing_count  bigint,
+    surplus_count  bigint,
+    duplicate_rows bigint,
+    missing_ids    jsonb,
+    ids_truncated  boolean NOT NULL DEFAULT false,
+    report         jsonb,
+    error          text
+);
+
+CREATE INDEX IF NOT EXISTS ix_audit_run_ds
+    ON starcubes_meta.audit_run (datasource_id, started_at DESC);
+
+COMMENT ON TABLE starcubes_meta.audit_run IS
+  'One execution of manage.py etl_audit, or of the forever loop reaching audit_interval_s. Both the record the "periodic audit" backlog item asked for and the staging row the targeted backfill reads its id list from.';
+COMMENT ON COLUMN starcubes_meta.audit_run.trigger IS
+  'manual (CLI or GUI button) or forever (the loop reached audit_interval_s).';
+COMMENT ON COLUMN starcubes_meta.audit_run.missing_count IS
+  'Rows present in the source and absent from fact over the window -- what the ETL lost. A column rather than a report field so core/pipeline_alarm.py can read it with a plain aggregate over starcubes_meta alone.';
+COMMENT ON COLUMN starcubes_meta.audit_run.missing_ids IS
+  'The missing primary keys as a jsonb array of strings, capped at STARCUBES_BACKFILL_IDS_MAX. Consumed by `etl_run --backfill --audit-run <id>`, which extracts exactly these rows instead of re-scanning the window. NULL when stage two did not run because nothing was missing.';
+COMMENT ON COLUMN starcubes_meta.audit_run.ids_truncated IS
+  'True when more ids were missing than the cap allows. The targeted backfill refuses such a run and points at the window backfill, rather than repairing a part of the gap and reporting success.';
+COMMENT ON COLUMN starcubes_meta.audit_run.report IS
+  'The per-bucket rows from core/audit.py:audit_window -- stage one. Stored for a clean run too: the series is what shows a gap appearing.';
+
+-- The pipeline-alarm condition whitelist gains `audit_gap`. Dropped and
+-- re-added rather than guarded with IF NOT EXISTS, because the constraint
+-- already exists from 0036 and the point here is to *widen* it; re-running
+-- lands on the same definition either way, so this stays idempotent.
+ALTER TABLE starcubes_meta.alarm
+    DROP CONSTRAINT IF EXISTS alarm_condition_check;
+ALTER TABLE starcubes_meta.alarm
+    ADD CONSTRAINT alarm_condition_check
+    CHECK ((rule_kind = 'pipeline' AND condition IN (
+                'data_stale', 'run_failed', 'no_recent_run',
+                'preflight_warn', 'dim_full_pct', 'audit_gap'))
+           OR (rule_kind = 'threshold' AND condition IS NULL));

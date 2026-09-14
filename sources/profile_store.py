@@ -204,11 +204,16 @@ def insert_datasource(conn, profile, name: str, schema: str,
 _DEFAULT_PIPELINE_ALARMS = (
     ("ETL runs are failing", "run_failed", ">=", 1.0),
     ("No ETL run is completing", "no_recent_run", ">", 3600.0),
+    # Stays silent until `audit_interval_s` is set: with no audit run the
+    # condition answers None ("not answerable"), never zero. Included anyway
+    # so turning the audit on is one setting rather than a setting plus a
+    # rule somebody has to know to create.
+    ("The audit found missing rows", "audit_gap", ">", 0.0),
 )
 
 
 def insert_default_pipeline_alarms(conn, datasource_id: int) -> list[str]:
-    """Give a fresh datasource its two pipeline alarms. Returns their names.
+    """Give a fresh datasource its default pipeline alarms. Returns their names.
 
     Shared by the CLI seed path and the GUI create form for the same reason
     the rest of this module is: the two must not drift, and a datasource

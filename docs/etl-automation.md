@@ -73,10 +73,11 @@ deliberately out.
 | Every load | `import_dimensions` (subject to `dim_refresh_interval_s`), `ensure_partitions_for`, the window bound, the run budget | `core/etl.py:import_fact` |
 | End of every load | `max_wm` / `src_now` and the preflight report recorded on the `etl_run` row | `core/etl.py` |
 | After every load | **Alarms**, both kinds | `core/alarm.py:run_alarm_cycle`, from `etl_run.py` |
-| After a load, on `housekeeping_interval_s` (default 6 h) | **Housekeeping** — retention, targeted ANALYZE, BRIN summarisation, dimension fill, partition sizes | `core/housekeeping.py` |
+| After a load, on `housekeeping_interval_s` (default 6 h) | **Housekeeping** — retention, targeted ANALYZE, BRIN summarisation, dimension fill, partition sizes, partition correlation | `core/housekeeping.py` |
+| After a load, on `audit_interval_s` (default off) | **Audit** — two stages; records a row and, when it finds a gap, the ids to repair it with | `core/audit.py:run_audit` |
 | Any HTTP request, throttled to `STARCUBES_PIPELINE_ALARM_INTERVAL_S` | **Pipeline alarms**, on a daemon thread | `starcubes/middleware.py:PipelineAlarmMiddleware` |
 | Continuously, in its own container process | **Pipeline alarms** | `manage.py pipeline_watch` |
-| By hand | `manage.py etl_housekeeping`, `manage.py alarm_run`, the ETL tab's Preflight and Housekeeping buttons | — |
+| By hand | `manage.py etl_housekeeping`, `manage.py etl_audit`, `manage.py alarm_run`, the ETL tab's Preflight, Housekeeping and Audit buttons | — |
 
 Nothing else is periodic. If you are about to add something that must happen
 regularly, it belongs in one of those rows or it will not happen.
@@ -100,6 +101,8 @@ it was added**, with a single deliberate exception, marked.
 | `housekeeping_interval_s` | **21600 (6 h) — on by default** | s | Almost never. This is the exception: what it fixes rots identically on every installation and is invisible by construction. 0 disables the automatic run. |
 | `retention_periods` | 0 = keep everything | partition periods | You have decided, deliberately, that old data may go. **Irreversible.** |
 | `dim_refresh_interval_s` | 0 = every run | s | The per-run dimension import is measurably expensive and new dimension values are rare. Costs freshness — see [Dimensions](#dimensions). |
+| `audit_interval_s` | 0 = off | s | Late arrivals land beyond `late_arrival_overlap_s` and you want them found rather than reported by whoever notices. Off by default because an audit reads the source and the warehouse across a window; unlike housekeeping, it is not free. |
+| `audit_window_s` | 0 = fall back to `audit_interval_s` | s | The trailing span each audit examines. Normally *wider* than the interval — late arrivals are the thing being hunted, and they land behind the tip. The fallback exists so setting only the interval cannot leave an unexamined strip between runs. |
 
 Three columns on the same table are **state, not configuration** — written by
 the engine, never edited by hand:
@@ -122,6 +125,7 @@ Environment variables, all with sane defaults and none normally set:
 | `STARCUBES_PIPELINE_ALARM_INTERVAL_S` | 60 | Throttle for the request-path pipeline-alarm evaluator. |
 | `STARCUBES_MAX_RETENTION_DROPS` | 2 | Partitions retention may drop per housekeeping run. |
 | `STARCUBES_MAX_OVERLAP_PKS` | 5 000 000 | Ceiling on a de-duplicated reload. |
+| `STARCUBES_BACKFILL_IDS_MAX` | 100 000 | Missing ids an audit will store for a targeted backfill. Past it the run is marked `ids_truncated` and only a window backfill is offered. |
 
 ---
 
@@ -206,6 +210,58 @@ wedged ETL.
 (fastest COPY), so "no indices" is the normal initial state. The real
 complaint is "this has been syncing for weeks and they are still missing",
 which needs a row count *and* an age to express.
+
+---
+
+## The periodic audit, and repairing what it finds
+
+`late_arrival_overlap_s` re-reads a trailing span on every load, so a row
+that arrives out of order *within* that span is caught. A row slower than
+that is already below the high watermark when it appears, and no load will
+ever look there again. Nothing notices: the run says `status='ok'`, the
+watermark keeps moving, and the gap is permanent until somebody compares the
+two sides by hand.
+
+`core/audit.py:run_audit` is that comparison, on `audit_interval_s`, in the
+forever loop beside housekeeping — **the only scheduler this system has**.
+
+**Two stages, and the second one usually does not run.** Stage one is
+`audit_window`: counts per time bucket, one cheap query per side. Only when a
+bucket disagrees does stage two (`audit_ids`) pull both sides' primary keys
+and name the individual rows. The normal answer to "did we lose anything" is
+no, and `gap_span` narrows stage two to the buckets that actually disagree —
+measured on a seven-hour window with one gap, that was 17.5 minutes of
+expensive read instead of seven hours.
+
+**It never repairs.** Findings land in `starcubes_meta.audit_run`, the
+`audit_gap` pipeline alarm turns them into a notification, and the repair is
+a gesture. That follows the same rule as preflight: detect and report,
+repair only what is idempotent and finishes in milliseconds.
+
+**The row is also the repair's input.** `etl_run --backfill --audit-run <id>`
+reads `audit_run.missing_ids` and extracts exactly those rows, chunked at
+1000 for Oracle's `IN`-list limit, instead of re-scanning the window.
+Measured on a 37-row gap: **45 source rows read instead of 2439**. This is
+why the two things are one feature — the id list is far too long for a CLI
+argument, and a table to park it in was the missing piece for both.
+
+Two refusals are deliberate:
+
+- Past `STARCUBES_BACKFILL_IDS_MAX` the run is marked `ids_truncated` and the
+  targeted backfill refuses, naming the window backfill instead. Repairing
+  part of a gap and reporting success is worse than re-reading the window,
+  which repairs all of it.
+- An audit whose *every* bucket was unreadable is recorded `failed` with
+  NULL counts, not `ok` with zero. `audit_window` answers one unreadable
+  bucket with `None` so the other 23 survive; a run where all of them failed
+  compared nothing, and recording that as "nothing is missing" would let the
+  alarm close a standing episode on a run that never saw the source. Silence
+  is not recovery.
+
+**The de-dupe is narrowed, not dropped.** A targeted backfill asks which of
+*those* ids are already in fact — against the PK index, not the watermark
+range. Skipping it would be wrong: a regular load may have picked some up
+between the audit and the repair, and there is no unique index on `fact`.
 
 ---
 

@@ -765,6 +765,75 @@ def _overlap_pks(source: Source, dest_engine, since: datetime,
     return set(pks[pk])
 
 
+def _existing_pks_among(source: Source, dest_engine, ids: list) -> set:
+    """Which of `ids` are already in fact — the targeted backfill's de-dupe.
+
+    `_overlap_pks` above answers "what is in fact across this window", which
+    is the right question when the window is what gets re-extracted. When an
+    audit has named the exact rows, the cheaper and more precise question is
+    whether *those* are present, and it is asked against the PK column rather
+    than the watermark expression, so it uses the primary-key index instead
+    of scanning a range.
+
+    Chunked at 1000 like everything else that builds an IN-list here (see
+    `core/audit.py:audit_id_details`); the limit is Oracle's, and the
+    warehouse side keeps the same shape so there is one number to remember.
+    """
+    pk = source.pk_column()
+    if pk is None:
+        raise RuntimeError(
+            f"{source.name}: a targeted backfill needs a fact column with "
+            f"role='pk' — that is what the audit matched on in the first "
+            f"place.")
+    from .audit import _bind_pk
+    found: set = set()
+    with dest_engine.begin() as dst:
+        for i in range(0, len(ids), 1000):
+            batch = ids[i:i + 1000]
+            names = [f"p{j}" for j in range(len(batch))]
+            params = {n: _bind_pk(v) for n, v in zip(names, batch)}
+            placeholders = ", ".join(f":{n}" for n in names)
+            rows = dst.execute(text(
+                f"SELECT {pk} FROM {source.schema_name}.fact "
+                f" WHERE {pk} IN ({placeholders})"), params).all()
+            found.update(r[0] for r in rows)
+    return found
+
+
+def _targeted_chunks(source, source_engine, query: str, ids: list,
+                     pc: str, chunk: int = 1000):
+    """Yield DataFrames for `ids` only, in IN-list chunks.
+
+    The stand-in for the window `pd.read_sql` when an audit has named the
+    rows. Same output shape, so the extract loop below consumes it without
+    knowing which produced it — that is what keeps the transform/load
+    pipeline, the progress writer and the row accounting untouched.
+
+    The PK is matched with `core/audit.py:_source_pk_sql`, not with the raw
+    source column: `fact_column.source_expr` is what the ETL applied on the
+    way in (the example source stores `to_number(txn_id)`, not the text
+    `txn_id`), so comparing against the raw column would match nothing. The
+    audit named these ids through the same expression, which is what makes
+    the two halves fit.
+
+    Chunked at 1000 for Oracle's IN-list limit. `chunksize` is deliberately
+    not used: a chunk here is already at most 1000 rows.
+    """
+    from .audit import _bind_pk, _source_pk_sql
+    pk_sql = _source_pk_sql(source)
+    for i in range(0, len(ids), chunk):
+        batch = ids[i:i + chunk]
+        names = [f"_sc_p{j}" for j in range(len(batch))]
+        params = {n: _bind_pk(v) for n, v in zip(names, batch)}
+        placeholders = ", ".join(f":{n}" for n in names)
+        frame = pd.read_sql(
+            text(f"{query} WHERE {pk_sql} IN ({placeholders})"),
+            source_engine, params=params,
+            parse_dates={pc: {"utc": True}})
+        if not frame.empty:
+            yield frame
+
+
 def _source_min_watermark(source: Source, source_engine) -> Optional[datetime]:
     """`min(watermark_column)` in the source — where its data actually begins.
 
@@ -957,6 +1026,7 @@ def import_fact(source: Source, meta_engine, *,
                 end_time_override: datetime | None = None,
                 row_limit: int | None = None,
                 backfill: bool = False,
+                backfill_ids: list | None = None,
                 log_path: str | None = None) -> int:
     """Run one incremental fact load for `source`. Returns rows loaded.
 
@@ -982,6 +1052,15 @@ def import_fact(source: Source, meta_engine, *,
     therefore invisible to ``_resume_state`` — a backfill must never move
     the high watermark backwards.
 
+    ``backfill_ids`` narrows that to the rows an audit actually named. The
+    extract then reads `WHERE <pk> IN (…)` in chunks instead of scanning the
+    window, which for a sparse gap (37 rows in an hour) is the difference
+    between reading 37 rows and reading a million. The window is still
+    required — partitions, the run row and the de-dupe all need it — it just
+    stops being what the extract reads. Fed by
+    ``etl_run --backfill --audit-run <id>``, which reads the list from
+    ``starcubes_meta.audit_run.missing_ids``.
+
     ``end_time_override`` overrides the source ``max(watermark_column)``
     query — the extract ends at this timestamp.  The source max query is
     skipped entirely.
@@ -995,6 +1074,10 @@ def import_fact(source: Source, meta_engine, *,
     also captured into ``log_tail`` so the GUI can show a traceback without
     filesystem access to the log volume.
     """
+    if backfill_ids is not None and not backfill:
+        raise ValueError(
+            "backfill_ids is only meaningful for a backfill — it names rows "
+            "to re-fetch, not a window to follow")
     if backfill and (start_time is None or end_time_override is None):
         raise ValueError(
             "backfill requires both start_time and end_time_override — "
@@ -1274,14 +1357,31 @@ def import_fact(source: Source, meta_engine, *,
                 end_time = max_wm
 
         if backfill:
-            # A backfill owns its window outright: no HWM lookup, and the
-            # whole window is de-duped against what is already in fact so
-            # only the genuinely missing rows get inserted.
+            # A backfill owns its window outright: no HWM lookup, and what is
+            # already in fact is de-duped away so only the genuinely missing
+            # rows get inserted.
             if start_time.tzinfo is None:
                 start_time = start_time.replace(tzinfo=timezone.utc)
             last_end_time = extract_from = _ceil_second(start_time)
-            existing_pks = _overlap_pks(
-                source, dest_engine, extract_from, end_time)
+            if backfill_ids is not None:
+                # Narrowed, not skipped. Asking which of *these* ids are
+                # already in fact is both cheaper than pulling every PK in
+                # the window and exactly the question that matters.
+                #
+                # Skipping it outright would be wrong: an audit names what
+                # was missing when it ran, and a regular load may have picked
+                # some of those rows up in between. There is no unique index
+                # on `fact`, so a stale id list would insert duplicates
+                # rather than be rejected.
+                existing_pks = _existing_pks_among(
+                    source, dest_engine, backfill_ids)
+                logger.info(
+                    "%s: targeted backfill — %d id(s) named by the audit, "
+                    "%d already in fact",
+                    source.name, len(backfill_ids), len(existing_pks))
+            else:
+                existing_pks = _overlap_pks(
+                    source, dest_engine, extract_from, end_time)
         else:
             # Read fresh, not off the Source: a forever session loads its
             # Source once, before the loop, so a rewind armed from the GUI
@@ -1444,7 +1544,9 @@ def import_fact(source: Source, meta_engine, *,
         else:
             where = f" WHERE {wm} < :_sc_until"
 
-        if backfill:
+        if backfill and backfill_ids is not None:
+            _mode = f"backfill of {len(backfill_ids)} named id(s)"
+        elif backfill:
             _mode = "backfill"
         elif extract_from is None:
             _mode = "initial"
@@ -1595,16 +1697,25 @@ def import_fact(source: Source, meta_engine, *,
         # an `import_query` containing `LIKE '%x%'` survives
         # `exec_driver_sql` only while no params accompany it, whereas
         # `text()` escapes for the driver's paramstyle itself.
-        chunks = pd.read_sql(
-            text(query + where), source_engine, params=where_params,
-            chunksize=source.chunksize,
-            parse_dates={pc: {"utc": True}})
+        if backfill_ids is not None:
+            # The audit named the rows; read those and nothing else. Same
+            # DataFrame shape as the window read, so everything downstream --
+            # tqdm, the progress writer, the transform/load queues, the row
+            # accounting -- is unchanged.
+            chunks = _targeted_chunks(source, source_engine, query,
+                                      backfill_ids, pc)
+        else:
+            chunks = pd.read_sql(
+                text(query + where), source_engine, params=where_params,
+                chunksize=source.chunksize,
+                parse_dates={pc: {"utc": True}})
         # A detached spawn's stderr is a regular log file, not a terminal —
         # tqdm's \r-repainted description would otherwise dominate the log
         # with one giant line. Only draw the bar when something is actually
         # watching it live.
         pbar = tqdm(chunks, desc=f"{source.name}: filling fact",
-                     unit_scale=source.chunksize / 1000, unit=" krows",
+                     unit_scale=(1000 if backfill_ids is not None
+                                 else source.chunksize) / 1000, unit=" krows",
                      disable=quiet or not sys.stderr.isatty())
         chunk_iter = iter(pbar)
         while True:

@@ -7,23 +7,29 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
-### Changed
+### Added
 
-- **Every source connection now opens with its session clock on UTC.**
-  `SET TIME ZONE 'UTC'` on Postgres, `ALTER SESSION SET TIME_ZONE = 'UTC'`
-  on Oracle, `SET time_zone = '+00:00'` on MySQL, issued once per pooled
-  connection. This is a behaviour change for *existing* sources, not only
-  new ones: operator SQL in `import_query` or `source_expr` that depends on
-  the session clock (`CURRENT_DATE`, `LOCALTIMESTAMP`, a cast between a
-  naive and an aware timestamp) now sees UTC. For Oracle `DATE` and
-  `TIMESTAMP` columns — the example source's shape — it changes nothing:
-  those are naive and ignore the session zone. SQL Server has no session
-  time zone and is logged as such.
+- **Periodic audit, and a backfill that repairs only what it named.** Two
+  backlog items that turned out to need the same table.
+  `datasource.audit_interval_s` (default off) has the forever loop compare
+  source and fact over a trailing window; each run writes a
+  `starcubes_meta.audit_run` row. When a gap is found the row also carries
+  the missing primary keys, and `manage.py etl_run --backfill --audit-run
+  <id>` re-fetches exactly those rows instead of re-scanning the window —
+  measured on a 37-row gap, **45 source rows read instead of 2439**. In the
+  GUI the Audit tab's Backfill button becomes "Backfill these N rows"
+  whenever an id list is available.
 
-  The reason is not tidiness. The engine has always asserted that source
-  timestamps are naive and hold UTC; the pin makes that true at the
-  connection instead of hoping for it, and it is what allows a
-  timezone-aware watermark column to work at all (below).
+  The audit is two stages and the expensive one usually does not run: counts
+  per bucket first, ids only over the buckets that disagree. It never
+  repairs on its own — the new `audit_gap` pipeline alarm (in the default
+  set for new datasources) notifies, and the repair stays a gesture.
+
+  Two deliberate refusals: past `STARCUBES_BACKFILL_IDS_MAX` (100 000) the
+  targeted backfill refuses and points at the window backfill rather than
+  repairing half a gap; and an audit whose every bucket was unreadable is
+  recorded as failed with NULL counts, so the alarm cannot read a clean bill
+  of health from a run that never saw the source.
 
 ### Fixed
 

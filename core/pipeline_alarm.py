@@ -206,6 +206,43 @@ def _dim_full_pct(meta_engine, ds_id: int) -> Optional[float]:
     return max(float(d.get("pct_full") or 0) for d in dims)
 
 
+def _audit_gap(meta_engine, ds_id: int) -> Optional[float]:
+    """Rows the newest completed audit found missing from fact.
+
+    The one condition that can see a **late arrival beyond the overlap**.
+    `late_arrival_overlap_s` re-reads a trailing span on every load, so a row
+    that shows up within it is caught; a row slower than that is already below
+    the high watermark when it appears, and no load will ever look there
+    again. Nothing in the pipeline notices — the run says `status='ok'`, the
+    watermark keeps moving, and the gap is permanent until somebody compares
+    the two sides.
+
+    `starcubes_meta.audit_run` is that comparison, written by
+    `core/audit.py:run_audit` on the forever loop's schedule. Reading it here
+    keeps this module's rule intact: metadata only, no `Source.load`, no
+    source connection, so the condition stays answerable for a datasource
+    whose source is unreachable.
+
+    `None` — not zero — while no audit has completed. Zero would assert "no
+    gap", which is exactly what an unaudited datasource cannot claim, and the
+    module treats None as "no breach we can assert" without closing a
+    standing episode. That is also what makes `audit_interval_s` defaulting
+    to off harmless: the alarm exists and stays quiet until somebody turns
+    the audit on.
+
+    A `failed` audit is skipped rather than read as clean, for the same
+    reason: its counts describe the part that ran.
+    """
+    with meta_engine.begin() as conn:
+        n = conn.execute(text(
+            "SELECT missing_count FROM starcubes_meta.audit_run "
+            " WHERE datasource_id = :ds AND status = 'ok' "
+            "   AND missing_count IS NOT NULL "
+            " ORDER BY started_at DESC LIMIT 1"
+        ), {"ds": ds_id}).scalar()
+    return None if n is None else float(n)
+
+
 class _Condition:
     """One pipeline condition: how to measure it, and how to say it.
 
@@ -237,6 +274,8 @@ CONDITIONS: dict[str, _Condition] = {
                    "Preflight is reporting problems", _preflight_warn),
         _Condition("dim_full_pct", "fullest dimension (% of 32767)",
                    "A dimension is filling up", _dim_full_pct),
+        _Condition("audit_gap", "rows missing in the newest audit",
+                   "The audit found rows the ETL lost", _audit_gap),
     )
 }
 

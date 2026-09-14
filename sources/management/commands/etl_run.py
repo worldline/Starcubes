@@ -16,10 +16,12 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import text
 
 from core.alarm import run_alarm_cycle
+from core.audit import audit_due, audit_window_seconds, backfill_ids_for_run, run_audit
 from core.housekeeping import housekeeping_due, run_housekeeping
 from core.etl import import_fact, truncate_last_partition, delete_fact_from, \
                       clear_etl_history, set_highwatermark, EtlAborted
@@ -87,7 +89,14 @@ class Command(BaseCommand):
                             help="re-load the --start/--end window, skipping "
                                  "rows already in fact (matched by PK). Does "
                                  "not move the high watermark. Requires "
-                                 "--start and --end.")
+                                 "--start and --end, or --audit-run.")
+        parser.add_argument("--audit-run", type=int, default=None,
+                            metavar="ID",
+                            help="with --backfill: re-fetch exactly the rows "
+                                 "audit run ID named as missing, instead of "
+                                 "re-scanning its window. The window comes "
+                                 "from the audit run, so --start/--end are "
+                                 "not needed. See manage.py etl_audit.")
 
         # Standalone maintenance actions (one per invocation)
         parser.add_argument("--refresh-counts", action="store_true",
@@ -229,11 +238,47 @@ class Command(BaseCommand):
             return
 
         # Full ETL run (with optional window overrides)
+        backfill_ids = None
+        if options["audit_run"] is not None:
+            if not options["backfill"]:
+                self.stderr.write(
+                    "Error: --audit-run only applies to --backfill\n")
+                self.stderr.flush()
+                raise SystemExit(1)
+            try:
+                picked = backfill_ids_for_run(meta, options["audit_run"])
+            except ValueError as exc:
+                # Every refusal here names what to do instead -- a truncated
+                # id list sends the operator to the window backfill, which
+                # can repair the whole gap.
+                self.stderr.write(f"Error: {exc}\n")
+                self.stderr.flush()
+                raise SystemExit(1)
+            if picked["datasource_id"] != source.id:
+                self.stderr.write(
+                    f"Error: audit run {options['audit_run']} belongs to "
+                    f"datasource {picked['datasource_id']}, not "
+                    f"{source.id} ({source.name})\n")
+                self.stderr.flush()
+                raise SystemExit(1)
+            backfill_ids = picked["ids"]
+            # The audit run owns the window. Overriding it from the command
+            # line would let the partition pre-flight and the run row
+            # describe a different span than the ids came from.
+            start_time_override = picked["start"]
+            end_time_override = picked["end"]
+            options["start"] = start_time_override.isoformat()
+            options["end"] = end_time_override.isoformat()
+            self.stdout.write(
+                f"{source.name}: audit run {options['audit_run']} named "
+                f"{len(backfill_ids)} missing row(s) in "
+                f"[{picked['start']}, {picked['end']})")
+
         if options["backfill"]:
             if not (options["start"] and options["end"]):
                 self.stderr.write(
                     "Error: --backfill requires --start and --end "
-                    "(it re-loads one closed window)\n")
+                    "(it re-loads one closed window), or --audit-run\n")
                 self.stderr.flush()
                 raise SystemExit(1)
             if options["forever"] is not None:
@@ -335,6 +380,7 @@ class Command(BaseCommand):
                                        end_time_override=end_time,
                                        row_limit=options["limit"],
                                        backfill=options["backfill"],
+                                       backfill_ids=backfill_ids,
                                        log_path=log_path)
                 except DatasourceLocked as exc:
                     # Another starcubes process owns this datasource. No
@@ -433,6 +479,37 @@ class Command(BaseCommand):
                                              trigger="forever")
                     except Exception:
                         log.exception("%s: housekeeping failed, continuing",
+                                      source.name)
+
+                # The periodic audit: the only thing that can see a late
+                # arrival which landed *beyond* the overlap window. The
+                # overlap catches rows that show up within
+                # late_arrival_overlap_s; anything slower is simply below the
+                # high watermark by the time it appears, and no load will
+                # ever look there again. Until now that was found only when
+                # somebody opened the Audit tab and chose a window.
+                #
+                # Same placement and same rules as housekeeping above: off by
+                # default, forever-mode only (a one-shot run is somebody
+                # watching, not a scheduler), takes no datasource lock (an
+                # audit only reads), and its own try/except because a failing
+                # audit must not end the iteration — the load is the job, the
+                # audit is the check on it.
+                #
+                # It does not repair. The findings land in
+                # starcubes_meta.audit_run, the `audit_gap` pipeline alarm
+                # turns them into a notification, and the repair is a
+                # gesture: `etl_run --backfill --audit-run <id>`.
+                if forever_id is not None:
+                    try:
+                        if audit_due(meta, source.id):
+                            width = audit_window_seconds(meta, source.id)
+                            now = datetime.now(timezone.utc)
+                            run_audit(source, source.dest_engine(), meta,
+                                      start=now - timedelta(seconds=width),
+                                      end=now, trigger="forever")
+                    except Exception:
+                        log.exception("%s: audit failed, continuing",
                                       source.name)
 
                 iteration += 1

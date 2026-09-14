@@ -42,6 +42,7 @@ No Django imports — same constraint as the rest of `core/`.
 """
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
 from bisect import bisect_right
@@ -88,6 +89,18 @@ DEFAULT_ID_SAMPLE = 200
 # driver tuples is alive at a time, which is the whole point -- see
 # _fetch_id_array.
 _FETCH_CHUNK = 100_000
+
+# How many missing ids an audit will hand to a targeted backfill. Past this
+# the run records ids_truncated and the operator falls back to a window
+# backfill.
+#
+# Not thrift. The targeted extract chunks its IN-list at 1000 for Oracle, so
+# 100k ids are a hundred round trips -- still far cheaper than re-reading a
+# window of a million rows, but the curve is heading the wrong way, and once
+# the gap approaches the size of the window the window scan simply wins.
+# Repairing *part* of a gap and reporting success would be worse than
+# refusing, which is why the cap sets a flag rather than silently slicing.
+BACKFILL_IDS_MAX = int(os.environ.get("STARCUBES_BACKFILL_IDS_MAX", 100_000))
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -338,6 +351,7 @@ def _fetch_id_array(engine, sql: str, params: dict, label: str,
 def audit_ids(source: Source, dest_engine, *, start: datetime, end: datetime,
               sample: int = DEFAULT_ID_SAMPLE,
               max_ids: int = MAX_AUDIT_IDS,
+              full_ids: int = 0,
               timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
     """Name the rows that differ between source and fact over `[start, end)`.
 
@@ -350,6 +364,13 @@ def audit_ids(source: Source, dest_engine, *, start: datetime, end: datetime,
       duplicate — the same PK stored more than once in fact. There is no
                   unique constraint to prevent it, and the count-based
                   audit cannot see it at all.
+
+    `full_ids > 0` additionally returns `missing_all`: the complete missing
+    list, capped at that many, plus `missing_all_truncated`. That is what a
+    targeted backfill consumes, and it is opt-in because the browser has no
+    use for it -- the GUI endpoint renders `sample` ids and would only be
+    made slower by the rest. `sample` still governs what `missing_ids` and
+    the `*_display` lists hold, so no existing caller sees a change.
     """
     start = _as_utc(start)
     end = _as_utc(end)
@@ -394,7 +415,7 @@ def audit_ids(source: Source, dest_engine, *, start: datetime, end: datetime,
     missing_raw, missing_display = head(missing)
     surplus_raw, surplus_display = head(surplus)
 
-    return {
+    result = {
         "start": start.isoformat(),
         "end": end.isoformat(),
         "source_rows": int(len(src_ids)),
@@ -410,6 +431,13 @@ def audit_ids(source: Source, dest_engine, *, start: datetime, end: datetime,
         "sample": int(sample),
         "truncated": bool(len(missing) > sample or len(surplus) > sample),
     }
+    if full_ids > 0:
+        # str() and not the native type: a PK is not always an integer, and
+        # this list round-trips through JSON on its way into audit_run.
+        # _bind_pk puts it back in its native form at the other end.
+        result["missing_all"] = [str(v) for v in missing[:full_ids]]
+        result["missing_all_truncated"] = bool(len(missing) > full_ids)
+    return result
 
 
 def gap_span(rows: list[dict]) -> Optional[tuple[str, str]]:
@@ -455,6 +483,254 @@ def _bind_pk(raw: str):
         return int(raw)
     except (TypeError, ValueError):
         return raw
+
+
+def audit_due(meta_engine, datasource_id: int) -> bool:
+    """True when `audit_interval_s` has elapsed since the last audit.
+
+    A copy of `core/housekeeping.py:housekeeping_due` in shape and in
+    reasoning, including the part that is easy to get wrong: the interval is
+    read *fresh* from the metadata on every call rather than off the `Source`,
+    because a forever session loads its `Source` once before the loop and
+    would otherwise never see an interval edited in the GUI mid-session.
+
+    Unlike housekeeping, the default is off (0). Housekeeping is catalogue
+    reads, an ANALYZE and a BRIN summarise; an audit reads the *source* and
+    the warehouse across a window, and that is not something to switch on for
+    everyone by default.
+    """
+    with meta_engine.begin() as meta:
+        row = meta.execute(text(
+            "SELECT d.audit_interval_s AS iv, "
+            "       (SELECT max(started_at) FROM starcubes_meta.audit_run a "
+            "         WHERE a.datasource_id = d.id) AS last "
+            "  FROM starcubes_meta.datasource d WHERE d.id = :ds"
+        ), {"ds": datasource_id}).mappings().first()
+    if not row:
+        return False
+    interval = int(row["iv"] or 0)
+    if interval <= 0:
+        return False
+    last: Optional[datetime] = row["last"]
+    if last is None:
+        return True
+    return (datetime.now(timezone.utc) - _as_utc(last)).total_seconds() >= interval
+
+
+def audit_window_seconds(meta_engine, datasource_id: int) -> int:
+    """How far back a periodic audit should look, in seconds.
+
+    `audit_window_s` when set, else `audit_interval_s`. The fallback is the
+    point: an operator who sets only the interval still gets a window that
+    reaches back at least to the previous run, so consecutive audits cannot
+    leave an unexamined strip between them. Setting the window *wider* than
+    the interval is the normal configuration -- late arrivals are the thing
+    being hunted, and they land behind the tip.
+    """
+    with meta_engine.begin() as meta:
+        row = meta.execute(text(
+            "SELECT audit_window_s AS w, audit_interval_s AS iv "
+            "  FROM starcubes_meta.datasource WHERE id = :ds"
+        ), {"ds": datasource_id}).mappings().first()
+    if not row:
+        return 0
+    return int(row["w"] or 0) or int(row["iv"] or 0)
+
+
+def run_audit(source: Source, dest_engine, meta_engine, *,
+              start: datetime, end: datetime,
+              buckets: int = 24, trigger: str = "manual",
+              stage_one: bool = True,
+              full_ids: int = BACKFILL_IDS_MAX,
+              timeout_ms: int = DEFAULT_TIMEOUT_MS) -> dict:
+    """Audit `[start, end)` in two stages and record the result.
+
+    Stage one is `audit_window`: counts, bucketed, one cheap query per side.
+    Stage two is `audit_ids`, and it runs **only over the buckets
+    `gap_span` names** -- it pulls both sides' primary keys into memory, and
+    the normal answer to "did we lose anything" is no. This mirrors what an
+    operator does by hand in the Audit tab, which is where the two-stage
+    shape came from.
+
+    `gap_span` has been sitting in this module without a caller since it was
+    written; this is the caller it was written for.
+
+    Writes one `starcubes_meta.audit_run` row and returns it as a dict. The
+    row is the point, not a side effect: it is simultaneously the "result
+    stored per run" the periodic-audit backlog item asked for and the staging
+    row the targeted backfill reads its id list from
+    (`etl_run --backfill --audit-run <id>`).
+
+    `stage_one=False` goes straight to the id comparison over the given
+    window. That is the GUI's "Compare IDs" button: the operator has already
+    decided this window is worth the expensive read, so bucketing it first
+    would be work done to answer a question already answered. It still writes
+    an `audit_run` row, which is what gives that button's result an id the
+    targeted backfill can be pointed at.
+
+    Never raises for a finding. A stage that fails is recorded with
+    status='failed' and the error text, because a periodic audit that throws
+    would take the forever loop's iteration with it.
+    """
+    start = _as_utc(start)
+    end = _as_utc(end)
+    if end <= start:
+        raise ValueError("audit window end must be after start")
+
+    with meta_engine.begin() as meta:
+        run_id = meta.execute(text(
+            "INSERT INTO starcubes_meta.audit_run "
+            "  (datasource_id, trigger, status, started_at, "
+            "   window_start, window_end) "
+            "VALUES (:ds, :t, 'running', now(), :a, :b) RETURNING id"
+        ), {"ds": source.id, "t": trigger, "a": start, "b": end}).scalar()
+
+    result: dict = {"id": run_id, "status": "ok", "trigger": trigger,
+                    "window_start": start.isoformat(),
+                    "window_end": end.isoformat(),
+                    "missing_count": 0, "surplus_count": 0,
+                    "duplicate_rows": 0, "missing_ids": None,
+                    "ids_truncated": False, "error": None}
+    try:
+        if not stage_one:
+            rows = []
+            span = (start.isoformat(), end.isoformat())
+            unreadable = 0
+        else:
+            rows = audit_window(source, dest_engine, start=start, end=end,
+                                buckets=buckets, timeout_ms=timeout_ms)
+
+            # `audit_window` answers an unreadable bucket with
+            # source_rows=None rather than discarding the other 23 -- right
+            # for one bucket, and a trap for the run as a whole. With *every*
+            # bucket unreadable the comparison learned nothing, and recording
+            # that as ok/missing=0 would hand `audit_gap` a clean bill of
+            # health from a run that never saw the source: the alarm would
+            # read zero and close a standing episode. Silence is not
+            # recovery, so this is a failure.
+            unreadable = sum(1 for r in rows if r["source_rows"] is None)
+            if unreadable == len(rows):
+                raise RuntimeError(
+                    f"the source was unreadable across all {len(rows)} "
+                    f"bucket(s) -- the audit compared nothing. See the "
+                    f"per-bucket errors logged above.")
+
+            result["source_rows"] = sum(r["source_rows"] or 0 for r in rows)
+            result["fact_rows"] = sum(r["fact_rows"] or 0 for r in rows)
+            if unreadable:
+                # Partially readable: the counts are real for the buckets
+                # that answered, but a gap sitting in one that did not is
+                # invisible, and `gap_span` cannot see it either (a None
+                # bucket has no `missing`). Recorded so the number is not
+                # read as a statement about the whole window.
+                logger.warning(
+                    "%s: %d of %d audit bucket(s) were unreadable — the "
+                    "result covers only the rest of the window",
+                    source.name, unreadable, len(rows))
+            span = gap_span(rows)
+
+        result["unreadable_buckets"] = unreadable
+        if span is not None:
+            # Narrow to the buckets that actually disagree. Stage two over
+            # the whole window would read both sides in full to learn what
+            # stage one already said about the clean part of it.
+            ids = audit_ids(source, dest_engine,
+                            start=_as_utc(datetime.fromisoformat(span[0])),
+                            end=_as_utc(datetime.fromisoformat(span[1])),
+                            full_ids=full_ids, timeout_ms=timeout_ms)
+            result["missing_count"] = ids["missing_count"]
+            result["surplus_count"] = ids["surplus_count"]
+            result["duplicate_rows"] = ids["duplicate_rows"]
+            result["missing_ids"] = ids.get("missing_all") or None
+            result["ids_truncated"] = bool(ids.get("missing_all_truncated"))
+            # In memory only -- the caller (the GUI endpoint) renders it; the
+            # stored copy below drops `missing_all`, which can be 100k ids.
+            result["ids"] = ids
+            result["source_rows"] = ids["source_rows"]
+            result["fact_rows"] = ids["fact_rows"]
+            result["report"] = {"buckets": rows, "gap_span": list(span),
+                                "unreadable_buckets": unreadable,
+                                "ids": {k: v for k, v in ids.items()
+                                        if k != "missing_all"}}
+            logger.warning(
+                "%s: audit found %d missing, %d surplus, %d duplicate row(s) "
+                "in [%s, %s)", source.name, ids["missing_count"],
+                ids["surplus_count"], ids["duplicate_rows"], span[0], span[1])
+        else:
+            result["report"] = {"buckets": rows, "gap_span": None,
+                                "unreadable_buckets": unreadable}
+            logger.info("%s: audit clean over [%s, %s) — %d row(s) both sides",
+                        source.name, start, end, result["source_rows"])
+    except Exception as exc:
+        logger.exception("%s: audit failed", source.name)
+        result["status"] = "failed"
+        result["error"] = str(exc)
+        # NULL, not 0. `_audit_gap` filters on `missing_count IS NOT NULL`
+        # precisely so a failed run cannot be read as "nothing is missing".
+        result["missing_count"] = None
+        result["surplus_count"] = None
+        result["duplicate_rows"] = None
+
+    with meta_engine.begin() as meta:
+        meta.execute(text(
+            "UPDATE starcubes_meta.audit_run "
+            "   SET status = :s, finished_at = now(), "
+            "       source_rows = :sr, fact_rows = :fr, "
+            "       missing_count = :mc, surplus_count = :sc, "
+            "       duplicate_rows = :dr, "
+            "       missing_ids = CAST(:mi AS jsonb), "
+            "       ids_truncated = :tr, "
+            "       report = CAST(:rep AS jsonb), error = :err "
+            " WHERE id = :id"
+        ), {"id": run_id, "s": result["status"],
+            "sr": result.get("source_rows"), "fr": result.get("fact_rows"),
+            "mc": result["missing_count"], "sc": result["surplus_count"],
+            "dr": result["duplicate_rows"],
+            "mi": (_json.dumps(result["missing_ids"])
+                   if result["missing_ids"] else None),
+            "tr": result["ids_truncated"],
+            "rep": (_json.dumps(result.get("report"))
+                    if result.get("report") is not None else None),
+            "err": result["error"]})
+    return result
+
+
+def backfill_ids_for_run(meta_engine, run_id: int) -> dict:
+    """The stored id list for one audit run, with the reason it is unusable.
+
+    Returns `{"ids": [...], "start": dt, "end": dt, "datasource_id": int}`,
+    or raises ValueError naming why this run cannot drive a targeted
+    backfill. Refusing is deliberate in the truncated case: repairing part of
+    a gap and reporting success is worse than sending the operator to the
+    window backfill that can repair all of it.
+    """
+    with meta_engine.begin() as meta:
+        row = meta.execute(text(
+            "SELECT datasource_id, status, window_start, window_end, "
+            "       missing_ids, ids_truncated, missing_count "
+            "  FROM starcubes_meta.audit_run WHERE id = :id"
+        ), {"id": run_id}).mappings().first()
+    if row is None:
+        raise ValueError(f"audit run {run_id} does not exist")
+    if row["status"] != "ok":
+        raise ValueError(
+            f"audit run {run_id} is {row['status']}, not ok — its id list "
+            f"cannot be trusted")
+    if row["ids_truncated"]:
+        raise ValueError(
+            f"audit run {run_id} found {row['missing_count']} missing rows, "
+            f"more than the id cap (STARCUBES_BACKFILL_IDS_MAX). Use a window "
+            f"backfill over [{row['window_start']}, {row['window_end']}) "
+            f"instead — it repairs the whole gap.")
+    ids = row["missing_ids"] or []
+    if not ids:
+        raise ValueError(
+            f"audit run {run_id} found nothing missing — there is nothing to "
+            f"backfill")
+    return {"ids": [str(v) for v in ids],
+            "start": _as_utc(row["window_start"]),
+            "end": _as_utc(row["window_end"]),
+            "datasource_id": int(row["datasource_id"])}
 
 
 def audit_id_details(source: Source, meta_engine, *, ids: list,

@@ -2166,14 +2166,28 @@ function auditRenderRows(rows) {
   document.getElementById('auditResultCard').style.display = rows.length ? '' : 'none';
 }
 
-function auditBackfill(from, to, btn) {
+{% comment %}
+Two modes behind one function. With `auditRun` set, the backfill re-fetches
+only the rows that audit run named as missing -- the id list lives in
+starcubes_meta.audit_run, which is what makes it reachable at all: it is far
+too long for a form field, and that is exactly why the targeted backfill went
+unbuilt for so long. Without it, the historical window backfill.
+{% endcomment %}
+function auditBackfill(from, to, btn, auditRun, missingCount) {
   var resultEl = document.getElementById('result-audit');
-  if (!confirm('Re-load ' + fmtLocal(from) + ' → ' + fmtLocal(to) + '?\n\n'
-             + 'Rows already in fact are skipped by primary key. '
-             + 'The high watermark is not moved.')) return;
+  var msg = auditRun
+    ? ('Re-fetch the ' + missingCount.toLocaleString() + ' row(s) the audit '
+       + 'named as missing?\n\nOnly those rows are read from the source. '
+       + 'The high watermark is not moved.')
+    : ('Re-load ' + fmtLocal(from) + ' → ' + fmtLocal(to) + '?\n\n'
+       + 'Rows already in fact are skipped by primary key. '
+       + 'The high watermark is not moved.');
+  if (!confirm(msg)) return;
   if (btn) btn.disabled = true;
   resultEl.textContent = '';
-  postJSON('/sources/' + DS_PK + '/etl/backfill/', {from_time: from, to_time: to})
+  var body = auditRun ? {audit_run: auditRun}
+                      : {from_time: from, to_time: to};
+  postJSON('/sources/' + DS_PK + '/etl/backfill/', body)
     .then(function(d) {
       showCmdResult(resultEl, d.ok, d.ok
         ? '✓ Backfill started — watch the ETL Log tab, then re-run the audit'
@@ -2188,6 +2202,9 @@ function auditBackfill(from, to, btn) {
 // injected as markup only when it actually differs from the raw id — the
 // same test the chart's drill-down list uses.
 var auditIdWindowRange = null;
+var auditRunId = null;          // starcubes_meta.audit_run id of the last compare
+var auditIdsTruncated = false;  // more missing rows than the id cap
+var auditMissingCount = 0;
 var auditMissingIds = [];
 
 function auditIdList(title, hint, raw, display, total, sample) {
@@ -2315,6 +2332,9 @@ function auditCompareIds(from, to, btn) {
       return;
     }
     auditIdWindowRange = [d.start, d.end];
+    auditRunId = d.audit_run_id || null;
+    auditIdsTruncated = !!d.ids_truncated;
+    auditMissingCount = d.missing_count || 0;
     auditMissingIds = d.missing_ids || [];
     // A previous window's detail table must not survive a new comparison.
     document.getElementById('auditDetailBox').innerHTML = '';
@@ -2344,6 +2364,9 @@ function auditCompareIds(from, to, btn) {
     if (db) db.addEventListener('click', function() { auditIdDetails(db); });
     var bf = document.getElementById('auditIdBackfillBtn');
     bf.style.display = d.missing_count ? '' : 'none';
+    bf.textContent = (auditRunId && !auditIdsTruncated && d.missing_count)
+      ? ('Backfill these ' + d.missing_count.toLocaleString() + ' row(s)')
+      : 'Backfill this window';
     document.getElementById('result-audit-ids').textContent = '';
     var msg;
     if (d.missing_count) {
@@ -2370,7 +2393,14 @@ on('auditIdsBtn', 'click', function() {
 
 on('auditIdBackfillBtn', 'click', function() {
   if (!auditIdWindowRange) return;
-  auditBackfill(auditIdWindowRange[0], auditIdWindowRange[1], this);
+  // A truncated id list falls back to the window backfill on purpose:
+  // repairing part of a gap and reporting success is worse than re-reading
+  // the window, which repairs all of it.
+  if (auditRunId && !auditIdsTruncated) {
+    auditBackfill(null, null, this, auditRunId, auditMissingCount);
+  } else {
+    auditBackfill(auditIdWindowRange[0], auditIdWindowRange[1], this);
+  }
 });
 
 on('auditRunBtn', 'click', function() {

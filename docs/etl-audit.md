@@ -94,6 +94,40 @@ reason `MAX_AUDIT_IDS` is what it is.
   overlap filter keeps its set, because there the access pattern is repeated
   per-chunk membership tests and a hash table earns its overhead.
 
+## Periodic, and the repair it feeds
+
+The Audit tab is the on-demand form. `core/audit.py:run_audit` is the same
+comparison on a schedule (`datasource.audit_interval_s`, checked by the
+forever loop beside housekeeping), and it writes one
+`starcubes_meta.audit_run` row per execution.
+
+That row does double duty, and that is the whole reason these two things
+were built together. It is the record a periodic audit needs — a series in
+which a gap appearing is visible — *and* the staging row a targeted backfill
+reads its id list from. `etl_run --backfill --audit-run <id>` re-fetches
+exactly the named rows; measured on a 37-row gap, 45 source rows read
+instead of 2439. The list is far too long for a CLI argument, which is what
+kept the targeted backfill unbuilt: there was nowhere to park it.
+
+The GUI's **Compare IDs** button goes through the same function with
+`stage_one=False` — the operator picked the window deliberately, so bucketing
+it first would answer a question already answered — which is what gives its
+result a run id, and turns the adjacent button into "Backfill these N rows".
+
+Three behaviours worth knowing before relying on it:
+
+- **Stage two is narrowed by `gap_span`**, not run over the whole window.
+  On a seven-hour window with one gap that was 17.5 minutes of expensive
+  read instead of seven hours.
+- **A truncated id list refuses the targeted backfill** and points at the
+  window backfill. Repairing part of a gap and reporting success is worse
+  than re-reading the window, which repairs all of it.
+- **An entirely unreadable source is `failed`, not clean.** `audit_window`
+  answers one unreadable bucket with `None` so the other 23 survive; a run
+  where every bucket failed compared nothing, and `ok`/`missing=0` would let
+  the `audit_gap` alarm close a standing episode on a run that never saw the
+  source.
+
 ## Counting strategy
 
 - **`core/audit.py` counts the two sides differently on purpose.** Any
