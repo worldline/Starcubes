@@ -721,6 +721,38 @@ class Source:
             "mssql": "SYSUTCDATETIME()",
         }.get(self.source_dialect, "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'")
 
+    def watermark_probe_sql(self) -> tuple[str, Optional[str]]:
+        """SQL that reads `max(watermark_column)` and the source's own clock.
+
+        Returns ``(max_query, standalone_now)``. The first yields
+        ``max(watermark_column)`` in column 0 and, where it can, the source
+        clock in column 1; the second is a separate statement for the clock
+        when the first could not carry it, or ``None`` when it did.
+
+        Three shapes, cheapest first: an operator-supplied
+        `watermark_max_query` (opaque, so the clock needs its own trivial
+        round trip — Oracle's `FROM dual` included), a direct `max()` against
+        `base_table`, and finally the whole `import_query` as a subquery,
+        which is the slow one and the reason the first two exist.
+
+        Lives here rather than in `core/etl.py` because two callers need the
+        *same* statement: the engine, which uses the values to bound the load
+        window, and `core/preflight.py:_check_watermark_tz`, which reads
+        `max(watermark_column)` to see whether the column is timezone-aware.
+        Preflight runs first and hands its reading forward, so the pair is
+        read once per run rather than twice — but only if both ask the source
+        the same question, which is what this method guarantees.
+        """
+        wm = self.watermark_column
+        now_expr = self.source_now_sql()
+        if self.watermark_max_query:
+            return self.watermark_max_query, (
+                f"SELECT {now_expr} FROM dual"
+                if self.source_dialect == "oracle"
+                else f"SELECT {now_expr}")
+        frm = self.base_table or f"({self.import_query}) q"
+        return f"SELECT max({wm}), {now_expr} FROM {frm}", None
+
     def pk_column(self) -> Optional[str]:
         return next((c.name for c in self.fact_columns if c.role == "pk"), None)
 

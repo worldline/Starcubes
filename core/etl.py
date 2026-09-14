@@ -40,7 +40,7 @@ from .preflight import (acquire_datasource_lock, blocking_message,
 from .schema import (UNKNOWN_SOURCE_ID, ensure_partitions_for, import_dimensions,
                      read_dimensions)
 from .source import Source
-from .utils import tail_file
+from .utils import _parse_dt, tail_file
 
 logger = logging.getLogger(__name__)
 
@@ -672,6 +672,40 @@ def _as_utc(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _preflight_watermark(report: Optional[dict]
+                         ) -> Optional[tuple[datetime, Optional[datetime]]]:
+    """`(max_wm, src_now)` as preflight already read them, or None.
+
+    `core/preflight.py:_check_watermark_tz` runs
+    `Source.watermark_probe_sql()` to see whether the watermark column is
+    timezone-aware, and parks what it read under `watermark_probe` so this
+    run does not ask the source the same thing twice.
+
+    The values travel as ISO strings, not as datetimes, and that is not
+    cosmetic: the whole report is merged into `etl_run.stats` and written
+    with a bare `json.dumps` — a live datetime in there would raise
+    TypeError in the finally block, at the very end of an otherwise
+    successful run. `_parse_dt` is the matching reader (aware UTC, naive
+    input taken as UTC, which is how the engine treats a naive source
+    timestamp anyway).
+
+    Returns None for anything unusable, so the caller falls back to reading
+    the source itself. A missing `max_wm` is unusable; a missing `src_now`
+    is not — that one is legitimately absent and already has a None path.
+    """
+    probe = (report or {}).get("watermark_probe")
+    if not probe or not probe.get("max_wm"):
+        return None
+    try:
+        max_wm = _parse_dt(probe["max_wm"])
+        raw_now = probe.get("src_now")
+        return max_wm, (_parse_dt(raw_now) if raw_now else None)
+    except (ValueError, TypeError):
+        logger.warning("preflight watermark probe was unreadable (%r) — "
+                       "reading the source again", probe)
+        return None
+
+
 def _as_naive_utc(dt: datetime) -> datetime:
     """A DB timestamp as **naive UTC** — the form a source-side bind takes.
 
@@ -1102,10 +1136,9 @@ def import_fact(source: Source, meta_engine, *,
         lag_wm = max(0, int(source.watermark_lag_s or 0))
         lag_now = max(0, int(source.wallclock_lag_s or 0))
 
-        # discover source max(watermark). Prefer the explicit max query if set,
-        # then a direct max() against base_table (cheap), and finally fall back
-        # to wrapping the full import_query as a subquery (slow).
-        # Skipped when end_time_override is provided.
+        # Discover source max(watermark) and the source's own clock. The
+        # three query shapes live in `Source.watermark_probe_sql()`, shared
+        # with preflight. Skipped when end_time_override is provided.
         if end_time_override is not None:
             end_time = end_time_override
             if end_time.tzinfo is None:
@@ -1114,40 +1147,45 @@ def import_fact(source: Source, meta_engine, *,
         else:
             # The wall-clock term of the upper bound (below) reads the
             # source DB's own clock, not this host's -- watermarks are
-            # source wall-clock time throughout. For the two generated
-            # query shapes it rides along as a second column, so it costs
-            # no extra round-trip; only a user-supplied watermark_max_query
-            # is opaque and needs its own statement.
-            # Read on every run, not only when wallclock_lag_s is set. It
-            # rides along as a second column on the two generated query
-            # shapes, so it is free there, and `src_now - max_wm` is the only
+            # source wall-clock time throughout. Read on every run, not only
+            # when wallclock_lag_s is set: `src_now - max_wm` is the only
             # thing that can see a source which is healthy but has stopped
-            # producing (U9) or one whose watermark column is not UTC (N12).
-            # Only a user-supplied watermark_max_query pays for it, with one
-            # extra trivial round trip.
-            want_now = True
-            now_expr = source.source_now_sql()
-            standalone_now = None
-            if source.watermark_max_query:
-                max_query = source.watermark_max_query
-                if want_now:
-                    standalone_now = (
-                        f"SELECT {now_expr} FROM dual"
-                        if source.source_dialect == "oracle"
-                        else f"SELECT {now_expr}")
-            elif source.base_table:
-                _cols = f"max({wm})" + (f", {now_expr}" if want_now else "")
-                max_query = f"SELECT {_cols} FROM {source.base_table}"
+            # producing (U9) or one whose watermark column is not UTC (N12),
+            # and on the two generated query shapes it rides along as a
+            # second column for free.
+            #
+            # Preflight already asked the source this exact question, a few
+            # lines up: `_check_watermark_tz` reads max(watermark_column) to
+            # decide whether the column is timezone-aware, using the same
+            # `Source.watermark_probe_sql()` statement. Re-reading it here
+            # bought nothing and cost one more round trip per run -- on a
+            # 60-second forever loop, 1440 needless indexed max() a day
+            # against the source. So the reading is handed forward.
+            #
+            # Not a shortcut that can go stale in a way that matters: the
+            # value is a few hundred milliseconds older than it would have
+            # been (preflight runs before import_dimensions), which moves
+            # the window's upper bound *earlier*. That is the conservative
+            # direction -- the remainder is simply loaded next run -- and
+            # `src_now - max_wm` is unaffected either way, because both come
+            # out of the same statement.
+            #
+            # Falls back to reading it here whenever preflight could not
+            # supply one: an import_query-only datasource (preflight will
+            # not pay for a full subquery scan), an unreachable source, a
+            # rejected probe.
+            probed = _preflight_watermark(preflight_report)
+            if probed is not None:
+                end_time, src_now = probed
             else:
-                _cols = f"max({wm})" + (f", {now_expr}" if want_now else "")
-                max_query = f"SELECT {_cols} FROM ({source.import_query}) q"
-            with source_engine.begin() as src:
-                _row = src.execute(text(max_query)).first()
-                end_time = _row[0] if _row is not None else None
-                if want_now and standalone_now is None:
-                    src_now = _row[1] if _row is not None else None
-                elif standalone_now is not None:
-                    src_now = src.execute(text(standalone_now)).scalar()
+                max_query, standalone_now = source.watermark_probe_sql()
+                with source_engine.begin() as src:
+                    _row = src.execute(text(max_query)).first()
+                    end_time = _row[0] if _row is not None else None
+                    if standalone_now is None:
+                        src_now = _row[1] if _row is not None else None
+                    else:
+                        src_now = src.execute(text(standalone_now)).scalar()
             if end_time is None:
                 logger.log(logging.DEBUG if quiet else logging.INFO,
                           "%s: source has no data for watermark %s",

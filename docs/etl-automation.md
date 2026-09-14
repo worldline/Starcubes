@@ -148,7 +148,7 @@ Nine checks, in cost order:
 | `indices` | Are the indices and foreign keys `create_indices` would build present? | Warns, never blocks, **never builds** |
 | `warehouse_drift` | Does `fact` match the configured columns? (`sync_schema` dry run) | Blocks on a missing column or an unsafe type; warns on a safe widening or an orphan column |
 | `source_projection` | Does the source still project every fact column? (`WHERE 1=0`) | Blocks on a rejected query; warns on an unreachable source |
-| `watermark_tz` | Is the watermark column naive, the shape the load window binds against? (one indexed `max()`) | Blocks an aware column on a dialect whose session cannot be pinned to UTC; otherwise OK |
+| `watermark_tz` | Is the watermark column naive, the shape the load window binds against? (one indexed `max()`, handed forward to the load) | Blocks an aware column on a dialect whose session cannot be pinned to UTC; otherwise OK |
 | `watermark_tip` | Is the stored watermark standing above a fact tip that moved down? | Warns past `STARCUBES_HWM_GAP_WARN_S` |
 | `data_staleness` | `src_now − max_wm` against `max_data_lag_s` | Warns; a *negative* value is reported as a non-UTC watermark column |
 | `alarm_windows` | Do any alarm windows reach below the retention floor? | Warns, naming them |
@@ -171,6 +171,23 @@ to do re-extracted two hours it already held and inserted 16665 duplicate
 rows; binding without the session pin lost the same 16665 instead. Under a
 UTC session the one bind matches a naive and an aware column alike, which
 is what `watermark_tz` reports as OK.
+
+**The check's round trip is not an extra one.** It reads
+`max(watermark_column)` plus the source clock through
+`Source.watermark_probe_sql()` — the same statement `import_fact` needs to
+bound the load window — and parks the reading under
+`report["watermark_probe"]` as ISO strings, which `core/etl.py` then uses
+instead of asking again. Measured against a Postgres source: three source
+statements for the window before, two after; on a 60-second forever loop
+that is 1440 needless indexed `max()` a day not issued.
+
+Two consequences worth knowing. The value is read slightly *earlier* than
+before — preflight runs ahead of `import_dimensions` — which moves the
+window's upper bound marginally back, the conservative direction, with the
+remainder loaded next run; `src_now − max_wm` is unaffected because both
+still come out of one statement. And an import_query-only datasource is
+skipped by the check on purpose, because `max()` over that subquery is a
+table scan: there the engine reads for itself, exactly as before.
 
 `mssql` is the exception that keeps the check alive: SQL Server has no
 session time zone at all (`AT TIME ZONE` is per-expression), so an aware

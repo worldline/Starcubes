@@ -54,7 +54,11 @@ Notable changes per release. Format follows
 
   Where the session cannot be pinned — MSSQL has none — the new
   `watermark_tz` preflight check blocks the run and names the column
-  instead of loading it on an unknown clock.
+  instead of loading it on an unknown clock. That check costs no extra
+  source round trip: it reads `max(watermark_column)` and the source clock
+  through the statement the load needs anyway
+  (`Source.watermark_probe_sql()`) and hands the reading forward, so a run
+  now issues one of those queries where it used to issue two.
 
 - **The source cardinality estimate in the source editor read the wrong
   clock.** Its 24-hour window anchored on `SYSTIMESTAMP` / `NOW()` /

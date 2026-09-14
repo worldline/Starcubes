@@ -358,7 +358,8 @@ def _check_source_projection(source: Source, source_engine) -> dict:
                   extra=extra)
 
 
-def _check_watermark_tz(source: Source, source_engine) -> dict:
+def _check_watermark_tz(source: Source,
+                        source_engine) -> tuple[dict, Optional[dict]]:
     """Is the watermark column naive, the shape the load window binds against?
 
     The window bounds go down as **naive UTC** (`core/etl.py:_as_naive_utc`),
@@ -380,55 +381,73 @@ def _check_watermark_tz(source: Source, source_engine) -> dict:
     `datetime.tzinfo` is what the driver decided, which is dialect-free and
     needs no psycopg2 oid table.
 
-    One indexed `max()` — literally the query the engine already runs as its
-    default `watermark_max_query`. Deliberately *not* wrapped around
-    `import_query`: a full `max()` over that subquery is the slow shape
-    `core/etl.py:_source_min_watermark` already warns about, and no probe is
-    worth a table scan before every load.
+    Returns `(check, probe)`. The probe is `{"max_wm": iso, "src_now": iso}`
+    — what this round trip read — and `core/etl.py` uses it to bound the load
+    window instead of asking the source the same thing again a few lines
+    later. `Source.watermark_probe_sql()` is what keeps the two questions
+    identical; without that they would drift and the sharing would quietly
+    become wrong.
+
+    ISO strings rather than datetimes because the whole report is merged into
+    `etl_run.stats` and written with a bare `json.dumps`: a live datetime in
+    there raises TypeError in the finally block, at the end of an otherwise
+    good run.
+
+    `None` for the probe whenever the engine must read for itself — an
+    import_query-only datasource, an unreachable source, a rejected query.
+    An import_query-only source is skipped deliberately: `max()` over that
+    subquery is the slow shape `core/etl.py:_source_min_watermark` warns
+    about, and preflight will not pay for a table scan to answer a question
+    the engine is about to answer anyway.
     """
+    def _iso(v):
+        return v.isoformat() if hasattr(v, "isoformat") else None
+
     if source_engine is None:
         return _check("watermark_tz", CHECK_OK,
-                      "skipped — no source connection available")
+                      "skipped — no source connection available"), None
 
     wm = source.watermark_column
-    if source.watermark_max_query:
-        probe = source.watermark_max_query
-    elif source.base_table:
-        probe = f"SELECT max({wm}) FROM {source.base_table}"
-    else:
-        # import_query only. See the docstring: the probe is not worth what
-        # it would cost here, and the engine reads the same value moments
-        # later anyway.
+    if not source.watermark_max_query and not source.base_table:
         return _check("watermark_tz", CHECK_OK,
                       "skipped — needs base_table or watermark_max_query to "
-                      "probe the watermark cheaply")
+                      "probe the watermark cheaply"), None
 
+    max_query, standalone_now = source.watermark_probe_sql()
     try:
         with source_engine.begin() as src:
-            value = src.execute(text(probe)).scalar()
+            row = src.execute(text(max_query)).first()
+            value = row[0] if row is not None else None
+            if standalone_now is None:
+                src_now = row[1] if row is not None else None
+            else:
+                src_now = src.execute(text(standalone_now)).scalar()
     except Exception as exc:
         # Warn, never block. A query the source *rejects* is drift, and
         # _check_source_projection is what blocks on that; reaching the same
         # verdict from here would double the refusal for one cause.
         return _check("watermark_tz", CHECK_WARN,
                       f"could not read max({wm}) to check its time zone: "
-                      f"{exc}", error=str(exc))
+                      f"{exc}", error=str(exc)), None
+
+    probe = {"max_wm": _iso(value), "src_now": _iso(src_now)}
 
     if value is None:
         return _check("watermark_tz", CHECK_OK,
                       f"not checked — the source has no rows yet, so "
-                      f"max({wm}) says nothing about its type")
+                      f"max({wm}) says nothing about its type"), probe
     if getattr(value, "tzinfo", None) is None:
         return _check("watermark_tz", CHECK_OK,
                       f"{wm} reads as a naive timestamp — the shape the load "
-                      f"window binds against", watermark=wm, aware=False)
+                      f"window binds against", watermark=wm,
+                      aware=False), probe
 
     if source.source_dialect in _SESSION_UTC_SQL:
         return _check("watermark_tz", CHECK_OK,
                       f"{wm} is timezone-aware, and the {source.source_dialect} "
                       f"source session is pinned to UTC — the window bounds "
                       f"compare exactly", watermark=wm, aware=True,
-                      session_pinned=True)
+                      session_pinned=True), probe
 
     return _check("watermark_tz", CHECK_BLOCK,
                   f"{wm} is timezone-aware and the {source.source_dialect} "
@@ -437,7 +456,7 @@ def _check_watermark_tz(source: Source, source_engine) -> dict:
                   f"rows in or out of it silently. Project the watermark as "
                   f"a naive UTC value — through import_query or a view — and "
                   f"point watermark_column at that.",
-                  watermark=wm, aware=True, session_pinned=False)
+                  watermark=wm, aware=True, session_pinned=False), probe
 
 
 def _check_watermark_tip(source: Source, dest_engine, meta_engine) -> dict:
@@ -653,7 +672,9 @@ def run_preflight(source: Source, meta_engine, dest_engine, *,
     checks.append(_check_indices(source, dest_engine, meta_engine))
     checks.append(_check_warehouse_drift(source, dest_engine))
     checks.append(_check_source_projection(source, source_engine))
-    checks.append(_check_watermark_tz(source, source_engine))
+    wm_tz_check, watermark_probe = _check_watermark_tz(
+        source, source_engine)
+    checks.append(wm_tz_check)
     checks.append(_check_watermark_tip(source, dest_engine, meta_engine))
     checks.append(_check_data_staleness(source, meta_engine))
     checks.append(_check_alarm_windows(source, meta_engine))
@@ -669,6 +690,10 @@ def run_preflight(source: Source, meta_engine, dest_engine, *,
     return {"checks": checks,
             "repairs": repairs,
             "blocked": bool(blocked),
+            # What _check_watermark_tz read from the source, ISO-encoded, so
+            # core/etl.py can bound the window with it instead of issuing the
+            # same max(watermark) again. None when it could not read one.
+            "watermark_probe": watermark_probe,
             "ran_at": datetime.now(timezone.utc).isoformat()}
 
 
