@@ -122,6 +122,11 @@ def render_message(t: dict) -> tuple[str, str]:
         f"Closed at: {_fmt(t['closed_at'])}",
         f"Details: /sources/alarms/firings/?ds={t['datasource_id']}",
     ]
+    # Optional, and `.get()` rather than a subscript unlike everything above:
+    # only some pipeline conditions supply one, and a missing note must not
+    # be an exception on the notification path.
+    if t.get("note"):
+        lines.insert(4, str(t["note"]))
     return subject, "\n".join(lines)
 
 

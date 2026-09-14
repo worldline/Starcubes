@@ -182,6 +182,21 @@
         <div class="form-hint">Seconds between automatic housekeeping runs, checked by the forever loop after each load: targeted <code>ANALYZE</code> of the partitions being written, BRIN range summarisation, dimension fill levels and partition sizes. Defaults to 6&nbsp;hours and is deliberately on &mdash; the load is COPY-only, so autovacuum's thresholds are effectively never reached, statistics on the newest partition go stale and BRIN ranges are never summarised, which silently stops the index covering the newest data. 0 disables the automatic run; the ETL&nbsp;Commands tab and <code>manage.py etl_housekeeping</code> still work by hand.</div>
       </div>
       <div class="form-group">
+        <label class="form-label">Audit Interval (s)</label>
+        <input class="form-control" name="audit_interval_s" type="number" min="0" step="1" value="{{ ds.audit_interval_s|default:0 }}">
+        <div class="form-hint">Seconds between automatic audits, checked by the forever loop after each load. An audit compares source and fact across a trailing window and is the only thing that finds a <em>late arrival beyond the overlap</em> &mdash; a row slower than <code>late_arrival_overlap_s</code> is already below the high watermark when it appears, and no load will ever look there again. Two stages, and the expensive one runs only where a bucket disagrees. <strong>0 = off</strong>, unlike housekeeping: an audit reads the source and the warehouse over a window and is not free.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Audit Window (s)</label>
+        <input class="form-control" name="audit_window_s" type="number" min="0" step="1" value="{{ ds.audit_window_s|default:0 }}">
+        <div class="form-hint">How far back each audit looks. Normally <em>wider</em> than the interval &mdash; late arrivals are what is being hunted and they land behind the tip. <strong>0 falls back to the interval</strong>, so setting only the interval cannot leave an unexamined strip between consecutive runs.</div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Audit Auto-Repair (rows)</label>
+        <input class="form-control" name="audit_autofill_max" type="number" min="0" step="1" value="{{ ds.audit_autofill_max|default:0 }}">
+        <div class="form-hint">Up to this many missing rows, a forever-mode audit repairs the gap itself with a targeted backfill instead of only raising the alarm. The point is that keeping <code>watermark_lag_s</code> low means accepting a few stragglers, and accepting them should not mean somebody presses a button for 37 rows. Capped rather than unlimited: past a point a gap is a symptom rather than a straggler, and a large out-of-order insert also costs BRIN correlation. <strong>0 = off</strong>; a truncated id list is never auto-repaired.</div>
+      </div>
+      <div class="form-group">
         <label class="form-label">Watermark Fact Expression</label>
         <input class="form-control mono" name="watermark_fact_expr" value="{{ ds.watermark_fact_expr|default:'' }}">
         <div class="form-hint">Fact-side SQL reproducing the watermark column, used to find already-loaded rows in the overlap window and by the Audit tab. Leave blank to use the partition column. Example: <code>create_time + total * interval &#39;1 millisecond&#39;</code></div>

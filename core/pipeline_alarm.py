@@ -243,6 +243,78 @@ def _audit_gap(meta_engine, ds_id: int) -> Optional[float]:
     return None if n is None else float(n)
 
 
+def _needed_lag_p99(meta_engine, ds_id: int) -> Optional[float]:
+    """Seconds the load window would have had to reach further back.
+
+    The diagnosis behind `audit_gap`. That condition says rows were lost;
+    this one says *by how much* -- `etl_run.last_end_time` minus the missing
+    row's own watermark value, measured by `core/audit.py:audit_id_details`
+    and stored by stage three of `run_audit`.
+
+    Raw seconds, deliberately, and not a shortfall against either knob. The
+    number applies to both and they are not interchangeable: raising
+    `watermark_lag_s` by it keeps the window's tip below the row and holds
+    *every* row back with it, while `late_arrival_overlap_s` set to it
+    re-reads a trailing span instead and leaves freshness alone. Which price
+    to pay is an operator's decision, so the alarm states the measurement and
+    `_needed_lag_note` below spells out what each increment would buy.
+
+    `None` when no successful audit has found anything -- never zero. Zero
+    would assert "nothing arrives late", which a datasource with no audit
+    cannot claim, and the module treats None as no assertion either way.
+    """
+    with meta_engine.begin() as conn:
+        v = conn.execute(text(
+            "SELECT needed_lag_p99_s FROM starcubes_meta.audit_run "
+            " WHERE datasource_id = :ds AND status = 'ok' "
+            "   AND needed_lag_p99_s IS NOT NULL "
+            " ORDER BY started_at DESC LIMIT 1"
+        ), {"ds": ds_id}).scalar()
+    return None if v is None else float(v)
+
+
+def _needed_lag_note(meta_engine, ds_id: int) -> Optional[str]:
+    """The ladder, as one line for the notification body.
+
+    Answers the question an operator actually has in front of the number:
+    *what do I have to add, and what does that buy me.* Both knobs are named
+    with their current values, because the decision is between them and
+    neither is derivable from the measurement alone.
+    """
+    with meta_engine.begin() as conn:
+        row = conn.execute(text(
+            "SELECT a.report -> 'lag_ladder' AS ladder, "
+            "       d.watermark_lag_s AS wl, "
+            "       d.late_arrival_overlap_s AS ov "
+            "  FROM starcubes_meta.audit_run a "
+            "  JOIN starcubes_meta.datasource d ON d.id = a.datasource_id "
+            " WHERE a.datasource_id = :ds AND a.status = 'ok' "
+            "   AND a.needed_lag_p99_s IS NOT NULL "
+            " ORDER BY a.started_at DESC LIMIT 1"
+        ), {"ds": ds_id}).mappings().first()
+    if not row or not row["ladder"]:
+        return None
+    rungs = ", ".join(f"+{_fmt_secs(r['add_s'])} -> {r['caught_pct']:g}%"
+                      for r in row["ladder"])
+    return (f"Current reach: watermark_lag_s={row['wl']}s, "
+            f"late_arrival_overlap_s={row['ov']}s. "
+            f"Would have caught: {rungs}. "
+            f"Either knob buys the same reach -- watermark_lag_s delays every "
+            f"row, late_arrival_overlap_s re-reads a trailing span instead.")
+
+
+def _fmt_secs(n: float) -> str:
+    """Seconds as something an operator reads without counting zeroes."""
+    n = int(n)
+    if n < 120:
+        return f"{n}s"
+    if n < 7200:
+        return f"{n // 60}min"
+    if n < 172800:
+        return f"{n // 3600}h"
+    return f"{n // 86400}d"
+
+
 class _Condition:
     """One pipeline condition: how to measure it, and how to say it.
 
@@ -255,11 +327,19 @@ class _Condition:
     """
 
     def __init__(self, code: str, label: str, title: str,
-                 fn: Callable[[object, int], Optional[float]]):
+                 fn: Callable[[object, int], Optional[float]],
+                 note_fn: Optional[Callable[[object, int],
+                                            Optional[str]]] = None):
         self.code = code
         self.label = label
         self.title = title
         self.fn = fn
+        # Optional one-line elaboration for the notification body. A
+        # condition answers with a number, which is what the episode machine
+        # needs; a number is sometimes not what the *reader* needs. Only
+        # `needed_lag_p99` has one so far, because only there is the number
+        # an input to a decision rather than a verdict.
+        self.note_fn = note_fn
 
 
 CONDITIONS: dict[str, _Condition] = {
@@ -276,6 +356,9 @@ CONDITIONS: dict[str, _Condition] = {
                    "A dimension is filling up", _dim_full_pct),
         _Condition("audit_gap", "rows missing in the newest audit",
                    "The audit found rows the ETL lost", _audit_gap),
+        _Condition("needed_lag_p99", "lateness of the missing rows, p99 (s)",
+                   "Rows are arriving later than the window reaches",
+                   _needed_lag_p99, note_fn=_needed_lag_note),
     )
 }
 
@@ -318,6 +401,19 @@ def evaluate_pipeline_alarm(meta_engine, alarm: dict) -> dict:
 
     # The label stands in for `measure` so the notification path needs no
     # knowledge of pipeline alarms at all. See `_Condition`.
+    #
+    # The note is computed only when there is a transition to carry it: it is
+    # a second metadata read, and the overwhelming majority of evaluations
+    # produce no transition at all.
+    note = None
+    if counts["transitions"] and cond.note_fn is not None:
+        try:
+            note = cond.note_fn(meta_engine, alarm["datasource_id"])
+        except Exception:
+            # An elaboration that fails must not cost the notification it was
+            # meant to elaborate.
+            logger.exception("%s: building the note for %s failed",
+                             alarm.get("ds_name"), cond.code)
     stamp_transitions(counts["transitions"],
-                      {**alarm, "measure": cond.label})
+                      {**alarm, "measure": cond.label, "note": note})
     return counts

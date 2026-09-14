@@ -554,6 +554,13 @@ def stamp_transitions(transitions: list[dict], alarm: dict) -> None:
     before calling this — which is exactly why the notification path needed
     no change at all to carry a second kind of alarm.
 
+    `note` is an optional free line for the notification body, absent for
+    every threshold alarm and for most pipeline ones. It exists because a
+    condition answers with a *number*, which is what the episode machine
+    needs and occasionally not what the reader needs -- "rows arrived 18
+    minutes late" is a measurement, "adding 5 minutes would have caught 90%
+    of them" is the decision it feeds.
+
     Note what is *not* stamped: an `alarm.rule_kind` value must never land
     on a transition under the key `kind`, which already means opened/closed.
     """
@@ -568,6 +575,7 @@ def stamp_transitions(transitions: list[dict], alarm: dict) -> None:
             notify_email_recipients=alarm.get("notify_email_recipients") or [],
             notify_xmpp_recipients=alarm.get("notify_xmpp_recipients") or [],
             severity=alarm.get("severity") or None,
+            note=alarm.get("note") or None,
         )
 
 

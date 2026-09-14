@@ -365,12 +365,15 @@ def audit_ids(source: Source, dest_engine, *, start: datetime, end: datetime,
                   unique constraint to prevent it, and the count-based
                   audit cannot see it at all.
 
-    `full_ids > 0` additionally returns `missing_all`: the complete missing
-    list, capped at that many, plus `missing_all_truncated`. That is what a
-    targeted backfill consumes, and it is opt-in because the browser has no
-    use for it -- the GUI endpoint renders `sample` ids and would only be
-    made slower by the rest. `sample` still governs what `missing_ids` and
-    the `*_display` lists hold, so no existing caller sees a change.
+    `full_ids > 0` additionally returns `missing_all` (the complete missing
+    list, capped at that many, plus `missing_all_truncated`) and `lag_sample`
+    (`sample` ids spread evenly across the whole missing set). The first is
+    what a targeted backfill consumes; the second is what stage three of
+    `run_audit` measures lateness on, and it is *not* the head of the list --
+    see `sample_evenly` for why that would be biased. Both are opt-in because
+    the browser has no use for either. `sample` still governs what
+    `missing_ids` and the `*_display` lists hold, so no existing caller sees
+    a change.
     """
     start = _as_utc(start)
     end = _as_utc(end)
@@ -437,6 +440,11 @@ def audit_ids(source: Source, dest_engine, *, start: datetime, end: datetime,
         # _bind_pk puts it back in its native form at the other end.
         result["missing_all"] = [str(v) for v in missing[:full_ids]]
         result["missing_all_truncated"] = bool(len(missing) > full_ids)
+        # Spread across the *whole* missing set, and taken here rather than
+        # from `missing_all` on purpose: that list is capped, so sampling it
+        # would inherit the cap's head bias on exactly the runs where the gap
+        # is largest. See `sample_evenly`.
+        result["lag_sample"] = sample_evenly(missing, sample)
     return result
 
 
@@ -483,6 +491,58 @@ def _bind_pk(raw: str):
         return int(raw)
     except (TypeError, ValueError):
         return raw
+
+
+# Rungs for the "what would I have to add" ladder, in seconds. Round
+# durations an operator would actually type into a config field, not
+# percentiles: the question being answered is "what does this much reach buy
+# me", and the answer has to be readable as a trade-off.
+_LAG_LADDER_RUNGS = (30, 60, 300, 900, 3600, 21600, 86400)
+
+
+def lag_ladder(lags: list[float]) -> list[dict]:
+    """`[{add_s, caught_pct}]` — what each increment would have caught.
+
+    Deliberately this direction and not percentiles-in-seconds. The operator
+    is choosing a compromise between freshness and re-reads, and the question
+    that decision turns on is "how much coverage does this much cost me",
+    which a percentile answers backwards.
+
+    Stops one rung past the worst observed lateness: further rungs all read
+    100% and say nothing. Always ends on a rung that reaches everything, so
+    the ladder has a visible ceiling rather than trailing off.
+    """
+    if not lags:
+        return []
+    arr = np.asarray(lags, dtype=np.float64)
+    worst = float(arr.max())
+    out = []
+    for rung in _LAG_LADDER_RUNGS:
+        out.append({"add_s": rung,
+                    "caught_pct": round(float((arr <= rung).mean()) * 100, 1)})
+        if rung >= worst:
+            break
+    else:
+        # Later than the coarsest rung. Name the actual figure rather than
+        # leave the ladder implying a day is enough.
+        out.append({"add_s": int(np.ceil(worst)), "caught_pct": 100.0})
+    return out
+
+
+def sample_evenly(arr, n: int) -> list:
+    """`n` values spread across `arr`, not its head.
+
+    `np.setdiff1d` returns its result **sorted**, so `missing[:n]` is the n
+    lowest primary keys. With the usual monotonic key that is the n oldest
+    missing rows -- a systematically biased sample for anything that asks how
+    late rows arrive, which is exactly what stage three asks.
+
+    Harmless where `audit_ids` uses the head: that list is for display.
+    """
+    if len(arr) <= n:
+        return [str(v) for v in arr]
+    step = len(arr) / float(n)
+    return [str(arr[int(i * step)]) for i in range(n)]
 
 
 def audit_due(meta_engine, datasource_id: int) -> bool:
@@ -590,7 +650,9 @@ def run_audit(source: Source, dest_engine, meta_engine, *,
                     "window_end": end.isoformat(),
                     "missing_count": 0, "surplus_count": 0,
                     "duplicate_rows": 0, "missing_ids": None,
-                    "ids_truncated": False, "error": None}
+                    "ids_truncated": False, "error": None,
+                    "needed_lag_p99_s": None, "needed_lag_median_s": None,
+                    "needed_lag_max_s": None, "needed_lag_n": None}
     try:
         if not stage_one:
             rows = []
@@ -652,6 +714,48 @@ def run_audit(source: Source, dest_engine, meta_engine, *,
                                 "unreadable_buckets": unreadable,
                                 "ids": {k: v for k, v in ids.items()
                                         if k != "missing_all"}}
+
+            # Stage three: *why* they were missing. A row is absent because
+            # it arrived after the high watermark had already passed its
+            # watermark value, and `audit_id_details` measures exactly that
+            # distance. Guarded separately -- it is the diagnosis, and losing
+            # it must not lose the finding itself, which is what actually
+            # repairs the data.
+            try:
+                det = audit_id_details(
+                    source, meta_engine,
+                    ids=ids.get("lag_sample") or ids["missing_ids"],
+                    start=_as_utc(datetime.fromisoformat(span[0])),
+                    end=_as_utc(datetime.fromisoformat(span[1])))
+                needed = det.get("needed_lag")
+                if needed:
+                    result["needed_lag_p99_s"] = needed["p99"]
+                    result["needed_lag_median_s"] = needed["median"]
+                    result["needed_lag_max_s"] = needed["max"]
+                    result["needed_lag_n"] = needed["n"]
+                    result["report"]["needed_lag"] = needed
+                    result["report"]["lag_ladder"] = det["lag_ladder"]
+                    logger.warning(
+                        "%s: those rows arrived up to %.0fs after the window "
+                        "had passed them (median %.0fs, p99 %.0fs over %d "
+                        "resolved) — raising watermark_lag_s or "
+                        "late_arrival_overlap_s by that much would have "
+                        "caught them",
+                        source.name, needed["max"], needed["median"],
+                        needed["p99"], needed["n"])
+                else:
+                    # Nothing resolved: every sampled row either vanished
+                    # from the source or has no identifiable covering run.
+                    # Say so rather than leave the columns NULL silently.
+                    result["report"]["needed_lag"] = None
+                    logger.info(
+                        "%s: lateness not resolvable for any sampled row "
+                        "(%d not in source, %d without a covering run)",
+                        source.name, det["not_in_source"], det["unresolved"])
+            except Exception:
+                logger.exception(
+                    "%s: measuring how late those rows were failed — the gap "
+                    "itself is still recorded", source.name)
             logger.warning(
                 "%s: audit found %d missing, %d surplus, %d duplicate row(s) "
                 "in [%s, %s)", source.name, ids["missing_count"],
@@ -680,6 +784,10 @@ def run_audit(source: Source, dest_engine, meta_engine, *,
             "       duplicate_rows = :dr, "
             "       missing_ids = CAST(:mi AS jsonb), "
             "       ids_truncated = :tr, "
+            "       needed_lag_p99_s = :lp99, "
+            "       needed_lag_median_s = :lmed, "
+            "       needed_lag_max_s = :lmax, "
+            "       needed_lag_n = :ln, "
             "       report = CAST(:rep AS jsonb), error = :err "
             " WHERE id = :id"
         ), {"id": run_id, "s": result["status"],
@@ -689,6 +797,10 @@ def run_audit(source: Source, dest_engine, meta_engine, *,
             "mi": (_json.dumps(result["missing_ids"])
                    if result["missing_ids"] else None),
             "tr": result["ids_truncated"],
+            "lp99": result["needed_lag_p99_s"],
+            "lmed": result["needed_lag_median_s"],
+            "lmax": result["needed_lag_max_s"],
+            "ln": result["needed_lag_n"],
             "rep": (_json.dumps(result.get("report"))
                     if result.get("report") is not None else None),
             "err": result["error"]})
@@ -928,4 +1040,8 @@ def audit_id_details(source: Source, meta_engine, *, ids: list,
             "resolved": len(lags),
             "unresolved": unresolved,
             "not_in_source": not_in_source,
-            "needed_lag": needed}
+            "needed_lag": needed,
+            # Computed here rather than by each caller so the GUI panel and
+            # the stored audit run cannot disagree about what a given
+            # increment would have bought.
+            "lag_ladder": lag_ladder(lags)}

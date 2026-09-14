@@ -209,6 +209,10 @@ _DEFAULT_PIPELINE_ALARMS = (
     # so turning the audit on is one setting rather than a setting plus a
     # rule somebody has to know to create.
     ("The audit found missing rows", "audit_gap", ">", 0.0),
+    # Silent until an audit has found something: the condition answers None,
+    # never zero. The threshold is a starting point, not a recommendation --
+    # what an acceptable lateness is depends entirely on the source.
+    ("Rows arrive later than the window reaches", "needed_lag_p99", ">", 600.0),
 )
 
 

@@ -203,6 +203,7 @@ What the repo actually does today (verified against `core/schema.py` and
    | backfilling 8 000 old rows into it | **0.2041** |
    | `REINDEX` of that partition | 0.2022 — *unchanged* |
    | `CLUSTER` over a temporary B-tree | **1.0000** |
+   | deleting from T and reloading that span | **1.0000** |
 
    The mechanism is the §6.4 lever seen from the other side. A backfill
    appends old timestamps to the *end* of the partition's heap, so the
@@ -224,9 +225,22 @@ What the repo actually does today (verified against `core/schema.py` and
    partition alongside the sizes it already collects, so the decay is a
    number over time rather than a suspicion.
 
+   **Deleting from T and reloading restores it — but by luck, not by
+   design.** Measured at 1.0000 with and without an `ORDER BY` on the
+   reload, and the reason for the second figure is worth knowing: the engine
+   issues no `ORDER BY` in its extract, so the row order is whatever the
+   source's plan produces. Over an append-ordered source table a sequential
+   scan happens to yield timestamp order, which is the common case and why
+   this works in practice. It is not a guarantee: a bitmap heap scan, a
+   parallel scan, or a source whose heap is not append-ordered would all
+   land the rows scattered, and the reload would restore nothing.
+
    Note that a *targeted* backfill does not improve on this: it inserts the
    same rows, because the window backfill already de-dupes against what fact
-   holds. What it saves is extract cost, not index damage.
+   holds. What it saves is extract cost, not index damage. The reverse is
+   also true and is what `audit_autofill_max` is capped for — a large
+   automatic backfill costs layout that a targeted one at 37 rows does not
+   (1.0000 → 0.9997).
 
 5. **Physical clustering is the only real lever.** The 141× gap between `r*`
    and `s*` is a property of the *data layout*, not of the index type.

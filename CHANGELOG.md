@@ -9,6 +9,40 @@ Notable changes per release. Format follows
 
 ### Added
 
+- **The audit now says why rows were missing, not just which.** A row is
+  absent because it arrived after the high watermark had passed its
+  watermark value; `needed_lag_s` is that distance, and
+  `core/audit.py:audit_id_details` has always computed it — it just ran only
+  on a GUI click and was never stored. A third audit stage records it per
+  run, together with a ladder in the form operators actually decide on:
+  *+30 s would have caught 50%, +5 min 90%, +60 min 100%*.
+
+  The new `needed_lag_p99` pipeline alarm reports the raw seconds and
+  carries that ladder as a line in the notification body, alongside both
+  knobs' current values. It reports rather than prescribes on purpose:
+  raising `watermark_lag_s` or `late_arrival_overlap_s` by the same amount
+  buys the same reach, but the first delays **every** row while the second
+  re-reads a trailing span, and which price to pay is the operator's call.
+  Verified against a fixture with deliberate lateness — with the measured
+  maximum set as `watermark_lag_s`, all 100 late rows were caught; one
+  second below it, 90.
+
+  The lateness sample is spread across the missing set rather than taken
+  from its head. `np.setdiff1d` returns sorted, so the head is the lowest
+  primary keys, which with a monotonic key means the oldest missing rows: on
+  the same fixture that reported a maximum lateness of 30 s where the truth
+  was 1200 s.
+
+- **`datasource.audit_autofill_max`: small gaps repair themselves.** The
+  other half of the same trade-off — keeping `watermark_lag_s` low means
+  accepting a few stragglers, and accepting them should not mean pressing a
+  button for 37 rows. Up to that many missing rows, a forever-mode audit
+  closes the gap with the targeted backfill and records it on the run. Off
+  by default; never applied to a truncated id list; capped because past a
+  point a gap is a symptom rather than a straggler, and because a large
+  out-of-order insert costs BRIN correlation (37 rows: 1.0000 → 0.9997;
+  10% of a partition: → 0.8263).
+
 - **Periodic audit, and a backfill that repairs only what it named.** Two
   backlog items that turned out to need the same table.
   `datasource.audit_interval_s` (default off) has the forever loop compare

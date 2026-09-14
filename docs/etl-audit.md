@@ -114,6 +114,12 @@ The GUI's **Compare IDs** button goes through the same function with
 it first would answer a question already answered — which is what gives its
 result a run id, and turns the adjacent button into "Backfill these N rows".
 
+Stage three then asks *why* the rows were missing, over a sample spread
+across the whole missing set — `needed_lag_s`, its percentiles, and a ladder
+of what a given increment to `watermark_lag_s` or `late_arrival_overlap_s`
+would have caught. That number reaches a person through the
+`needed_lag_p99` pipeline alarm, which carries the ladder as a note.
+
 Three behaviours worth knowing before relying on it:
 
 - **Stage two is narrowed by `gap_span`**, not run over the whole window.

@@ -1344,3 +1344,54 @@ ALTER TABLE starcubes_meta.alarm
                 'data_stale', 'run_failed', 'no_recent_run',
                 'preflight_warn', 'dim_full_pct', 'audit_gap'))
            OR (rule_kind = 'threshold' AND condition IS NULL));
+
+-- 0041_audit_lag.sql -- what the gap says about the lag, and permission to
+-- close small ones. 0040 made the audit find gaps; this makes it say why they
+-- were missing. `needed_lag_s = etl_run.last_end_time - the row's watermark`
+-- was already computed by core/audit.py:audit_id_details and never stored.
+-- It proposes *both* knobs by the same amount at different prices: raising
+-- watermark_lag_s by D >= needed_lag_s keeps the tip below the row (and holds
+-- every other row back with it), while late_arrival_overlap_s >= needed_lag_s
+-- re-reads a trailing span instead and leaves freshness alone. The alarm
+-- therefore reports raw seconds and the report carries the ladder. The
+-- columns are columns because core/pipeline_alarm.py reads conditions from
+-- starcubes_meta alone. `audit_autofill_max` is the other half: keeping the
+-- lag low means accepting stragglers, and accepting them should not mean
+-- pressing a button for 37 rows. See migrations/0041_audit_lag.sql.
+
+ALTER TABLE starcubes_meta.audit_run
+    ADD COLUMN IF NOT EXISTS needed_lag_p99_s    double precision;
+ALTER TABLE starcubes_meta.audit_run
+    ADD COLUMN IF NOT EXISTS needed_lag_median_s double precision;
+ALTER TABLE starcubes_meta.audit_run
+    ADD COLUMN IF NOT EXISTS needed_lag_max_s    double precision;
+ALTER TABLE starcubes_meta.audit_run
+    ADD COLUMN IF NOT EXISTS needed_lag_n        int;
+ALTER TABLE starcubes_meta.audit_run
+    ADD COLUMN IF NOT EXISTS autofilled          boolean NOT NULL DEFAULT false;
+
+COMMENT ON COLUMN starcubes_meta.audit_run.needed_lag_p99_s IS
+  'How much further back the window would have had to reach to catch 99% of the rows this run found missing. Both operands come from the source watermark column -- etl_run.started_at must never enter the subtraction, it is the starcubes host clock (see core/audit.py:audit_id_details).';
+COMMENT ON COLUMN starcubes_meta.audit_run.needed_lag_n IS
+  'Missing rows the lag could actually be resolved for. Smaller than missing_count: a row whose covering etl_run cannot be identified, or which has since vanished from the source, contributes nothing.';
+COMMENT ON COLUMN starcubes_meta.audit_run.autofilled IS
+  'This run repaired itself with a targeted backfill (datasource.audit_autofill_max). Recorded so a silent repair is still visible afterwards.';
+
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS audit_autofill_max int NOT NULL DEFAULT 0;
+
+COMMENT ON COLUMN starcubes_meta.datasource.audit_autofill_max IS
+  'Up to this many missing rows, a forever-mode audit repairs itself with the targeted backfill instead of only raising the alarm. 0 = off. The point is to keep watermark_lag_s low without a human pressing a button for every handful of stragglers; the cap is where that stops being true.';
+
+-- The pipeline-alarm condition whitelist gains `needed_lag_p99`. Dropped and
+-- re-added rather than guarded, because widening it is the point; re-running
+-- lands on the same definition, so this stays idempotent.
+ALTER TABLE starcubes_meta.alarm
+    DROP CONSTRAINT IF EXISTS alarm_condition_check;
+ALTER TABLE starcubes_meta.alarm
+    ADD CONSTRAINT alarm_condition_check
+    CHECK ((rule_kind = 'pipeline' AND condition IN (
+                'data_stale', 'run_failed', 'no_recent_run',
+                'preflight_warn', 'dim_full_pct', 'audit_gap',
+                'needed_lag_p99'))
+           OR (rule_kind = 'threshold' AND condition IS NULL));

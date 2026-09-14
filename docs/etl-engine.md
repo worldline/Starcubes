@@ -337,6 +337,29 @@ overlap can usually go to 0, which removes the PK check entirely.
 
 ## Window bound — supporting machinery
 
+- **`watermark_lag_s` and `late_arrival_overlap_s` buy the same reach at
+  different prices, and the audit measures how much is needed.** A row goes
+  missing when it arrives after the window's upper edge has already passed
+  its watermark value. `core/audit.py` reports that distance as
+  `needed_lag_s = etl_run.last_end_time − the row's watermark`, and raising
+  *either* knob by at least that much would have caught it: the lag keeps
+  the tip below the row, the overlap re-reads the ground the tip already
+  covered.
+
+  The difference is what each costs. `watermark_lag_s` delays **every** row
+  by Δ, permanently — the whole datasource is that much less fresh.
+  `late_arrival_overlap_s` re-reads a Δ-wide trailing span on every run and
+  de-dupes by primary key, so timely rows stay timely and the price is paid
+  in source reads and `_overlap_pks` memory. Neither is derivable from the
+  measurement; it is an operator's trade-off, and the `needed_lag_p99` alarm
+  states the number with a ladder of what each increment would have bought
+  rather than prescribing one.
+
+  Verified against a fixture with deliberate lateness: with the measured
+  maximum of 1200 s set as `watermark_lag_s`, all 100 late rows were caught;
+  one second below it, 90. See [`etl-automation.md`](etl-automation.md).
+
+
 - **Both bounds go into the extract as bind parameters, normalised to naive
   UTC.** `:_sc_from` / `:_sc_until`, through
   `pd.read_sql(text(query + where), params=…)`. They used to be rendered

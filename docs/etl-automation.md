@@ -103,6 +103,7 @@ it was added**, with a single deliberate exception, marked.
 | `dim_refresh_interval_s` | 0 = every run | s | The per-run dimension import is measurably expensive and new dimension values are rare. Costs freshness — see [Dimensions](#dimensions). |
 | `audit_interval_s` | 0 = off | s | Late arrivals land beyond `late_arrival_overlap_s` and you want them found rather than reported by whoever notices. Off by default because an audit reads the source and the warehouse across a window; unlike housekeeping, it is not free. |
 | `audit_window_s` | 0 = fall back to `audit_interval_s` | s | The trailing span each audit examines. Normally *wider* than the interval — late arrivals are the thing being hunted, and they land behind the tip. The fallback exists so setting only the interval cannot leave an unexamined strip between runs. |
+| `audit_autofill_max` | 0 = off | rows | You have decided that a handful of stragglers is cheaper to re-fetch than to prevent. Up to this many missing rows, a forever-mode audit repairs itself with the targeted backfill instead of only alarming. |
 
 Three columns on the same table are **state, not configuration** — written by
 the engine, never edited by hand:
@@ -257,6 +258,68 @@ Two refusals are deliberate:
   compared nothing, and recording that as "nothing is missing" would let the
   alarm close a standing episode on a run that never saw the source. Silence
   is not recovery.
+
+### What the gap says about the lag
+
+Stage three answers the question the gap raises: *why* were those rows
+missing. A row is absent because it arrived after the high watermark had
+already passed its watermark value, and `audit_id_details` measures exactly
+that distance:
+
+```
+needed_lag_s = etl_run.last_end_time − the row's own watermark value
+```
+
+Both operands come from the source's watermark column. `etl_run.started_at`
+must never enter that subtraction — it is the starcubes host clock, and on a
+source writing in another zone the result goes negative.
+
+**It proposes both knobs, by the same amount, at different prices.** With
+`end_time_N = max_wm_N − watermark_lag_s`, raising that lag by Δ puts the
+window's tip at `end_time_N − Δ`; for run N not to swallow the row it takes
+**Δ ≥ needed_lag_s**. `late_arrival_overlap_s` takes the same number
+(`needed_lag_s ≤ overlap` is its exact re-read criterion). What differs is
+the cost: `watermark_lag_s` holds **every** row back, so the whole datasource
+is that much less fresh; the overlap re-reads a trailing span instead and
+leaves freshness alone. Which price to pay is an operator's decision, which
+is why the `needed_lag_p99` alarm reports the raw seconds and carries the
+ladder as a note rather than prescribing a setting.
+
+Measured against ground truth on a fixture with deliberate lateness
+(50 rows 30 s late, 40 rows 300 s, 10 rows 1200 s):
+
+| `watermark_lag_s` | stragglers caught |
+|---|---|
+| 0 | 0 of 100 |
+| 1199 | 90 of 100 |
+| **1200** (the measured maximum) | **100 of 100** |
+
+**The ladder reads forwards, not as percentiles.** `+30s → 50%, +5min →
+90%, +60min → 100%` is the shape of the decision; "the 90th percentile is
+300 s" is the same fact stated backwards.
+
+**The sample is spread, not the head of the list.** `np.setdiff1d` returns
+sorted, so `missing[:200]` is the 200 *lowest* primary keys — with the usual
+monotonic key, the 200 oldest missing rows. On the same fixture the head
+sample reports a maximum lateness of 30 s where the truth is 1200 s, a 40×
+underestimate that would have recommended adding half a minute. The display
+list still uses the head; only the statistic is spread.
+
+### Repairing small gaps without asking
+
+`audit_autofill_max` is the other half of the same trade-off. Keeping
+`watermark_lag_s` low means accepting a few stragglers, and accepting them
+should not mean a human presses a button for 37 rows. Up to that many
+missing rows, a forever-mode audit repairs itself with the targeted backfill
+and records `audit_run.autofilled`.
+
+A cap rather than a switch, for two reasons. Past it a gap is not a handful
+of stragglers but a symptom, and it deserves a person. And it costs heap
+order: measured on a 500 000-row table, backfilling 37 rows moves
+`pg_stats.correlation` from 1.0000 to 0.9997, while backfilling 10% of it
+moves it to 0.8263 — and BRIN range exclusion rests on that number (see
+[`bitmap-indexes.md`](bitmap-indexes.md)). A truncated id list is never
+auto-repaired regardless of the cap.
 
 **The de-dupe is narrowed, not dropped.** A targeted backfill asks which of
 *those* ids are already in fact — against the PK index, not the watermark

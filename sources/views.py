@@ -623,6 +623,9 @@ def source_edit(request, pk: int):
                     retention_periods  = :retention_periods,
                     initial_window_s   = :initial_window_s,
                     dim_refresh_interval_s = :dim_refresh_interval_s,
+                    audit_interval_s   = :audit_interval_s,
+                    audit_window_s     = :audit_window_s,
+                    audit_autofill_max = :audit_autofill_max,
                     updated_at         = now()
                 WHERE id = :id
             """), {
@@ -650,6 +653,12 @@ def source_edit(request, pk: int):
                 "pdrk":               p.get("pagerduty_routing_key", ""),
                 "hk_interval":        max(0, int(
                     p.get("housekeeping_interval_s") or 0)),
+                "audit_interval_s":   max(0, int(
+                    p.get("audit_interval_s") or 0)),
+                "audit_window_s":     max(0, int(
+                    p.get("audit_window_s") or 0)),
+                "audit_autofill_max": max(0, int(
+                    p.get("audit_autofill_max") or 0)),
                 "max_data_lag_s":     max(0, int(
                     p.get("max_data_lag_s") or 0)),
                 "max_run_s":          max(0, int(p.get("max_run_s") or 0)),
