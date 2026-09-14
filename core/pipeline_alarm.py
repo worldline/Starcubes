@@ -259,18 +259,43 @@ def _needed_lag_p99(meta_engine, ds_id: int) -> Optional[float]:
     to pay is an operator's decision, so the alarm states the measurement and
     `_needed_lag_note` below spells out what each increment would buy.
 
-    `None` when no successful audit has found anything -- never zero. Zero
-    would assert "nothing arrives late", which a datasource with no audit
-    cannot claim, and the module treats None as no assertion either way.
+    Reads the **newest** successful audit, not the newest one that happened
+    to find something, and that distinction is the whole behaviour of the
+    alarm. Skipping runs with no lag figure looks harmless and is not: a
+    clean audit stores NULL there (stage three never ran), so the query would
+    keep returning the last run that *did* find something and the value could
+    only ever go up. The episode would open once and never close, and an
+    operator could not tell "still arriving late" from "was late once, in
+    March".
+
+    Three answers, and the middle one is the fix:
+
+    * newest ok run found nothing missing -> **0.0**. Honest: a row late
+      enough to matter would have shown up as missing in that window, so
+      finding none is evidence that nothing did.
+    * newest ok run found rows but no lateness could be resolved -> **None**.
+      Every sampled row either vanished from the source or has no
+      identifiable covering run; that is "not answerable", not "not late".
+    * otherwise the measured p99.
+
+    `None` also while no audit has run at all -- never zero there either.
+    Zero would assert "nothing arrives late", which a datasource with no
+    audit cannot claim, and the module treats None as no assertion in either
+    direction.
     """
     with meta_engine.begin() as conn:
-        v = conn.execute(text(
-            "SELECT needed_lag_p99_s FROM starcubes_meta.audit_run "
+        row = conn.execute(text(
+            "SELECT missing_count, needed_lag_p99_s "
+            "  FROM starcubes_meta.audit_run "
             " WHERE datasource_id = :ds AND status = 'ok' "
-            "   AND needed_lag_p99_s IS NOT NULL "
+            "   AND missing_count IS NOT NULL "
             " ORDER BY started_at DESC LIMIT 1"
-        ), {"ds": ds_id}).scalar()
-    return None if v is None else float(v)
+        ), {"ds": ds_id}).mappings().first()
+    if row is None:
+        return None
+    if row["needed_lag_p99_s"] is not None:
+        return float(row["needed_lag_p99_s"])
+    return 0.0 if not row["missing_count"] else None
 
 
 def _needed_lag_note(meta_engine, ds_id: int) -> Optional[str]:
@@ -402,11 +427,13 @@ def evaluate_pipeline_alarm(meta_engine, alarm: dict) -> dict:
     # The label stands in for `measure` so the notification path needs no
     # knowledge of pipeline alarms at all. See `_Condition`.
     #
-    # The note is computed only when there is a transition to carry it: it is
-    # a second metadata read, and the overwhelming majority of evaluations
-    # produce no transition at all.
+    # Only for an *opening* transition. It is a second metadata read and the
+    # overwhelming majority of evaluations produce no transition at all --
+    # and on a close it would describe the ladder from the episode that just
+    # ended, which reads as advice about a condition that no longer holds.
     note = None
-    if counts["transitions"] and cond.note_fn is not None:
+    if (cond.note_fn is not None
+            and any(t.get("kind") == "opened" for t in counts["transitions"])):
         try:
             note = cond.note_fn(meta_engine, alarm["datasource_id"])
         except Exception:

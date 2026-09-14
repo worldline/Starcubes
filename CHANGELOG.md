@@ -33,6 +33,16 @@ Notable changes per release. Format follows
   the same fixture that reported a maximum lateness of 30 s where the truth
   was 1200 s.
 
+- **The `needed_lag_p99` alarm could open but never close.** It read the
+  newest audit run that *had* a lag figure, and a clean audit stores NULL
+  there — so once an episode opened, the value could only ever go up. A
+  clean run now answers 0.0 (a row late enough to matter would have shown up
+  as missing, so finding none is evidence that nothing was), while a run
+  that found rows but could resolve no lateness still answers None: "not
+  answerable" is not "not late". The ladder note is also attached only to an
+  opening transition — on a close it described the episode that had just
+  ended.
+
 - **`datasource.audit_autofill_max`: small gaps repair themselves.** The
   other half of the same trade-off — keeping `watermark_lag_s` low means
   accepting a few stragglers, and accepting them should not mean pressing a
