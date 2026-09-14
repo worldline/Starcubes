@@ -7,6 +7,39 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The ETL load window is no longer Oracle-only, and no longer depends on
+  two session clocks agreeing.** The extract's `WHERE` used to render its
+  bounds into `to_timestamp('…', 'YYYY-MM-DD HH24:MI:SS')` literals — Oracle
+  spelling, which MySQL and MSSQL reject outright. They are SQLAlchemy bind
+  parameters now, normalised to naive UTC before they go down.
+
+  The normalisation matters on its own: the window's two bounds come from
+  two different connections — the lower one is the stored high watermark
+  read back from the warehouse, the upper one is `max(watermark_column)`
+  off the source — so a rendering that keeps each one's local fields
+  describes the same instant two different ways. Measured against a
+  Postgres source, an incremental run with nothing to do re-extracted two
+  hours it already held and inserted 16665 duplicate rows. An
+  Oracle-and-Postgres-in-one-timezone installation never saw it, because
+  the two errors cancelled.
+
+  A source whose watermark column is `timestamptz` is still not supported
+  and still fails silently; that is written up in `docs/backlog.md` as its
+  own item.
+
+- **The source cardinality estimate in the source editor read the wrong
+  clock.** Its 24-hour window anchored on `SYSTIMESTAMP` / `NOW()` /
+  `GETDATE()` — the session clock — while watermark columns hold UTC, so on
+  a session outside UTC the window slid by the session offset. It now
+  anchors on `Source.source_now_sql()`, the same UTC-explicit expression
+  the load window uses.
+
+- **"Preview import query" failed on every MSSQL datasource.** MSSQL fell
+  through to the `LIMIT 5` branch, which it does not accept; it now gets
+  `SELECT TOP 5`.
+
 ## [2.0.0-alpha.8] — 2026-09-12
 
 ### Added

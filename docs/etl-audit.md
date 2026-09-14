@@ -102,8 +102,12 @@ reason `MAX_AUDIT_IDS` is what it is.
   what `late_arrival_overlap_s` should be in the first place. The fact side
   is one query bucketed server-side by integer division on the epoch; the
   source side is N plain `count(*)` range predicates on `watermark_column`,
-  deliberately *not* `date_trunc`/`TRUNC`, which would drag the open
-  multi-dialect item in [`docs/backlog.md`](backlog.md) into a new place. When
+  deliberately *not* `date_trunc`/`TRUNC`. That was originally to avoid
+  spreading the then-open multi-dialect item in
+  [`docs/backlog.md`](backlog.md); the load window is bound now, but the
+  reason survives the fix — a bind carries a value, never a function name,
+  so a truncation call would have had to be dispatched per dialect either
+  way. When
   `watermark_fact_expr` is derived, the fact-side count can use neither BRIN
   nor partition pruning and scans the range — hence the bucket cap (200) and
   the `statement_timeout`, since uWSGI only has 8 request slots.

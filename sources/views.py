@@ -790,22 +790,27 @@ def estimate_cardinality(request, pk: int, fc_id: int):
         wm = source.watermark_column
         dialect = source.source_dialect
 
-        if dialect == "oracle":
-            q = (f"SELECT count(DISTINCT {expr}) "
-                 f"FROM {source.base_table} "
-                 f"WHERE {wm} >= SYSTIMESTAMP - INTERVAL '24' HOUR")
-        elif dialect == "mysql":
-            q = (f"SELECT count(DISTINCT {expr}) "
-                 f"FROM {source.base_table} "
-                 f"WHERE {wm} >= NOW() - INTERVAL 24 HOUR")
-        elif dialect == "mssql":
-            q = (f"SELECT count(DISTINCT {expr}) "
-                 f"FROM {source.base_table} "
-                 f"WHERE {wm} >= DATEADD(hour, -24, GETDATE())")
-        else:
-            q = (f"SELECT count(DISTINCT {expr}) "
-                 f"FROM {source.base_table} "
-                 f"WHERE {wm} >= now() - interval '24 hours'")
+        # Anchored on Source.source_now_sql(), not on SYSTIMESTAMP / NOW() /
+        # GETDATE(). Those read the *session* clock, while watermark columns
+        # hold UTC everywhere in this codebase -- so on a session sitting in
+        # Europe/Berlin the 24-hour window silently slid two hours. That is
+        # the same wrong assumption source_now_sql() was introduced to
+        # remove from the load window (see its docstring, and
+        # docs/etl-engine.md "Window's upper bound is the later of two
+        # terms"); it has no business being reintroduced here.
+        #
+        # The interval arithmetic itself still has to be spelled per
+        # dialect: a bind can carry a value, not a syntax element, so this
+        # is dispatch by necessity rather than by omission.
+        now_expr = source.source_now_sql()
+        since = {
+            "oracle": f"{now_expr} - INTERVAL '24' HOUR",
+            "mysql":  f"{now_expr} - INTERVAL 24 HOUR",
+            "mssql":  f"DATEADD(hour, -24, {now_expr})",
+        }.get(dialect, f"{now_expr} - interval '24 hours'")
+        q = (f"SELECT count(DISTINCT {expr}) "
+             f"FROM {source.base_table} "
+             f"WHERE {wm} >= {since}")
 
         engine = source.source_engine()
         try:
@@ -832,8 +837,14 @@ def preview_import(request, pk: int):
         else:
             return JsonResponse({"ok": False, "error": "no import_query or base_table configured"})
 
+        # Row-capping is the one thing every dialect spells differently and
+        # no bind can reach. MSSQL used to fall through to the LIMIT branch
+        # and reject it outright -- the preview button simply errored on any
+        # MSSQL datasource. Oracle also wants the alias without `AS`.
         if source.source_dialect == "oracle":
             limited = f"SELECT * FROM ({q}) WHERE ROWNUM <= 5"
+        elif source.source_dialect == "mssql":
+            limited = f"SELECT TOP 5 * FROM ({q}) _preview"
         else:
             limited = f"SELECT * FROM ({q}) AS _preview LIMIT 5"
 

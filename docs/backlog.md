@@ -18,12 +18,69 @@ unwatched — are collected and evaluated in
 [`etl-automation.md`](etl-automation.md) rather than listed one by one here.
 Three items below are cross-referenced from it.
 
-- **Multi-dialect WHERE construction.** `core/etl.py` emits Oracle
-  `to_timestamp(..., 'YYYY-MM-DD HH24:MI:SS')` literals — fine for the
-  example Oracle source, wrong for Postgres/MySQL. When a second non-Oracle
-  source is wired up, switch to SQLAlchemy bind parameters. (`core/audit.py`
-  already uses binds for its source-side counts and avoids any truncation
-  function for exactly this reason.)
+- **Multi-dialect WHERE construction** — closed. The load window is two
+  bind parameters (`:_sc_from` / `:_sc_until`) passed through
+  `pd.read_sql(text(...), params=...)`, the shape `core/audit.py` already
+  used. Four things are worth keeping:
+
+  - **`text()` is what makes the binds work at all, and pandas branches on
+    the type.** `SQLDatabase.execute` routes a `str` through
+    `Connection.exec_driver_sql` — DBAPI paramstyle, so `:name` is never
+    substituted — and a `TextClause` through `Connection.execute`. Passing
+    the concatenated string with `params=` would have been silently wrong
+    rather than an error.
+  - **The bind has to be normalised to UTC before the tzinfo is stripped,
+    and that half carries the defect.** A bare `.replace(tzinfo=None)` keeps
+    the object's *local* fields, and the two bounds arrive from different
+    connections: the lower one is the stored HWM off the **warehouse**
+    (`etl_run.last_end_time` is `timestamptz`, so psycopg2 returns it in the
+    warehouse session zone), the upper one is `max(watermark_column)` off
+    the **source**. Same instant, two offsets, two renderings —
+    `window [2026-09-14 06:00:01+00:00, 2026-09-14 08:00:01+02:00)` in the
+    run log is the tell. `_as_utc` already warned about exactly this in its
+    docstring; `_as_naive_utc` is the second half of it. Measured: skipping
+    the normalisation reproduced all 16665 duplicate rows.
+  - **Postgres made the old code silent rather than loud, which is worse.**
+    MySQL and MSSQL have no `to_timestamp` and reject the statement
+    outright. Postgres has one, but it returns *timestamptz* parsed in the
+    session timezone — so the rendering error and the parsing error
+    cancelled whenever warehouse and source sat in the same zone, which on
+    an Oracle-only installation they always did.
+  - **What a bind cannot buy.** Row caps (`ROWNUM` / `TOP` / `LIMIT`),
+    `FROM dual`, interval arithmetic and `source_now_sql()` stay
+    dialect-dispatched: a bind carries a *value*, never a syntax element.
+    `small_window_hint` is operator-supplied and dialect-specific by
+    definition.
+
+  Verified end-to-end against a Postgres source (session `Europe/Berlin`,
+  deliberately not UTC) with the warehouse session forced to both
+  `Europe/Berlin` and `UTC`; the in-contract shape loads 50000/0 rows in
+  all four combinations, before and after. Also checked that
+  `text(import_query)` on the Oracle example profile — full of
+  `'YYYY-MM-DD HH24:MI:SS.FF3'` masks — yields no spurious binds.
+- **A `timestamptz` watermark column in the source silently loses or
+  duplicates rows.** Found while closing the item above; *not* fixed by it,
+  and it predates it. The engine's contract is that source timestamps are
+  naive and hold UTC (`Source.source_now_sql`, the `parse_dates={pc:
+  {"utc": True}}` in the extract, `_as_utc` throughout), so the window
+  bounds are bound as naive UTC. Against a `timestamptz` column Postgres
+  coerces that naive value using the *session* timezone, and the window
+  slides by the session offset. Measured on a Berlin session with an
+  otherwise identical 50000-row fixture:
+
+  | watermark column | before the bind work | after |
+  |---|---|---|
+  | `timestamp` (in contract) | 50000 loaded, 0 duplicates | unchanged |
+  | `timestamptz` | 16665 **duplicate** rows on an incremental run that should have loaded 0 | 16665 rows **missing**, HWM advanced past them |
+
+  Both are silent — nothing raises, nothing warns, and the second shape is
+  permanent loss. Two ways out, neither free: pick the bind's tzinfo from
+  the type the driver reports for `max(watermark_column)` (the signal is
+  already in hand at `core/etl.py`'s max-query read, but `--start/--end`
+  runs skip that read), or refuse the configuration — a preflight check
+  that sees an *aware* value come back for the watermark and blocks with
+  the column named, in the shape of `_check_source_projection`. The second
+  is much the smaller change and turns silent loss into a named refusal.
 - **Test coverage.** No unit or integration tests for `core/etl.py`,
   `core/query.py`, or the three-stage multiprocessing pipeline. The
   `_resume_state` deduplication logic and `copy_from` path are especially

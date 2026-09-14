@@ -284,6 +284,17 @@ class Source:
     import_query: str          # bare SELECT ... FROM ... (no WHERE/GROUP/ORDER).
                                # Built from base_table + per-column source_expr
                                # at load time when datasource.import_query is NULL.
+                               # Executed through SQLAlchemy's text(), so a
+                               # `:name` in it is read as a bind parameter and
+                               # the statement fails for want of a value. Not
+                               # new with the bound load window -- preflight's
+                               # projection probe (core/preflight.py) and
+                               # core/audit.py already wrap it the same way, so
+                               # such a query never got past preflight -- but
+                               # nowhere written down until now. `::text` casts
+                               # and 'HH24:MI:SS' masks are safe: SQLAlchemy's
+                               # bind regex skips a colon that follows a word
+                               # character or another colon.
     base_table: Optional[str]  # FROM-table for the composed import_query and a
                                # smarter default for watermark_max_query.
     watermark_column: str      # high-watermark column name in the source base table

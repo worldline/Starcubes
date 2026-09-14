@@ -239,9 +239,13 @@ def _ceil_second(dt: datetime) -> datetime:
 
     Source databases with second-resolution time indexes cannot match a
     sub-second HWM.  Rounding up ensures the next ETL run's WHERE clause
-    starts strictly past all loaded rows — no boundary rows are missed,
-    and the ``to_timestamp(..., 'YYYY-MM-DD HH24:MI:SS')`` format string
-    in the source query won't reject a fractional-seconds literal.
+    starts strictly past all loaded rows — no boundary rows are missed.
+
+    A second reason used to stand here: the window bounds were rendered
+    into ``to_timestamp(..., 'YYYY-MM-DD HH24:MI:SS')`` literals, which
+    have no room for a fractional second.  They are bind parameters now
+    (see ``import_fact``), so that constraint is gone — the one above is
+    not, and is why this still rounds.
     """
     if dt.microsecond:
         return dt.replace(microsecond=0) + timedelta(seconds=1)
@@ -666,6 +670,24 @@ def _as_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _as_naive_utc(dt: datetime) -> datetime:
+    """A DB timestamp as **naive UTC** — the form a source-side bind takes.
+
+    The `.replace(tzinfo=None)` that `_as_utc` above warns about, done the
+    one safe way: normalise first, strip second. Source timestamps are
+    naive and hold UTC throughout this codebase (`Source.source_now_sql`),
+    so a predicate against a watermark column has to carry the UTC
+    wall-clock reading and nothing else.
+
+    Written out as a helper rather than inlined because the two bounds of a
+    load window reach it from different connections — the lower one via
+    `_resume_state` off the warehouse, the upper one off the source — and
+    stripping the offset without normalising renders the same instant two
+    different ways depending on which one produced it.
+    """
+    return _as_utc(dt).replace(tzinfo=None)
 
 
 def _overlap_pks(source: Source, dest_engine, since: datetime,
@@ -1336,18 +1358,53 @@ def import_fact(source: Source, meta_engine, *,
             query = query.replace(
                 "SELECT", f"SELECT {source.small_window_hint}", 1)
 
-        _ts_fmt = '%Y-%m-%d %H:%M:%S'
+        # Window bounds as bind parameters, not as formatted literals.
+        #
+        # This used to emit `to_timestamp('2026-09-14 06:00:01',
+        # 'YYYY-MM-DD HH24:MI:SS')`, which is Oracle spelling: MySQL and
+        # MSSQL have no `to_timestamp` at all and reject the statement
+        # outright. Postgres does have one -- and that is the worse half of
+        # the story, because it made the bug silent rather than loud:
+        #
+        #   * Postgres `to_timestamp(text, text)` returns *timestamptz*,
+        #     parsed in the session timezone -- not the naive timestamp the
+        #     Oracle spelling produces.
+        #   * `.strftime()` on an aware datetime prints *that object's own*
+        #     fields. `extract_from` and `end_time` do not always carry the
+        #     same tzinfo: the lower bound is the stored HWM, read back
+        #     through the warehouse connection, while the upper bound comes
+        #     off the source connection. Two connections, two session
+        #     timezones, two different renderings of the same instant.
+        #
+        # Both halves cancel out whenever warehouse and source happen to sit
+        # in the same zone, which is why an Oracle-only installation never
+        # saw it. They stop cancelling the moment the zones differ:
+        # measured against a Postgres source (session Europe/Berlin) with
+        # the warehouse session on UTC, an incremental run that had nothing
+        # to do re-extracted two hours it already held and inserted 16665
+        # duplicate rows. The run log showed the tell plainly --
+        # `window [2026-09-14 06:00:01+00:00, 2026-09-14 08:00:01+02:00)`,
+        # one instant printed twice under two offsets.
+        #
+        # A bind carries a datetime rather than a rendering, so no dialect
+        # gets to reinterpret it -- but only once the datetime itself is
+        # unambiguous. `_as_naive_utc` is what does that, and it is the
+        # load-bearing half: a bare `.replace(tzinfo=None)` drops the offset
+        # while keeping each object's *local* fields, which reproduces the
+        # exact split above -- measured, all 16665 duplicates came back.
+        # `_as_utc` already carries that warning in its own docstring; this
+        # is the second half of it.
+        #
+        # The `_sc_` prefix keeps the names clear of anything an operator
+        # might have written in `import_query` (`core/query.py` uses the
+        # same convention for `:_limit`).
+        where_params: dict = {"_sc_until": _as_naive_utc(end_time)}
         if extract_from is not None:
-            where = (f" WHERE {wm} >= to_timestamp("
-                     f"'{extract_from.strftime(_ts_fmt)}', "
-                     f"'YYYY-MM-DD HH24:MI:SS') "
-                     f"   AND {wm} < to_timestamp("
-                     f"'{end_time.strftime(_ts_fmt)}', "
-                     f"'YYYY-MM-DD HH24:MI:SS')")
+            where = (f" WHERE {wm} >= :_sc_from "
+                     f"   AND {wm} < :_sc_until")
+            where_params["_sc_from"] = _as_naive_utc(extract_from)
         else:
-            where = (f" WHERE {wm} < to_timestamp("
-                     f"'{end_time.strftime(_ts_fmt)}', "
-                     f"'YYYY-MM-DD HH24:MI:SS')")
+            where = f" WHERE {wm} < :_sc_until"
 
         if backfill:
             _mode = "backfill"
@@ -1491,8 +1548,18 @@ def import_fact(source: Source, meta_engine, *,
         progress_thread.start()
 
         source_engine.dispose()  # drop parent pool before the main extract loop
+        # `text()`, not a bare string: pandas branches on the type.
+        # `SQLDatabase.execute` routes a `str` through
+        # `Connection.exec_driver_sql` -- DBAPI paramstyle, so `:name` would
+        # never be substituted -- and a `TextClause` through
+        # `Connection.execute`, which is the SQLAlchemy bind path this
+        # window now depends on. It also settles the `%` question for good:
+        # an `import_query` containing `LIKE '%x%'` survives
+        # `exec_driver_sql` only while no params accompany it, whereas
+        # `text()` escapes for the driver's paramstyle itself.
         chunks = pd.read_sql(
-            query + where, source_engine, chunksize=source.chunksize,
+            text(query + where), source_engine, params=where_params,
+            chunksize=source.chunksize,
             parse_dates={pc: {"utc": True}})
         # A detached spawn's stderr is a regular log file, not a terminal —
         # tqdm's \r-repainted description would otherwise dominate the log

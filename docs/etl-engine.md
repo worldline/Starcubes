@@ -337,6 +337,34 @@ overlap can usually go to 0, which removes the PK check entirely.
 
 ## Window bound — supporting machinery
 
+- **Both bounds go into the extract as bind parameters, normalised to naive
+  UTC.** `:_sc_from` / `:_sc_until`, through
+  `pd.read_sql(text(query + where), params=…)`. They used to be rendered
+  into `to_timestamp('…', 'YYYY-MM-DD HH24:MI:SS')` literals, which is
+  Oracle spelling — MySQL and MSSQL have no such function, and Postgres has
+  one that returns *timestamptz* parsed in the session timezone.
+
+  The normalisation is the part that actually carries the correctness, and
+  it is not obvious: the two bounds reach this point from *different
+  connections*. The lower one is the stored high watermark, read back from
+  `starcubes_meta.etl_run.last_end_time` (a `timestamptz`, so psycopg2
+  returns it in the **warehouse** session zone); the upper one is
+  `max(watermark_column)` off the **source**. Stripping the offset without
+  converting first — `.replace(tzinfo=None)` — renders the same instant two
+  different ways depending on which connection produced it, and the run log
+  shows it as a window whose two ends carry different offsets. `_as_utc`
+  warns about exactly this in its docstring; `_as_naive_utc` is what the
+  bound values go through.
+
+  Naive rather than aware because source timestamps hold UTC and are naive
+  throughout (see `Source.source_now_sql` above). A source whose watermark
+  column is `timestamptz` therefore does *not* work — see
+  [`backlog.md`](backlog.md).
+
+  What stays dialect-dispatched, because a bind carries a value and never a
+  syntax element: `FROM dual`, row caps (`ROWNUM` / `TOP` / `LIMIT`),
+  interval arithmetic, and `source_now_sql()` itself.
+
 - **`datasource.watermark_fact_expr` exists because the watermark is not
   always a projected fact column.** The example Oracle source watermarks on
   `end_time` but stores `create_time` plus a `total` duration, so finding
