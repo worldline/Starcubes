@@ -528,6 +528,14 @@
      than part of #info-text, which setInfo() rewrites on every fetch. */
   #rollup-notice { margin-left: 10px; opacity: .85; }
   #rollup-notice:not(:empty)::before { content: '\2022'; margin-right: 10px; opacity: .5; }
+  /* The source's readiness note — `not_ready` from /source-meta: the schema,
+     the fact table or a dim table not created (yet), or the warehouse gone.
+     Its own span rather than part of #info-text, which setInfo() rewrites on
+     every fetch tick — same reason #rollup-notice is its own span. The err
+     colour because while this note stands the chart is empty and the fix is
+     on the user's side of the glass. */
+  #source-notice { margin-left: 10px; opacity: .85; color: var(--info-err-color); }
+  #source-notice:not(:empty)::before { content: '\2022'; margin-right: 10px; opacity: .5; }
   /* While chart data loads, the *unloaded* (right-hand) portion of the
      status line is tinted to flag missing data; the loaded portion keeps
      the normal background. As blocks arrive the tint recedes left-to-right,
@@ -1234,7 +1242,7 @@
   </div>
 </div>
 <div id="wrap"><canvas id="chart"></canvas><div id="loading-overlay">Loading…</div></div>
-<div id="info"><span id="info-text"></span><span id="rollup-notice"></span></div>
+<div id="info"><span id="info-text"></span><span id="rollup-notice"></span><span id="source-notice"></span></div>
 <div id="drill-modal" class="fpanel">
   <div id="drill-header" class="fpanel-header">
     <div id="drill-header-info"></div>
@@ -2387,6 +2395,17 @@ async function fetchRange(from, to, interval, signal) {
       throw new Error(`HTTP ${r.status}: ${t}`);
     }
     plot = await r.json();
+    // The chart's four endpoints answer a *normal* failure — a source whose
+    // relations are missing or whose warehouse is unreachable — with HTTP 200
+    // + {"ok": false, ...} so the status line can show the reason instead of
+    // repr(exc) (see _friendly_db_error in viz/views.py). Throwing here keeps
+    // the payload out of the coverage bookkeeping: pushData would have booked
+    // the span as loaded and no gap scan would ever repair it.
+    if (plot && plot.ok === false) {
+      const err = new Error(plot.error);
+      err.friendly = true;
+      throw err;
+    }
     freshlyFetched = true;
     // Before anything is stored or drawn: a changed epoch invalidates every
     // block we are holding, including the one about to be returned from a
@@ -2635,6 +2654,17 @@ async function autoFetch() {
 
 async function _autoFetchOnce() {
   if (!ts || !starcubesPush) return;
+  // A source the meta call marked not_ready has nothing to fetch: the schema,
+  // the fact table or a dim table is missing, so every request would only
+  // answer the not-ready reason (HTTP 200 + {"ok": false, ...}). While the
+  // note stands, follow mode's 300 ms ticks and the trailing-edge poll must
+  // not fire at a source that cannot answer — returning here is the single
+  // gate both go through. updateSourceNotice() already shows the reason in
+  // its own span; the overlay any caller showed goes with this.
+  if (currentMeta && currentMeta.not_ready) {
+    hideLoadingOverlay();
+    return;
+  }
   const gen = ++fetchGeneration;
   const ctrl = new AbortController();
   activeController = ctrl;
@@ -2693,7 +2723,11 @@ async function _autoFetchOnce() {
   } catch (e) {
     if (e.name === 'AbortError') return;
     hideLoadingOverlay();
-    setInfo('fetch failed: ' + e.message, true);
+    // A fetch that failed through the friendly path (the server's
+    // {"ok": false, "error": ...} answer) carries the status-line message
+    // itself; anything else keeps the generic 'fetch failed:' prefix so a
+    // genuine server fault stays distinguishable from an operating state.
+    setInfo(e.friendly ? e.message : 'fetch failed: ' + e.message, true);
   }
 }
 
@@ -3334,6 +3368,20 @@ function updateRollupNotice(bounds) {
   el.textContent = isPct
     ? `pre-aggregated before ${fmtEpoch(below)} — percentiles unavailable here, no drill-down`
     : `pre-aggregated before ${fmtEpoch(below)} — no drill-down`;
+}
+
+// The source's own readiness note — /source-meta's `not_ready` field: the
+// schema, the fact table or a primary dim table is not there (yet), or the
+// warehouse is gone. Shown in its own span, not in #info-text, which
+// updateInfo() rewrites at the end of every successful fetch tick — same
+// reason #rollup-notice is its own span. The fetch cycle gates on the same
+// field in _autoFetchOnce, so while the note stands no poll or follow-mode
+// tick fires at a source that cannot answer.
+function updateSourceNotice() {
+  const el = document.getElementById('source-notice');
+  if (!el) return;
+  const nr = currentMeta && currentMeta.not_ready;
+  el.textContent = (nr && nr.reason) || '';
 }
 
 function updateLegend() {
@@ -4483,7 +4531,13 @@ async function setActiveSource(name) {
   if (starcubesPush && sourceMemoryRestore(name)) {
     // Canvas re-populated instantly from memory — no overlay needed.
     starcubesSeriesColors = null;  // stale colors from previous source
-    await loadMeta(name);
+    try {
+      await loadMeta(name);
+    } catch (e) {
+      hideLoadingOverlay();
+      setInfo(e.friendly ? e.message : 'load failed: ' + e.message, true);
+      return;
+    }
     applySourceState(name);
     // Memory-restored plots inherited the previous source's directions
     // (or none). Re-decorate now that lowerHalf reflects this source.
@@ -4495,7 +4549,13 @@ async function setActiveSource(name) {
     autoFetch();   // fetch trailing edge and any gaps
   } else {
     showLoadingOverlay();
-    await loadMeta(name);
+    try {
+      await loadMeta(name);
+    } catch (e) {
+      hideLoadingOverlay();
+      setInfo(e.friendly ? e.message : 'load failed: ' + e.message, true);
+      return;
+    }
     applySourceState(name);
     resetAndFetch();
   }
@@ -4597,7 +4657,20 @@ function selectMeasure(value, name) {
 
 async function loadMeta(name) {
   const meta = await fetchJson(`${META_URL}?name=${encodeURIComponent(name)}`);
+  // The meta endpoint shares the chart's new normal-failure shape: a source
+  // whose warehouse side is gone answers 200 + {"ok": false, "error": ...}
+  // (see _friendly_db_error in viz/views.py). The previous source's meta
+  // must not survive as currentMeta — dropdowns, legend and notices all read
+  // it — so it is dropped here and the caller's catch reports the reason.
+  if (meta.ok === false) {
+    currentMeta = null;
+    updateSourceNotice();
+    const err = new Error(meta.error);
+    err.friendly = true;
+    throw err;
+  }
   currentMeta = meta;
+  updateSourceNotice();
   if (chartSqlBtn) chartSqlBtn.disabled = !ts;
   starcubesIntervalLadder = meta.interval_ladder || [1, 60, 3600, 86400];
   // applyBarTargetPref() (defined in the popover IIFE) honours localStorage;

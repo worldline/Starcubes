@@ -1338,6 +1338,7 @@ def timeseries_multibar(
     graph_style: str = "multibar",
     rollup_table: Optional[str] = None,
     rollup_value_expr: Optional[str] = None,
+    dest_engine=None,
 ) -> dict:
     """Build the multibar plot dict for `timeseries.js`.
 
@@ -1372,6 +1373,13 @@ def timeseries_multibar(
                      Should include "(other)" with the residual count (sum of
                      dim counts not in any named group); defaults to 0 when
                      missing, which would stack "(other)" at the bottom.
+      dest_engine:    optional engine to run the slot query against. Defaults
+                     to `source.dest_engine()` — the ETL pool. The chart's
+                     request path (viz/views.py) passes `source.request_engine()`
+                     instead: a separate pool carrying a libpq connect_timeout,
+                     so an unreachable warehouse fails the request with an
+                     OperationalError the status line can translate instead of
+                     hanging it until harakiri kills the worker.
 
     Returns the plot dict; an empty result still has the required scaffolding
     (count/min/max = 0, data = {}).
@@ -1436,7 +1444,7 @@ def timeseries_multibar(
     epoch_to = int(t_to.timestamp())
     group_by_grouped = bool(group_by_groups) and bool(index_to_group)
 
-    with source.dest_engine().connect() as conn:
+    with (dest_engine or source.dest_engine()).connect() as conn:
         rows = conn.execute(text(sql), params).all()
 
     # Prefix integer-like series keys with '_' so JavaScript's JSON.parse
@@ -1546,6 +1554,7 @@ def timeseries_ladder(
     graph_style: str = "quantile-bands",
     rollup_table: Optional[str] = None,
     rollup_value_expr: Optional[str] = None,
+    dest_engine=None,
 ) -> dict:
     """Build a ladder plot dict for `timeseries.js`.
 
@@ -1617,7 +1626,7 @@ def timeseries_ladder(
     interval_start = int(params["interval_start"])
     epoch_to = int(t_to.timestamp())
 
-    with source.dest_engine().connect() as conn:
+    with (dest_engine or source.dest_engine()).connect() as conn:
         rows = conn.execute(text(sql), params).all()
 
     def _safe_key(s: str) -> str:

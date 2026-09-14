@@ -21,6 +21,15 @@ from sqlalchemy import event, exc, text
 # Prevents per-request create_engine() calls from leaking connection pools.
 _engine_cache: dict[tuple, sqlalchemy.Engine] = {}
 
+# libpq connect timeout (seconds) for the chart's request path. A warehouse
+# that is down must fail a request with an OperationalError a status line can
+# translate; without it the request hangs on libpq's TCP default and uwsgi's
+# harakiri (= 120 s) then kills the whole worker, its four threads with it.
+# Request path only: the ETL pools are created without it, because a
+# connect timeout is not a circuit breaker and a busy warehouse must not
+# abort a load. See `Source.request_engine`.
+REQUEST_CONNECT_TIMEOUT_S = 10
+
 _oracle_client_initialized = False
 
 # Whitelist of `measure.graph_style` values accepted by `Source.load`.
@@ -581,6 +590,28 @@ class Source:
         return _get_cached_engine(
             self.dest_dsn,
             connect_args={"options": f"-csearch_path={self.schema_name}"},
+        )
+
+    def request_engine(self) -> sqlalchemy.Engine:
+        """Engine for the chart's request path (viz/views.py).
+
+        Same warehouse and search_path as :meth:`dest_engine` — but a separate
+        cached pool, because the connect_args differ, so the ETL pool with its
+        long runs is untouched. The libpq ``connect_timeout`` is what makes an
+        unreachable warehouse/meta DB answer "warehouse not reachable" instead
+        of hanging the request on libpq's TCP default until harakiri kills the
+        worker (its four threads with it) — a status line can translate an
+        OperationalError, it cannot translate a killed process. Request path
+        only: a connect timeout is not a circuit breaker, and the ETL pools
+        are created without it so a busy warehouse does not abort a load.
+        See the backlog's "Engine cache fast-fail" entry — still open.
+        """
+        return _get_cached_engine(
+            self.dest_dsn,
+            connect_args={
+                "options": f"-csearch_path={self.schema_name}",
+                "connect_timeout": REQUEST_CONNECT_TIMEOUT_S,
+            },
         )
 
     def console_engine(self, *, statement_timeout_ms: int = 30_000) -> sqlalchemy.Engine:

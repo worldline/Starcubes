@@ -703,6 +703,57 @@ same historic period.
   - Returns `false` when `fetchGeneration` has moved on, so `autoFetch`
     abandons the remaining tiers instead of fetching for a stale viewport.
 
+## A source that is not there yet
+
+A datasource whose warehouse side is not reachable is a *normal operating
+state*, not a server fault: the GUI's source page creates the metadata row
+first and runs Create Schema later — or never, for a half-configured source,
+and a warehouse can go away between two requests. Both halves of the chart
+answer it the same way the SQL console answers a user's syntax error — with
+the reason, and without a 500 in anyone's logs:
+
+- **Proactively, in the meta payload.** `/source-meta` probes `<schema>.fact`
+  along the primary dim tables it already probes for the dim guard — one
+  `to_regclass` round trip, no extra cost — and adds the answer as
+  `not_ready: {reason, missing}` (null on a ready source). `loadMeta` shows
+  the reason via `updateSourceNotice()` in the status line's own
+  `#source-notice` span (own span, not `#info-text`, which `updateInfo()`
+  rewrites on every fetch tick — same reason `#rollup-notice` is one), and
+  `_autoFetchOnce` gates on it: no `autoFetch`, no poll, no fetch storm
+  against a source that cannot answer. Rollup tables are not probed —
+  `pick_rollup` consults `rollup_state`, and a genuinely missing one
+  surfaces through the request's own 42P01 instead.
+- **Defensively, in the four JSON endpoints.** What the meta call cannot
+  cover — a direct URL call, a table dropped between meta call and plot, a
+  rollup `pick_rollup` chooses that does not exist, or a database that dies
+  after the meta call — the endpoints themselves translate, in
+  `_friendly_db_error(chart=True)`. Dispatch is by exception type and
+  `orig.pgcode` only, never by message text (the relation name in the note
+  is display-only extraction with a generic fallback): `42P01` → "missing in
+  schema … — run Create Schema on the source page", `OperationalError` →
+  "warehouse not reachable", `LookupError` → datasource not found. All three
+  answer HTTP 200 with `{"ok": false, "error": …}`, like the console's five;
+  everything else keeps `{"error": repr(exc)} + 500`. No empty plot object is
+  returned — the client would book the span as covered via
+  `pushData`/`loadedBlocks` and no gap scan would ever repair it.
+- **The fetch side knows both shapes.** `fetchRange` throws on
+  `plot.ok === false` (marked `friendly`, so the status line shows the
+  message without the "fetch failed:" prefix and the payload stays out of the
+  coverage bookkeeping), and `loadMeta` does the same for the meta payload
+  while *dropping* `currentMeta` — the previous source's dropdowns, legend
+  and notices must not survive a failed switch. `setActiveSource` wraps its
+  `await loadMeta()` in `try/catch` that hides the loading overlay and shows
+  the reason: without it, the click on a source tab — the likeliest way to
+  reach a broken source — would leave the overlay up for ever, an unhandled
+  rejection with nothing on screen.
+- **The connect_timeout underneath.** An unreachable warehouse only gets to
+  *be* an `OperationalError` within a bounded time: the request-path engines
+  (`Source.request_engine()`, `_meta_engine()`) carry a libpq
+  `connect_timeout` (`REQUEST_CONNECT_TIMEOUT_S`, 10 s) and are separate
+  cached pools, so the ETL pools — which must keep waiting for a busy
+  warehouse — are untouched. `connect_timeout` is not a circuit breaker; the
+  backlog's "Engine cache fast-fail" entry stays open.
+
 ## The in-page data cache and the epoch
 
 `dataCache` is a 50 MB LRU keyed on the request query string. That key knows

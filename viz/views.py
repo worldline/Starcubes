@@ -16,6 +16,7 @@ from django.http import FileResponse, Http404, HttpResponseBadRequest, JsonRespo
 from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_POST
 from sqlalchemy import text
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from core import adhoc
 from core.cache import (get_cached_plot, is_cacheable, make_cache_key,
@@ -29,13 +30,24 @@ from core.query import (build_chart_legend_sql_rendered,
 from core.rollup import (measure_expr, pick_rollup, read_rollup_states,
                          rollup_extent)
 from core.schema import UNKNOWN_SOURCE_ID
-from core.source import Source, _get_cached_engine
+from core.source import (REQUEST_CONNECT_TIMEOUT_S, Source, _get_cached_engine)
 from core.utils import _parse_dt
 
 
 def _meta_engine():
-    """SQLAlchemy engine for starcubes_meta lookups, shared across requests."""
-    return _get_cached_engine(settings.STARCUBES_POSTGRES_DSN)
+    """SQLAlchemy engine for starcubes_meta lookups, shared across requests.
+
+    The request path's `connect_timeout`: starcubes_meta sits on the same
+    Postgres as the warehouse in the standard deployment, and a dead database
+    must fail the request with an OperationalError the chart can translate —
+    not hang it to the TCP default for harakiri to reap. A separate cached
+    pool, because `_get_cached_engine` keys on `(dsn, connect_args)`; the ETL
+    and console pools read starcubes_meta without the timeout.
+    """
+    return _get_cached_engine(settings.STARCUBES_POSTGRES_DSN,
+                              connect_args={
+                                  "connect_timeout": REQUEST_CONNECT_TIMEOUT_S
+                              })
 
 
 def _read_hwm_and_epoch(meta, datasource_id: int) -> tuple[int | None, int]:
@@ -267,7 +279,7 @@ def plot_json(request):
                 all_indices = set(group_by_groups)
                 if all_indices:
                     idx_list = ",".join(str(i) for i in sorted(all_indices))
-                    with source.dest_engine().begin() as dconn:
+                    with source.request_engine().begin() as dconn:
                         rows = dconn.execute(text(
                             f"SELECT index, count "
                             f"  FROM {source.schema_name}.{group_dim.dim_table} "
@@ -347,6 +359,7 @@ def plot_json(request):
                 graph_style=graph_style,
                 rollup_table=rollup_table,
                 rollup_value_expr=rollup_value_expr,
+                dest_engine=source.request_engine(),
             )
         else:
             plot = timeseries_multibar(
@@ -365,6 +378,7 @@ def plot_json(request):
                 graph_style=graph_style,
                 rollup_table=rollup_table,
                 rollup_value_expr=rollup_value_expr,
+                dest_engine=source.request_engine(),
             )
         if cache_key is not None:
             put_cached_plot(meta, cache_key=cache_key,
@@ -382,6 +396,11 @@ def plot_json(request):
         # persisted blob stays free of a value that would age inside it.
         plot["cache_epoch"] = cache_epoch
         return JsonResponse(plot, json_dumps_params={"default": str})
+    except (OperationalError, ProgrammingError, LookupError) as exc:
+        message = _friendly_db_error(exc, chart=True)[0]
+        if message is None:   # none of the normal states — stay a real 500
+            return JsonResponse({"error": repr(exc)}, status=500)
+        return JsonResponse({"ok": False, "error": message})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)
 
@@ -422,7 +441,7 @@ def drill_json(request):
             group_by_indices = build_group_by_indices(gb_set)
 
         dims = drill_down(
-            source, source.dest_engine(),
+            source, source.request_engine(),
             group_by, gb_val,
             t_from, t_to,
             filter_tree=filter_tree or None,
@@ -435,6 +454,11 @@ def drill_json(request):
             "to":           t_to.isoformat(),
             "dimensions":   dims,
         })
+    except (OperationalError, ProgrammingError, LookupError) as exc:
+        message = _friendly_db_error(exc, chart=True)[0]
+        if message is None:   # none of the normal states — stay a real 500
+            return JsonResponse({"error": repr(exc)}, status=500)
+        return JsonResponse({"ok": False, "error": message})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)
 
@@ -470,7 +494,7 @@ def txn_json(request):
             group_by_indices = build_group_by_indices(gb_set)
 
         raw_ids, display_ids = list_transactions(
-            source, source.dest_engine(),
+            source, source.request_engine(),
             group_by, gb_val,
             t_from, t_to,
             filter_tree=filter_tree or None,
@@ -486,6 +510,11 @@ def txn_json(request):
             "transaction_display": display_ids,
             "limit":               1000,
         })
+    except (OperationalError, ProgrammingError, LookupError) as exc:
+        message = _friendly_db_error(exc, chart=True)[0]
+        if message is None:   # none of the normal states — stay a real 500
+            return JsonResponse({"error": repr(exc)}, status=500)
+        return JsonResponse({"ok": False, "error": message})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)
 
@@ -560,10 +589,36 @@ def api_source_meta(request):
         } for c in sorted(source.fact_columns, key=lambda c: c.ordinal)]
 
         dimensions: dict[str, list] = {}
-        with source.dest_engine().begin() as conn:
-            present = _existing_relations(
-                conn, [f"{source.schema_name}.{d.dim_table}"
-                       for d in source.primary_dimensions()])
+        with source.request_engine().begin() as conn:
+            # Readiness rides the dim guard's probe rather than costing its own
+            # round trip: fact's name joins the primary dim tables in the one
+            # unnest(text[]) pass, and its absence is what `not_ready` below
+            # reports. Rollup tables are deliberately not probed — `pick_rollup`
+            # consults rollup_state, whose spec_hash already degrades a changed
+            # config to `fact`, and a genuinely missing table surfaces through
+            # the request's own 42P01 instead (see `_friendly_db_error`).
+            dim_names = [f"{source.schema_name}.{d.dim_table}"
+                         for d in source.primary_dimensions()]
+            fact_name = f"{source.schema_name}.fact"
+            present = _existing_relations(conn, dim_names + [fact_name])
+            not_ready = None
+            if fact_name not in present:
+                not_ready = {
+                    "reason": "fact table not created yet — run Create Schema "
+                              "on the source page",
+                    "missing": ["fact"],
+                }
+            else:
+                missing = [d.dim_table
+                           for d in source.primary_dimensions()
+                           if f"{source.schema_name}.{d.dim_table}" not in present]
+                if missing:
+                    not_ready = {
+                        "reason": f"missing in schema {source.schema_name}: "
+                                  f"{', '.join(missing)} — run Create Schema "
+                                  "on the source page",
+                        "missing": missing,
+                    }
             for d in source.primary_dimensions():
                 if f"{source.schema_name}.{d.dim_table}" not in present:
                     dimensions[d.dim_table] = []
@@ -591,7 +646,7 @@ def api_source_meta(request):
                                for g in gs.groups for m in g.members}
                 if all_indices:
                     idx_list = ",".join(str(i) for i in sorted(all_indices))
-                    with source.dest_engine().begin() as dconn:
+                    with source.request_engine().begin() as dconn:
                         # Same guard as the dim-value loop above: a group dimension
                         # can be configured before the dim table it buckets exists.
                         if _existing_relations(
@@ -686,6 +741,12 @@ def api_source_meta(request):
             "id":                       source.id,
             "name":                     source.name,
             "schema_name":              source.schema_name,
+            # Non-null when the warehouse side is not there yet: the schema,
+            # `fact` or a primary dim table missing. The chart shows the
+            # reason in its own status-line span and gates its fetch cycle on
+            # it (chart.html's updateSourceNotice / _autoFetchOnce). Rollup
+            # tables are not probed — see the probe block above.
+            "not_ready":                not_ready,
             "partition_column":         source.partition_column,
             # Unix seconds below which only the rollups answer, or null.
             # Everything under it still has counts and breakdowns over the
@@ -710,6 +771,11 @@ def api_source_meta(request):
                 "max": wm["hi"].isoformat() if wm["hi"] else None,
             },
         }, json_dumps_params={"default": str})
+    except (OperationalError, ProgrammingError, LookupError) as exc:
+        message = _friendly_db_error(exc, chart=True)[0]
+        if message is None:   # none of the normal states — stay a real 500
+            return JsonResponse({"error": repr(exc)}, status=500)
+        return JsonResponse({"ok": False, "error": message})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)
 
@@ -769,12 +835,24 @@ def _console_source(request):
                        name_or_id=name)
 
 
-def _friendly_db_error(exc) -> tuple[str, bool]:
+def _friendly_db_error(exc, *, chart: bool = False) -> tuple[str | None, bool]:
     """Turn a SQLAlchemy DBAPI error into (message, was_cancelled).
 
     Postgres' own message carries the error position and is far more useful to
     someone editing SQL than repr() of the SQLAlchemy wrapper, so it is passed
     through rather than summarised.
+
+    With ``chart=True`` — the chart's four JSON endpoints — the states a
+    half-configured source is *allowed* to be in translate into the status
+    line's normal-case messages, and the caller answers them with HTTP 200 +
+    ``{"ok": False, ...}`` instead of the 500 + repr(exc) convention the rest
+    of viz keeps (see the comment block above the query console: a source
+    without DDL is the same kind of case as a console user's syntax error).
+    None as the message signals "none of the normal states": the caller falls
+    through to the unchanged 500 convention, so a genuine program error stays
+    a 500. The console (chart=False, the default) keeps its own translations —
+    a 42P01 there is a table the *user's SQL* named, and Postgres' own
+    message with its error position is the useful answer.
     """
     orig = getattr(exc, "orig", None)
     code = getattr(orig, "pgcode", None)
@@ -782,7 +860,37 @@ def _friendly_db_error(exc) -> tuple[str, bool]:
         return "Query cancelled or timed out.", True
     if code == "25006":      # read_only_sql_transaction
         return "This console is read-only.", False
+    if chart:
+        if code == "42P01":  # undefined_table
+            return _missing_relation_note(orig), False
+        if isinstance(exc, OperationalError):
+            return "warehouse not reachable — check the database connection", False
+        if isinstance(exc, LookupError):
+            # Raised only by `Source.load` — see the single raise in
+            # core/source.py — so "datasource … not found" is the honest text.
+            return str(exc).strip(), False
+        return None, False
     return str(orig or exc).strip(), False
+
+
+def _missing_relation_note(orig) -> str:
+    """The 'run Create Schema' note for an undefined_table failure.
+
+    The relation's name is display only, pulled from Postgres' own message so
+    the note can name what is missing — the dispatch above decided on
+    ``orig.pgcode`` alone, never on this text. Both locales quote the name
+    (English as "schema.table", the German one as »schema.table«); when the
+    wording does not cooperate the note degrades to its generic form rather
+    than misnaming anything.
+    """
+    m = re.search(r'[»"]([A-Za-z0-9_.]+)[«"]', str(orig))
+    name = m.group(1) if m else None
+    if name and "." in name:
+        schema, rel = name.split(".", 1)
+        return (f"missing in schema {schema}: {rel} — "
+                "run Create Schema on the source page")
+    return ("missing relation in the warehouse — "
+            "run Create Schema on the source page")
 
 
 @require_POST

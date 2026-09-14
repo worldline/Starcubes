@@ -197,7 +197,13 @@ Three items below are cross-referenced from it.
   them, nobody persists per-user server-side.
 - **Engine cache fast-fail for dead sources.** `_get_cached_engine` relies
   on `pool_pre_ping=True` and `pool_timeout=30`. Stale engines retry until
-  timeout on every checkout. No circuit breaker.
+  timeout on every checkout. No circuit breaker. The chart's request path
+  now fails *fast* rather than never (`Source.request_engine()` and the
+  meta engine carry a libpq `connect_timeout`, so an unreachable warehouse
+  answers "warehouse not reachable" within 10 s instead of hanging until
+  harakiri), but a connect timeout is not a circuit breaker: a source that
+  is up and flapping still re-pays the connect wait on every checkout, and
+  the ETL pools still wait indefinitely by design.
 - **A `SELECT`-only DB role for the Query console.** The chart's ad-hoc SQL
   console (`core/adhoc.py`) runs as the app's own Postgres role. The read-only
   transaction blocks writes but not `pg_sleep()`, `pg_read_file()`, or reading
