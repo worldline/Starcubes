@@ -16,92 +16,8 @@ discussion captures.
 Operational preconditions around a load — the ones that are still manual or
 unwatched — are collected and evaluated in
 [`etl-automation.md`](etl-automation.md) rather than listed one by one here.
-Three items below are cross-referenced from it.
+Three of the closed items at the end are cross-referenced from it.
 
-- **Multi-dialect WHERE construction** — closed. The load window is two
-  bind parameters (`:_sc_from` / `:_sc_until`) passed through
-  `pd.read_sql(text(...), params=...)`, the shape `core/audit.py` already
-  used. Four things are worth keeping:
-
-  - **`text()` is what makes the binds work at all, and pandas branches on
-    the type.** `SQLDatabase.execute` routes a `str` through
-    `Connection.exec_driver_sql` — DBAPI paramstyle, so `:name` is never
-    substituted — and a `TextClause` through `Connection.execute`. Passing
-    the concatenated string with `params=` would have been silently wrong
-    rather than an error.
-  - **The bind has to be normalised to UTC before the tzinfo is stripped,
-    and that half carries the defect.** A bare `.replace(tzinfo=None)` keeps
-    the object's *local* fields, and the two bounds arrive from different
-    connections: the lower one is the stored HWM off the **warehouse**
-    (`etl_run.last_end_time` is `timestamptz`, so psycopg2 returns it in the
-    warehouse session zone), the upper one is `max(watermark_column)` off
-    the **source**. Same instant, two offsets, two renderings —
-    `window [2026-09-14 06:00:01+00:00, 2026-09-14 08:00:01+02:00)` in the
-    run log is the tell. `_as_utc` already warned about exactly this in its
-    docstring; `_as_naive_utc` is the second half of it. Measured: skipping
-    the normalisation reproduced all 16665 duplicate rows.
-  - **Postgres made the old code silent rather than loud, which is worse.**
-    MySQL and MSSQL have no `to_timestamp` and reject the statement
-    outright. Postgres has one, but it returns *timestamptz* parsed in the
-    session timezone — so the rendering error and the parsing error
-    cancelled whenever warehouse and source sat in the same zone, which on
-    an Oracle-only installation they always did.
-  - **What a bind cannot buy.** Row caps (`ROWNUM` / `TOP` / `LIMIT`),
-    `FROM dual`, interval arithmetic and `source_now_sql()` stay
-    dialect-dispatched: a bind carries a *value*, never a syntax element.
-    `small_window_hint` is operator-supplied and dialect-specific by
-    definition.
-
-  Verified end-to-end against a Postgres source (session `Europe/Berlin`,
-  deliberately not UTC) with the warehouse session forced to both
-  `Europe/Berlin` and `UTC`; the in-contract shape loads 50000/0 rows in
-  all four combinations, before and after. Also checked that
-  `text(import_query)` on the Oracle example profile — full of
-  `'YYYY-MM-DD HH24:MI:SS.FF3'` masks — yields no spurious binds.
-- **A `timestamptz` watermark column in the source silently loses or
-  duplicates rows** — closed by `core/source.py:_pin_session_utc`. Every
-  source connection is now put on a UTC session clock (`SET TIME ZONE
-  'UTC'` / `ALTER SESSION SET TIME_ZONE = 'UTC'` / `SET time_zone =
-  '+00:00'`, as a connect event). Three things worth keeping:
-
-  - **A preflight check would not have closed this, and that was the whole
-    question.** A check turns silent loss into a named refusal; the affected
-    source stays unusable until an operator rebuilds it. What *fixes* it is
-    the session pin, and the measurement is one line: a naive UTC bind
-    equals a `timestamptz` value under a UTC session and does not under
-    `Europe/Berlin`. The engine already asserted "source timestamps are
-    naive and hold UTC" everywhere; pinning makes that true at the
-    connection rather than hoped for — the same move `source_now_sql()`
-    made when it stopped reading `LOCALTIMESTAMP`.
-  - **The untimed source engine was sharing a cache with the warehouse.**
-    `Source.source_engine()` handed the no-timeout case to
-    `_get_cached_engine`, which is dialect-blind and keys on
-    `(dsn, connect_args)` — so a datasource whose `source_dsn` names the
-    same database as `dest_dsn` (a legitimate shape, and what a
-    Postgres-as-source fixture takes) got *one* engine for both roles, and
-    a source-only setting would have landed on the warehouse. Both cases go
-    through `_bounded_source_engine` now, which has its own cache.
-    `timeout_ms=None` means "none asked for" and draws no warning.
-  - **The pin is a connect event, not a connect argument**, although
-    Postgres would take `-ctimezone=UTC` alongside its statement timeout:
-    one place serves all four dialects, Oracle needs an event either way,
-    and two mechanisms for one rule drift apart.
-
-  Measured, same 50000-row fixture, source session `Europe/Berlin`, the
-  warehouse session tried on both `Europe/Berlin` and `UTC`:
-
-  | watermark column | before the bind work | after it | with the pin |
-  |---|---|---|---|
-  | `timestamp` | 50000, 0 duplicates | unchanged | unchanged |
-  | `timestamptz` | 16665 **duplicates** | 16665 **missing** | 50000, 0 duplicates |
-
-  What the pin does **not** reach, and why `preflight._check_watermark_tz`
-  exists anyway: `mssql` has no session time zone (`AT TIME ZONE` is
-  per-expression), so an aware watermark there is blocked with the column
-  named instead of loaded on an unknown clock. And a naive column that does
-  not hold UTC remains invisible to any probe — a naive value carries no
-  evidence about its zone — leaving N12 (`src_now − max_wm`) the only
-  detector, as before.
 - **Test coverage.** No unit or integration tests for `core/etl.py`,
   `core/query.py`, or the three-stage multiprocessing pipeline. The
   `_resume_state` deduplication logic and `copy_from` path are especially
@@ -117,79 +33,6 @@ Three items below are cross-referenced from it.
   all, and duly hid one in `needed_lag_s` until it was read by hand. Any
   successor suite wants at least one source connection deliberately *not* on
   UTC.)
-- **Late arrivals beyond the overlap** and **backfill re-scanning a window
-  whose ids are known** — both closed, by one table. They read as two items
-  and were one: the first asked for a periodic audit "with the result stored
-  per run", the second named its blocker as "a `starcubes_meta` staging row"
-  for the id list. That is the same row. `starcubes_meta.audit_run`
-  (migration 0040) is written by `core/audit.py:run_audit` on
-  `datasource.audit_interval_s`, and read back by
-  `etl_run --backfill --audit-run <id>`. Worth keeping:
-
-  - **`gap_span` had been sitting in `core/audit.py` without a caller since
-    it was written.** It is the bridge between the two stages — counts first,
-    ids only over the buckets that disagree — and its absence is a fair
-    summary of why neither item moved: the cheap half and the exact half
-    existed, nothing joined them.
-  - **Measured, on a 37-row gap:** 45 source rows read by the targeted
-    backfill against 2439 by the window backfill over the *same* narrow span.
-    Stage two itself narrowed a seven-hour window to 17.5 minutes.
-  - **Two refusals are load-bearing.** Past `STARCUBES_BACKFILL_IDS_MAX`
-    (100 000) the run is `ids_truncated` and the targeted backfill refuses,
-    naming the window backfill: repairing part of a gap and reporting success
-    is worse than re-reading the window. And an audit whose *every* bucket
-    was unreadable is `failed` with NULL counts — `audit_window` answers one
-    unreadable bucket with `None` so the other 23 survive, but a run where
-    all of them failed compared nothing, and `ok`/`missing=0` would have let
-    the `audit_gap` alarm close a standing episode on a run that never saw
-    the source. That one was found by testing the failure path, not by
-    reading the code.
-  - **The de-dupe is narrowed, not dropped.** A targeted backfill asks which
-    of *those* ids are already in fact, against the PK index. Skipping it
-    would be wrong: a regular load may have picked some up between the audit
-    and the repair, and there is no unique index on `fact`.
-  - **It does not repair by itself.** The alarm (`audit_gap`, a new
-    `core/pipeline_alarm.py` condition, in the default set) notifies; the
-    repair is a gesture. `None` while no audit has run, never zero, so
-    `audit_interval_s` defaulting to off leaves the alarm quiet rather than
-    asserting health.
-
-  Still true, and unchanged by this: a *total* standstill remains invisible
-  to the audit (a stopped source has nothing to compare), which is U9's
-  territory — `max_data_lag_s` and the `data_stale` alarm. See
-  [`etl-automation.md`](etl-automation.md).
-- **Source schema drift guard** — closed by `core/preflight.py`. The
-  `WHERE 1=0` probe runs before the worker pool starts and blocks the run
-  with the offending column named, instead of failing mid-extract. What is
-  worth remembering from it: a rejected query and an unreachable source
-  raise identically and need opposite answers (block vs. warn), so the
-  connection is opened before the query is executed. U5b in
-  [`etl-automation.md`](etl-automation.md).
-- **`datasource.schema_name` quoting — resolved by validation, not by
-  quoting.** The name is still interpolated raw into ~70 `f"{schema}.fact"`
-  sites across `core/` and `sources/`, while pandas' `to_sql` quotes it.
-  Rather than convert those sites to `%I` — they are consistently unquoted
-  and therefore work, so quoting them would break every installation whose
-  schema is already sitting folded on disk — the name is restricted to what
-  survives Postgres case-folding unchanged:
-  `core/schema.py:validate_schema_name` on `^[a-z_][a-z0-9_]{0,62}$`, called
-  from `source_new`, `source_edit`, `profile_store.insert_datasource` and
-  `ensure_schema`, with a `NOT VALID` CHECK
-  (`migrations/0024_schema_name_check.sql`) as backstop. `source_edit` skips
-  the check when the submitted name is unchanged, so a row predating it stays
-  editable. Remaining gap: nothing repairs a datasource already holding a
-  folded name — its metadata and disk still disagree until someone edits the
-  field to the folded spelling.
-- **Partition retirement** — closed. `datasource.retention_periods` drops
-  aged-out partitions from the housekeeping, at most a couple per run so a
-  mistyped value walks visibly instead of clearing the table in one pass.
-  What made it an M rather than an S was never the drop loop: four
-  subsystems assumed `fact` covered everything since the beginning of time
-  and had to learn about the floor — the audit, the server-side plot cache,
-  the chart's own in-page cache (which keys on the query string and had
-  never heard of the cache epoch), and alarms, where a truncated window
-  makes `count(*) <` report an outage retention itself caused. See
-  [`etl-automation.md`](etl-automation.md).
 - **Authentication on JSON endpoints.** All `viz/` JSON endpoints
   (`plot_json`, `drill_json`, `txn_json`, `api_sources`, `api_source_meta`)
   are public. The chart's user-tunable settings (Y-axis mode, bar pixel
@@ -215,15 +58,6 @@ Three items below are cross-referenced from it.
   *including the cancel requests that would clear them*. The 30 s
   `statement_timeout` bounds it; raising `threads` or a per-user guard would
   bound it better.
-- **Alarm notification transports** — closed by migration 0030:
-  `email` (stdlib smtplib), `xmpp` (slixmpp bot account) and `pagerduty`
-  (Events API v2, per-datasource routing key) are real transports now;
-  dispatch lives in `sources/alarm_notify.py` — see `docs/alarm.md`.
-  Remaining gaps: `slack` still has no transport, and recipients are the
-  login users only (no external/distribution-list addresses — accepted
-  limitation). Known accepted trade-off on the evaluation side unchanged:
-  rows arriving late into an already-evaluated window are never
-  re-evaluated (see `docs/alarm.md`).
 - **Source-side timezone awareness.** The pipeline treats every naive source
   timestamp as UTC — `parse_dates={pc: {"utc": True}}` in the extract,
   `_as_utc` in `core/audit.py`, `_parse_dt` in `core/utils.py`, and a dozen
@@ -434,53 +268,213 @@ zones whose offset is a whole hour. At +05:30 or +05:45 a local day begins at
 The longer this waits the more sites accumulate, which is the actual argument
 for writing it down now rather than the severity of the bug.
 
-## The partial dim indexes exclude the wrong row
+## Closed items
 
-`core/schema.py:326` creates one btree per dimension FK column as
-`... USING btree(<col>) WHERE <col> != 1`. The intent is to keep the single
-most frequent value out of the index — the `__unknown__` sentinel, which
-`_ensure_unknown_row` inserts as the catch-all for source values missing from
-the dim at import time.
+## Closed items
 
-The predicate hardcodes `1`, but nothing pins the sentinel to that index. It
-is a `SMALLSERIAL`, so it lands on 1 only when the dim table was created
-empty and the sentinel went in first. With `inline_values`
-(`core/schema.py:268`) or on import of an already-populated dim
-(`core/schema.py:632`) it is inserted *after* the real rows and gets whatever
-number is next.
+Kept for the measured lessons in them; the work is done.
 
-Measured on `payments`, the one real datasource — the sentinel is on `1` in
-**none** of its eleven dimensions:
+- **Multi-dialect WHERE construction** — closed. The load window is two
+  bind parameters (`:_sc_from` / `:_sc_until`) passed through
+  `pd.read_sql(text(...), params=...)`, the shape `core/audit.py` already
+  used. Four things are worth keeping:
 
-| dim table | `__unknown__` at | what `index = 1` actually is |
-|---|---:|---|
-| `app_loc`, `db_loc` | 4 | `-1` (source NULL) |
-| `sec_type` | 22 | `-1` |
-| `issuer` | 31 | `-1` |
-| `txn_origin` | 41 | `-1` |
-| `peer` | 51 | `-1` |
-| `card_type` | 112 | `-1` |
-| `cncy_code` | 140 | `008` — **a real currency code** |
-| `txn_type` | 318 | `-1` |
-| `merch_cat` | 965 | `-1` |
-| `response` | 1273 | `-1` |
+  - **`text()` is what makes the binds work at all, and pandas branches on
+    the type.** `SQLDatabase.execute` routes a `str` through
+    `Connection.exec_driver_sql` — DBAPI paramstyle, so `:name` is never
+    substituted — and a `TextClause` through `Connection.execute`. Passing
+    the concatenated string with `params=` would have been silently wrong
+    rather than an error.
+  - **The bind has to be normalised to UTC before the tzinfo is stripped,
+    and that half carries the defect.** A bare `.replace(tzinfo=None)` keeps
+    the object's *local* fields, and the two bounds arrive from different
+    connections: the lower one is the stored HWM off the **warehouse**
+    (`etl_run.last_end_time` is `timestamptz`, so psycopg2 returns it in the
+    warehouse session zone), the upper one is `max(watermark_column)` off
+    the **source**. Same instant, two offsets, two renderings —
+    `window [2026-09-14 06:00:01+00:00, 2026-09-14 08:00:01+02:00)` in the
+    run log is the tell. `_as_utc` already warned about exactly this in its
+    docstring; `_as_naive_utc` is the second half of it. Measured: skipping
+    the normalisation reproduced all 16665 duplicate rows.
+  - **Postgres made the old code silent rather than loud, which is worse.**
+    MySQL and MSSQL have no `to_timestamp` and reject the statement
+    outright. Postgres has one, but it returns *timestamptz* parsed in the
+    session timezone — so the rendering error and the parsing error
+    cancelled whenever warehouse and source sat in the same zone, which on
+    an Oracle-only installation they always did.
+  - **What a bind cannot buy.** Row caps (`ROWNUM` / `TOP` / `LIMIT`),
+    `FROM dual`, interval arithmetic and `source_now_sql()` stay
+    dialect-dispatched: a bind carries a *value*, never a syntax element.
+    `small_window_hint` is operator-supplied and dialect-specific by
+    definition.
 
-Correctness is unaffected — a partial index can never hide rows, the planner
-simply declines to use it where the predicate does not hold. What is lost is
-the intent. In ten of the eleven the index excludes the `-1` NULL row instead
-of the sentinel, which may well be the better exclusion (whether it is
-depends on which value the fact table actually carries more of — worth
-measuring before changing anything). The eleventh is the one that is plainly
-wrong: every query filtering `cncy_code = '008'` is excluded from its own
-index.
+  Verified end-to-end against a Postgres source (session `Europe/Berlin`,
+  deliberately not UTC) with the warehouse session forced to both
+  `Europe/Berlin` and `UTC`; the in-contract shape loads 50000/0 rows in
+  all four combinations, before and after. Also checked that
+  `text(import_query)` on the Oracle example profile — full of
+  `'YYYY-MM-DD HH24:MI:SS.FF3'` masks — yields no spurious binds.
+- **A `timestamptz` watermark column in the source silently loses or
+  duplicates rows** — closed by `core/source.py:_pin_session_utc`. Every
+  source connection is now put on a UTC session clock (`SET TIME ZONE
+  'UTC'` / `ALTER SESSION SET TIME_ZONE = 'UTC'` / `SET time_zone =
+  '+00:00'`, as a connect event). Three things worth keeping:
 
-The fix is to resolve the sentinel's index at DDL time rather than assume it,
-which means `create_indices` has to read the dim table first — cheap, but it
-turns an index creation into something with a data dependency, and the
-existing indexes do not rebuild themselves. Whether it is worth a rebuild on
-an existing install is the open question; on a fresh one it is nearly free.
+  - **A preflight check would not have closed this, and that was the whole
+    question.** A check turns silent loss into a named refusal; the affected
+    source stays unusable until an operator rebuilds it. What *fixes* it is
+    the session pin, and the measurement is one line: a naive UTC bind
+    equals a `timestamptz` value under a UTC session and does not under
+    `Europe/Berlin`. The engine already asserted "source timestamps are
+    naive and hold UTC" everywhere; pinning makes that true at the
+    connection rather than hoped for — the same move `source_now_sql()`
+    made when it stopped reading `LOCALTIMESTAMP`.
+  - **The untimed source engine was sharing a cache with the warehouse.**
+    `Source.source_engine()` handed the no-timeout case to
+    `_get_cached_engine`, which is dialect-blind and keys on
+    `(dsn, connect_args)` — so a datasource whose `source_dsn` names the
+    same database as `dest_dsn` (a legitimate shape, and what a
+    Postgres-as-source fixture takes) got *one* engine for both roles, and
+    a source-only setting would have landed on the warehouse. Both cases go
+    through `_bounded_source_engine` now, which has its own cache.
+    `timeout_ms=None` means "none asked for" and draws no warning.
+  - **The pin is a connect event, not a connect argument**, although
+    Postgres would take `-ctimezone=UTC` alongside its statement timeout:
+    one place serves all four dialects, Oracle needs an event either way,
+    and two mechanisms for one rule drift apart.
 
-Found while measuring bitmap-index feasibility — see
-[`bitmap-indexes.md`](bitmap-indexes.md) §6.2, which is also where the
-argument lives for why one very frequent value is the case a bitmap index
-would handle best.
+  Measured, same 50000-row fixture, source session `Europe/Berlin`, the
+  warehouse session tried on both `Europe/Berlin` and `UTC`:
+
+  | watermark column | before the bind work | after it | with the pin |
+  |---|---|---|---|
+  | `timestamp` | 50000, 0 duplicates | unchanged | unchanged |
+  | `timestamptz` | 16665 **duplicates** | 16665 **missing** | 50000, 0 duplicates |
+
+  What the pin does **not** reach, and why `preflight._check_watermark_tz`
+  exists anyway: `mssql` has no session time zone (`AT TIME ZONE` is
+  per-expression), so an aware watermark there is blocked with the column
+  named instead of loaded on an unknown clock. And a naive column that does
+  not hold UTC remains invisible to any probe — a naive value carries no
+  evidence about its zone — leaving N12 (`src_now − max_wm`) the only
+  detector, as before.
+- **Late arrivals beyond the overlap** and **backfill re-scanning a window
+  whose ids are known** — both closed, by one table. They read as two items
+  and were one: the first asked for a periodic audit "with the result stored
+  per run", the second named its blocker as "a `starcubes_meta` staging row"
+  for the id list. That is the same row. `starcubes_meta.audit_run`
+  (migration 0040) is written by `core/audit.py:run_audit` on
+  `datasource.audit_interval_s`, and read back by
+  `etl_run --backfill --audit-run <id>`. Worth keeping:
+
+  - **`gap_span` had been sitting in `core/audit.py` without a caller since
+    it was written.** It is the bridge between the two stages — counts first,
+    ids only over the buckets that disagree — and its absence is a fair
+    summary of why neither item moved: the cheap half and the exact half
+    existed, nothing joined them.
+  - **Measured, on a 37-row gap:** 45 source rows read by the targeted
+    backfill against 2439 by the window backfill over the *same* narrow span.
+    Stage two itself narrowed a seven-hour window to 17.5 minutes.
+  - **Two refusals are load-bearing.** Past `STARCUBES_BACKFILL_IDS_MAX`
+    (100 000) the run is `ids_truncated` and the targeted backfill refuses,
+    naming the window backfill: repairing part of a gap and reporting success
+    is worse than re-reading the window. And an audit whose *every* bucket
+    was unreadable is `failed` with NULL counts — `audit_window` answers one
+    unreadable bucket with `None` so the other 23 survive, but a run where
+    all of them failed compared nothing, and `ok`/`missing=0` would have let
+    the `audit_gap` alarm close a standing episode on a run that never saw
+    the source. That one was found by testing the failure path, not by
+    reading the code.
+  - **The de-dupe is narrowed, not dropped.** A targeted backfill asks which
+    of *those* ids are already in fact, against the PK index. Skipping it
+    would be wrong: a regular load may have picked some up between the audit
+    and the repair, and there is no unique index on `fact`.
+  - **It does not repair by itself.** The alarm (`audit_gap`, a new
+    `core/pipeline_alarm.py` condition, in the default set) notifies; the
+    repair is a gesture. `None` while no audit has run, never zero, so
+    `audit_interval_s` defaulting to off leaves the alarm quiet rather than
+    asserting health.
+
+  Still true, and unchanged by this: a *total* standstill remains invisible
+  to the audit (a stopped source has nothing to compare), which is U9's
+  territory — `max_data_lag_s` and the `data_stale` alarm. See
+  [`etl-automation.md`](etl-automation.md).
+- **Source schema drift guard** — closed by `core/preflight.py`. The
+  `WHERE 1=0` probe runs before the worker pool starts and blocks the run
+  with the offending column named, instead of failing mid-extract. What is
+  worth remembering from it: a rejected query and an unreachable source
+  raise identically and need opposite answers (block vs. warn), so the
+  connection is opened before the query is executed. U5b in
+  [`etl-automation.md`](etl-automation.md).
+- **`datasource.schema_name` quoting — resolved by validation, not by
+  quoting.** The name is still interpolated raw into ~70 `f"{schema}.fact"`
+  sites across `core/` and `sources/`, while pandas' `to_sql` quotes it.
+  Rather than convert those sites to `%I` — they are consistently unquoted
+  and therefore work, so quoting them would break every installation whose
+  schema is already sitting folded on disk — the name is restricted to what
+  survives Postgres case-folding unchanged:
+  `core/schema.py:validate_schema_name` on `^[a-z_][a-z0-9_]{0,62}$`, called
+  from `source_new`, `source_edit`, `profile_store.insert_datasource` and
+  `ensure_schema`, with a `NOT VALID` CHECK
+  (`migrations/0024_schema_name_check.sql`) as backstop. `source_edit` skips
+  the check when the submitted name is unchanged, so a row predating it stays
+  editable. Remaining gap: nothing repairs a datasource already holding a
+  folded name — its metadata and disk still disagree until someone edits the
+  field to the folded spelling.
+- **Partition retirement** — closed. `datasource.retention_periods` drops
+  aged-out partitions from the housekeeping, at most a couple per run so a
+  mistyped value walks visibly instead of clearing the table in one pass.
+  What made it an M rather than an S was never the drop loop: four
+  subsystems assumed `fact` covered everything since the beginning of time
+  and had to learn about the floor — the audit, the server-side plot cache,
+  the chart's own in-page cache (which keys on the query string and had
+  never heard of the cache epoch), and alarms, where a truncated window
+  makes `count(*) <` report an outage retention itself caused. See
+  [`etl-automation.md`](etl-automation.md).
+- **Alarm notification transports** — closed by migration 0030:
+  `email` (stdlib smtplib), `xmpp` (slixmpp bot account) and `pagerduty`
+  (Events API v2, per-datasource routing key) are real transports now;
+  dispatch lives in `sources/alarm_notify.py` — see `docs/alarm.md`.
+  Remaining gaps: `slack` still has no transport, and recipients are the
+  login users only (no external/distribution-list addresses — accepted
+  limitation). Known accepted trade-off on the evaluation side unchanged:
+  rows arriving late into an already-evaluated window are never
+  re-evaluated (see `docs/alarm.md`).
+- **The partial dim indexes excluded the wrong row** — closed by dropping
+  the predicate rather than fixing it: the dim FK indexes are full btrees
+  now (`core/schema.py:create_indices`), and a stale partial one is dropped
+  and rebuilt by the same command, so the preflight hint
+  ("run `manage.py create_indices --name …`") keeps doing what it says.
+  What is worth keeping:
+
+  - **The original premise was doubly false.** The `!= 1` assumed the
+    `__unknown__` sentinel lands on `SMALLSERIAL` 1; it only does when the
+    dim table was created empty. Measured on `payments` it sits on 4, 22,
+    31, …, 1273 — never on 1. And the second premise — that the sentinel is
+    the *most frequent* value — fails too: it never reaches the pg_stats
+    MCV threshold on any dim FK column, i.e. it is rare, not dominant. The
+    predicate was excluding whatever row happened to be first: the `-1`
+    NULL row in ten dims, a real currency code (`008`) in `cncy_code`.
+  - **The space argument did not survive measurement either.** FK=1
+    carries 0.00 % of fact in eleven of the fourteen dim FK columns
+    (pg_stats MCV, `payments`); the max is 3.86 % (`so_peer_3`), then
+    1.32 % (`so_peer_2`, `merch_cat`). The predicate could have saved at
+    most ~3.9 % of one dim index. A dominant value — the whole point of
+    the exclusion — does not exist on the one real datasource.
+  - **Correctness was never at risk; coverage was.** The planner skips a
+    partial index wherever the predicate does not hold, so nothing was
+    ever hidden. What was lost is coverage: every query filtering
+    `cncy_code = '008'` was excluded from its own index. Full btrees give
+    that back.
+  - **The cost side never became a measurement.** On the payments install
+    the dim indexes had never been built at all — only `ix_create_time`
+    existed at the partitioned parent — and the rebuild via
+    `manage.py create_indices` is currently blocked there by a pre-existing
+    FK violation (fact carries raw ISO-4217 numeric codes in `cncy_code`,
+    3 862 631 of ~3.88 M rows reference no dim row; separate problem, not
+    this item). The FK=1 shares above already bound what the predicate
+    could have saved: at most ~3.9 % of one dim index, nothing elsewhere.
+
+  Found while measuring bitmap-index feasibility — see
+  [`bitmap-indexes.md`](bitmap-indexes.md) §6.2, which carries a dated
+  correction line now.

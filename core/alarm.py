@@ -318,6 +318,7 @@ def alarm_aggregate_sql(
     where_parts, params = _build_where(
         source.schema_name, source.partition_column,
         t_from, t_to, None, dims_by_fact, filter_tree=tree,
+        fact_types={c.name: c.pg_type for c in source.fact_columns},
     )
     value_expr = measure_value_expr(source, alarm["measure"])
     sql = (

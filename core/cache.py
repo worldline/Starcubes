@@ -35,12 +35,20 @@ def make_cache_key(
     filter_tree: Optional[list],
     series_label: str,
     cache_epoch: int,
+    kind: str = "plot",
 ) -> str:
     """Build a stable sha256 hex key for a cacheable plot request.
 
     `t_from_epoch` is normalized to the server-side `interval_start`
     (`(t_from // interval) * interval`) so trivially-different `from` values
     that produce the same plot collide on the same key.
+
+    `kind` namespaces the key space so unrelated payloads (e.g. the gap
+    profile behind the gap overlay, `kind="gap_profile"`) cannot collide
+    with plot keys. It is part of the hashed payload, so introducing it
+    changed every key once — acceptable because the cache is a pure
+    accelerator and re-fills from live queries; within one deployment the
+    keys are stable.
     """
     interval_start = (int(t_from_epoch) // interval) * interval
     payload = {
@@ -53,6 +61,7 @@ def make_cache_key(
         "ft": filter_tree or [],
         "sl": series_label,
         "ce": int(cache_epoch),
+        "k":  kind,
     }
     blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
@@ -99,15 +108,33 @@ def is_cacheable(
     return True
 
 
-def get_cached_plot(meta_engine, cache_key: str) -> Optional[dict]:
-    """Return the cached payload (and bump LRU stats), or None on miss."""
+def get_cached_plot(
+    meta_engine,
+    cache_key: str,
+    *,
+    max_age_s: Optional[int] = None,
+) -> Optional[dict]:
+    """Return the cached payload (and bump LRU stats), or None on miss.
+
+    `max_age_s` bounds the row's age: a payload older than that is treated
+    as a miss. Default None keeps the existing behaviour (no age check) for
+    plot payloads — those are invalidated by cache_epoch, not by age. The
+    gap profile (see `core.query.GAP_PROFILE_TTL_S`) uses it to bound table
+    growth: the entry is immutable behind an epoch-bump, but back-scrolling
+    over months would otherwise pile up one row per tag-aligned key.
+    """
+    sql = (
+        "UPDATE starcubes_meta.query_cache "
+        "   SET last_hit_at = now(), hits = hits + 1 "
+        " WHERE cache_key = :k"
+    )
+    params = {"k": cache_key}
+    if max_age_s is not None:
+        sql += "   AND created_at > now() - make_interval(secs => :age)"
+        params["age"] = max_age_s
+    sql += " RETURNING payload"
     with meta_engine.begin() as conn:
-        row = conn.execute(text(
-            "UPDATE starcubes_meta.query_cache "
-            "   SET last_hit_at = now(), hits = hits + 1 "
-            " WHERE cache_key = :k "
-            " RETURNING payload"
-        ), {"k": cache_key}).scalar()
+        row = conn.execute(text(sql), params).scalar()
     return row  # psycopg2 returns json as a dict already
 
 

@@ -35,8 +35,9 @@ inside the subquery; for pass-through columns it runs on `f.col::text`.
 """
 from __future__ import annotations
 
+import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import text
@@ -88,6 +89,58 @@ EXTENT_STYLES = frozenset({
     "quantile-steps",
     "quantile-steps-open",
 })
+
+# --- Gap overlay (6σ event-gap detection over count(*)) ---------------------
+#
+# With second-resolution fact rows, an empty bucket at measure count(*) is an
+# empty second(s) of the event stream: consecutive empty buckets between two
+# occupied ones are the inter-event distance. Poisson statistics turn that
+# into a threshold: the probability of zero events over a span whose expected
+# event count is μ is exp(−μ), so a span is 6σ-suspicious once
+# μ = ∫λ̂ dt exceeds −ln(α). T = −ln(α)/λ̂ is the flat-rate special case.
+#
+# "μ + 6σ on the gap length" would be mcalibrated — the geometric tail
+# probability behind μ + 6σ depends on λ itself (e.g. e^{−0.6} ≈ 0.54 at
+# λ = 0.01/s) — so the tail quantile is used directly.
+
+# One-sided 6σ tail quantile, Φ(−6) ≈ 9.87e-10.
+GAP_ALPHA = 9.87e-10
+# The day profile λ̂(h) averages the same filters over the `profile_days` days
+# ending at the last full UTC midnight, so the rate an hour "usually" carries
+# is measured at the same hour of day.
+GAP_PROFILE_DAYS = 7
+# Server-side TTL for the cached day profile (core.cache.get_cached_plot).
+# Not a data invalidation — the entry is immutable behind a cache_epoch bump —
+# but a growth bound: back-scrolling over months would otherwise leave one
+# row per tag-aligned key behind, and query_cache has no eviction of its own.
+GAP_PROFILE_TTL_S = 900
+# Cap on the gaps list (largest first). The client draws a further cap
+# (GAP_MAX_DRAWN in chart.html); the sort keeps the cap from dropping the
+# interesting end of the distribution.
+GAP_MAX_CANDIDATES = 2000
+# Cap the μ integration per gap in hours. A gap long enough to hit the cap is
+# marked long before it matters — the cap only bounds the loop on a
+# pathological span.
+GAP_MAX_INTEGRAL_HOURS = 400
+# −ln(α) ≈ 20.7557: a span whose expected event count μ exceeds this is
+# marked (P(no event over the span) = exp(−μ) ≤ α).
+GAP_THRESHOLD_EVENTS = -math.log(GAP_ALPHA)
+# The granularity the gap scan always groups at, whatever tier the chart is
+# drawing. The overlay's arrow tips sit on the first/last *transaction*, and
+# only a 1 s scan sees them — so the scan SQL hardcodes 1 s buckets
+# (`floor(extract(epoch from …))::bigint`) and this constant records that
+# decision; the client no longer sends an interval at all.
+GAP_SCAN_INTERVAL_S = 1
+# Cap on one gap scan, in seconds. A pan across months must not turn into one
+# unbounded full scan of `fact`: the client splits its demand at 7-day seams
+# and this is the server-side mirror, cutting the *end* of the window (the
+# fresh edge is the provisional one — the cut part is simply re-requested).
+GAP_MAX_SCAN_S = 7 * 86400
+# The shortest span the scan can even report. With 1 s buckets,
+# `sec − prev_sec >= 2` is the first distance that has at least one fully
+# empty second between two occupied ones; `sec − prev_sec == 1` is two
+# adjacent occupied seconds, i.e. no gap at all.
+GAP_MIN_SPAN_S = 2
 
 
 def parse_ladder_agg(agg: Optional[str]) -> Optional[tuple[str, str]]:
@@ -455,6 +508,51 @@ def validate_filter_tree(source, nodes: list[dict]) -> None:
         validate_filter_tree(source, node["children"])
 
 
+def validate_filters(source, filter_tree=None, filter_groups=None) -> None:
+    """Validate whichever filter form was supplied — tree (web) or groups (CLI).
+
+    `filter_tree` takes precedence when both are given, the same rule
+    `_build_where` applies when it picks which one to turn into SQL. Called
+    from the four `_build_where` wrappers (`build_chart_sql`,
+    `build_chart_legend_sql`, `_gap_where`, `_build_bar_where`), so no filter
+    reaches SQL unchecked and every query function is covered by the wrapper
+    it already goes through — a bad filter column used to reach Postgres and
+    come back as a 42703 the chart's error translation does not know, i.e. an
+    HTTP 500 for what is a typo in the filter box.
+    """
+    if filter_tree is not None:
+        validate_filter_tree(source, filter_tree)
+        return
+    for group in filter_groups or []:
+        for cond in group:
+            check_filter_col(source, cond["col"])
+            if cond["op"] not in _VALID_OPS:
+                raise ValueError(
+                    f"filter op for {cond['col']!r} must be one of "
+                    f"{_VALID_OPS}, got {cond['op']!r}")
+
+
+def _coerce_filter_vals(pg_type: Optional[str], vals: list) -> list:
+    """Coerce filter values to the plain fact column's type.
+
+    The non-dim branches of `_filter_sql` compare the column against one
+    bound array (`= ANY` / `!= ALL`), and psycopg2 sends the Python list as
+    a single array literal — so its element type must match the column's or
+    PostgreSQL refuses the comparison. A dim-less fact column may well be
+    text (an ISO code, a status string): the LIKE branch above already
+    assumes that with its `::text` cast, and coercing those values with
+    int() turned any filter on such a column into a 500. Unknown or missing
+    type falls through to strings, the type PostgreSQL casts most broadly.
+    """
+    t = (pg_type or "").strip().split()
+    t = t[0] if t else ""
+    if t in ("smallint", "integer", "bigint"):
+        return [int(v) for v in vals]
+    if t in ("numeric", "double", "real"):
+        return [float(v) for v in vals]
+    return [str(v) for v in vals]
+
+
 def _filter_sql(
     schema: str,
     fact_col: str,
@@ -462,6 +560,7 @@ def _filter_sql(
     vals: list,
     param: str,
     dims_by_fact: dict,
+    fact_types: Optional[dict[str, str]] = None,
 ) -> tuple[str, dict]:
     """Return (sql_fragment, params) for a single filter condition.
 
@@ -540,7 +639,8 @@ def _filter_sql(
         per_col = [f"f.{c} IN ({inner})" for c in cols]
         return "(" + " OR ".join(per_col) + ")", params
     else:
-        params[param] = [int(v) for v in vals]
+        params[param] = _coerce_filter_vals(
+            (fact_types or {}).get(fact_col), vals)
         if op == "not_in":
             return f"f.{fact_col} != ALL(:{param})", params
         else:
@@ -552,6 +652,7 @@ def _build_where_nodes(
     siblings: list[dict],
     dims_by_fact: dict,
     cond_idx: list,
+    fact_types: Optional[dict[str, str]] = None,
 ) -> tuple[list[str], dict]:
     """Recursively build WHERE parts for a filter-tree sibling list.
 
@@ -568,14 +669,14 @@ def _build_where_nodes(
         row = sibling["row"]
         row_sql, row_params = _filter_sql(
             schema, row["col"], row["op"], row["vals"],
-            f"flt{cond_idx[0]}", dims_by_fact,
+            f"flt{cond_idx[0]}", dims_by_fact, fact_types,
         )
         cond_idx[0] += 1
         params.update(row_params)
 
         if sibling["children"]:
             child_parts, child_params = _build_where_nodes(
-                schema, sibling["children"], dims_by_fact, cond_idx,
+                schema, sibling["children"], dims_by_fact, cond_idx, fact_types,
             )
             params.update(child_params)
             children_sql = " AND ".join(child_parts)
@@ -621,6 +722,7 @@ def _build_where(
     *,
     filter_tree: Optional[list[dict]] = None,
     include_time_range: bool = True,
+    fact_types: Optional[dict[str, str]] = None,
 ) -> tuple[list[str], dict]:
     """Build WHERE clause parts and params.
 
@@ -640,7 +742,7 @@ def _build_where(
 
     if filter_tree is not None:
         tree_parts, tree_params = _build_where_nodes(
-            schema, filter_tree, dims_by_fact, [0]
+            schema, filter_tree, dims_by_fact, [0], fact_types,
         )
         where_parts.extend(tree_parts)
         params.update(tree_params)
@@ -651,7 +753,7 @@ def _build_where(
             for cond in group:
                 sql, cparams = _filter_sql(
                     schema, cond["col"], cond["op"], cond["vals"],
-                    f"flt{cond_idx}", dims_by_fact,
+                    f"flt{cond_idx}", dims_by_fact, fact_types,
                 )
                 cond_sqls.append(sql)
                 params.update(cparams)
@@ -793,9 +895,11 @@ def build_chart_sql(
     epoch_from = int(t_from.timestamp())
     interval_start = (epoch_from // interval) * interval
 
+    validate_filters(source, filter_tree, filter_groups)
     where_parts, flt_params = _build_where(
         schema, pc, t_from, t_to, filter_groups, dims_by_fact,
-        filter_tree=filter_tree)
+        filter_tree=filter_tree,
+        fact_types={c.name: c.pg_type for c in source.fact_columns})
     params: dict = {
         "interval":       interval,
         "interval_start": interval_start,
@@ -1031,9 +1135,11 @@ def build_chart_legend_sql(
     else:
         series_expr = f"f.{group_by}::text"
 
+    validate_filters(source, filter_tree, filter_groups)
     where_parts, flt_params = _build_where(
         schema, pc, t_from, t_to, filter_groups, dims_by_fact,
-        filter_tree=filter_tree)
+        filter_tree=filter_tree,
+        fact_types={c.name: c.pg_type for c in source.fact_columns})
     params: dict = {**flt_params}
 
     if graph_style in LADDER_STYLES:
@@ -1410,19 +1516,12 @@ def timeseries_multibar(
                 f"measure column {mcol!r} is not a fact column of "
                 f"{source.name!r}")
 
-    # Filter validation lives at module level (check_filter_col /
-    # validate_filter_tree) so the alarm CRUD and evaluator can reuse the
-    # exact same rules and error messages.
-    if filter_tree is not None:
-        validate_filter_tree(source, filter_tree)
-    else:
-        for group in filter_groups or []:
-            for cond in group:
-                check_filter_col(source, cond["col"])
-                if cond["op"] not in _VALID_OPS:
-                    raise ValueError(
-                        f"filter op for {cond['col']!r} must be one of "
-                        f"{_VALID_OPS}, got {cond['op']!r}")
+    # Filter validation lives at module level (validate_filters /
+    # check_filter_col / validate_filter_tree) so the alarm CRUD and evaluator
+    # reuse the exact same rules and error messages. `build_chart_sql` below
+    # validates too — this call only moves the failure ahead of the SQL build,
+    # which is where the group_by / measure checks above already fail.
+    validate_filters(source, filter_tree, filter_groups)
 
     sql, params, index_to_group, group_colors = build_chart_sql(
         source,
@@ -1696,6 +1795,547 @@ def timeseries_ladder(
     return plot
 
 
+def _gap_where(
+    source: Source,
+    *,
+    filter_tree=None,
+    filter_groups=None,
+    include_time_range: bool = True,
+    t_from: Optional[datetime] = None,
+    t_to: Optional[datetime] = None,
+) -> tuple[list[str], dict]:
+    """Return (where_parts, params) for the gap queries.
+
+    Thin wrapper around `_build_where` so the gap scan and the day profile
+    share one filter-SQL builder with the chart queries — the chart's filters
+    and the profile's must be the same filter, or λ̂(h) describes a different
+    stream than the one the chart displays.
+    """
+    validate_filters(source, filter_tree, filter_groups)
+    dims_by_fact = {d.fact_column: d for d in source.dimensions}
+    return _build_where(
+        source.schema_name, source.partition_column,
+        t_from, t_to, filter_groups, dims_by_fact,
+        filter_tree=filter_tree,
+        include_time_range=include_time_range,
+        fact_types={c.name: c.pg_type for c in source.fact_columns},
+    )
+
+
+def _profile_integral(
+    rate_per_s: dict[int, float],
+    start_epoch: int,
+    end_epoch: int,
+) -> float:
+    """Integrate the day profile λ̂(h) over [start_epoch, end_epoch).
+
+    μ = Σ λ̂(h)·overlap_s over the UTC hours the span touches. λ̂ = 0 for an
+    hour-of-day that never saw traffic contributes nothing — a span that
+    covers only silent hours stays unmarked by construction ("no traffic
+    expected") instead of via a special case. `GAP_MAX_INTEGRAL_HOURS` bounds
+    the loop; a span that long is marked long before the cap matters.
+    """
+    if end_epoch <= start_epoch:
+        return 0.0
+    mu = 0.0
+    seg = start_epoch
+    # Walk hour segments; cap the loop at GAP_MAX_INTEGRAL_HOURS segments.
+    # `seg = seg_end` at the foot is what advances the walk: without it the
+    # loop re-added the *first* segment's contribution GAP_MAX_INTEGRAL_HOURS
+    # times over. A span that ended inside its own hour was unaffected (the
+    # `seg_end >= end_epoch` break fires on the first pass), so only spans
+    # crossing an hour boundary were wrong — and wrong by a factor of 400,
+    # which turned a few seconds of quiet just before the full hour into a
+    # 6σ outage.
+    for _ in range(GAP_MAX_INTEGRAL_HOURS):
+        seg_start = (seg // 3600) * 3600
+        h = (seg_start % 86400) // 3600
+        seg_end = seg_start + 3600
+        overlap = min(end_epoch, seg_end) - max(start_epoch, seg_start)
+        if overlap <= 0:
+            break
+        mu += rate_per_s.get(h, 0.0) * overlap
+        if seg_end >= end_epoch:
+            break
+        seg = seg_end
+    return mu
+
+
+def gap_profile_bounds(
+    source: Source,
+    t_to_epoch: int,
+    hwm_epoch: Optional[int],
+    profile_days: int,
+) -> tuple[int, int]:
+    """Return (prof_from, prof_to) epoch bounds for the gap day profile.
+
+    UTC-midnight of the last fully-watermarked day (the profile window ends
+    at the last fully-seen day, never at a partial one); it looks at the
+    `profile_days` days before that, clamped up at the retention floor (same
+    precedence as core/audit._clamp_to_floor) and never below its own end.
+
+    Module-level so `viz.views.gaps_json` can build the profile's cache key
+    before `detect_gaps` runs — the profile is the expensive multi-day scan,
+    the gap rows the incremental part, so the two take different cache
+    treatment.
+    """
+    horizon = t_to_epoch if hwm_epoch is None else min(t_to_epoch, hwm_epoch)
+    prof_to = (horizon // 86400) * 86400
+    prof_from = prof_to - profile_days * 86400
+    floor_dt = getattr(source, "retention_floor", None)
+    if floor_dt is not None:
+        if floor_dt.tzinfo is None:
+            floor_dt = floor_dt.replace(tzinfo=timezone.utc)
+        prof_from = max(prof_from, int(floor_dt.timestamp()))
+    return min(prof_from, prof_to), prof_to
+
+
+def gap_scan_bounds(
+    source: Source,
+    t_from: datetime,
+    t_to: datetime,
+    hwm: Optional[datetime],
+) -> tuple[int, int, bool]:
+    """Return (scan_from, scan_to, truncated) epoch bounds for one gap scan.
+
+    Mirror piece of `gap_profile_bounds` and extracted from `detect_gaps`'s
+    inline clamping: the scan's lower bound rises to the retention floor
+    (below it `fact` is empty *on purpose* — reading that span would report
+    the disposal as a gap), the upper bound falls to the watermark (behind it
+    there is by definition no data to be a gap), and the whole span is capped
+    at `GAP_MAX_SCAN_S` — cut at the **end**, not the start, because the fresh
+    edge of the window is the provisional one and the cut remainder is simply
+    re-requested by the client.
+
+    Naive datetimes are UTC by project convention (same normalization the
+    HWM readers in this file apply).
+    """
+    def _utc(dt: datetime) -> datetime:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
+    scan_from = _utc(t_from)
+    scan_to = _utc(t_to)
+    floor_dt = getattr(source, "retention_floor", None)
+    if floor_dt is not None:
+        floor_dt = _utc(floor_dt)
+        if scan_from < floor_dt:
+            scan_from = floor_dt
+    if hwm is not None:
+        scan_to = min(scan_to, _utc(hwm))
+    truncated = False
+    if (scan_to - scan_from).total_seconds() > GAP_MAX_SCAN_S:
+        scan_to = scan_from + timedelta(seconds=GAP_MAX_SCAN_S)
+        truncated = True
+    return int(scan_from.timestamp()), int(scan_to.timestamp()), truncated
+
+
+def _utc_ts(source: Source, expr: str) -> str:
+    """`expr` normalised to a naive UTC timestamp, for hour/day grouping.
+
+    `extract(hour from …)` and `date_trunc('day', …)` over a `timestamptz` are
+    evaluated in the **session** time zone, not in UTC: a server running on
+    Europe/Berlin reports hour 21 for 19:00 UTC. Everything that reads those
+    groupings back — `_profile_integral`, the estimate dialog's hour table,
+    `gap_reference_drill`'s hour restriction — keys on the *UTC* hour, so the
+    two frames have to be forced together or λ̂(h) describes a different hour
+    than the one it is asked about (and the offset changes twice a year with
+    DST). A column that is already `timestamp without time zone` is left alone:
+    it is taken as UTC, which is how this module has always bound its
+    parameters.
+    """
+    pc_type = next((c.pg_type for c in source.fact_columns
+                    if c.name == source.partition_column), None)
+    tz_aware = bool(pc_type) and 'with time zone' in pc_type.replace('tz', ' with time zone')
+    return f"({expr} AT TIME ZONE 'UTC')" if tz_aware else expr
+
+
+def gap_day_profile(
+    source: Source,
+    *,
+    prof_from: int,
+    prof_to: int,
+    filter_tree=None,
+    filter_groups=None,
+    table: Optional[str] = None,
+    count_expr: str = "count(*)",
+    dest_engine=None,
+) -> dict:
+    """Day profile λ̂(h) for the gap overlay: rate per hour-of-day in 1/s.
+
+    One aggregation over the profile window [prof_from, prof_to) (epoch
+    seconds, day-aligned by `gap_profile_bounds`), grouped by UTC hour
+    (forced there by `_utc_ts` — the session time zone would otherwise
+    decide, and every reader of λ̂ keys on the UTC hour) and
+    day so the response can carry both the rate and the per-day series the
+    estimate dialog needs. `table=None` reads `{schema}.fact` with
+    `count(*)`; otherwise `{schema}.{table}` with the given `count_expr`
+    (e.g. `sum(f.n)` — **never** `count(*)` over rollup rows, each rollup
+    row already aggregates a bucket's worth of fact rows; see
+    `core.rollup.measure_expr`). The *filters* are the chart's, shared with
+    the scan through `_gap_where`; only the window differs.
+
+    **The denominator is the window length, not `count(distinct day)`.** The
+    previous profile query divided each hour's count by the number of days
+    that hour saw traffic, so a completely silent day inside the window — a
+    source outage, a weekend the stream never sees — lifted every hour's λ̂
+    by the same factor. The window length is one denominator for the rate
+    and for the zero-fill of `per_day` alike: a day the whole stream was
+    down enters `per_day` as zeros, which is exactly what min/max in the
+    estimate dialog should report for it.
+
+    Payload shape (string keys — it goes through JSON caching verbatim):
+
+        {"prof_from": int, "prof_to": int, "days": float,
+         "hours":   {str h: rate_per_s},
+         "per_day": {str h: [n per day, zero-filled to the day count]},
+         "source":  "fact" | table}
+
+    `days` is `(prof_to - prof_from) / 86400` — the window length, which for
+    a floor-clamped `prof_from` can be fractional.
+    """
+    schema = source.schema_name
+    pc = source.partition_column
+    tbl = f"{schema}.{table}" if table else f"{schema}.fact"
+    utc_pc = _utc_ts(source, f"f.{pc}")
+    expr = count_expr or "count(*)"
+
+    prof_from = int(prof_from)
+    prof_to = int(prof_to)
+    n_slots = max(1, int(math.ceil((prof_to - prof_from) / 86400.0)))
+    days = (prof_to - prof_from) / 86400.0
+
+    time_parts = [f"f.{pc} >= :prof_from", f"f.{pc} < :prof_to"]
+    flt_parts, flt_params = _gap_where(
+        source, filter_tree=filter_tree, filter_groups=filter_groups,
+        include_time_range=False)
+    where = time_parts + flt_parts
+    params = {"prof_from": datetime.fromtimestamp(prof_from, tz=timezone.utc),
+              "prof_to": datetime.fromtimestamp(prof_to, tz=timezone.utc),
+              **flt_params}
+
+    sql = f"""
+        SELECT extract(hour from {utc_pc})::int AS h,
+               date_trunc('day', {utc_pc}) AS d,
+               {expr} AS n
+          FROM {tbl} f
+         WHERE {" AND ".join(where) or "TRUE"}
+         GROUP BY 1, 2
+    """
+    with (dest_engine or source.dest_engine()).connect() as conn:
+        rows = conn.execute(text(sql), params).mappings().all()
+    per_day: dict[int, list[float]] = {}
+    for row in rows:
+        h = int(row["h"])
+        d = row["d"]
+        d_ts = d.timestamp() if d.tzinfo is not None else \
+            d.replace(tzinfo=timezone.utc).timestamp()
+        slot = int(round((d_ts - prof_from) / 86400.0))
+        if not 0 <= slot < n_slots:
+            continue
+        n = row["n"]
+        if not isinstance(n, int):           # Decimal (sum over bigint) → float
+            n = float(n)
+        per_day.setdefault(h, [0.0] * n_slots)[slot] = n
+
+    hours: dict[int, float] = {}
+    for h, series in per_day.items():
+        hours[h] = sum(series) / (days * 3600.0)
+    return {
+        "prof_from": prof_from,
+        "prof_to": prof_to,
+        "days": days,
+        # String keys so the payload survives a JSON cache roundtrip
+        # byte-identical; readers re-key to int (`_normalize_gap_profile`).
+        "hours": {str(h): r for h, r in hours.items()},
+        "per_day": {str(h): s for h, s in per_day.items()},
+        "source": table or "fact",
+    }
+
+
+def gap_neighbor_rate(
+    source: Source,
+    *,
+    t_from: int,
+    t_to: int,
+    filter_tree=None,
+    filter_groups=None,
+    dest_engine=None,
+) -> Optional[float]:
+    """Mean event rate (rows per second) over [t_from, t_to) from `fact`.
+
+    The gap estimate dialog's neighbour interpolation: the rate the stream
+    actually carried just before/after the gap, as one small COUNT over the
+    chart's filters (shared with the scan and the profile via `_gap_where`).
+    Returns None for an empty or inverted window — the caller decides what
+    an unavailable neighbour means; it does not silently become 0.
+    """
+    t_from = int(t_from)
+    t_to = int(t_to)
+    if t_to <= t_from:
+        return None
+    where, params = _gap_where(
+        source, filter_tree=filter_tree, filter_groups=filter_groups,
+        include_time_range=True,
+        t_from=datetime.fromtimestamp(t_from, tz=timezone.utc),
+        t_to=datetime.fromtimestamp(t_to, tz=timezone.utc))
+    sql = f"""
+        SELECT count(*) FROM {source.schema_name}.fact f
+         WHERE {" AND ".join(where) or "TRUE"}
+    """
+    with (dest_engine or source.dest_engine()).connect() as conn:
+        n = conn.execute(text(sql), params).scalar()
+    return (n or 0) / (t_to - t_from)
+
+
+def detect_gaps(
+    source: Source,
+    *,
+    t_from: datetime,
+    t_to: datetime,
+    filter_tree=None,
+    filter_groups=None,
+    profile_days: int = GAP_PROFILE_DAYS,
+    alpha: float = GAP_ALPHA,
+    max_gaps: int = GAP_MAX_CANDIDATES,
+    hwm: Optional[datetime] = None,
+    profile: Optional[dict] = None,
+    dest_engine=None,
+) -> dict:
+    """Detect 6σ event gaps for the chart's gap overlay (count(*) only).
+
+    An empty second of the event stream behind the chart's filters is what
+    the overlay draws; the scan groups `fact` at second resolution
+    (`GAP_SCAN_INTERVAL_S`) whatever tier the chart is showing, so the gap's
+    edges are the first/last *transaction*, not bucket boundaries.
+    `group_by` is deliberately not a parameter: the test runs on the
+    **total** stream (a second is empty when no row falls into it, whatever
+    the chart's breakdown is) — that is the question the chart visually asks,
+    and it keeps the scan from scaling with the series count.
+
+    Reads `{schema}.fact` always, never a rollup: a rollup carries min/max
+    only as bucket-start values of its own bucket column, not as
+    transaction timestamps, so exact edge timestamps would be wrong. (The
+    *profile* λ̂(h) may come from a rollup — that decision lives in
+    `viz.views._load_gap_profile`, which hands it in pre-loaded.)
+
+    The 6σ test is an integral over the day profile λ̂(h) (hour-of-day rate
+    over the last `profile_days` days, same filters as the chart):
+    μ = ∫λ̂ dt must exceed −ln(α) ≈ 20.7557 expected events. λ̂(h) = 0 hours
+    contribute 0 — a span over silent hours stays unmarked by construction.
+
+    `profile` is a **required** interface in the normal request path: the
+    caller (viz.views._load_gap_profile) loads it rollup-first with fact
+    fallback and caches it server-side under kind="gap_profile". When None,
+    the profile is computed here via `gap_day_profile` **without any
+    caching** — the profile is the expensive multi-day scan and the view is
+    its caching layer, so a caller that skips the view pays the scan every
+    time; management commands may do exactly that.
+
+    A λ̂max = 0 profile means no traffic is expected anywhere in the day, so
+    the 6σ integral can never fire and the scan is skipped entirely
+    (gaps = [], candidate_gaps = 0). Otherwise the scan SQL prefilters with
+    `min_len_s = GAP_THRESHOLD_EVENTS / λ̂max`: a gap shorter than that
+    cannot reach μ > −ln(α) even at the day's highest rate, so carrying it
+    through the window function and the Python μ-test would be work the
+    integral discards anyway.
+
+    Returns a dict as documented in `viz/views.py gaps_json`.
+    """
+    if t_from.tzinfo is None or t_to.tzinfo is None:
+        raise ValueError("t_from and t_to must be timezone-aware")
+    if t_to <= t_from:
+        raise ValueError(f"t_to ({t_to}) must be after t_from ({t_from})")
+    if not (0 < alpha < 1):
+        alpha = GAP_ALPHA
+    if not (1 <= profile_days <= 30):
+        profile_days = GAP_PROFILE_DAYS
+    # Ahead of the profile query and the scan, both of which reach SQL
+    # through `_gap_where` — which validates as well; this is the fail-fast.
+    validate_filters(source, filter_tree, filter_groups)
+
+    epoch_from_req = int(t_from.timestamp())
+    epoch_to_req = int(t_to.timestamp())
+    schema = source.schema_name
+    pc = source.partition_column
+
+    # Naive datetimes are UTC by project convention (same normalization the
+    # HWM readers in this file apply).
+    if hwm is not None and hwm.tzinfo is None:
+        hwm = hwm.replace(tzinfo=timezone.utc)
+
+    def _epoch(dt: datetime) -> int:
+        if dt.tzinfo is None:
+            return int(dt.replace(tzinfo=timezone.utc).timestamp())
+        return int(dt.timestamp())
+
+    floor_dt = getattr(source, "retention_floor", None)
+    if floor_dt is not None and floor_dt.tzinfo is None:
+        floor_dt = floor_dt.replace(tzinfo=timezone.utc)
+
+    # --- clamps (extracted into gap_scan_bounds) --------------------------
+    scan_from_epoch, scan_to_epoch, scan_truncated = gap_scan_bounds(
+        source, t_from, t_to, hwm)
+    if scan_to_epoch <= scan_from_epoch:
+        # Nothing to scan (window entirely below the floor or behind the
+        # watermark): the full scaffolding with empty gaps. The pre-loaded
+        # profile is echoed so the client keeps its λ̂ context; without one
+        # the scaffolding stays as bare as before.
+        if profile is not None:
+            prof_from = int(profile["prof_from"])
+            prof_to = int(profile["prof_to"])
+            days_total = float(profile["days"])
+            rate_per_s = {int(h): float(r)
+                          for h, r in profile["hours"].items()}
+            prof_source = profile.get("source") or "fact"
+        else:
+            prof_from = prof_to = None
+            days_total = 0.0
+            rate_per_s = {}
+            prof_source = None
+        return {
+            "from": epoch_from_req,
+            "to": epoch_to_req,
+            "scanned_from": scan_from_epoch,
+            "scanned_to": scan_to_epoch,
+            "scan_truncated": scan_truncated,
+            "data_until": _epoch(hwm) if hwm is not None else None,
+            "floor": int(floor_dt.timestamp()) if floor_dt is not None else None,
+            "alpha": alpha,
+            "expected_threshold": -math.log(alpha),
+            "profile": {"prof_from": prof_from, "prof_to": prof_to,
+                        "days": float(days_total), "rate_per_s": {},
+                        "source": prof_source},
+            "gaps": [],
+            "candidate_gaps": 0,
+            "truncated": False,
+        }
+
+    # --- day profile λ̂(h) -------------------------------------------------
+    if profile is not None:
+        prof_from = int(profile["prof_from"])
+        prof_to = int(profile["prof_to"])
+        days_total = float(profile["days"])
+        rate_per_s = {int(h): float(r)
+                      for h, r in profile["hours"].items()}
+        prof_source = profile.get("source") or "fact"
+    else:
+        prof_from, prof_to = gap_profile_bounds(
+            source, epoch_to_req,
+            int(hwm.timestamp()) if hwm is not None else None, profile_days)
+        payload = gap_day_profile(
+            source, prof_from=prof_from, prof_to=prof_to,
+            filter_tree=filter_tree, filter_groups=filter_groups,
+            dest_engine=dest_engine)
+        prof_from = int(payload["prof_from"])
+        prof_to = int(payload["prof_to"])
+        days_total = float(payload["days"])
+        rate_per_s = {int(h): float(r)
+                      for h, r in payload["hours"].items()}
+        prof_source = payload["source"]
+
+    # --- gap scan ---------------------------------------------------------
+    gaps: list[dict] = []
+    candidate_gaps = 0
+    lam_max = max(rate_per_s.values(), default=0.0)
+    if lam_max > 0 and scan_to_epoch > scan_from_epoch:
+        # SQL prefilter: a gap of L seconds can reach μ = λ̂·L at best (the
+        # day's peak rate), so anything below GAP_THRESHOLD_EVENTS / λ̂max
+        # cannot pass the integral test even at the most favourable hour —
+        # running it through the window function and the per-gap integral
+        # would be pure discard. GAP_MIN_SPAN_S floors it, because with 1 s
+        # buckets a distance of 1 s is two adjacent occupied seconds: no
+        # empty second at all.
+        min_len_s = max(GAP_THRESHOLD_EVENTS / lam_max, GAP_MIN_SPAN_S)
+
+        gap_where, gap_params = _gap_where(
+            source, filter_tree=filter_tree, filter_groups=filter_groups,
+            include_time_range=True,
+            t_from=datetime.fromtimestamp(scan_from_epoch, tz=timezone.utc),
+            t_to=datetime.fromtimestamp(scan_to_epoch, tz=timezone.utc))
+        gap_sql = f"""
+            WITH occ AS (
+              SELECT floor(extract(epoch from f.{pc}))::bigint AS sec,
+                     min(f.{pc}) AS first_txn, max(f.{pc}) AS last_txn
+                FROM {schema}.fact f
+               WHERE {" AND ".join(gap_where)}
+               GROUP BY 1)
+            SELECT prev_sec, sec, prev_last_txn, first_txn
+              FROM (SELECT sec, first_txn, last_txn,
+                           lag(sec) OVER (ORDER BY sec) AS prev_sec,
+                           lag(last_txn) OVER (ORDER BY sec)
+                               AS prev_last_txn
+                      FROM occ) g
+             WHERE prev_sec IS NOT NULL AND sec - prev_sec >= :min_len_s
+             ORDER BY (sec - prev_sec) DESC
+             LIMIT :max_gaps
+        """
+        gap_params = {**gap_params,
+                      "min_len_s": min_len_s,
+                      "max_gaps": max_gaps}
+        with (dest_engine or source.dest_engine()).connect() as conn:
+            gap_rows = conn.execute(text(gap_sql),
+                                    gap_params).mappings().all()
+
+        # Widest-first from the SQL keeps the cap's survivors the wide ones;
+        # the response is ascending so the client can merge seam-to-seam.
+        candidate_gaps = len(gap_rows)
+        for row in gap_rows:
+            left_ms = _epoch_ms(row["prev_last_txn"])
+            right_ms = _epoch_ms(row["first_txn"])
+            # The μ-test runs over the transaction distance, not the bucket
+            # distance: the gap is the empty span *between* the last
+            # transaction before it and the first one after.
+            left_s = left_ms // 1000
+            right_s = right_ms // 1000
+            span_s = round((right_ms - left_ms) / 1000.0, 3)
+            mu = _profile_integral(rate_per_s, left_s, right_s)
+            if mu <= GAP_THRESHOLD_EVENTS:
+                continue
+            gaps.append({
+                "left_txn_ms": left_ms,
+                "right_txn_ms": right_ms,
+                "span_s": span_s,
+                "expected_events": mu,
+                # Equivalent flat-rate threshold for the tooltip: the gap
+                # length at which −ln(α) events would have been expected at
+                # the span's own average rate μ/span_s.
+                "threshold_s": (GAP_THRESHOLD_EVENTS / (mu / span_s))
+                               if span_s > 0 else None,
+            })
+    gaps.sort(key=lambda g: g["left_txn_ms"])
+
+    return {
+        "from": epoch_from_req,
+        "to": epoch_to_req,
+        "scanned_from": scan_from_epoch,
+        "scanned_to": scan_to_epoch,
+        "scan_truncated": scan_truncated,
+        "data_until": _epoch(hwm) if hwm is not None else None,
+        "floor": int(floor_dt.timestamp()) if floor_dt is not None else None,
+        "alpha": alpha,
+        "expected_threshold": -math.log(alpha),
+        "profile": {
+            "prof_from": prof_from,
+            "prof_to": prof_to,
+            "days": float(days_total),
+            "rate_per_s": {str(h): r for h, r in rate_per_s.items()},
+            "source": prof_source,
+        },
+        "gaps": gaps,
+        "candidate_gaps": candidate_gaps,
+        "truncated": candidate_gaps >= max_gaps,
+    }
+
+
+def _epoch_ms(dt: datetime) -> int:
+    """Transaction timestamp → integer epoch milliseconds (tz-safe)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(round(dt.timestamp() * 1000))
+
+
 def _build_bar_where(
     source: Source,
     group_by: str,
@@ -1761,9 +2401,11 @@ def _build_bar_where(
     if gb_where is not None:
         base_parts.append(gb_where)
 
+    validate_filters(source, filter_tree, filter_groups)
     flt_parts, flt_params = _build_where(
         schema, pc, t_from, t_to, filter_groups, dims_by_fact,
-        filter_tree=filter_tree, include_time_range=False)
+        filter_tree=filter_tree, include_time_range=False,
+        fact_types={c.name: c.pg_type for c in source.fact_columns})
 
     return base_parts + flt_parts, {**base_params, **flt_params}
 
@@ -1832,6 +2474,115 @@ def drill_down(
                         for r in rows
                     ],
                 })
+    return results
+
+
+def gap_reference_drill(
+    source: Source,
+    engine,
+    *,
+    prof_from: int,
+    prof_to: int,
+    hours: list[int],
+    mu: float,
+    filter_tree=None,
+    filter_groups=None,
+    limit: int = 20,
+) -> list[dict]:
+    """Dimension breakdown for a gap, interpolated from the profile window.
+
+    A gap holds no rows by definition, so there is nothing to count — the
+    breakdown has to come from a comparison set and be scaled to the expected
+    count μ. The comparison set is the **profile window** (`gap_profile_bounds`)
+    restricted to the hours-of-day the gap touches: the same window and the
+    same `extract(hour from …)` grouping `gap_day_profile` derives λ̂ from, so
+    the shares and the total they are scaled by come from one body of data
+    rather than two. A neighbour window either side of the gap would answer a
+    different question — what happened to be running — and freeze a passing
+    anomaly into the estimate.
+
+    The gap rarely sits on hour boundaries (14:03 → 14:41); taking the whole
+    touched hour as the reference is deliberate. Only the *ratios* are read
+    here, and μ — computed over the exact transaction distance — supplies the
+    magnitude.
+
+    Shares are read per dimension in one query each, the denominator coming
+    from `sum(count(*)) OVER ()` in the same pass: window functions run before
+    LIMIT, so the total covers every group, not just the top `limit` rows. The
+    unknown-source row is excluded exactly as `drill_down` excludes it, which
+    keeps the two breakdowns comparable — the point of the whole exercise.
+
+    Returns `drill_down`'s shape, so the client renders both through one path:
+      {"column": str, "dim_table": str,
+       "values": [{"source_id": str, "name": str, "count": int}]}
+    `count` is round(share · μ) and is therefore an estimate; it is the caller's
+    job to present it as one.
+    """
+    if not hours or mu <= 0:
+        return []
+    schema = source.schema_name
+    pc = source.partition_column
+
+    flt_parts, flt_params = _gap_where(
+        source, filter_tree=filter_tree, filter_groups=filter_groups,
+        include_time_range=False)
+    where_parts = [f"f.{pc} >= :_prof_from", f"f.{pc} < :_prof_to",
+                   f"extract(hour from {_utc_ts(source, f'f.{pc}')})::int "
+                   f"= ANY(:_hours)"] + flt_parts
+    where_base = " AND ".join(where_parts)
+    base_params = {
+        "_prof_from": datetime.fromtimestamp(int(prof_from), tz=timezone.utc),
+        "_prof_to": datetime.fromtimestamp(int(prof_to), tz=timezone.utc),
+        "_hours": sorted({int(h) for h in hours}),
+        **flt_params,
+    }
+
+    dims_by_fact = {d.fact_column: d for d in source.dimensions}
+    results = []
+    with engine.begin() as conn:
+        for fc in sorted(source.fact_columns, key=lambda c: c.ordinal):
+            if fc.role not in ("dimension", "auto-dimension"):
+                continue
+            dm = dims_by_fact.get(fc.name)
+            if not dm or not dm.dim_table:
+                continue
+            params = dict(base_params)
+            params["_limit"] = limit
+            params["_unk"] = UNKNOWN_SOURCE_ID
+            sql = text(
+                f"SELECT d.source_id, d.name, count(*) AS cnt, "
+                f"       sum(count(*)) OVER () AS total "
+                f"FROM {schema}.fact f "
+                f"JOIN {schema}.{dm.dim_table} d ON f.{fc.name} = d.index "
+                f"WHERE {where_base} AND d.source_id != :_unk "
+                f"GROUP BY d.source_id, d.name "
+                f"ORDER BY cnt DESC, d.name NULLS LAST "
+                f"LIMIT :_limit"
+            )
+            rows = conn.execute(sql, params).all()
+            if not rows:
+                continue
+            total = float(rows[0][3] or 0)
+            if total <= 0:
+                continue
+            # Values whose share rounds to zero are dropped rather than listed.
+            # A count of 0 reads as a measurement ("none of these came through")
+            # when it is really the opposite — a share too small to show at this
+            # gap's size. They are also the bulk of the list on a short gap: a
+            # 20-second gap over a 20-value dimension rounds most of it to zero.
+            values = [
+                {"source_id": r[0], "name": r[1] or r[0],
+                 "count": int(round(int(r[2]) / total * mu))}
+                for r in rows
+            ]
+            values = [v for v in values if v["count"] > 0]
+            if not values:
+                continue
+            results.append({
+                "column":    fc.name,
+                "dim_table": dm.dim_table,
+                "values":    values,
+            })
     return results
 
 

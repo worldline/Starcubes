@@ -4,6 +4,6 @@
   "version": "0.0.0",
   "description": "npm manifest for vendoring the @hgruber/timeseries.js frontend dep",
   "dependencies": {
-    "@hgruber/timeseries.js": "~0.10.7"
+    "@hgruber/timeseries.js": "~0.10.8"
   }
 }

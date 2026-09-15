@@ -69,8 +69,8 @@ branch — **`master` is the only long-lived branch.**
   one. Measured, with the answer being mostly no (B-tree deduplication since
   PG 13 already banks 3.2× for free; the remaining win needs physically
   clustered data). Read before proposing an index-level change, and for §6,
-  which is what the repo does today and where the partial-index defect in
-  the backlog came from.
+  which is what the dim indexes were before they went full — the source of
+  the partial-index defect, closed in the backlog's closed items 2026-09-14.
 - **[`docs/backlog.md`](docs/backlog.md)** — known unfinished work. Read when
   planning new work or assessing scope.
 - **[`docs/releases.md`](docs/releases.md)** — the git tag *is* the version

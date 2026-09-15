@@ -189,6 +189,12 @@ What the repo actually does today (verified against `core/schema.py` and
    unaffected — a partial index can never hide rows — but the intended space
    saving is not realised there.
 
+   *Correction 2026-09-14:* the predicate was dropped — the dim FK indexes
+   are full btrees now, and `create_indices` drops a stale partial one on the
+   next `manage.py create_indices`. Measurement and decision in the
+   close-out of the backlog entry "The partial dim indexes exclude the wrong
+   row".
+
 3. **BRIN is already supported.** `_VALID_INDEX_METHODS = {"brin", "btree",
    "hash"}` (`core/profile.py:76`) — the fact-index method is selectable per
    profile and emitted as `USING {method}` at `core/schema.py:308`. So this

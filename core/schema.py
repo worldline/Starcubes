@@ -320,11 +320,34 @@ def create_indices(source: Source, dest_engine, *, quiet: bool = False) -> None:
         for d in source.dimensions:
             if not d.dim_table:
                 continue
+            name = f"ix_{d.fact_column}"
+            # Full, not partial: an earlier `WHERE {col} != 1` meant to keep
+            # the __unknown__ sentinel out of the index, assuming it lands on
+            # SMALLSERIAL 1 — it never does when the dim table was populated
+            # before the sentinel was appended, so the predicate excluded
+            # whatever row happened to be first (on payments, a real currency
+            # in one dim). The planner simply skips a partial index whose
+            # predicate it cannot trust, so nothing was ever hidden — but the
+            # intended saving never materialised either. A stale partial index
+            # from before the change is dropped here rather than left in place,
+            # so that `manage.py create_indices` repairs an existing install.
+            stale = conn.execute(text(
+                "SELECT pg_get_expr(x.indpred, x.indrelid) IS NOT NULL "
+                "  FROM pg_index x "
+                "  JOIN pg_class i ON i.oid = x.indexrelid "
+                "  JOIN pg_namespace n ON n.oid = i.relnamespace "
+                " WHERE n.nspname = :s AND i.relname = :name"
+            ), {"s": schema, "name": name}).scalar()
+            if stale:
+                if not quiet:
+                    print(f"{source.name}: dropping partial {name} "
+                          "(pre-dates the full dim index)")
+                conn.execute(text(f"DROP INDEX {schema}.{name}"))
             if not quiet:
                 print(f"{source.name}: creating fact index {d.fact_column} (btree)")
             conn.execute(text(
-                f"CREATE INDEX IF NOT EXISTS ix_{d.fact_column} ON {schema}.fact "
-                f"USING btree({d.fact_column}) WHERE {d.fact_column} != 1"
+                f"CREATE INDEX IF NOT EXISTS {name} ON {schema}.fact "
+                f"USING btree({d.fact_column})"
             ))
 
 

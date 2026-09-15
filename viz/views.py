@@ -22,13 +22,18 @@ from core import adhoc
 from core.cache import (get_cached_plot, is_cacheable, make_cache_key,
                         put_cached_plot)
 from core.query import (build_chart_legend_sql_rendered,
-                        build_filter_tree, build_group_by_indices, drill_down,
-                        grouped_label, grouped_token, LADDER_STYLES,
+                        build_filter_tree, build_group_by_indices,
+                        detect_gaps, drill_down, gap_day_profile,
+                        gap_neighbor_rate, gap_profile_bounds,
+                        gap_reference_drill,
+                        GAP_PROFILE_DAYS, GAP_PROFILE_TTL_S, grouped_label,
+                        grouped_token, _profile_integral, LADDER_STYLES,
                         list_transactions, parse_ladder_agg,
                         resolve_group_set, split_grouped_col,
-                        timeseries_ladder, timeseries_multibar)
-from core.rollup import (measure_expr, pick_rollup, read_rollup_states,
-                         rollup_extent)
+                        timeseries_ladder, timeseries_multibar,
+                        validate_filter_tree)
+from core.rollup import (measure_expr, pick_profile_rollup, pick_rollup,
+                         read_rollup_states, rollup_extent)
 from core.schema import UNKNOWN_SOURCE_ID
 from core.source import (REQUEST_CONNECT_TIMEOUT_S, Source, _get_cached_engine)
 from core.utils import _parse_dt
@@ -401,6 +406,12 @@ def plot_json(request):
         if message is None:   # none of the normal states — stay a real 500
             return JsonResponse({"error": repr(exc)}, status=500)
         return JsonResponse({"ok": False, "error": message})
+    except ValueError as exc:
+        # A user-input error (bad filter column/op, an unparseable filter
+        # value, a bad date): the chart surfaces "ok": false the same way it
+        # does for _friendly_db_error's states — before, it was a 500 with
+        # repr(exc), which made a typo'd filter look like a server fault.
+        return JsonResponse({"ok": False, "error": str(exc)})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)
 
@@ -459,6 +470,12 @@ def drill_json(request):
         if message is None:   # none of the normal states — stay a real 500
             return JsonResponse({"error": repr(exc)}, status=500)
         return JsonResponse({"ok": False, "error": message})
+    except ValueError as exc:
+        # A user-input error (bad filter column/op, an unparseable filter
+        # value, a bad date): the chart surfaces "ok": false the same way it
+        # does for _friendly_db_error's states — before, it was a 500 with
+        # repr(exc), which made a typo'd filter look like a server fault.
+        return JsonResponse({"ok": False, "error": str(exc)})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)
 
@@ -515,6 +532,390 @@ def txn_json(request):
         if message is None:   # none of the normal states — stay a real 500
             return JsonResponse({"error": repr(exc)}, status=500)
         return JsonResponse({"ok": False, "error": message})
+    except ValueError as exc:
+        # A user-input error (bad filter column/op, an unparseable filter
+        # value, a bad date): the chart surfaces "ok": false the same way it
+        # does for _friendly_db_error's states — before, it was a 500 with
+        # repr(exc), which made a typo'd filter look like a server fault.
+        return JsonResponse({"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JsonResponse({"error": repr(exc)}, status=500)
+
+
+def _normalize_gap_profile(payload: dict) -> dict:
+    """gap_day_profile / JSON-cache payload → the internal shape every reader
+    (detect_gaps, gap_estimate_json) consumes: int-keyed `hours` and
+    `per_day`, numeric `days`, and `source` naming the table the numbers
+    came from. The cached payload's keys are JSON strings (the store keeps
+    string keys so the payload survives the JSON roundtrip byte-identical);
+    re-keying happens here and only here.
+    """
+    return {
+        "prof_from": int(payload["prof_from"]),
+        "prof_to": int(payload["prof_to"]),
+        "days": float(payload["days"]),
+        "hours": {int(k): float(v) for k, v in payload["hours"].items()},
+        "per_day": {int(k): [float(x) for x in v]
+                    for k, v in (payload.get("per_day") or {}).items()},
+        "source": payload.get("source") or "fact",
+    }
+
+
+def _load_gap_profile(meta, source, filter_tree, hwm, horizon_epoch,
+                      profile_days, cache_epoch):
+    """The gap overlay's day profile λ̂(h): rollup-first with fact fallback.
+
+    Resolution order: `gap_profile_bounds` (day-aligned window) →
+    `read_rollup_states` → `pick_profile_rollup` (only when
+    `source.rollup_interval_s` is set) → cache roundtrip under
+    kind="gap_profile" → `gap_day_profile` on a miss. The cache key encodes
+    the source table via `series_label` ("fact" vs. the rollup's name): both
+    payloads have the same shape, but a rollup profile over the same window
+    and filters is a *different* λ̂ (non-final edge, bucket-granular count),
+    and a hit across tables would be a silently wrong number.
+
+    Returns the normalized internal shape (see `_normalize_gap_profile`);
+    `per_day` is what `gap_estimate_json`'s hour table reads, `source` is
+    what the response's `profile.source` reports.
+    """
+    prof_from, prof_to = gap_profile_bounds(
+        source, horizon_epoch, hwm, profile_days)
+    picked = None
+    rollup_ok = bool(getattr(source, "rollup_interval_s", 0))
+    if rollup_ok:
+        states = read_rollup_states(meta, source.id)
+        picked = pick_profile_rollup(source, states, filter_tree=filter_tree,
+                                     prof_from=prof_from, prof_to=prof_to)
+    if picked is not None:
+        table, count_expr = picked
+    else:
+        table, count_expr = None, "count(*)"
+    series_label = table or "fact"
+
+    prof_key = make_cache_key(
+        datasource_id=source.id,
+        group_by="",
+        measure=None,
+        t_from_epoch=prof_from,
+        t_to_epoch=prof_to,
+        interval=86400,
+        filter_tree=filter_tree,
+        series_label=series_label,
+        cache_epoch=cache_epoch,
+        kind="gap_profile")
+    cached = get_cached_plot(meta, prof_key, max_age_s=GAP_PROFILE_TTL_S)
+    if cached is not None:
+        return _normalize_gap_profile(cached)
+
+    payload = gap_day_profile(
+        source, prof_from=prof_from, prof_to=prof_to,
+        filter_tree=filter_tree or None,
+        table=table, count_expr=count_expr,
+        dest_engine=source.request_engine())
+    put_cached_plot(meta, cache_key=prof_key, datasource_id=source.id,
+                    cache_epoch=cache_epoch, group_by="", measure=None,
+                    payload={"kind": "gap_profile", **payload})
+    return _normalize_gap_profile(payload)
+
+
+def gaps_json(request):
+    """Gap overlay endpoint: 6σ event gaps behind the chart's filters.
+
+    Runs `core.query.detect_gaps` on the chart's exact window and filters,
+    `count(*)` only. `group_by` is deliberately ignored (and deliberately
+    not a parameter of detect_gaps): a gap is a bucket **no row falls into**
+    — the total transaction stream — not a per-series question.
+
+    Required: ?name=  &from=  &to=
+    Optional: ?filter=  (same syntax as plot_json)  &profile_days= (1..30)
+
+    `?interval=` is deliberately **no longer read** and simply ignored, not
+    a 400: the client of this deployment stopped sending it, and ignoring
+    keeps a stale bookmark or a half-deployed client working instead of
+    failing the whole overlay. `?measure=` still 400s — the 6σ test is
+    defined on count(*), and a measure request here would silently compute
+    a different question.
+
+    The day profile λ̂(h) behind the 6σ test is loaded via
+    `_load_gap_profile` — rollup-first with fact fallback, cached
+    server-side under `kind="gap_profile"` — and detect_gaps no longer
+    runs its own profile query. The gap rows themselves are never cached
+    server-side: they are the incremental part, the client re-requests only
+    new coverage.
+    """
+    try:
+        q             = request.GET
+        name          = q.get("name")
+        t_from_s      = q.get("from")
+        t_to_s        = q.get("to")
+        # `group_by` is deliberately not read — detect_gaps runs on the total
+        # transaction stream, not per series.
+        if not all([name, t_from_s, t_to_s]):
+            return HttpResponseBadRequest("missing required params")
+        if q.get("measure"):
+            return HttpResponseBadRequest("gaps needs count(*) (no ?measure=)")
+        t_from = _parse_dt(t_from_s)
+        t_to   = _parse_dt(t_to_s)
+        if t_to <= t_from:
+            return HttpResponseBadRequest("to must be after from")
+
+        profile_days = GAP_PROFILE_DAYS
+        if q.get("profile_days"):
+            try:
+                profile_days = int(q.get("profile_days"))
+            except ValueError:
+                profile_days = GAP_PROFILE_DAYS
+        profile_days = max(1, min(30, profile_days))
+
+        filter_tree = _parse_filter_tree(q)
+
+        meta = _meta_engine()
+        source = Source.load(meta,
+                             dest_dsn=settings.STARCUBES_POSTGRES_DSN,
+                             name_or_id=name)
+        # Every query function validates its own filters now (core.query's
+        # four `_build_where` wrappers call `validate_filters`), but not one
+        # of them runs before `_load_gap_profile` builds its cache key from
+        # this tree and possibly returns a hit. Keeping the check here is what
+        # makes the answer independent of whether the profile was cached.
+        # Same order as gap_estimate_json.
+        validate_filter_tree(source, filter_tree)
+        hwm, cache_epoch = _read_hwm_and_epoch(meta, source.id)
+        hwm_dt = (datetime.fromtimestamp(hwm, timezone.utc)
+                  if hwm is not None else None)
+
+        # --- profile load (rollup-first, cached) ----------------------------
+        # Anchored at the **watermark**, not at this request's `to`. λ̂ keyed
+        # on the request window made the same gap score differently depending
+        # on which slice the client happened to ask for — and the client
+        # splits its own demand, so that is not under anyone's control. On
+        # this data a gap on 01.04. scored μ = 25.1, 40.9 or 63.3 for a `to`
+        # of 03.04., 05.04. or 08.04., and went undetected entirely for
+        # 02.04., whose profile window reaches back before the first row in
+        # `fact`. One anchor per source and filter set: the verdict on a gap
+        # no longer depends on how it was looked at, and the profile cache is
+        # hit instead of being re-keyed per window. The price is that a gap
+        # months back is measured against the *current* day profile.
+        profile = _load_gap_profile(
+            meta, source, filter_tree, hwm,
+            hwm if hwm is not None else int(t_to.timestamp()),
+            profile_days, cache_epoch)
+        result = detect_gaps(
+            source, t_from=t_from, t_to=t_to,
+            filter_tree=filter_tree or None, profile_days=profile_days,
+            hwm=hwm_dt, profile=profile,
+            dest_engine=source.request_engine())
+
+        result["cache_epoch"] = cache_epoch
+        return JsonResponse(result, json_dumps_params={"default": str})
+    except (OperationalError, ProgrammingError, LookupError) as exc:
+        message = _friendly_db_error(exc, chart=True)[0]
+        if message is None:   # none of the normal states — stay a real 500
+            return JsonResponse({"error": repr(exc)}, status=500)
+        return JsonResponse({"ok": False, "error": message})
+    except ValueError as exc:
+        # A user-input error (bad filter column/op, an unparseable filter
+        # value, a bad date): the chart surfaces "ok": false the same way it
+        # does for _friendly_db_error's states — before, it was a 500 with
+        # repr(exc), which made a typo'd filter look like a server fault.
+        return JsonResponse({"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JsonResponse({"error": repr(exc)}, status=500)
+
+
+# Width of the gap estimate's neighbour windows, in seconds: the rate the
+# stream actually carried in the ~±5 minutes either side of the gap, read
+# from `fact` (rollups are bucket-granular and cannot see a 5-minute rate).
+GAP_NEIGHBOR_S = 300
+
+
+def gap_estimate_json(request):
+    """Backend numbers for the gap overlay's click-through estimate dialog.
+
+    Answers for one detected gap: the expected event count μ over the
+    transaction distance, the profile's per-hour-of-day detail (Ø/Min/Max
+    from the per-day series the shared profile payload carries), and the
+    rate the stream actually carried just before/after the gap from two
+    small fact COUNTs. Computed entirely in the backend so the client only
+    renders.
+
+    Required: ?name=  &left_txn=  &right_txn=  (epoch seconds, the gap's
+              txn anchors exactly as gaps.json reported them)
+    Optional: ?filter=  (same syntax as gaps.json)  &profile_days= (1..30)
+
+    The profile part shares the gaps.json cache key (same profile window,
+    filters, series_label and epoch), so on a warm cache this endpoint
+    costs one meta round trip and two small fact COUNTs.
+
+    Response:
+      left_txn, right_txn, span_s, expected_events,
+      hours[]  ({h, avg, min, max, expected} per covered hour-of-day;
+                avg = λ̂(h)·3600, min/max from the profile's per-day series),
+      dimensions[]  (drill.json's exact shape, but the counts are
+                round(share · μ) — shares read from the profile window over
+                the hours this gap touches, see `gap_reference_drill`. The
+                client renders it through the same path as a bar's drill-down,
+                which is the point: a gap should break down like a bar does),
+      neighbor_rate_l_s / neighbor_rate_r_s (rows/s just before/after),
+      neighbor_rate_s (both neighbours combined, None when neither side
+                could be measured),
+      clamped {left, right, profile} — True when that neighbour window was
+                shortened by the retention floor / watermark, and `profile`
+                when the profile window itself was shortened (fewer days of
+                history than requested, i.e. λ̂ rests on less data),
+      profile_source ("fact" | rollup table name), cache_epoch.
+    """
+    try:
+        q = request.GET
+        name      = q.get("name")
+        left_s    = q.get("left_txn")
+        right_s   = q.get("right_txn")
+        if not all([name, left_s, right_s]):
+            return HttpResponseBadRequest("missing required params")
+        if q.get("measure"):
+            return HttpResponseBadRequest("gap estimate needs count(*) (no ?measure=)")
+        try:
+            left_txn = int(left_s)
+            right_txn = int(right_s)
+        except ValueError:
+            return HttpResponseBadRequest(
+                "left_txn/right_txn must be epoch seconds")
+        if right_txn <= left_txn:
+            return HttpResponseBadRequest("right_txn must be after left_txn")
+
+        profile_days = GAP_PROFILE_DAYS
+        if q.get("profile_days"):
+            try:
+                profile_days = int(q.get("profile_days"))
+            except ValueError:
+                profile_days = GAP_PROFILE_DAYS
+        profile_days = max(1, min(30, profile_days))
+
+        filter_tree = _parse_filter_tree(q)
+
+        meta = _meta_engine()
+        source = Source.load(meta,
+                             dest_dsn=settings.STARCUBES_POSTGRES_DSN,
+                             name_or_id=name)
+        validate_filter_tree(source, filter_tree)
+
+        hwm, cache_epoch = _read_hwm_and_epoch(meta, source.id)
+
+        # The same watermark anchor gaps_json uses — and it has to be the
+        # same one, or this dialog would report a different μ than the
+        # bracket that opened it and the list it was picked from. As a
+        # by-product the two now share the profile cache entry *always*,
+        # where before they only did when their windows happened to end on
+        # the same day.
+        profile = _load_gap_profile(
+            meta, source, filter_tree, hwm,
+            hwm if hwm is not None else right_txn,
+            profile_days, cache_epoch)
+
+        # (a) μ = ∫λ̂ dt over the transaction distance
+        mu = _profile_integral(profile["hours"], left_txn, right_txn)
+
+        # (b) the covered hours-of-day with their per-day detail
+        hours = []
+        seen = set()
+        seg = (left_txn // 3600) * 3600
+        while seg < right_txn and len(seen) < 24:
+            h = (seg % 86400) // 3600
+            if h not in seen:
+                seen.add(h)
+                rate = profile["hours"].get(h, 0.0)
+                per = profile["per_day"].get(h) or []
+                hours.append({
+                    "h": h,
+                    "avg": rate * 3600.0,
+                    "min": min(per) if per else 0.0,
+                    "max": max(per) if per else 0.0,
+                    "expected": rate * 3600.0,
+                })
+            seg += 3600
+
+        # (b2) the interpolated breakdown over those same hours. Shares come
+        # from the profile window μ itself rests on, so the two halves of the
+        # estimate — how many and of what — cannot disagree about their basis.
+        dimensions = gap_reference_drill(
+            source, source.request_engine(),
+            prof_from=profile["prof_from"], prof_to=profile["prof_to"],
+            hours=[h["h"] for h in hours], mu=mu,
+            filter_tree=filter_tree or None)
+
+        # (c) neighbour rates ±GAP_NEIGHBOR_S out of fact, clamped at the
+        # retention floor and the watermark — a window the data cannot
+        # support would otherwise read as a suspicious 0/s.
+        floor_dt = getattr(source, "retention_floor", None)
+        if floor_dt is not None and floor_dt.tzinfo is None:
+            floor_dt = floor_dt.replace(tzinfo=timezone.utc)
+        floor_epoch = (int(floor_dt.timestamp())
+                       if floor_dt is not None else None)
+
+        clamped_l = clamped_r = False
+        rate_l = rate_r = None
+        span_l = span_r = 0
+
+        l_from = left_txn - GAP_NEIGHBOR_S
+        if floor_epoch is not None and l_from < floor_epoch:
+            l_from = floor_epoch
+            clamped_l = True
+        span_l = left_txn - l_from
+        if span_l > 0:
+            rate_l = gap_neighbor_rate(
+                source, t_from=l_from, t_to=left_txn,
+                filter_tree=filter_tree or None,
+                dest_engine=source.request_engine())
+
+        r_to = right_txn + GAP_NEIGHBOR_S
+        if hwm is not None and r_to > hwm:
+            r_to = hwm
+            clamped_r = True
+        span_r = r_to - right_txn
+        if span_r > 0:
+            rate_r = gap_neighbor_rate(
+                source, t_from=right_txn, t_to=r_to,
+                filter_tree=filter_tree or None,
+                dest_engine=source.request_engine())
+
+        measured = [(r, s) for r, s in ((rate_l, span_l), (rate_r, span_r))
+                    if r is not None]
+        neighbor_rate_s = (sum(r * s for r, s in measured)
+                           / sum(s for _r, s in measured)) if measured else None
+
+        # (d) profile-edge clamp flag: the profile window is day-aligned at
+        # the last full day, so λ̂ is keyed by hour-of-day and a gap may
+        # legally reach past its edge — but when the *window itself* was
+        # shortened (retention floor ate part of it), λ̂ rests on fewer days
+        # than requested and every rate carries that uncertainty.
+        clamped_profile = profile["days"] < profile_days
+
+        return JsonResponse({
+            "left_txn": left_txn,
+            "right_txn": right_txn,
+            "span_s": right_txn - left_txn,
+            "expected_events": mu,
+            "hours": hours,
+            "dimensions": dimensions,
+            "neighbor_rate_s": neighbor_rate_s,
+            "neighbor_rate_l_s": rate_l,
+            "neighbor_rate_r_s": rate_r,
+            "clamped": {"left": clamped_l, "right": clamped_r,
+                        "profile": clamped_profile},
+            "profile_source": profile["source"],
+            "cache_epoch": cache_epoch,
+        }, json_dumps_params={"default": str})
+    except (OperationalError, ProgrammingError, LookupError) as exc:
+        message = _friendly_db_error(exc, chart=True)[0]
+        if message is None:   # none of the normal states — stay a real 500
+            return JsonResponse({"error": repr(exc)}, status=500)
+        return JsonResponse({"ok": False, "error": message})
+    except ValueError as exc:
+        # A user-input error (bad filter column/op, an unparseable filter
+        # value, a bad date): the chart surfaces "ok": false the same way it
+        # does for _friendly_db_error's states — before, it was a 500 with
+        # repr(exc), which made a typo'd filter look like a server fault.
+        return JsonResponse({"ok": False, "error": str(exc)})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)
 
@@ -776,6 +1177,12 @@ def api_source_meta(request):
         if message is None:   # none of the normal states — stay a real 500
             return JsonResponse({"error": repr(exc)}, status=500)
         return JsonResponse({"ok": False, "error": message})
+    except ValueError as exc:
+        # A user-input error (bad filter column/op, an unparseable filter
+        # value, a bad date): the chart surfaces "ok": false the same way it
+        # does for _friendly_db_error's states — before, it was a 500 with
+        # repr(exc), which made a typo'd filter look like a server fault.
+        return JsonResponse({"ok": False, "error": str(exc)})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)
 

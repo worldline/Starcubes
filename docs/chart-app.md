@@ -847,6 +847,235 @@ library defaults to `'full'` — the library must not change any existing
 consumer's picture, whereas in the chart this bar is on screen whenever anyone
 watches a live source.
 
+## The gap overlay
+
+The `#gap-toggle` button (hidden until the source meta has arrived, disabled
+while a real measure is selected) asks a question the bars cannot: which
+stretches of the transaction stream are an **outage**, not just quiet? The
+answer is drawn as black brackets over the bars (white in the dark theme — `--gap-mark`) — one `gantt` span block
+(`category: 'span'`, `appearance: 'bracket'`) pinned near the top of the plot
+(`GAP_YPOS = 0.9` — a bracket annotates the bars rather than being one of
+them, and down in the lower third it crossed the very bars it spans), so the
+library owns pan/zoom, drawing and hit-testing and
+`chart.html` only maintains the event list. The overlay exists for
+`count(*)` only: the test is defined on "no row fell into this second", so
+any real measure would silently compute a different question, and
+`syncGapToggle()` (wired into `gatherParams`) disables the button while one
+is selected. Session-only by decision — an overlay that turns itself back on
+after a reload would be a surprise.
+
+**The model is Poisson over a day profile.** For a candidate span,
+μ = ∫λ̂ dt — the expected transaction count, integrated hour segment by hour
+segment (`_profile_integral`) with the hour-of-day rate λ̂(h) measured over
+the last 7 days (`GAP_PROFILE_DAYS`; the window is
+day-aligned and ends at the last fully-watermarked day, `gap_profile_bounds`,
+clamped up at the retention floor). The span is marked when μ exceeds
+`GAP_THRESHOLD_EVENTS` = −ln(α) ≈ 20.7557 (α = Φ(−6)), i.e. when
+P(no event over the span) = exp(−μ) falls below the one-sided 6σ tail — the
+tail quantile is tested directly because "μ + 6σ on the gap length" would be
+miscalibrated (the geometric tail depends on λ itself). An hour-of-day that
+never saw traffic has λ̂(h) = 0 and contributes nothing: a span covering only
+silent hours stays unmarked *by construction*, not by special case.
+
+**Both halves of that sentence are in UTC, and it takes work to keep them
+there.** λ̂ is keyed by hour-of-day, the integral asks for it by UTC hour, and
+the SQL that derives it groups with `extract(hour from …)` — which over a
+`timestamptz` is evaluated in the **session** time zone. On a server running
+Europe/Berlin the profile answered for 19:00 UTC when asked about 21:00 UTC,
+so λ̂ was wrong by whatever the day profile does across two hours (a factor of
+2.4 on this data) and the error moved twice a year with DST. `_utc_ts`
+normalises the grouping expression, and `gap_reference_drill` restricts its
+reference hours through the same helper, so the profile, the integral and the
+breakdown share one frame. A `timestamp without time zone` column is left
+alone — it is taken as UTC, which is what the bound parameters have always
+assumed.
+
+**The scan runs in the backend at a fixed 1 s granularity** whatever tier
+the chart is showing — `gaps.json` no longer reads `?interval=` at all. The
+bracket tips sit on the first and last *transaction*, and only a 1-second
+grouping sees them: the scan SQL takes `left_txn_ms`/`right_txn_ms` from
+`max`/`min` of the two edge buckets and the μ-test runs over the
+transaction distance, not the bucket distance. The scan itself always reads
+`fact`, never a rollup — a rollup carries min/max only as its own bucket
+starts, so exact edge timestamps would be wrong there. One request answers
+at most `GAP_MAX_SCAN_S` = 7 days and reports `scan_truncated` beyond that,
+cut at the **end** (the fresh edge is the provisional one; the remainder is
+simply re-requested). The client pre-splits its demand at the same constant
+(`splitSpansMax` over `GAP_SCAN_MAX_S`), so every request comes back
+answered in full and the per-piece coverage booking stays honest. The scan
+is also pre-filtered in SQL with `min_len_s = GAP_THRESHOLD_EVENTS / λ̂max` —
+a gap shorter than that cannot pass the μ integral even at the day's peak
+rate — and `λ̂max = 0` skips the scan entirely (nothing is expected anywhere
+in the day, so nothing can be an outage).
+
+**The density estimate prefers a rollup.** The profile λ̂(h) is the
+expensive multi-day part, and it is a coarse count — an hourly rollup
+answers it fine. `viz.views._load_gap_profile` resolves the source:
+`core.rollup.pick_profile_rollup` returns the first spec in `rollup_specs`
+order whose bucket width divides the hour (`3600 % interval_s == 0` —
+otherwise `extract(hour from bucket_start)` reports the hour a bucket
+*starts* in, not the one its rows sat in), whose stored `spec_hash` matches
+the configured spec, whose `[built_from, built_through]` covers the
+day-aligned profile window (less than a day of usable window means fact —
+a sub-day profile is a rate measured at nothing), and whose column set
+covers every column the chart's filters actually read (`filter_tree_columns`,
+the same resolution the WHERE clause uses, so the coverage test cannot
+drift apart from it). Anything else falls back to `fact` with `count(*)`.
+The choice travels into the cache key via `series_label` ("fact" vs. the
+rollup's name): both payloads have the same shape, but a rollup profile over
+the same window and filters is a *different* λ̂ (bucket-granular count,
+non-final edge), and a hit across tables would be a silently wrong number.
+**The profile window is anchored at the watermark**, not at the request's
+`to`. Keying λ̂ on the request window made the same gap score differently
+depending on which slice the client asked for — and the client splits its own
+demand, so nobody controls that. Measured on this data, a gap on 01.04.
+scored μ = 25.1, 40.9 or 63.3 for a `to` of 03.04., 05.04. or 08.04., and was
+missed entirely for 02.04., whose window reaches back before the first row in
+`fact`. With one anchor per source and filter set the verdict on a gap no
+longer depends on how it was looked at, `gaps.json` and `gap_estimate.json`
+report the same μ by construction, and the two share the cache entry always
+instead of only when their windows happened to end on the same day. The price
+is that a gap months back is measured against the *current* day profile.
+
+The payload is cached server-side under `kind="gap_profile"` with
+`GAP_PROFILE_TTL_S` = 15 min — not a data invalidation (the entry dies with
+a `cache_epoch` bump anyway) but a growth bound: back-scrolling over months
+would otherwise leave one row per key behind, and `query_cache` has no
+eviction of its own. The gap rows themselves are never cached server-side —
+they are the incremental part.
+
+**The client keeps one global map.** The detection is tier-independent, so
+there is no per-tier `gapStore`: `gapMap` is keyed on the exact
+`left_txn_ms` (the merge key of every response — the same gap seen from two
+seam-widened windows lands on one entry, merged unconditionally because each
+row carries its complete txn anchors; there is no bucket-truncated sighting
+left to protect), and `gapCoverage` records the spans already scanned so
+pan/zoom re-asks only new demand. Demand = plot coverage over **all**
+loaded blocks at every tier (the scan is server-side and needs no tier data
+of its own) minus gap coverage, clipped to viewport, HWM and retention
+floor, and widened by `GAP_SEAM_S` = 1 s so a gap straddling the seam of two
+requests is seen complete by at least one of them — the margin itself is
+never booked. Once seen, a gap stays in the map: `refreshGapPlot()` runs in
+the `onViewportChange` tracker as well as after every fetch, so a bracket
+cached in a previously scanned region reappears the moment the viewport
+returns to it — through pan, zoom and tier changes alike. A HWM advance
+reopens the trailing edge (`invalidateGapsFromHorizon`: entries computed
+against provisional trailing slots are cut back), a `cache_epoch` change
+clears the whole store (a backfill or retention drop rewrites exactly the
+buckets the gaps were computed from), and the toggle-off aborts and drops.
+
+**The toggle also opens the gap list** (`#gap-panel`), a `.fpanel` like the
+rest. A bracket is a few pixels wide on a week view and invisible until
+stumbled over, and a scan that has found nothing looks exactly like one that
+has not started; the panel answers both. It lists **everything the session has
+found** — `gapMap`, not the viewport — because the first thing a reader does
+is jump to a gap, and a viewport-filtered list would collapse to that one row
+on arrival. What the list is about is therefore stated rather than implied:
+`gapScannedText()` prints the outer bounds of `gapCoverage` plus the total
+scanned duration, and deliberately does not claim the span is contiguous
+(coverage can hold several pieces once the chart has jumped across ranges).
+
+`refreshGapList()` renders three states — searching, nothing found, and the
+list — and is called where the data or the scan state changes: after the
+merge in `fetchGapSpan`, at both ends of `maybeFetchGaps`, in
+`clearGapStore` and `invalidateGapsFromHorizon`. **Never from
+`refreshGapPlot()`**, which runs in the viewport tracker on every frame: the
+list is not viewport-dependent and would be rebuilt per panned pixel. Rows
+are chronological, unlike the plot's widest-first ordering — that one sorts
+to cap pixel density under `GAP_MAX_DRAWN`, this one is a timeline to read
+down.
+
+Clicking a row calls `gapZoomTo()`: the window is three times the gap's own
+length, centred on it, floored at `GAP_ZOOM_MIN_S` (180 s) so a
+ten-second outage does not arrive in a ten-second window with no traffic
+around it to judge it against. It goes through `applyRange`, the single host
+entry point for a viewport change. The store survives that jump — but not
+because `applyRange` is gentle: it runs `resetAndFetch`, which used to call
+`clearGapStore()` and so threw away every gap found so far on each jump out
+of the list. The store is now dropped by `syncGapStore()` in `gatherParams`,
+on a change of the **parameter signature** (source + the filters, built from
+the same `appendGapFilters` the requests use) rather than on any refetch. A
+viewport is not a parameter: a gap is anchored to an absolute instant and
+stays true whatever window it is looked at through. The panel's `×` and Escape both route through
+`setGapOverlay(false)`: brackets and list are one state, and closing either
+closes both.
+
+**Hovering a bracket names the number it is about.** `gapTooltipNodes`
+prints `~ <μ> expected` ahead of the duration and the 6σ threshold. It costs
+no request: `detect_gaps` computes each gap's `expected_events` with the very
+`_profile_integral` that `gap_estimate_json` computes its μ with, and the
+value rides on the event object `refreshGapPlot` stamps. `fmtExpected` is
+shared with the dialog so the hover and the click cannot disagree about the
+same number.
+
+**A click on a bracket opens the estimate dialog** — the shared
+`#drill-modal` (a generic `.fpanel`, so drag/Escape/resize come free),
+filled by `openGapModal` instead of `openDrillModal`, with the txn and alarm
+header buttons hidden and restored by `openDrillModal`, symmetrically. Every
+number is computed in the backend by `gap_estimate.json`, so the client only
+lays it out: μ over the gap's exact txn anchors, the profile's per-hour
+table (Ø/min/max per covered hour-of-day, from the `per_day` series the
+shared profile payload carries), and the neighbour rate — the rows/s the
+stream actually carried in the ±5 minutes either side (`GAP_NEIGHBOR_S`),
+read from `fact` because a rollup is bucket-granular and cannot see a
+5-minute rate. The response carries `clamped` flags (a neighbour window
+shortened by the retention floor or the watermark — a window the data cannot
+support would otherwise read as a suspicious 0/s — and a profile window
+resting on less history than requested) and `profile_source`. The profile
+part shares the gaps.json cache key, so the warm case is one meta round trip
+and two small fact COUNTs.
+
+**The dialog breaks the gap down like a bar.** It leads with the same
+per-dimension layout `renderDrillBody` draws for a clicked bar — both go
+through `_drillSectionsHtml` — and the derivation behind μ (hour table,
+neighbour rates, clamp notes) follows in a collapsed `<details>`. A gap holds
+no rows by definition, so the counts cannot be counted: `dimensions` in the
+`gap_estimate.json` payload comes from `core.query.gap_reference_drill`,
+which reads the **shares** out of the profile window — the same window and
+the same `extract(hour from …)` grouping λ̂ is derived from, restricted to the
+hours-of-day the gap touches — and scales them by μ. Shares and magnitude
+therefore rest on one body of data. The neighbour windows either side would
+answer a different question (what happened to be running just then) and would
+freeze a passing anomaly into the estimate. Counts are rendered with a `~`
+prefix and values whose share rounds to zero are dropped rather than listed
+as `0`, which would read as a measurement instead of a share too small to
+show. The gap is rarely aligned to hour boundaries; taking the whole touched
+hour as the reference is deliberate, since only ratios are read from it.
+
+Because the dialog now carries clickable filter rows like a bar's, it has to
+remember which question it is answering: `_drillCtx.kind` (`'bar'` or
+`'gap'`) routes `drillAddFilter`/`drillRemoveFilter` through
+`_refetchDrillView`, or a filter clicked inside a gap would reload the modal
+as a drill-down of whatever bar was clicked before it.
+
+Two things that are not self-evident:
+
+- **`GAP_YPOS` needs timeseries.js > 0.10.8 to actually pin.** `yPos`
+  promises a place that does not move, but through 0.10.8 `gantt.js barRect()`
+  resolved it as `yPos × laneCount` through `Y()` — the *shared* value axis,
+  whose `ymax` is a weighted blend over the active blocks (the span block
+  contributes its `laneCount`, the multibar its data maximum). Every zoom
+  moved that blend, so the bracket wandered vertically and, through `ppv`,
+  resized with it. The fix places pinned events against the plot's pixel box
+  and derives their glyph metrics from `plotHeight`; where a span block owns
+  the axis alone the two expressions are arithmetically identical, so only
+  the mixed case changes. Without that library version the overlay still
+  works — it just will not hold still.
+- **The bracket glyph ships with timeseries.js 0.10.8.** `appearance:
+  'bracket'` is drawn by the released package (`package.json` pins
+  `~0.10.8`); before that release the overlay could only run against the
+  library's working copy, which is what `docker/refresh-timeseries.sh` is
+  for — pushing a pre-release working copy into a running container without
+  cutting a release for every small change. Nothing in the overlay depends
+  on it staying a dev build any more.
+- **The `dropData` exemption in `fetchRange` (~2532).** After every plot
+  push, `ts.dropData()` removes residual blocks left over from a previous
+  measure — and the gap overlay's span block carries no
+  `_starcubesMeasure`, so without the `category !== 'span'` guard every
+  subsequent plot push dropped the brackets and the overlay vanished on the
+  first pan or zoom. Measured, not hypothetical: the drop came through that
+  exact line, not through `pushData`'s trim.
+
 ## Resolution tiers and the cross-fade
 
 Blocks at different `interval`s live side by side in `ts.data[]` (`pushData`
@@ -930,8 +1159,9 @@ numbers printed on the axis, over a 300 ms dissolve of the tick set.
 
 ## Floating panels
 
-Four draggable boxes float over the canvas — the legend, the drill-down panel,
-the query console and the keyboard-shortcut panel — and there will be more. They share one CSS ruleset
+Five draggable boxes float over the canvas — the legend, the drill-down panel,
+the query console, the keyboard-shortcut panel and the gap list — and there
+will be more. They share one CSS ruleset
 (`.fpanel`, `.fpanel-header`, `.fpanel-title`, `.fpanel-actions`,
 `.fpanel-close`) and one JS registration (`makeFloatingPanel(el, opts)`), both
 in `chart.html`. A new panel is two classes in the markup and one call; it must

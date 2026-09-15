@@ -777,3 +777,71 @@ def pick_rollup(source: Source, states: dict[str, RollupState], *,
     # Narrowest first: fewer columns means fewer rows to scan, and a marginal
     # beats the core set whenever both cover the query.
     return min(candidates, key=lambda s: (len(s.columns), s.name))
+
+
+def pick_profile_rollup(
+    source: Source,
+    states: dict[str, RollupState],
+    *,
+    filter_tree: Optional[list],
+    prof_from: int,
+    prof_to: int,
+) -> Optional[tuple[str, str]]:
+    """The rollup `gap_day_profile` should read its λ̂(h) day profile from.
+
+    Returns `(table, count_expr)` — e.g. `("rollup_1h", "sum(f.n)")` — or
+    None for the fact fallback (`table=None`, `count(*)`). Modelled on
+    `pick_rollup` but a different bargain: `pick_rollup` wants the
+    *narrowest* covering spec (a marginal beats the core set), while the
+    profile takes the **first spec in `rollup_specs` order** that covers the
+    query — the core set before each marginal. Deliberate, and the
+    difference is documented rather than hidden: the profile is one count
+    over the whole stream, so every covering spec costs the same shape of
+    scan; what matters is determinism and the operator's configured order,
+    not narrowness.
+
+    The conditions, cheapest to reject on first:
+
+      1. `rollup_interval_s` set and specs configured at all
+      2. `3600 % spec.interval_s == 0` — every spec shares the datasource's
+         one bucket width, so this is tested once: a bucket that does not
+         divide the hour straddles hour boundaries and `extract(hour from
+         bucket_start)` would report the bucket's start hour, not the hour
+         its rows sat in
+      3. the stored spec hash must match the configured spec, so a
+         reconfiguration degrades to fact like everywhere else
+      4. the profile window must lie inside [built_from, built_through]
+         (day-aligned bounds from `gap_profile_bounds`); less than one day
+         of usable window means None — a sub-day profile is a rate measured
+         at nothing
+      5. every column a filter actually reads (`filter_tree_columns`, the
+         same resolution `_filter_sql` uses) must be in the spec — same
+         condition 7 as `pick_rollup`, so the coverage test and the WHERE
+         clause cannot drift apart
+    """
+    iv = int(source.rollup_interval_s or 0)
+    if iv <= 0:
+        return None
+    specs = rollup_specs(source)
+    if not specs:
+        return None
+    if 3600 % iv != 0:
+        return None
+    if prof_to - prof_from < 86400:
+        return None
+    dims_by_fact = {d.fact_column: d for d in source.dimensions}
+    needed = filter_tree_columns(filter_tree or [], dims_by_fact)
+    from_dt = datetime.fromtimestamp(prof_from, tz=timezone.utc)
+    to_dt = datetime.fromtimestamp(prof_to, tz=timezone.utc)
+    for spec in specs:
+        st = states.get(spec.name)
+        if st is None or st.spec_hash != spec_hash(spec):
+            continue
+        if st.built_from is None or st.built_through is None:
+            continue
+        if from_dt < st.built_from or to_dt > st.built_through:
+            continue
+        if not spec.covers_columns(needed):
+            continue
+        return (spec.name, "sum(f.n)")
+    return None

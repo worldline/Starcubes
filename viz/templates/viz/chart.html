@@ -99,6 +99,15 @@
     --legend-copy-ok-color: #1e6b34;
     --follow-dot: #999;
     --follow-dot-active: #d00;
+    /* Gap overlay brackets: plain ink, the darkest thing on the page. A gap
+       is an absence, and a hue would file it next to the series colours as
+       if it were one more thing being measured. Deliberately not amber
+       either — amber on this page already means provisional data (the
+       partial trailing bar), which a 6σ gap is not. The dark theme takes the
+       mirror value, since "black" there is the background. Read by
+       getComputedStyle on every block build and re-read on every theme
+       switch (refreshGapColor). */
+    --gap-mark: #000000;
     /* Aliases bridging chart.html names to sources/base.html names */
     --muted: var(--label-color);
     --fg: var(--body-color);
@@ -200,6 +209,8 @@
     --legend-copy-ok-color: #a8e6b8;
     --follow-dot: #777;
     --follow-dot-active: #f44;
+    /* The mirror of the light theme's black — see there. */
+    --gap-mark: #ffffff;
     /* Aliases bridging chart.html names to sources/base.html names */
     --muted: var(--label-color);
     --fg: var(--body-color);
@@ -688,6 +699,35 @@
     resize: both; overflow: hidden;
   }
   #keys-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 10px 14px 14px; }
+  /* Gap list panel. Geometry and the row grid only — chrome, drag, stacking
+     and Escape come from .fpanel, exactly as for #keys-panel above. Every
+     colour is a var() so the theme switch carries it. */
+  #gap-panel {
+    width: 380px; max-width: 92vw; max-height: 70vh;
+    min-width: 260px; min-height: 140px;
+    resize: both; overflow: hidden;
+  }
+  #gap-panel-count { font-size: 11px; color: var(--legend-total-color); }
+  #gap-panel-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 12px 12px; }
+  .gap-scanned {
+    font-size: 10px; color: var(--legend-total-color);
+    padding-bottom: 6px; margin-bottom: 6px;
+    border-bottom: 1px solid var(--filter-row-border);
+  }
+  .gap-status { padding: 14px 4px; text-align: center; color: var(--legend-total-color); }
+  /* One found gap. Clickable as a whole — the jump is the only action a row
+     has, so a separate link next to it would be a second target for one
+     gesture (same reasoning as .drill-row--clickable). */
+  .gap-row {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 4px 4px; border-radius: 3px; margin: 0 -4px;
+    cursor: pointer; white-space: nowrap;
+  }
+  .gap-row:hover { background: var(--toggle-hover); }
+  .gap-row + .gap-row { border-top: 1px solid var(--filter-row-border); }
+  .gap-row-when { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--body-color); font-size: 11px; }
+  .gap-row-span { color: var(--body-color); font-size: 11px; flex-shrink: 0; }
+  .gap-row-miss { color: var(--legend-total-color); font-size: 11px; flex-shrink: 0; min-width: 7.5em; text-align: right; }
   .keys-group + .keys-group { margin-top: 13px; }
   .keys-group-title {
     font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -825,6 +865,26 @@
     color: var(--toggle-color); display: block;
   }
   .drill-copy-btn:hover { background: var(--toggle-hover); }
+  /* Gap estimate dialog (shares the drill modal) */
+  .drill-gap-table {
+    width: 100%; border-collapse: collapse; font-size: 11px;
+    color: var(--body-color); margin-bottom: 8px;
+  }
+  .drill-gap-table th, .drill-gap-table td {
+    text-align: right; padding: 2px 6px; border-bottom: 1px solid var(--filter-row-border);
+  }
+  .drill-gap-table th { color: var(--legend-total-color); font-weight: 600; }
+  .drill-gap-table th:first-child, .drill-gap-table td:first-child { text-align: left; }
+  .drill-gap-note {
+    color: var(--legend-total-color); font-size: 11px; margin-top: 6px;
+  }
+  /* The derivation behind μ, folded away under the breakdown. */
+  .drill-gap-details { margin-top: 10px; border-top: 1px solid var(--filter-row-border); }
+  .drill-gap-details > summary {
+    cursor: pointer; font-size: 11px; font-weight: 600; padding: 6px 0 4px;
+    color: var(--legend-total-color); list-style-position: inside;
+  }
+  .drill-gap-details > summary:hover { color: var(--body-color); }
   /* Drill-down alert form (creates a real alarm via sources:alarm_add) */
   .drill-alarm-form { display: flex; flex-direction: column; gap: 10px; padding-top: 2px; }
   .drill-alarm-row  { display: flex; flex-direction: column; gap: 3px; }
@@ -1192,6 +1252,17 @@
             aria-label="Clamp outliers" data-tip="Clamp outliers&#10;(c)" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-clamp"></use></svg>
     </button>
+    {% comment %}
+      Gap overlay, count(*) only: between two occupied buckets, a pause the
+      day-profile's 6σ test calls an outage is drawn as a bracket over the
+      bars. syncGapToggle() (wired into gatherParams) disables the button
+      while a real measure is selected and keeps it hidden until the source
+      meta has arrived. Session-only by decision — see the wiring below.
+    {% endcomment %}
+    <button id="gap-toggle" class="ibtn" type="button" hidden
+            aria-label="Mark gaps" data-tip="Mark gaps (6σ)&#10;count(*) only" data-tip-align="end">
+      <svg class="ic" aria-hidden="true"><use href="#ic-gap"></use></svg>
+    </button>
     {% if user.is_authenticated %}
     {% comment %}
       `q` opens and closes the console, as a page key like `?` — the canvas
@@ -1341,6 +1412,20 @@
   </div>
 </div>
 
+{% comment %} The gap list. A .fpanel like the rest, per docs/chart-app.md:
+   two classes and one makeFloatingPanel() call buy drag, stacking, the clamp
+   and Escape. Its body is built by refreshGapList(); the close button and
+   Escape both route through setGapOverlay(false), so the brackets and this
+   list are one state, not two. {% endcomment %}
+<div id="gap-panel" class="fpanel">
+  <div class="fpanel-header">
+    <span class="fpanel-title">Gaps</span>
+    <span id="gap-panel-count" class="fpanel-actions"></span>
+    <button id="gap-panel-close" class="fpanel-close" type="button" aria-label="Close">&times;</button>
+  </div>
+  <div id="gap-panel-body"></div>
+</div>
+
 {% if user.is_authenticated %}
 <div id="query-panel" class="fpanel">
   {% comment %}
@@ -1408,6 +1493,8 @@ const TXN_URL     = "{% url 'viz:txn_json' %}";
 const SOURCES_URL = "{% url 'viz:api_sources' %}";
 const META_URL    = "{% url 'viz:api_source_meta' %}";
 const CHART_SQL_URL = "{% url 'viz:chart_sql' %}";
+const GAPS_URL      = "{% url 'viz:gaps_json' %}";
+const GAP_ESTIMATE_URL = "{% url 'viz:gap_estimate_json' %}";
 // Reversed from sources/urls.py rather than assembled by hand: the sentinel
 // pk is swapped for the real one. A literal '/sources/' + id + '/' broke
 // silently the day the route moved, and nothing on this page noticed.
@@ -1957,6 +2044,52 @@ let prefetchMargin       = 0.5;
 let activeController     = null;  // AbortController for in-flight fetches
 let hwmSeen               = null;  // monotonic max of plot.incomplete_until seen so far (per-source; reset on source/param change)
 
+// ── Gap overlay state ────────────────────────────────────────────────────
+// 6σ pauses between transactions, count(*) only. The detection runs server-
+// side at a fixed 1 s granularity regardless of the tier on screen, so the
+// answer is tier-independent: gapMap is one global cache (key = the exact
+// left transaction timestamp in epoch ms, the merge key of every response),
+// and gapCoverage records the [from, to] spans (epoch s) already scanned so
+// pan/zoom re-asks only new coverage. The marked spans go to timeseries.js
+// as one gantt bracket block (gapPlot), which makes the library own pan/zoom,
+// drawing and hit-testing. Session-only by decision: an overlay that turns
+// itself back on after a reload would be a surprise.
+const GAP_PROFILE_DAYS = 7;  // client knob for the gap endpoints; the server defaults to 7 and clamps 1..30
+const GAP_MAX_DRAWN    = 250; // pixel-density cap: the widest gaps win (the server caps the list itself)
+// Vertical pin of the gap band inside the plot, 0 = plot floor, 1 = ceiling.
+// Near the top: a bracket annotates the bars, it is not one of them, and down
+// in the lower third it reads as part of the data it comments on — it crosses
+// the bars it spans and competes with them for the same ink. Above the mass
+// it stays a margin note. (The value is absolute against the plot box, which
+// only holds from the timeseries.js release that fixed `yPos` pinning — see
+// docs/chart-app.md, "The gap overlay".)
+const GAP_YPOS = 0.9;
+// The scan is bucket-free, so the old ±1-interval seam margin has no natural
+// unit left; 1 s is the detection granularity and wide enough for the exact
+// txn anchors of two adjacent windows to agree.
+const GAP_SEAM_S = 1;
+// Mirror of the server's GAP_MAX_SCAN_S: the scan answers at most this much
+// per request (scan_truncated beyond it), so the client splits its demand
+// before asking and every request comes back answered in full.
+const GAP_SCAN_MAX_S = 7 * 86400;
+// Floor for the gap list's jump width. The jump frames a gap in the middle
+// third, i.e. three times its own length — which for a gap of a few seconds
+// is a window of a few seconds, showing the outage and nothing to judge it
+// against. Three minutes is the smallest span that still carries visible
+// neighbouring traffic at this project's rates.
+const GAP_ZOOM_MIN_S = 180;
+let gapOverlayOn  = false;
+let gapCoverage = [];            // [from, to] epoch-s spans already scanned, mergeRanges-sorted
+const gapMap      = new Map();   // String(left_txn_ms) → gap {left_txn_ms, right_txn_ms, span_s, expected_events, threshold_s, …}
+let gapController = null;        // AbortController for in-flight gap fetches — never activeController
+let _gapRunning = false, _gapPending = false;
+// Last parameter signature the store was filled under (see syncGapStore).
+// Declared here rather than beside its function because `let` has no
+// hoisting and gatherParams() is reachable from the boot path.
+let _gapParamSig = null;
+let gapPlot = null;              // the pushed span block, or null
+let gapFloorSeen = null;         // retention floor as gaps_json last reported it
+
 // ── Per-source plot memory ───────────────────────────────────────────────
 // Keyed by source name. Stores non-trailing plots so switching back to a
 // previously-viewed source instantly restores the canvas without re-fetching.
@@ -2029,6 +2162,11 @@ function noteCacheEpoch(plot) {
   if (cacheEpoch !== null && e !== cacheEpoch) {
     dataCache.clear();
     cacheSize = 0;
+    // The gap overlay is keyed on the same data epoch: a backfill, a
+    // retention drop or a watermark rewind rewrites exactly the buckets the
+    // gaps were computed from, so the brackets must be re-derived, not kept.
+    clearGapStore();
+    removeGapPlot();
   }
   cacheEpoch = e;
 }
@@ -2445,14 +2583,26 @@ async function fetchRange(from, to, interval, signal) {
   // blocks below use it — a briefly regressing watermark would otherwise make
   // the bar flicker wider and back on every poll.
   const hwm = (typeof plot.incomplete_until === 'number') ? plot.incomplete_until : null;
+  // An HWM advance re-opens the trailing edge: gap entries that reached past
+  // the old horizon were computed against provisional trailing slots, and a
+  // slot that was empty when they were asked may have filled since. Cut both
+  // the gap list and the claimed gap coverage back to the old horizon — the
+  // next maybeFetchGaps run re-asks the reopened span.
+  const prevHwm = hwmSeen;
   if (hwm !== null) hwmSeen = Math.max(hwmSeen ?? hwm, hwm);
+  if (prevHwm !== null && hwmSeen > prevHwm) invalidateGapsFromHorizon(prevHwm);
   if (hwmSeen !== null) plot.data_until = hwmSeen;
   // Store group colors for legend rendering
   starcubesSeriesColors = plot.series_colors || null;
   starcubesPush(plot);
   // starcubes shows a single measure at a time — drop any residual blocks left
   // over from a previous measure so the former series disappears on switch.
-  if (ts.dropData) ts.dropData(p => p._starcubesMeasure !== plot._starcubesMeasure);
+  // The gap overlay's span block carries no _starcubesMeasure and is exempt:
+  // without this guard every plot push below the toggle would drop it, and
+  // the brackets would vanish on the first pan or zoom (measured: the drop
+  // came through this very line, not through pushData's trim).
+  if (ts.dropData) ts.dropData(p => p.category !== 'span'
+    && p._starcubesMeasure !== plot._starcubesMeasure);
   applySeriesDirections();
   hideLoadingOverlay();
   if (starcubesRedraw) starcubesRedraw();
@@ -2720,6 +2870,14 @@ async function _autoFetchOnce() {
 
     schedulePoll();
     updateInfo();
+    // The gap overlay rolls with the viewport: every fetch cycle that moved
+    // the loaded coverage may have opened gap demand. Called without await —
+    // it coalesces through its own _gapRunning/_gapPending pair and must not
+    // stretch the load bar (it is a background overlay fetch, not a data
+    // load), and follow mode's 300 ms throttle and trailing poll inherit
+    // here without a timer of their own. In follow mode each tick's new
+    // trailing coverage is at most one slot, so one new gap span per tick.
+    maybeFetchGaps();
   } catch (e) {
     if (e.name === 'AbortError') return;
     hideLoadingOverlay();
@@ -2777,6 +2935,10 @@ function initTs() {
         syncClampButton();   // no library callback — read the state back
         syncDateTimeInputs();
         updateLegend();
+        // The gap map is global: brackets cached in a previously scanned
+        // region must re-appear the moment the viewport returns to it, not
+        // only after the next fetch cycle opens new gap demand.
+        refreshGapPlot();
         autoFetch();
       });
     },
@@ -2835,7 +2997,13 @@ function initTs() {
   _clampUiOn = false;
   if (clampToggle) clampToggle.classList.remove('active');
   attachBarTooltip();
-  ts.onClickDataCallback((plot, n, key, value) => openDrillModal(plot, n, key, value));
+  // The library hands a span click over as (plot, n, key = ev.id, value = ev).
+  // A gap bracket dispatches to the gap's own estimate dialog; everything
+  // else stays a bar drill-down.
+  ts.onClickDataCallback((plot, n, key, value) => {
+    if (value && typeof value === 'object' && value.is_gap) { openGapModal(value); return; }
+    openDrillModal(plot, n, key, value);
+  });
   if (chartSqlBtn) chartSqlBtn.disabled = !currentMeta;
 }
 
@@ -3072,6 +3240,14 @@ clampToggle.addEventListener('click', () => {
   clampToggle.classList.toggle('active', _clampUiOn);
 });
 
+// ── Gap overlay toggle ───────────────────────────────────────────────────
+// The gate (syncGapToggle) hangs off gatherParams — the one point every
+// filter/measure/source change passes through; the click only flips the
+// overlay. Session-only by decision: nothing is written to localStorage and
+// no constructor option is set, so every load starts with the overlay off.
+const gapToggle = document.getElementById('gap-toggle');
+gapToggle.addEventListener('click', () => setGapOverlay(!gapOverlayOn));
+
 // ── Top-bar menu ─────────────────────────────────────────────────────────
 // Everything that used to sit in the top bar as a sixth equal-weight link —
 // configure, username, preferences, logout, about, theme — now hangs off one
@@ -3105,6 +3281,9 @@ function applyTheme(dark) {
   }
   setThemeToggleUi(dark);
   localStorage.setItem('starcubes-theme', dark ? 'dark' : 'light');
+  // The bracket colour is a CSS token, not a library palette entry, so it
+  // does not follow ts.setColors — re-read it and restamp the events.
+  refreshGapColor();
 }
 
 // [data-keep-open] on the row keeps the menu up, so the two themes can be
@@ -3645,6 +3824,14 @@ function attachBarTooltip() {
     // Extend the shipped body rather than forking it: defaultContent() returns
     // [title, time] and the rate belongs next to the count in the title row.
     formatter: ctx => {
+      // Span branch: the library hit-tests the gap brackets itself and hands
+      // the whole event object over as ctx.value — recognisable by the is_gap
+      // field every gap event carries. Built as its own three rows rather
+      // than through ctx.defaultContent(): its title row would carry an empty
+      // label and a series swatch that means nothing on a span, and its time
+      // row prints UTC where the gap overlay speaks the browser's local time.
+      if (ctx.value && typeof ctx.value === 'object' && ctx.value.is_gap)
+        return gapTooltipNodes(ctx);
       const nodes = ctx.defaultContent();
       const rate = rateText(ctx.value, ctx.interval);
       if (!rate || !nodes.length) return nodes;
@@ -3657,11 +3844,586 @@ function attachBarTooltip() {
   });
 }
 
+// ── Gap overlay ──────────────────────────────────────────────────────────
+// 6σ pauses between transactions, count(*) only. The server's gaps_json
+// answers "which stretches between two *transactions* are so empty that the
+// Poisson day-profile calls them an outage", always detected at a fixed 1 s
+// granularity — independent of the tier on screen. The client keeps that
+// answer in ONE global map (gapMap, key = the exact left transaction stamp)
+// and hands it to timeseries.js as ONE gantt bracket block (gapPlot,
+// appearance 'bracket'), so the library owns pan/zoom, drawing and
+// hit-testing and this file only maintains the event list. Session-only:
+// nothing is persisted.
+//
+// Coverage bookkeeping. A gap is only meaningful over stretches the chart
+// has actually loaded plots for, so demand = plot coverage minus gap
+// coverage, both clipped to the viewport, the HWM horizon and the retention
+// floor. plotCov reads every loadedBlock at every tier — the scan is
+// server-side and needs no tier data of its own. Booking happens over the
+// DEMAND span ∩ [scanned_from, scanned_to], never the widened request
+// window: the seam margin (±1 s) exists so a gap straddling the seam of two
+// requests is seen complete by at least one of them — booking the margin
+// would let the first request claim it and the next one never re-examine it.
+
+// Which sub-spans of [from, to) still need a gaps_json request: the plot
+// coverage over all loaded blocks, at every tier, minus the gap coverage
+// already asked for.
+function gapDemandSpans(from, to) {
+  // Stretches behind the watermark are provisional — never asked for, same
+  // floor-alignment fetchRange clamps its own trailing coverage to. Below
+  // the retention floor the fact table is empty on purpose.
+  const hi = hwmSeen !== null ? Math.min(to, hwmSeen) : to;
+  const lo = gapFloorSeen !== null ? Math.max(from, gapFloorSeen) : from;
+  if (lo >= hi) return [];
+  const plotCov = mergeRanges(loadedBlocks
+    .map(b => [Math.max(b.actualFrom, lo), Math.min(b.actualTo, hi)])
+    .filter(([a, b]) => b > a));
+  if (!plotCov.length) return [];
+  const gapCov = mergeRanges(gapCoverage
+    .map(c => [Math.max(c[0], lo), Math.min(c[1], hi)])
+    .filter(c => c[1] > c[0]));
+  const demands = [];
+  for (const [s, e] of plotCov)
+    for (const [a, b] of uncoveredSpans(s, e, gapCov)) demands.push([a, b]);
+  // Adjacent demands merge into fewer requests — same reason mergeGaps
+  // serves the block fetches above.
+  const merged = mergeGaps(demands, GAP_SEAM_S);
+  // Seam rule: a gap straddling the seam of two requests is only emitted
+  // complete by a window reaching past both anchors, so every demand is
+  // widened by GAP_SEAM_S either way — clipped onto the loaded coverage
+  // (which may split it into pieces; each piece is its own request, and the
+  // demand span is what gets booked regardless of how it was clipped).
+  // Before that, each demand is split at GAP_SCAN_MAX_S boundaries: the
+  // server answers at most that much per request (scan_truncated beyond it),
+  // and a piece the client pre-splits comes back answered in full, keeping
+  // the coverage booking per piece honest.
+  const out = [];
+  for (const d of merged) {
+    for (const [cFrom, cTo] of splitSpansMax(d.from, d.to, GAP_SCAN_MAX_S)) {
+      for (const [rFrom, rTo] of intersectSpans(cFrom - GAP_SEAM_S, cTo + GAP_SEAM_S, plotCov))
+        out.push({ dFrom: cFrom, dTo: cTo, rFrom, rTo });
+    }
+  }
+  return out;
+}
+
+// Split [from, to) into pieces of at most maxS seconds.
+function splitSpansMax(from, to, maxLen) {
+  const out = [];
+  let a = from;
+  while (a < to) {
+    const b = Math.min(a + maxLen, to);
+    out.push([a, b]);
+    a = b;
+  }
+  return out;
+}
+
+// Subtract the covered spans from [from, to): the sub-spans still to ask for.
+// `covered` must be merged (mergeRanges) and sorted.
+function uncoveredSpans(from, to, covered) {
+  let cursor = from, out = [];
+  for (const [s, e] of covered) {
+    if (e <= cursor) continue;
+    if (s >= to) break;
+    if (s > cursor) out.push([cursor, Math.min(s, to)]);
+    cursor = Math.max(cursor, e);
+    if (cursor >= to) break;
+  }
+  if (cursor < to) out.push([cursor, to]);
+  return out.filter(([a, b]) => b > a);
+}
+
+// Intersect [from, to) with a merged span list.
+function intersectSpans(from, to, spans) {
+  const out = [];
+  for (const [s, e] of spans) {
+    if (e <= from || s >= to) continue;
+    out.push([Math.max(s, from), Math.min(e, to)]);
+  }
+  return out;
+}
+
+// Canonical span list: sorted, overlapping/adjacent spans merged.
+function mergeRanges(ranges) {
+  const sorted = ranges.slice().sort((a, b) => a[0] - b[0]);
+  const out = [];
+  for (const [s, e] of sorted) {
+    const last = out[out.length - 1];
+    if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+    else out.push([s, e]);
+  }
+  return out;
+}
+
+// One gaps_json request for a demand piece. rFrom/rTo is the seam-widened
+// server window; dFrom/dTo the demand piece it serves — that is what gets
+// booked as scanned, never the margin (see gapDemandSpans).
+async function fetchGapSpan(dFrom, dTo, rFrom, rTo, signal) {
+  const p = buildGapParams(rFrom, rTo);
+  const r = await fetch(GAPS_URL + '?' + p, { signal });
+  if (!r.ok) {
+    const t = await r.text().catch(() => '');
+    throw new Error(`HTTP ${r.status}: ${t}`);
+  }
+  const payload = await r.json();
+  if (payload && payload.ok === false) {
+    const err = new Error(payload.error);
+    err.friendly = true;
+    throw err;
+  }
+  // The epoch stamp rides on every response; a change has already cleared
+  // the gap state (noteCacheEpoch) and this run's results are void.
+  const epochBefore = cacheEpoch;
+  noteCacheEpoch(payload);
+  if (epochBefore !== null && cacheEpoch !== epochBefore) return;
+  if (payload.floor != null)
+    gapFloorSeen = gapFloorSeen === null ? payload.floor : Math.max(gapFloorSeen, payload.floor);
+  // What the server actually scanned comes straight off the payload —
+  // from clamped up to the retention floor, to clamped down to the
+  // watermark. Only over that span is the booked coverage honest; a
+  // scan_truncated response (server-side 7-day cap) cannot happen, the
+  // client pre-splits at the same constant.
+  const effFrom = Math.max(dFrom, payload.scanned_from != null ? payload.scanned_from : dFrom);
+  const effTo   = Math.min(dTo, payload.scanned_to != null ? payload.scanned_to : dTo);
+  if (effTo <= effFrom) return;
+  for (const g of payload.gaps || []) {
+    // Merge key: the exact left transaction timestamp — the same gap seen
+    // from two overlapping (seam-widened) windows lands on one entry. The
+    // merge is unconditional: each row carries the exact txn anchors, so
+    // every emission IS the complete gap — there is no bucket-truncated
+    // sighting to protect a complete one against.
+    gapMap.set(String(g.left_txn_ms), g);
+  }
+  gapCoverage = mergeRanges([...gapCoverage, [effFrom, effTo]]);
+  refreshGapList();
+}
+
+// Coalescing wrapper — mirrors autoFetch() above, but with its own
+// controller and its own running/pending pair: aborting per tick is wrong
+// for the reason abortInFlight() documents, and the gap fetches must never
+// share activeController, or a viewport tick would abort the gap request
+// and starve it exactly like a main fetch would.
+async function maybeFetchGaps() {
+  if (!gapOverlayOn) return;
+  if (_gapRunning) { _gapPending = true; return; }
+  _gapRunning = true;
+  refreshGapList();
+  try {
+    do {
+      _gapPending = false;
+      await _maybeFetchGapsOnce();
+    } while (_gapPending);
+  } finally {
+    _gapRunning = false;
+    refreshGapList();
+  }
+}
+
+async function _maybeFetchGapsOnce() {
+  if (!ts || !starcubesPush) return;
+  if (!gapOverlayOn || (starcubesParams && starcubesParams.measure)) return;
+  if (currentMeta && currentMeta.not_ready) return;
+  const vp = currentViewport;
+  if (!vp) return;
+  const from = vp.tmin / 1000, to = vp.tmax / 1000;
+  if (from >= to) return;
+  gapController = new AbortController();
+  try {
+    // The scan is tier-independent: one demand pass over the viewport, no
+    // per-tier loop and no dominant-tier notion left.
+    const demands = gapDemandSpans(from, to);
+    for (const q of demands) {
+      // The seam-widened request window arrives from gapDemandSpans already
+      // clipped onto the loaded coverage (which may have split the demand
+      // into pieces; each piece is its own request, and the demand span is
+      // what gets booked regardless of how it was clipped).
+      await fetchGapSpan(q.dFrom, q.dTo, q.rFrom, q.rTo, gapController.signal);
+    }
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    console.error('gaps error:', e);
+    setInfo(e.friendly ? e.message : 'gaps failed: ' + e.message, true);
+  }
+  refreshGapPlot();
+}
+
 function fmtInterval(iv) {
   if (iv >= 86400) return `${iv / 86400}d`;
   if (iv >= 3600)  return `${iv / 3600}h`;
   if (iv >= 60)    return `${iv / 60}min`;
   return `${iv}s`;
+}
+
+// Small helpers of the gap overlay. Declared after fmtInterval for no
+// particular reason — hoisted anyway.
+
+// Nothing left in the cache; also drops the block. Called from
+// noteCacheEpoch, resetAndFetch, setActiveSource and syncGapToggle.
+function clearGapStore() {
+  gapCoverage = [];
+  gapMap.clear();
+  gapFloorSeen = null;
+  refreshGapList();
+}
+
+// Abort any in-flight gap fetch. Called from resetAndFetch, setActiveSource
+// and the toggle-off path — for the same reason abortInFlight() aborts the
+// main fetches: an in-flight gap request belongs to the params it was made
+// under, and a response landing after the reset would merge into the new
+// param set's map.
+function abortGaps() {
+  if (gapController) gapController.abort();
+}
+
+// ── The gap list panel ───────────────────────────────────────────────────
+// The brackets say *where*; this says *what was found*. A bracket is a few
+// pixels wide on a week view and invisible until stumbled over, and a scan
+// that finds nothing looks exactly like a scan that has not started. The
+// panel answers both, and each row jumps the chart to its gap.
+//
+// It lists everything the session has found — gapMap, not the viewport —
+// because the first thing a reader does is jump to a gap, and a
+// viewport-filtered list would collapse to that one row on arrival. What the
+// list is *about* is therefore stated explicitly: the scanned span, read off
+// gapCoverage.
+const gapPanel = document.getElementById('gap-panel');
+
+// Local date + clock for a row's left edge; the right edge drops the date
+// while the gap stays inside one day. Local, like the rest of the overlay
+// (fmtClock), unlike the page's UTC fmtEpoch.
+function gapDate(t) {
+  return new Date(t * 1000).toLocaleDateString(undefined, { day: '2-digit', month: '2-digit' });
+}
+
+function gapRowWhen(g) {
+  const l = new Date(g.left_txn_ms), r = new Date(g.right_txn_ms);
+  const sameDay = l.toDateString() === r.toDateString();
+  return `${gapDate(g.left_txn_ms / 1000)} ${fmtClock(g.left_txn_ms / 1000)} → ` +
+         (sameDay ? '' : gapDate(g.right_txn_ms / 1000) + ' ') +
+         fmtClock(g.right_txn_ms / 1000);
+}
+
+// "scanned: … – …" over the whole booked coverage. Deliberately not claimed
+// as contiguous: gapCoverage can hold several spans when the chart has
+// jumped across ranges, and naming the outer bounds is the honest summary of
+// a list that mixes them.
+function gapScannedText() {
+  if (!gapCoverage.length) return '';
+  const a = gapCoverage[0][0], b = gapCoverage[gapCoverage.length - 1][1];
+  const total = gapCoverage.reduce((n, [x, y]) => n + (y - x), 0);
+  return `scanned: ${gapDate(a)} ${fmtClock(a)} → ${gapDate(b)} ${fmtClock(b)}` +
+         ` (${humanSpan(total)} of data)`;
+}
+
+// Rebuild the panel body from gapMap + gapCoverage + _gapRunning. Called
+// where those change — never from refreshGapPlot(), which runs on every
+// viewport frame and would rebuild this list per panned pixel.
+function refreshGapList() {
+  if (!gapPanel || !fpIsOpen(gapPanel)) return;
+  const body  = document.getElementById('gap-panel-body');
+  const count = document.getElementById('gap-panel-count');
+  const gaps  = [...gapMap.values()].sort((a, b) => a.left_txn_ms - b.left_txn_ms);
+
+  count.textContent = gaps.length ? `${gaps.length} found` : '';
+
+  const scanned = gapScannedText();
+  let html = scanned ? `<div class="gap-scanned">${scanned}</div>` : '';
+
+  if (!gaps.length) {
+    // Searching with nothing yet vs. a finished scan that found nothing —
+    // the same empty list, two very different statements.
+    html += _gapRunning
+      ? '<div class="gap-status">Searching&hellip;</div>'
+      : '<div class="gap-status">No gaps in the scanned range</div>';
+    body.innerHTML = html;
+    return;
+  }
+
+  // Chronological, unlike refreshGapPlot's widest-first ordering — that one
+  // sorts to cap pixel density, this one is a timeline to read down.
+  for (const g of gaps) {
+    html += `<div class="gap-row" data-gap="${g.left_txn_ms}" ` +
+            `title="Zoom to this gap">` +
+            `<span class="gap-row-when">${gapRowWhen(g)}</span>` +
+            `<span class="gap-row-span">${humanSpan(g.span_s)}</span>` +
+            `<span class="gap-row-miss">~${fmtExpected(g.expected_events)} missed</span></div>`;
+  }
+  if (_gapRunning) html += '<div class="gap-status">Searching&hellip;</div>';
+  body.innerHTML = html;
+}
+
+// Frame one gap in the middle third: the window is three times its length,
+// centred on it, floored at GAP_ZOOM_MIN_S. applyRange is the single host
+// entry point for a viewport change — it zooms once and fires exactly one
+// fetch cycle — and it leaves gapMap alone, so the list survives the jump.
+function gapZoomTo(g) {
+  const mid  = (g.left_txn_ms + g.right_txn_ms) / 2;
+  const span = Math.max(g.span_s * 3, GAP_ZOOM_MIN_S) * 1000;
+  applyRange(mid - span / 2, mid + span / 2);
+}
+
+document.getElementById('gap-panel-body').addEventListener('click', e => {
+  const row = e.target.closest('.gap-row');
+  if (!row) return;
+  const g = gapMap.get(row.dataset.gap);
+  if (g) gapZoomTo(g);
+});
+
+document.getElementById('gap-panel-close')
+        .addEventListener('click', () => setGapOverlay(false));
+// Close and Escape both go through setGapOverlay, so the brackets and this
+// list cannot disagree about whether the overlay is on.
+makeFloatingPanel(gapPanel, { onClose: () => setGapOverlay(false) });
+applyPersistedSize(gapPanel, 'starcubes-gap-panel');
+persistPanelSize(gapPanel, 'starcubes-gap-panel');
+
+// --gap-mark is a CSS token, not a library palette colour: the library draws
+// with a plain string, so the client reads the computed value and re-reads
+// it on every theme switch (refreshGapColor, called from applyTheme).
+function gapMarkColor() {
+  const v = getComputedStyle(document.documentElement).getPropertyValue('--gap-mark');
+  return (v && v.trim()) || '#000000';
+}
+
+// The chart's filters, serialized exactly as buildHistoryParams does (the
+// profile, the scan and the estimate must see the same filter SQL). Shared
+// by buildGapParams and the gap-estimate params builder — one copy, two
+// endpoints. profile_days rides along: both endpoints accept it and both
+// profiles must be the same λ̂.
+function appendGapFilters(p) {
+  // Same operator→separator mapping as fetchRange/buildHistoryParams.
+  for (const row of starcubesParams.filterRows || []) {
+    let sep;
+    if (row.op === 'not_in') sep = '!=';
+    else if (row.op === 'starts_with') sep = '~=';
+    else if (row.op === 'starts_not_with') sep = '!~=';
+    else if (row.op === 'contains') sep = '*=';
+    else sep = '=';
+    p.append('filter', `${row.col}${sep}${row.vals.join(',')}`);
+  }
+  for (let i = 1; i < (starcubesParams.filterRows || []).length; i++) {
+    p.append('andor', starcubesParams.filterRows[i].andOr || 'and');
+  }
+  for (const row of starcubesParams.filterRows || []) {
+    p.append('indent', row.indent || 0);
+  }
+  if (GAP_PROFILE_DAYS !== 7) p.set('profile_days', GAP_PROFILE_DAYS);
+}
+
+// Request parameters for one gap span — the chart's filters, serialized
+// exactly as buildHistoryParams does (the profile and the gap scan must see
+// the same filter SQL), minus yaxis/measure/partialbins: gaps are a count(*)
+// question by definition. group_by is sent anyway (buildHistoryParams sends
+// it) and deliberately ignored by the server — a gap is a bucket NO row
+// falls into, the total transaction stream, not a per-series question.
+function buildGapParams(from, to) {
+  const p = new URLSearchParams();
+  p.set('name', starcubesParams.name);
+  p.set('group_by', starcubesParams.group_by);
+  p.set('from', new Date(from * 1000).toISOString());
+  p.set('to',   new Date(to * 1000).toISOString());
+  appendGapFilters(p);
+  return p;
+}
+
+// Rebuild the span block's events from the global gap map. The library
+// renders the block rolling with every pan/zoom frame; only the event list
+// is client-owned. Mutated in place — pushing anew would have pushData trim
+// this very block against itself.
+function refreshGapPlot() {
+  if (!ts) return;
+  if (!gapOverlayOn || (starcubesParams && starcubesParams.measure)) {
+    removeGapPlot();
+    return;
+  }
+  // Visibility = cache ∩ viewport ∩ [floor, hwm]. Cache, not coverage: a gap
+  // stays visible once seen, wherever the viewport returns to it — the
+  // onViewportChange handler calls this on every tick for exactly that.
+  const vp = currentViewport;
+  if (!vp) { removeGapPlot(); return; }
+  let gaps = [...gapMap.values()];
+  // Spans behind the watermark are provisional and below the floor empty on
+  // purpose — neither is drawn.
+  if (hwmSeen !== null) gaps = gaps.filter(g => g.right_txn_ms / 1000 <= hwmSeen);
+  if (gapFloorSeen !== null) gaps = gaps.filter(g => g.left_txn_ms / 1000 >= gapFloorSeen);
+  gaps = gaps.filter(g => g.right_txn_ms >= vp.tmin && g.left_txn_ms <= vp.tmax);
+  // Cap the pixel density: the widest gaps win.
+  gaps.sort((a, b) => b.span_s - a.span_s);
+  const drawn = gaps.slice(0, GAP_MAX_DRAWN);
+  if (!drawn.length) { removeGapPlot(); return; }
+  // Block window = the loaded coverage over all tiers (Unix ms), widened to
+  // hold every drawn event.
+  let tmin = Infinity, tmax = -Infinity;
+  for (const b of loadedBlocks) {
+    if (b.actualFrom < tmin) tmin = b.actualFrom;
+    if (b.actualTo > tmax) tmax = b.actualTo;
+  }
+  if (!isFinite(tmin)) { removeGapPlot(); return; }
+  tmin *= 1000; tmax *= 1000;
+  const color = gapMarkColor();
+  // Extra fields ride on the event object: the tooltip formatter and the
+  // click dispatch read ctx.value wholesale (src/tooltip.js buildCtx passes
+  // the whole event).
+  const events = drawn.map(g => ({
+    id: String(g.left_txn_ms),       // the merge key of gapMap
+    start: g.left_txn_ms,            // server epochs are already ms — no scaling
+    end:   g.right_txn_ms,
+    label: '',                       // labels are a bar-glyph feature; the tooltip comes from the formatter
+    appearance: 'bracket',
+    yPos: GAP_YPOS,
+    color,
+    is_gap: true,
+    left_txn_ms: g.left_txn_ms,
+    right_txn_ms: g.right_txn_ms,
+    span_s: g.span_s,
+    expected_events: g.expected_events,
+    threshold_s: g.threshold_s,
+  }));
+  for (const ev of events) {
+    if (ev.start < tmin) tmin = ev.start;
+    if (ev.end > tmax) tmax = ev.end;
+  }
+  if (gapPlot) {
+    gapPlot.data = events;
+    gapPlot.tmin = tmin;
+    gapPlot.tmax = tmax;
+    gapPlot._laidOut = null;  // force layoutSpans() to re-stamp the new events
+    ts.redraw();
+  } else {
+    gapPlot = {
+      type: 'gantt', category: 'span', layout: 'packed', appearance: 'bracket',
+      tmin, tmax, data: events,
+    };
+    // pushData books the block but does not paint; the branch above gets its
+    // frame from ts.redraw(). Without this the first brackets of a scan sat
+    // in the model, invisible until some unrelated interaction happened to
+    // trigger a frame — which read as "the search found nothing".
+    starcubesPush(gapPlot);
+    if (starcubesRedraw) starcubesRedraw();
+  }
+}
+
+// Drop the block. dropData() redraws itself.
+function removeGapPlot() {
+  if (!gapPlot) return;
+  const p = gapPlot;
+  gapPlot = null;
+  if (ts && ts.dropData) ts.dropData(q => q === p);
+}
+
+// Theme switch: re-read the token and restamp the events. Layout is
+// unaffected, so no _laidOut reset — only a redraw.
+function refreshGapColor() {
+  if (!gapPlot || !gapPlot.data || !gapPlot.data.length) return;
+  const color = gapMarkColor();
+  for (const ev of gapPlot.data) ev.color = color;
+  ts.redraw();
+}
+
+// The HWM advanced past where the gap requests stood: entries reaching past
+// the old horizon were computed against provisional trailing slots, and a
+// slot that was empty when asked may have filled since. Cut the gap list
+// and the claimed coverage back to the old horizon.
+function invalidateGapsFromHorizon(oldHwm) {
+  for (const [key, g] of gapMap) {
+    if (g.right_txn_ms / 1000 > oldHwm) gapMap.delete(key);
+  }
+  gapCoverage = gapCoverage
+    .map(([a, b]) => [a, Math.min(b, oldHwm)])
+    .filter(([a, b]) => b > a);
+  refreshGapPlot();
+  refreshGapList();
+}
+
+// Toggle handler. Turning it OFF aborts the in-flight gap fetch and drops
+// the block; turning it ON starts the first scan. The toggle state survives
+// a measure switch (see syncGapToggle) — the next maybeFetchGaps run
+// refills the overlay once the user is back on count(*).
+function setGapOverlay(on) {
+  gapOverlayOn = on;
+  if (gapToggle) gapToggle.classList.toggle('active', on);
+  if (!on) {
+    abortGaps();
+    removeGapPlot();
+    gapPanel.classList.remove('fp-open');
+    return;
+  }
+  // Centred on first open, then wherever the user dragged it — the same rule
+  // #keys-panel follows.
+  gapPanel.classList.add('fp-open');
+  if (!gapPanel.dataset.fpMoved) {
+    const w = gapPanel.offsetWidth, h = gapPanel.offsetHeight;
+    fpMoveTo(gapPanel, window.innerWidth - w - 24, Math.max(16, (window.innerHeight - h) / 2));
+  }
+  fpBringToFront(gapPanel);
+  refreshGapList();          // "Searching…" before the first request returns
+  maybeFetchGaps();
+}
+
+// Gate. Called from gatherParams — the one point every filter/measure/
+// source change passes through. Disabled (not hidden) while a real measure
+// is selected: the gap test runs on the total transaction stream, so any
+// real measure would misread it. Hidden only while currentMeta is missing.
+function syncGapToggle() {
+  if (!gapToggle) return;
+  if (!currentMeta) { gapToggle.hidden = true; return; }
+  gapToggle.hidden = false;
+  const disabled = !!starcubesParams.measure;
+  gapToggle.disabled = disabled;
+  if (disabled && gapOverlayOn) {
+    // Overlay off, toggle stays on: block removed and store cleared — the
+    // next maybeFetchGaps run on count(*) refills. Session-only, nothing
+    // written anywhere.
+    removeGapPlot();
+    clearGapStore();
+  }
+}
+
+// Three rows for a hovered bracket. Built directly rather than through
+// ctx.defaultContent(): its title row would carry an empty label and a
+// series swatch that means nothing on a span, and its time row prints the
+// UTC date-time where the gap overlay speaks the browser's local time —
+// same convention as the drill modal's _barHeaderHtml.
+function gapTooltipNodes(ctx) {
+  const g = ctx.value;
+  const title = document.createElement('div');
+  title.style.cssText = `font-weight:600;color:${ctx.colors.tooltipTitle}`;
+  title.textContent = `Gap ${humanSpan(g.span_s)}`;
+  const when = document.createElement('div');
+  when.style.cssText = `color:${ctx.colors.tooltipMuted};font-size:11px`;
+  when.textContent = `${fmtClock(g.left_txn_ms / 1000)} → ${fmtClock(g.right_txn_ms / 1000)} local`;
+  const delta = document.createElement('div');
+  delta.style.cssText = `color:${ctx.colors.tooltipText};font-size:11px`;
+  const th = (typeof g.threshold_s === 'number') ? ` · 6σ threshold ${g.threshold_s.toFixed(1)} s` : '';
+  // Leads with the expected count: the duration is already in the title row,
+  // and "how many transactions are missing" is the question a bracket poses.
+  // It rides on the event from gaps.json, so the hover costs no request — and
+  // it is the same μ the click-through dialog reports.
+  const exp = (typeof g.expected_events === 'number')
+    ? `~ ${fmtExpected(g.expected_events)} expected · ` : '';
+  delta.textContent = `${exp}Δ ${humanSpan(g.span_s)}${th}`;
+  return [title, when, delta];
+}
+
+// Local clock, hh:mm:ss — the gap overlay speaks the browser's timezone,
+// unlike the page's fmtEpoch, which stays UTC.
+function fmtClock(t) {
+  const d = new Date(t * 1000);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+// Human Δt with seconds — threshold_s routinely lands below a minute.
+function humanSpan(sec) {
+  if (typeof sec !== 'number' || !isFinite(sec)) return '?';
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  const parts = [];
+  if (h) parts.push(`${h} h`);
+  if (m) parts.push(`${m} min`);
+  if (r || !parts.length) parts.push(`${r} s`);
+  return parts.join(' ');
 }
 
 function _resolveDimName(rawKey) {
@@ -3715,7 +4477,7 @@ document.getElementById('drill-header-info').addEventListener('click', e => {
 });
 
 document.getElementById('drill-body').addEventListener('click', e => {
-  if (e.target.closest('.drill-back-btn'))  { _fetchDrillContent(); return; }
+  if (e.target.closest('.drill-back-btn'))  { _refetchDrillView(); return; }
   if (e.target.closest('.drill-alarm-save')) { saveAlarmForm(e.target.closest('.drill-alarm-save')); return; }
   const xBtn = e.target.closest('.drill-chip-x');
   if (xBtn) {
@@ -3774,7 +4536,7 @@ function drillRemoveFilter(column, sourceId) {
   renderFilterTable();
   renderFilterSummary();
   resetAndFetch(true);
-  _fetchDrillContent();
+  _refetchDrillView();
 }
 
 async function _fetchDrillContent() {
@@ -3797,6 +4559,11 @@ async function openDrillModal(plot, n, key, value) {
   // Drill-down is only meaningful for (multi)bar slots — other plot types
   // have no per-bar count/value to break down.
   if (!plot || (plot.type !== 'multibar' && plot.type !== 'bar')) return;
+  // The header buttons are bar features (the txn list reads a slot map, the
+  // alarm form rides on the clicked series). A gap click hides both and the
+  // next bar click restores them here — symmetric with openGapModal.
+  document.getElementById('drill-txn-btn').hidden = false;
+  document.getElementById('drill-alarm-btn').hidden = false;
   // Deliberately does NOT call ts.stop(): follow mode (seismograph) must keep
   // running while the user inspects a bar. The drill body fetches its own
   // slice via /drill/ and does not interact with the chart's autoFetch chain.
@@ -3817,11 +4584,137 @@ async function openDrillModal(plot, n, key, value) {
   // library matches it exactly as the click delivered it.
   ts.setSelection({ slotSec, key });
 
-  _drillCtx = { rawKey, slotSec, interval: plot.interval, groupBy: starcubesParams.group_by, selKey: key };
+  _drillCtx = { kind: 'bar', rawKey, slotSec, interval: plot.interval, groupBy: starcubesParams.group_by, selKey: key };
   drillModal.classList.add('fp-open');
   fpBringToFront(drillModal);
   positionDrillModal();
   await _fetchDrillContent();
+}
+
+// ── Gap estimate dialog ──────────────────────────────────────────────────
+// A clicked gap bracket opens the same #drill-modal (a generic .fpanel, so
+// drag/Escape/resize come free), but fills it itself: the numbers are a
+// backend computation over the gap's exact txn anchors — the expected
+// transaction count μ, the profile's per-hour detail and the rate the
+// stream actually carried either side — fetched from gap_estimate.json and
+// rendered by renderGapEstimate below. The header buttons are hidden here
+// and restored by openDrillModal, symmetrically.
+async function openGapModal(gap) {
+  if (barTooltip) barTooltip.hide();
+  const l = new Date(gap.left_txn_ms);
+  const r = new Date(gap.right_txn_ms);
+  document.getElementById('drill-header-info').innerHTML =
+    `<div class="btt-dim">Gap ${humanSpan(gap.span_s)}</div>` +
+    `<div class="btt-date">${l.toLocaleString()} → ${r.toLocaleString()}</div>`;
+  // The txn list and the alarm form read a bar's slot map / series; a span
+  // has neither. openDrillModal restores them on the next bar click.
+  document.getElementById('drill-txn-btn').hidden = true;
+  document.getElementById('drill-alarm-btn').hidden = true;
+  const body = document.getElementById('drill-body');
+  body.innerHTML = '<div id="drill-status">Loading&hellip;</div>';
+  // The dialog is now filterable like a bar's, so it has to remember which
+  // question it is answering: drillAddFilter/-RemoveFilter refetch through
+  // _drillCtx.kind, or a filter clicked inside a gap would reload the modal
+  // as a bar drill-down of whatever bar was clicked before it.
+  _drillCtx = { kind: 'gap', gap };
+  drillModal.classList.add('fp-open');
+  fpBringToFront(drillModal);
+  positionDrillModal();
+  await _fetchGapEstimate(gap);
+}
+
+// The estimate's params: the gap's txn anchors in epoch seconds (exactly as
+// gaps.json reported them, only converted ms → s) plus the chart's filters
+// via appendGapFilters — the same filter SQL the scan and the profile ran
+// under, so the estimate answers the question the bracket posed.
+function _gapEstimateParams(gap) {
+  const p = new URLSearchParams();
+  p.set('name', starcubesParams.name);
+  p.set('left_txn', String(Math.round(gap.left_txn_ms / 1000)));
+  p.set('right_txn', String(Math.round(gap.right_txn_ms / 1000)));
+  appendGapFilters(p);
+  return p;
+}
+
+async function _fetchGapEstimate(gap) {
+  const body = document.getElementById('drill-body');
+  body.innerHTML = '<div id="drill-status">Loading&hellip;</div>';
+  try {
+    const r = await fetch(GAP_ESTIMATE_URL + '?' + _gapEstimateParams(gap));
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (data.error) throw new Error(data.error);
+    renderGapEstimate(data);
+    positionDrillModal();
+  } catch (err) {
+    body.innerHTML = `<div id="drill-status" class="err">${err.message}</div>`;
+  }
+}
+
+// The estimate body: headline quote (0 observed of the expected μ), the
+// profile's hours-of-day detail and the neighbour rate. The hours table is
+// the profile per-day series the backend already aggregated; every number
+// arrives computed, the client only lays it out.
+// The expected-event count as both the tooltip and the dialog print it.
+// One function because they show the *same* number — detect_gaps computes a
+// gap's `expected_events` with the same `_profile_integral` that
+// gap_estimate_json computes its μ with, so two formatters would only ever
+// drift apart.
+function fmtExpected(n) {
+  if (typeof n !== 'number' || !isFinite(n)) return '?';
+  return n % 1 === 0 ? n.toLocaleString() : n.toFixed(1);
+}
+
+function renderGapEstimate(data) {
+  const body = document.getElementById('drill-body');
+  const mu = fmtExpected(data.expected_events);
+  const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const clampNote = [];
+  if (data.clamped && data.clamped.profile)
+    clampNote.push('profile window shorter than requested — λ̂ rests on less history');
+  if (data.clamped && data.clamped.left) clampNote.push('left neighbour window clamped at the retention floor');
+  if (data.clamped && data.clamped.right) clampNote.push('right neighbour window clamped at the watermark');
+  const rows = (data.hours || []).map(hh => {
+    const fmt = x => (typeof x === 'number') ? x.toLocaleString(undefined, { maximumFractionDigits: 1 }) : '–';
+    return `<tr><td>${String(hh.h).padStart(2, '0')}:00</td>` +
+           `<td>${fmt(hh.avg)}</td><td>${fmt(hh.min)}</td><td>${fmt(hh.max)}</td>` +
+           `<td>${fmt(hh.expected)}</td></tr>`;
+  }).join('');
+  const rate = (typeof data.neighbor_rate_s === 'number')
+    ? `${data.neighbor_rate_s.toFixed(2)} rows/s` : 'not measurable';
+
+  // The breakdown leads, in the bar drill-down's own layout: what a gap is
+  // asking is "what did I not see", and that is a per-dimension question. The
+  // numbers behind μ follow in a collapsed block — nothing is lost, but the
+  // derivation no longer sits between the reader and the answer. A <details>
+  // rather than a scripted toggle: the browser already owns this behaviour.
+  const sections = _drillSectionsHtml(data, { approx: true });
+  body.innerHTML =
+    `<div class="drill-txn-count">Observed 0 transactions — ≈ ${mu} expected</div>` +
+    (clampNote.length ? `<div class="drill-gap-note">${esc(clampNote.join(' · '))}</div>` : '') +
+    _drillFiltersHtml() +
+    (sections === null
+      ? '<div class="drill-gap-note">no reference traffic in the profile window</div>'
+      : sections) +
+    `<details class="drill-gap-details"><summary>Profile &amp; neighbour rates</summary>` +
+    `<table class="drill-gap-table">` +
+    `<thead><tr><th>hour</th><th>Ø/day</th><th>min</th><th>max</th><th>expected</th></tr></thead>` +
+    `<tbody>${rows}</tbody></table>` +
+    `<div class="drill-gap-note">profile source: ${esc(data.profile_source || 'fact')}` +
+    (typeof data.neighbor_rate_s === 'number'
+      ? ` · neighbour rate: ${rate}`
+      : ' · neighbour rate: not measurable at the data edge') +
+    `</div></details>`;
+}
+
+// Reload whichever view the modal is currently showing. Both filter
+// mutations end here, so neither has to know which one that is.
+function _refetchDrillView() {
+  if (_drillCtx && _drillCtx.kind === 'gap') {
+    if (_drillCtx.gap) _fetchGapEstimate(_drillCtx.gap);
+    return;
+  }
+  _fetchDrillContent();
 }
 
 function drillAddFilter(column, sourceId) {
@@ -3837,7 +4730,7 @@ function drillAddFilter(column, sourceId) {
   renderFilterTable();
   renderFilterSummary();
   resetAndFetch(true);
-  _fetchDrillContent();
+  _refetchDrillView();
 }
 
 function _drillUrlParams() {
@@ -4233,18 +5126,21 @@ async function saveAlarmForm(btn) {
   }
 }
 
-function renderDrillBody(data) {
-  const body = document.getElementById('drill-body');
+// The dimension breakdown, shared by the bar drill-down and the gap estimate.
+// Both receive `drill.json`'s shape — a gap's numbers are interpolated by
+// `core.query.gap_reference_drill` but arrive in the same fields — so the two
+// read identically on screen, which is the whole point of the gap dialog
+// looking like a bar's. `approx` prefixes the counts with a tilde: a gap's
+// figures are estimates and must not be mistaken for a count.
+function _drillSectionsHtml(data, { approx = false } = {}) {
   const dims  = (data.dimensions || []).filter(d => d.values && d.values.length)
                                        .sort((a, b) => a.values.length - b.values.length);
-  if (!dims.length) {
-    body.innerHTML = _drillFiltersHtml() + '<div id="drill-status">No data</div>';
-    return;
-  }
+  if (!dims.length) return null;
 
   const singles = dims.filter(d => d.values.length === 1);
   const multi   = dims.filter(d => d.values.length  >  1);
-  let html = _drillFiltersHtml();
+  const fmtCount = n => (approx ? '~' : '') + n.toLocaleString();
+  let html = '';
 
   if (singles.length) {
     html += '<div class="drill-common"><div class="drill-common-title">Common</div>';
@@ -4267,7 +5163,7 @@ function renderDrillBody(data) {
     html += `<div class="drill-section"><div class="drill-section-title">${dim.column}</div>`;
     for (const row of dim.values) {
       const color = TimeSeries.seriesColor('_' + row.source_id, 0.8);
-      const cnt   = row.count.toLocaleString();
+      const cnt   = fmtCount(row.count);
       const name  = row.name.length > 30 ? row.name.slice(0, 28) + '…' : row.name;
       const alreadyFiltered = filterRows.some(r => r.column === dim.column && (r.op === 'in' || r.op === 'not_in') && r.values.has(row.source_id));
       const cls   = alreadyFiltered ? 'drill-row' : 'drill-row drill-row--clickable';
@@ -4280,7 +5176,15 @@ function renderDrillBody(data) {
     html += '</div>';
   }
 
-  body.innerHTML = html;
+  return html;
+}
+
+function renderDrillBody(data) {
+  const body = document.getElementById('drill-body');
+  const sections = _drillSectionsHtml(data);
+  body.innerHTML = sections === null
+    ? _drillFiltersHtml() + '<div id="drill-status">No data</div>'
+    : _drillFiltersHtml() + sections;
 }
 
 // ── DateTime picker ──────────────────────────────────────────────────────
@@ -4526,6 +5430,9 @@ async function setActiveSource(name) {
   abortInFlight();
   currentViewport = null;
   hwmSeen = null;  // HWM is per-datasource
+  abortGaps();
+  clearGapStore();   // gaps are per-datasource like everything else here
+  gapPlot = null;    // clearAll() has already dropped the block itself
   if (ts) ts.clearAll();
 
   if (starcubesPush && sourceMemoryRestore(name)) {
@@ -4869,6 +5776,36 @@ function gatherParams() {
   // The configuration links carry these filters, so they are refreshed here —
   // the one point every filter change passes through.
   updateSourceLinks();
+  // The gate for the gap toggle rides along: disabled while a measure is
+  // set, hidden until the source meta arrived.
+  syncGapToggle();
+  syncGapStore();
+}
+
+// What a found gap depends on: the source and the filters it was scanned
+// under. Built from the very appendGapFilters() that builds the requests, so
+// the signature cannot drift from what was actually asked. `group_by` is
+// deliberately absent — gaps.json ignores it, the test runs on the total
+// stream — and `measure` too, because a measure disables the overlay
+// outright (syncGapToggle).
+function gapParamSig() {
+  const p = new URLSearchParams();
+  p.set('name', (starcubesParams && starcubesParams.name) || '');
+  appendGapFilters(p);
+  return p.toString();
+}
+
+// Drop the store when — and only when — those parameters change. This used
+// to sit in resetAndFetch(), which also runs for a plain time-range change:
+// every jump out of the gap list wiped every gap found so far. A viewport is
+// not a parameter; a gap is anchored to an absolute instant and stays true
+// whatever window it is looked at through.
+function syncGapStore() {
+  const sig = gapParamSig();
+  if (sig === _gapParamSig) return;
+  _gapParamSig = sig;
+  clearGapStore();
+  removeGapPlot();
 }
 
 function buildHistoryParams() {
@@ -4908,6 +5845,13 @@ function resetAndFetch(pushHistory = true) {
   // Params are changing — any in-flight fetch belongs to the old params and
   // would otherwise land after this and get mislabelled (see abortInFlight).
   abortInFlight();
+  // The gap overlay's in-flight fetch belongs to the old params; its *store*
+  // does not necessarily — resetAndFetch also runs for a plain time-range
+  // change, and a gap is anchored to an absolute instant, not to the window
+  // it was seen through. Dropping it here threw away every found gap on each
+  // jump out of the gap list. gatherParams() below decides by parameter
+  // signature instead (see syncGapStore).
+  abortGaps();
   gatherParams();
   // Params are changing — discard any stored plots for this source so that
   // switching back re-fetches fresh data instead of restoring stale plots.

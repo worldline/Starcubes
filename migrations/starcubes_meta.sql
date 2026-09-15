@@ -1332,18 +1332,15 @@ COMMENT ON COLUMN starcubes_meta.audit_run.ids_truncated IS
 COMMENT ON COLUMN starcubes_meta.audit_run.report IS
   'The per-bucket rows from core/audit.py:audit_window -- stage one. Stored for a clean run too: the series is what shows a gap appearing.';
 
--- The pipeline-alarm condition whitelist gains `audit_gap`. Dropped and
--- re-added rather than guarded with IF NOT EXISTS, because the constraint
--- already exists from 0036 and the point here is to *widen* it; re-running
--- lands on the same definition either way, so this stays idempotent.
-ALTER TABLE starcubes_meta.alarm
-    DROP CONSTRAINT IF EXISTS alarm_condition_check;
-ALTER TABLE starcubes_meta.alarm
-    ADD CONSTRAINT alarm_condition_check
-    CHECK ((rule_kind = 'pipeline' AND condition IN (
-                'data_stale', 'run_failed', 'no_recent_run',
-                'preflight_warn', 'dim_full_pct', 'audit_gap'))
-           OR (rule_kind = 'threshold' AND condition IS NULL));
+-- The pipeline-alarm condition whitelist gains `audit_gap` here and
+-- `needed_lag_p99` in 0041. Both widenings used to DROP and re-ADD the
+-- constraint unconditionally, which is only idempotent while the *data*
+-- stays behind the code: a database already carrying a needed_lag_p99
+-- alarm row (the default pipeline set in sources/profile_store.py writes
+-- one) failed this block's six-value revalidation before 0041's widening
+-- ever ran, and the container could not boot. There is one widening block
+-- now, in the 0041 section below, guarded on the newest value — the same
+-- pattern measure_graph_style_check uses above.
 
 -- 0041_audit_lag.sql -- what the gap says about the lag, and permission to
 -- close small ones. 0040 made the audit find gaps; this makes it say why they
@@ -1383,15 +1380,34 @@ ALTER TABLE starcubes_meta.datasource
 COMMENT ON COLUMN starcubes_meta.datasource.audit_autofill_max IS
   'Up to this many missing rows, a forever-mode audit repairs itself with the targeted backfill instead of only raising the alarm. 0 = off. The point is to keep watermark_lag_s low without a human pressing a button for every handful of stragglers; the cap is where that stops being true.';
 
--- The pipeline-alarm condition whitelist gains `needed_lag_p99`. Dropped and
--- re-added rather than guarded, because widening it is the point; re-running
--- lands on the same definition, so this stays idempotent.
-ALTER TABLE starcubes_meta.alarm
-    DROP CONSTRAINT IF EXISTS alarm_condition_check;
-ALTER TABLE starcubes_meta.alarm
-    ADD CONSTRAINT alarm_condition_check
-    CHECK ((rule_kind = 'pipeline' AND condition IN (
-                'data_stale', 'run_failed', 'no_recent_run',
-                'preflight_warn', 'dim_full_pct', 'audit_gap',
-                'needed_lag_p99'))
-           OR (rule_kind = 'threshold' AND condition IS NULL));
+-- The pipeline-alarm condition whitelist lands on its final definition
+-- (0036's five, plus `audit_gap` from 0040 and `needed_lag_p99` from 0041).
+-- Guarded on the newest value rather than dropped unconditionally: a plain
+-- DROP + ADD revalidates every alarm row against whatever whitelist this
+-- block happens to name, and the historical 0040 block above used to
+-- re-assert a six-value one — any database already carrying a needed_lag_p99
+-- alarm (the default set in sources/profile_store.py writes one) died right
+-- there, before this block could widen anything. Widening only when the
+-- definition predates the newest value, and only ever to the final
+-- definition, makes the block order-independent against live data; re-running
+-- lands on the same constraint either way.
+DO $$
+DECLARE cdef text;
+BEGIN
+    SELECT pg_get_constraintdef(c.oid) INTO cdef
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = 'starcubes_meta' AND t.relname = 'alarm'
+       AND c.conname = 'alarm_condition_check';
+    IF cdef IS NULL OR position('needed_lag_p99' in cdef) = 0 THEN
+        ALTER TABLE starcubes_meta.alarm DROP CONSTRAINT IF EXISTS alarm_condition_check;
+        ALTER TABLE starcubes_meta.alarm
+            ADD CONSTRAINT alarm_condition_check
+            CHECK ((rule_kind = 'pipeline' AND condition IN (
+                        'data_stale', 'run_failed', 'no_recent_run',
+                        'preflight_warn', 'dim_full_pct', 'audit_gap',
+                        'needed_lag_p99'))
+                   OR (rule_kind = 'threshold' AND condition IS NULL));
+    END IF;
+END $$;
