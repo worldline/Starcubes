@@ -4,12 +4,33 @@ Guide to using the starcubes GUI and configuring datasources. See the
 [README](README.md) for what starcubes is and what it looks like, and
 [`docs/internals.md`](docs/internals.md) for the architecture behind it.
 
+Almost everybody who opens starcubes opens the chart, so the chart comes
+first here. Setting a schema up runs the other way round: a datasource is
+created in the [Sources GUI](#sources-gui) and loaded once before there is
+anything to plot — but that is one operator's job, and usually only once per
+source.
+
 ## Table of contents
 
+- [Chart GUI](#chart-gui)
+  - [Source tabs](#source-tabs)
+  - [Control bar](#control-bar)
+  - [The menu (☰)](#the-menu)
+  - [Filters](#filters)
+  - [Follow mode](#follow-mode)
+  - [Keyboard shortcuts](#keyboard-shortcuts)
+  - [Legend](#legend)
+  - [Outlier clamping](#outlier-clamping)
+  - [Drill-down](#drill-down)
+  - [Marking gaps](#marking-gaps)
+  - [Query console](#query-console)
+  - [Preferences](#preferences)
+  - [URL state and bookmarks](#url-state-and-bookmarks)
 - [Sources GUI](#sources-gui)
   - [Login](#login)
   - [SSO login (optional, Keycloak/OIDC)](#sso-login-optional-keycloakoidc)
   - [Datasource list](#datasource-list)
+  - [Alarm firings](#alarm-firings)
   - [Creating a datasource](#creating-a-datasource)
   - [Basic and Expert](#basic-and-expert)
   - [Tab: Basics](#tab-basics)
@@ -26,22 +47,441 @@ Guide to using the starcubes GUI and configuring datasources. See the
   - [Identity fields](#identity-fields)
   - [Source connection fields](#source-connection-fields)
   - [Watermark and partitioning fields](#watermark-and-partitioning-fields)
+  - [Finding and repairing missed transactions](#finding-and-repairing-missed-transactions)
   - [ETL performance fields](#etl-performance-fields)
   - [Fact column fields](#fact-column-fields)
   - [Dimension fields](#dimension-fields)
   - [Index fields](#index-fields)
 - [Pre-aggregation (rollups)](#pre-aggregation-rollups)
-- [Chart GUI](#chart-gui)
-  - [Source tabs](#source-tabs)
-  - [Control bar](#control-bar)
-  - [Filters](#filters)
-  - [Follow mode](#follow-mode)
-  - [Keyboard shortcuts](#keyboard-shortcuts)
-  - [Legend](#legend)
-  - [Drill-down](#drill-down)
-  - [Query console](#query-console)
-  - [Preferences](#preferences)
-  - [URL state and bookmarks](#url-state-and-bookmarks)
+  - [1. Measure first](#1-measure-first)
+  - [2. Configure](#2-configure)
+  - [3. Build](#3-build)
+  - [Rollups outlive retention](#rollups-outlive-retention)
+  - [Changing your mind](#changing-your-mind)
+  - [Checking it](#checking-it)
+
+---
+
+## Chart GUI
+
+The chart page at `/` (or `/viz/`) renders stacked-bar timeseries with
+filtering, drill-down, and follow mode. It supports multiple datasources
+with per-source state isolation.
+
+### Source tabs
+
+The navigation bar shows one tab per datasource. Clicking a tab switches
+the active source. The chart preserves per-source state:
+
+- **localStorage** (`starcubes-state-<name>`): stores group_by, measure, filters,
+  and viewport for each source.
+- **In-memory plot cache** (`sourceMemory`): stores non-trailing plot data so
+  switching back to a previously visited source restores the canvas instantly
+  without re-fetching from the server.
+- **Trailing-edge blocks** (data near "now") are always re-fetched fresh and
+  never cached, because they change between visits.
+
+When no cached data exists for a source, a loading overlay covers the chart
+until the first data arrives.
+
+### Control bar
+
+The bar is three groups, separated by hairlines: **what to plot**, **which
+time window**, and **what to open**. Every icon button names itself on hover
+and on keyboard focus.
+
+| Control | Description |
+|---------|-------------|
+| Group By | Dropdown of dimension columns, each followed by its group dimensions (see the Group Dims tab). A group dimension is listed under its own name, prefixed with the underlying column (`peer → Peer countries`). |
+| Filters | Show/hide the filter panel. The arrow points down while it is open. |
+| Measure | Aggregation: `count(*)` (default) or `sum`/`avg`/`min`/`max` of a measure column. |
+| From / To | Datetime fields defining the chart viewport. Type a value (`YYYY-MM-DD HH:MM`) and press Enter to commit and jump to the other field, or click the calendar icon in the field to pick one. |
+| Today / Yesterday / Week / Month | Quick ranges. Boundaries are local midnight, the end is exclusive, and the week starts on Monday. The chip stays highlighted only while the window matches it exactly — pan or zoom by any amount and it goes out. |
+| Back / Forward | Step back / forward through the windows you have visited, browser-style — every pan, zoom or preset files the window it leaves. `b` / `B` from a focused chart do the same. |
+| Follow | Toggles follow mode (seismograph-style auto-pan to "now"; `f` from a focused chart). The dot in the corner of the button pulses while it is on. |
+| Legend | Opens the legend panel showing per-value totals (`l` from a focused chart). |
+| Clamp | Toggles outlier clamping (`c` does the same). One or a few extreme values can own the whole y-axis and squash the rest against zero; with clamping on the axis is rescaled from the bulk and the cut marks are topped with an arrowhead at the plot edge. Not remembered — off again on the next load. |
+| Mark gaps | Marks stretches where the transaction stream stopped, and opens the list of them. `count(*)` only — the button is disabled while a measure is selected. See [Marking gaps](#marking-gaps). |
+| Query | Opens the ad-hoc SQL console over the chart (`q` does the same from anywhere on the page; logged-in users only). See [Query console](#query-console). |
+| Keys | Opens the keyboard-shortcut panel. `?` does the same from anywhere on the page. |
+| Config | Jumps to `/sources/<id>/` for the source whose tab is active (logged-in users only). |
+
+### The menu (☰)
+
+The top bar carries the source tabs and, on the right, a single menu button.
+The entries are the same as in the sources app's menu:
+
+| Entry | Does |
+|-------|------|
+| Datasources | Opens the datasource overview at `/sources/`. |
+| Firings | The global threshold-breach episode overview. |
+| Profiles / Users | Superuser-only: the profile catalogue and user admin. |
+| Preferences | Y-axis mode, latest-bar trimming and the bar pixel target. See [Preferences](#preferences). Available logged out too — they are browser-local settings. |
+| Theme | Switches light/dark. The menu deliberately stays open so the two can be compared; the choice survives a reload. |
+| My Profile | Own profile, password change, query history (`/sources/me/`). |
+| About starcubes | Opens the slide deck in a new tab. |
+| Log out / Log in | |
+
+The menu opens on click or `↓`, moves with `↑`/`↓`, and closes on Escape or a
+click outside.
+
+### Filters
+
+Click **Filters** to expand the filter panel. Each filter row has:
+
+| Control | Description |
+|---------|-------------|
+| AND/OR | Click to toggle. OR groups are highlighted amber. Top-level rows default to AND. |
+| Indent / Dedent | Triangle brackets to nest filter rows into logical groups. |
+| Column | Dropdown of dimension columns, plus one entry per group dimension. Filtering on a group dimension offers its group names and `(other)` as values. |
+| Operator | `is in` (green), `is not in` (red), `starts with` (blue), `starts not with` (amber), `contains` (purple), `does not contain` (pink). |
+| Value | For `is in` / `is not in`: tag pills with search dropdown. For text operators: text input with 300ms debounce. |
+| Remove | X button to delete the filter row. |
+
+**Collapsed state**: when the panel is collapsed, active filters are shown as
+summary tags with remove buttons. OR groups are wrapped in parentheses.
+
+**Add filter**: click **+ Add filter** to append a new row.
+
+Filter state is serialised to URL parameters (`filter=`, `andor=`, `indent=`)
+and saved to per-source localStorage.
+
+### Follow mode
+
+Toggle the **Follow** button (or click when the chart is active) to enable
+seismograph-style auto-panning. When active:
+
+- The chart continuously pans right to keep the viewport edge at "now".
+- Trailing-edge data is polled at `max(5s, interval/3)` intervals.
+- Polling only fires when the viewport right edge is within 2x the bar
+  interval of the current time — scrolling to historical data stops network
+  traffic.
+
+### Keyboard shortcuts
+
+Press `?` (or the keyboard button in the control bar) for this table inside
+the app.
+
+Most of these keys belong to the chart itself and only fire **while the plot
+has keyboard focus** — click the chart once, or Tab to it. The page keys at the
+bottom work anywhere except inside a text field.
+
+**Navigation** (chart focused)
+
+| Key | Action |
+|-----|--------|
+| `←` / `→` | One window back / forward |
+| `Shift`+`←` / `→` | One grid cell back / forward |
+| `↑` / `↓` | Zoom in / out, halving or doubling the window |
+| `Shift`+`↑` / `↓` | One cell narrower / wider |
+| `b` / `B` | Back / forward through the windows you have visited — the arrow keys and every calendar jump are recorded, so a stray `d` is undoable |
+
+**Calendar** (chart focused) — relative to the unit the *middle of the current
+window* falls in, not to the present
+
+| Key | Jumps to |
+|-----|----------|
+| `t` | Today, 00:00–24:00 |
+| `d` | That day |
+| `w` | That ISO week, Monday to Monday |
+| `m` | That month |
+| `y` | That year |
+
+**Follow mode** (chart focused)
+
+| Key | Anchors "now" at |
+|-----|------------------|
+| `f` | The right edge |
+| `p` | The left edge |
+| `n` | The middle |
+| `F` / `P` | The same, but the window is stretched onto "now" first |
+
+**Display** (chart focused)
+
+| Key | Toggles |
+|-----|---------|
+| `l` | The legend panel |
+| `g` | Grid snapping for the arrow keys. Nothing moves when you press it — it changes what the *next* arrow press does. |
+| `c` | Outlier clamping. One or a few extreme values stop owning the whole y-axis: the axis is rescaled from the bulk and the cut marks get an arrowhead at the plot edge. The Clamp button in the control bar does the same. |
+
+**Page**
+
+| Key | Action |
+|-----|--------|
+| `?` | Open / close the keyboard-shortcut panel |
+| `q` | Open / close the query console (logged-in users only) |
+| `Escape` | Close the front-most menu or panel |
+| `Enter` | In *from* / *to*: commit the value and jump to the other field |
+| `Ctrl`/`Cmd`+`Enter` | In the query console: run the statement |
+| `↑` / `↓`, `Enter`, `Delete` | In the query history: select, load, remove |
+
+Panning uses local-time calendar snapping, not fixed millisecond offsets.
+This means a "day" pan across a DST boundary is exactly 23 or 25 hours of
+wall-clock time, preserving visual alignment.
+
+### Legend
+
+Click **Legend** in the control bar to open the floating legend panel:
+
+- Sorted by total count (descending).
+- Click a color swatch to select/deselect that dimension value.
+- Selected values can be bulk-filtered via the **Filter** button.
+- **CSV** button copies all legend entries (name + total) to the clipboard.
+- The legend is draggable.
+
+### Outlier clamping
+
+The **Clamp** button in the control bar (or `c` with the chart focused) deals
+with the case where one or a few extreme bars own the entire y-axis and press
+everything else flat against zero — a single retry storm in an otherwise quiet
+week, and the week is unreadable.
+
+With clamping on, the axis is rescaled from the **bulk** of the data instead
+of from its maximum. The bars that exceed the new top are not hidden or
+silently shortened: they are cut at the plot edge and the cut is marked with
+an arrowhead, so a clamped bar is visibly a clamped bar rather than a short
+one. Their real value is still in the tooltip, the legend and the drill-down —
+clamping changes the axis, never a number.
+
+It is a way of looking, not a setting: the state is **not remembered** and is
+off again after a reload. Nothing about the query changes, so no data is
+re-fetched when you toggle it.
+
+### Drill-down
+
+Click any bar on the chart to open a drill-down modal:
+
+- **Header**: dimension name (clickable to add as a filter), value, interval,
+  date.
+- **Common section**: dimensions with exactly one value in the time slot
+  (clickable to add as filter).
+- **Per-dimension breakdown**: top-N values with counts (clickable to add as
+  filter).
+- **IDs button**: shows up to 1000 primary key values for the clicked slot.
+  "Copy all" copies them to the clipboard.
+- **Alert button**: creates a real threshold alarm on this datasource. The
+  context is the chart's active filters plus the clicked series; pick a
+  name, metric, condition, threshold and window. The alarm is evaluated by
+  a background loop, and every breach period (first to last crossing) is
+  recorded on the datasource's Alarms tab (detail page, ⓘ button). Alerts
+  need a group-dimension-free view: grouped filters cannot be stored in an
+  alarm (group sets are editable and would silently change its meaning).
+
+The modal is draggable. Press Escape to close.
+
+### Marking gaps
+
+Bars answer *how much*; they cannot answer *did the stream stop*. A quiet bin
+and an empty bin look alike at any zoom level, and the difference matters most
+exactly where it is hardest to see — on a week view an outage is a bar one
+pixel shorter than its neighbours.
+
+**Mark gaps** in the control bar answers that question directly. It marks
+every stretch between two transactions that is too empty to be chance, and
+opens a list of what it found.
+
+**What counts as a gap is tied to the time of day.** A fixed rule — "anything
+over a minute" — would be wrong around the clock: at ten in the morning six
+seconds of silence can already be an outage, while at three at night a minute
+is normal. So the chart measures what the stream *usually* carries in each
+hour of the day, over the last seven whole days, and marks a stretch only when
+the transactions it should have contained exceed a 6σ threshold (about 21
+expected transactions). An hour that never carries traffic contributes
+nothing, so a night without load is never flagged.
+
+In practice the same statistical statement comes out as very different
+durations — on a source running 12 000/h at midday and 1 100/h at night, the
+minimum flagged gap ranges from about six seconds to about a minute.
+
+The marks are **black brackets** (white in the dark theme) drawn above the
+bars. They are only available for `count(*)`: the test is defined on "no row
+fell into this second", so the button is disabled while a measure is selected.
+Nothing is stored — the marks belong to the browser session and are gone after
+a reload.
+
+**Hovering a bracket** names the gap's duration, its local start and end, and
+`~ N expected` — how many transactions the profile says should have been
+there.
+
+#### The gap list
+
+The same button opens a floating panel listing every gap found so far, one
+row each:
+
+| Shown | Meaning |
+|-------|---------|
+| Start → end | Local time; the date repeats only when a gap crosses midnight |
+| Duration | How long the stream was silent |
+| `~ N missed` | Expected transactions over that stretch |
+
+While the search runs, the panel says so; when it finishes without finding
+anything, it says that too — an empty list and a search that has not started
+are otherwise indistinguishable. Under the heading stands the span actually
+searched, because "3 found" only means something together with where it was
+looked.
+
+**Clicking a row zooms the chart to that gap**, framed in the middle third so
+the traffic either side is visible for comparison (very short gaps get a
+three-minute window, or there would be nothing around them to compare
+against). The list survives the jump — it is not restricted to what is on
+screen — and grows as panning and zooming cover new ground. Changing the
+source or the filters starts it over, since those change which gaps exist.
+
+#### What a gap was made of
+
+**Clicking a bracket** opens the same panel a bar's drill-down uses, with the
+same per-dimension layout — except that a gap contains no rows to break down.
+The figures are therefore *interpolated*: the chart takes the mix of traffic
+from the comparison period the expectation itself is measured over, and scales
+it to the number of transactions the gap should have held. They are marked
+with a `~` throughout and are estimates, not counts.
+
+Below that, **Profile & neighbour rates** folds out the derivation: what each
+covered hour of the day usually carries (average, minimum and maximum across
+the measured days), which table the profile was read from, and the rate the
+stream actually carried in the five minutes either side of the gap. Notes
+appear there when a window had to be shortened — by the retention floor, or by
+the high watermark at the fresh edge — because then the numbers rest on less
+history than they normally would.
+
+Filters apply throughout: the search, the expectation and the breakdown all
+run behind the chart's active filters, so "gaps in the traffic of this one
+site" is a question you can ask by filtering first.
+
+*Internals: see [`docs/chart-app.md`](docs/chart-app.md), "The gap overlay",
+for the Poisson model, the scan and the profile cache.*
+
+### Query console
+
+Click **Query** in the control bar to open a floating panel over the chart. It
+is visible to logged-in users only.
+
+The panel runs one SQL statement at a time against the **warehouse schema of
+the currently selected source** — the same `starcubes_<name>` schema the chart
+reads, so `fact`, the dimension tables and the partitions are all directly
+addressable by their bare names (the connection's `search_path` is already set
+for you).
+
+**What you can run.** Exactly one statement, and it must start with `SELECT` or
+`WITH`. Semicolons inside strings, dollar-quoted bodies and comments are
+understood, so `SELECT 'a;b'` is fine; `SELECT 1; SELECT 2` is not. The
+connection is opened read-only and the transaction is rolled back afterwards,
+so nothing you type can modify data — a `DELETE` hidden inside a `WITH` clause
+is refused by Postgres itself.
+
+That read-only guarantee is about *writes*, not about cost: the console can
+still read every table in the schema and can still run an expensive query. It
+is a tool for trusted operators, not a public endpoint.
+
+**The action row** is five icon buttons — Run, Cancel, Chart SQL, Format and
+CSV — each of which names itself on hover.
+
+**Chart SQL** copies the SQL behind the active chart legend to the clipboard —
+the query the chart itself ran, with the window snapped to bar edges. When
+pre-aggregation serves the view it may read a rollup table instead of `fact`;
+the status line names the table it copied
+(`copied chart SQL (fact)` vs. `copied chart SQL (rollup_1h …)`).
+
+**Running and cancelling.** Press **Run** (▶) or `Ctrl`/`Cmd`+`Enter`. Plain
+`Enter` still inserts a newline, so multi-line SQL types normally. Nothing runs
+while you type. **Cancel** genuinely stops the query on the server, not just in
+the browser — it works even if another worker process picked up the request.
+Queries are also killed automatically after 30 seconds
+(`STARCUBES_QUERY_TIMEOUT_MS`).
+
+**Results** are capped at 1000 rows (`STARCUBES_QUERY_ROW_LIMIT`); the status
+line says so when a result was truncated, and also reports the row count and
+elapsed time. `NULL` is shown in italics, numbers are right-aligned, and the
+full value of a clipped cell is in its tooltip.
+
+**Format** re-indents the statement in the editor: main clauses on their own
+lines, one item per line in a multi-item `SELECT` / `GROUP BY` / `ORDER BY`,
+subqueries indented two spaces, keywords upper-cased. It never touches the
+inside of a string, a dollar-quoted body, a comment or a `"quoted identifier"`,
+and formatting an already-formatted statement changes nothing. `Ctrl`+`Z`
+takes it back.
+
+**CSV** downloads the current result as a file (`starcubes-<source>-<timestamp>.csv`).
+It is disabled until a query has returned something. `NULL` becomes an empty
+field; commas, quotes and line breaks inside values are quoted per RFC 4180,
+so the file opens correctly in Excel, LibreOffice and `csv.reader`. The file
+carries a UTF-8 BOM, which is what makes Excel read non-ASCII values
+correctly.
+
+**History** is stored per user and per source on the server, so it follows you
+between browsers. Expand **History** at the bottom of the panel to see every
+statement you have run against this source, newest first, with the date it last
+ran. Click a row to load it back into the editor; click `×` to remove it.
+
+The list is keyboard-navigable. `Tab` into it (expanding **History** focuses it
+for you), then:
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Move the highlight. It stops at the ends rather than wrapping. |
+| `Home` / `End` | Jump to the newest / oldest entry. |
+| `Enter` | Load the highlighted statement into the editor and focus it. |
+| `Delete` / `Backspace` | Remove the highlighted entry. The highlight stays put, so repeated presses walk down the list. |
+
+`↑`/`↓` inside the SQL editor still move the caret between lines — the history
+keys only apply while the list itself has focus.
+Running the same statement again updates its date rather than adding a second
+entry, and only the 100 most recent are kept. A query that failed or timed out
+is still recorded — usually that is exactly the one you want back.
+
+**Panel chrome.** Drag the header to move the panel, drag the bottom-right
+corner to resize it. Position, size, open state and whether History is expanded
+are remembered in this browser. `Escape` deliberately does *not* close the
+panel — it would discard whatever you had typed; use the `×`.
+
+*Internals: see [`docs/chart-app.md`](docs/chart-app.md), "Query console",
+for how the four read-only layers and cross-process cancellation are wired.*
+
+### Preferences
+
+**Preferences** in the ☰ menu (top right) opens a popover. It is available
+logged out too — every setting in it is browser-local.
+
+**Y axis** — the chart's y-axis is a *density*, so bars of different time
+resolutions stay the same height and only the numbers change when the chart
+switches resolution. This picks which unit those numbers are in:
+
+| Option | Axis |
+|--------|------|
+| Rate, unit follows zoom (default) | `txns/min` while minute bars are drawn, `txns/h` once hourly bars take over — the numbers change with a short dissolve, the bars do not move |
+| Rate, fixed per second/minute/hour/day | never switches unit; useful when comparing two zoom levels by eye |
+| Count per bar | the raw count in each bar; the axis then rescales when the resolution changes |
+
+The setting applies to counts and sums only — an average or a percentile is
+already per-unit and is never rescaled. Tooltips, the legend and the drill-down
+always show absolute counts; the tooltip adds the rate (`≙ 9.32/min`) when it
+differs from the count. The choice is remembered in the browser and can be put
+in a shared link with `?yaxis=auto|s|min|h|d|count`. No account needed.
+
+**Bar pixel target** — the source ships with a default (set via **Sources →
+Edit**). The chart's preferences popover lets every visitor override it for
+the current browser via **Save** (stored in `localStorage['starcubes-bar-target']`)
+or clear it via **Reset** (falls back to the source default). Per-browser,
+no account needed.
+
+### URL state and bookmarks
+
+All chart parameters are serialised to the URL query string:
+
+```
+?name=mydb&group_by=response&measure=count(*)&from=2026-04-27+00:00&to=2026-04-27+12:00&filter=response:is_in:ok&andor=AND&indent=0
+```
+
+- `name` — datasource
+- `group_by` — dimension column
+- `measure` — aggregation function
+- `from` / `to` — viewport time range
+- `filter` / `andor` / `indent` — active filters
+- `yaxis` — y-axis mode (omitted when it is the default `auto`)
+
+Bookmarking or sharing this URL restores the exact chart state. The browser
+back/forward buttons also work — `popstate` events re-apply the saved
+parameters.
 
 ---
 
@@ -971,8 +1411,6 @@ and type the datasource name to confirm.
 
 ---
 
----
-
 ## Pre-aggregation (rollups)
 
 Every chart request aggregates fact rows anew. For the resolutions that span
@@ -1100,323 +1538,3 @@ manage.py rollup_verify --name <datasource>
 Runs a matrix of chart queries against both the fact table and the rollup and
 compares the results cell by cell. Cases the rollup cannot serve count as
 *skipped* — that is the fallback working, not a fault.
-
-## Chart GUI
-
-The chart page at `/` (or `/viz/`) renders stacked-bar timeseries with
-filtering, drill-down, and follow mode. It supports multiple datasources
-with per-source state isolation.
-
-### Source tabs
-
-The navigation bar shows one tab per datasource. Clicking a tab switches
-the active source. The chart preserves per-source state:
-
-- **localStorage** (`starcubes-state-<name>`): stores group_by, measure, filters,
-  and viewport for each source.
-- **In-memory plot cache** (`sourceMemory`): stores non-trailing plot data so
-  switching back to a previously visited source restores the canvas instantly
-  without re-fetching from the server.
-- **Trailing-edge blocks** (data near "now") are always re-fetched fresh and
-  never cached, because they change between visits.
-
-When no cached data exists for a source, a loading overlay covers the chart
-until the first data arrives.
-
-### Control bar
-
-The bar is three groups, separated by hairlines: **what to plot**, **which
-time window**, and **what to open**. Every icon button names itself on hover
-and on keyboard focus.
-
-| Control | Description |
-|---------|-------------|
-| Group By | Dropdown of dimension columns, each followed by its group dimensions (see the Group Dims tab). A group dimension is listed under its own name, prefixed with the underlying column (`peer → Peer countries`). |
-| Filters | Show/hide the filter panel. The arrow points down while it is open. |
-| Measure | Aggregation: `count(*)` (default) or `sum`/`avg`/`min`/`max` of a measure column. |
-| From / To | Datetime fields defining the chart viewport. Type a value (`YYYY-MM-DD HH:MM`) and press Enter to commit and jump to the other field, or click the calendar icon in the field to pick one. |
-| Today / Yesterday / Week / Month | Quick ranges. Boundaries are local midnight, the end is exclusive, and the week starts on Monday. The chip stays highlighted only while the window matches it exactly — pan or zoom by any amount and it goes out. |
-| Back / Forward | Step back / forward through the windows you have visited, browser-style — every pan, zoom or preset files the window it leaves. `b` / `B` from a focused chart do the same. |
-| Follow | Toggles follow mode (seismograph-style auto-pan to "now"; `f` from a focused chart). The dot in the corner of the button pulses while it is on. |
-| Legend | Opens the legend panel showing per-value totals (`l` from a focused chart). |
-| Clamp | Toggles outlier clamping (`c` does the same). One or a few extreme values can own the whole y-axis and squash the rest against zero; with clamping on the axis is rescaled from the bulk and the cut marks are topped with an arrowhead at the plot edge. Not remembered — off again on the next load. |
-| Query | Opens the ad-hoc SQL console over the chart (`q` does the same from anywhere on the page; logged-in users only). See [Query console](#query-console). |
-| Keys | Opens the keyboard-shortcut panel. `?` does the same from anywhere on the page. |
-| Config | Jumps to `/sources/<id>/` for the source whose tab is active (logged-in users only). |
-
-### The menu (☰)
-
-The top bar carries the source tabs and, on the right, a single menu button.
-The entries are the same as in the sources app's menu:
-
-| Entry | Does |
-|-------|------|
-| Datasources | Opens the datasource overview at `/sources/`. |
-| Firings | The global threshold-breach episode overview. |
-| Profiles / Users | Superuser-only: the profile catalogue and user admin. |
-| Preferences | Y-axis mode, latest-bar trimming and the bar pixel target. See [Preferences](#preferences). Available logged out too — they are browser-local settings. |
-| Theme | Switches light/dark. The menu deliberately stays open so the two can be compared; the choice survives a reload. |
-| My Profile | Own profile, password change, query history (`/sources/me/`). |
-| About starcubes | Opens the slide deck in a new tab. |
-| Log out / Log in | |
-
-The menu opens on click or `↓`, moves with `↑`/`↓`, and closes on Escape or a
-click outside.
-
-### Filters
-
-Click **Filters** to expand the filter panel. Each filter row has:
-
-| Control | Description |
-|---------|-------------|
-| AND/OR | Click to toggle. OR groups are highlighted amber. Top-level rows default to AND. |
-| Indent / Dedent | Triangle brackets to nest filter rows into logical groups. |
-| Column | Dropdown of dimension columns, plus one entry per group dimension. Filtering on a group dimension offers its group names and `(other)` as values. |
-| Operator | `is in` (green), `is not in` (red), `starts with` (blue), `starts not with` (amber), `contains` (purple), `does not contain` (pink). |
-| Value | For `is in` / `is not in`: tag pills with search dropdown. For text operators: text input with 300ms debounce. |
-| Remove | X button to delete the filter row. |
-
-**Collapsed state**: when the panel is collapsed, active filters are shown as
-summary tags with remove buttons. OR groups are wrapped in parentheses.
-
-**Add filter**: click **+ Add filter** to append a new row.
-
-Filter state is serialised to URL parameters (`filter=`, `andor=`, `indent=`)
-and saved to per-source localStorage.
-
-### Follow mode
-
-Toggle the **Follow** button (or click when the chart is active) to enable
-seismograph-style auto-panning. When active:
-
-- The chart continuously pans right to keep the viewport edge at "now".
-- Trailing-edge data is polled at `max(5s, interval/3)` intervals.
-- Polling only fires when the viewport right edge is within 2x the bar
-  interval of the current time — scrolling to historical data stops network
-  traffic.
-
-### Keyboard shortcuts
-
-Press `?` (or the keyboard button in the control bar) for this table inside
-the app.
-
-Most of these keys belong to the chart itself and only fire **while the plot
-has keyboard focus** — click the chart once, or Tab to it. The page keys at the
-bottom work anywhere except inside a text field.
-
-**Navigation** (chart focused)
-
-| Key | Action |
-|-----|--------|
-| `←` / `→` | One window back / forward |
-| `Shift`+`←` / `→` | One grid cell back / forward |
-| `↑` / `↓` | Zoom in / out, halving or doubling the window |
-| `Shift`+`↑` / `↓` | One cell narrower / wider |
-| `b` / `B` | Back / forward through the windows you have visited — the arrow keys and every calendar jump are recorded, so a stray `d` is undoable |
-
-**Calendar** (chart focused) — relative to the unit the *middle of the current
-window* falls in, not to the present
-
-| Key | Jumps to |
-|-----|----------|
-| `t` | Today, 00:00–24:00 |
-| `d` | That day |
-| `w` | That ISO week, Monday to Monday |
-| `m` | That month |
-| `y` | That year |
-
-**Follow mode** (chart focused)
-
-| Key | Anchors "now" at |
-|-----|------------------|
-| `f` | The right edge |
-| `p` | The left edge |
-| `n` | The middle |
-| `F` / `P` | The same, but the window is stretched onto "now" first |
-
-**Display** (chart focused)
-
-| Key | Toggles |
-|-----|---------|
-| `l` | The legend panel |
-| `g` | Grid snapping for the arrow keys. Nothing moves when you press it — it changes what the *next* arrow press does. |
-| `c` | Outlier clamping. One or a few extreme values stop owning the whole y-axis: the axis is rescaled from the bulk and the cut marks get an arrowhead at the plot edge. The Clamp button in the control bar does the same. |
-
-**Page**
-
-| Key | Action |
-|-----|--------|
-| `?` | Open / close the keyboard-shortcut panel |
-| `q` | Open / close the query console (logged-in users only) |
-| `Escape` | Close the front-most menu or panel |
-| `Enter` | In *from* / *to*: commit the value and jump to the other field |
-| `Ctrl`/`Cmd`+`Enter` | In the query console: run the statement |
-| `↑` / `↓`, `Enter`, `Delete` | In the query history: select, load, remove |
-
-Panning uses local-time calendar snapping, not fixed millisecond offsets.
-This means a "day" pan across a DST boundary is exactly 23 or 25 hours of
-wall-clock time, preserving visual alignment.
-
-### Legend
-
-Click **Legend** in the control bar to open the floating legend panel:
-
-- Sorted by total count (descending).
-- Click a color swatch to select/deselect that dimension value.
-- Selected values can be bulk-filtered via the **Filter** button.
-- **CSV** button copies all legend entries (name + total) to the clipboard.
-- The legend is draggable.
-
-### Drill-down
-
-Click any bar on the chart to open a drill-down modal:
-
-- **Header**: dimension name (clickable to add as a filter), value, interval,
-  date.
-- **Common section**: dimensions with exactly one value in the time slot
-  (clickable to add as filter).
-- **Per-dimension breakdown**: top-N values with counts (clickable to add as
-  filter).
-- **IDs button**: shows up to 1000 primary key values for the clicked slot.
-  "Copy all" copies them to the clipboard.
-- **Alert button**: creates a real threshold alarm on this datasource. The
-  context is the chart's active filters plus the clicked series; pick a
-  name, metric, condition, threshold and window. The alarm is evaluated by
-  a background loop, and every breach period (first to last crossing) is
-  recorded on the datasource's Alarms tab (detail page, ⓘ button). Alerts
-  need a group-dimension-free view: grouped filters cannot be stored in an
-  alarm (group sets are editable and would silently change its meaning).
-
-The modal is draggable. Press Escape to close.
-
-### Query console
-
-Click **Query** in the control bar to open a floating panel over the chart. It
-is visible to logged-in users only.
-
-The panel runs one SQL statement at a time against the **warehouse schema of
-the currently selected source** — the same `starcubes_<name>` schema the chart
-reads, so `fact`, the dimension tables and the partitions are all directly
-addressable by their bare names (the connection's `search_path` is already set
-for you).
-
-**What you can run.** Exactly one statement, and it must start with `SELECT` or
-`WITH`. Semicolons inside strings, dollar-quoted bodies and comments are
-understood, so `SELECT 'a;b'` is fine; `SELECT 1; SELECT 2` is not. The
-connection is opened read-only and the transaction is rolled back afterwards,
-so nothing you type can modify data — a `DELETE` hidden inside a `WITH` clause
-is refused by Postgres itself.
-
-That read-only guarantee is about *writes*, not about cost: the console can
-still read every table in the schema and can still run an expensive query. It
-is a tool for trusted operators, not a public endpoint.
-
-**The action row** is five icon buttons — Run, Cancel, Chart SQL, Format and
-CSV — each of which names itself on hover.
-
-**Chart SQL** copies the SQL behind the active chart legend to the clipboard —
-the query the chart itself ran, with the window snapped to bar edges. When
-pre-aggregation serves the view it may read a rollup table instead of `fact`;
-the status line names the table it copied
-(`copied chart SQL (fact)` vs. `copied chart SQL (rollup_1h …)`).
-
-**Running and cancelling.** Press **Run** (▶) or `Ctrl`/`Cmd`+`Enter`. Plain
-`Enter` still inserts a newline, so multi-line SQL types normally. Nothing runs
-while you type. **Cancel** genuinely stops the query on the server, not just in
-the browser — it works even if another worker process picked up the request.
-Queries are also killed automatically after 30 seconds
-(`STARCUBES_QUERY_TIMEOUT_MS`).
-
-**Results** are capped at 1000 rows (`STARCUBES_QUERY_ROW_LIMIT`); the status
-line says so when a result was truncated, and also reports the row count and
-elapsed time. `NULL` is shown in italics, numbers are right-aligned, and the
-full value of a clipped cell is in its tooltip.
-
-**Format** re-indents the statement in the editor: main clauses on their own
-lines, one item per line in a multi-item `SELECT` / `GROUP BY` / `ORDER BY`,
-subqueries indented two spaces, keywords upper-cased. It never touches the
-inside of a string, a dollar-quoted body, a comment or a `"quoted identifier"`,
-and formatting an already-formatted statement changes nothing. `Ctrl`+`Z`
-takes it back.
-
-**CSV** downloads the current result as a file (`starcubes-<source>-<timestamp>.csv`).
-It is disabled until a query has returned something. `NULL` becomes an empty
-field; commas, quotes and line breaks inside values are quoted per RFC 4180,
-so the file opens correctly in Excel, LibreOffice and `csv.reader`. The file
-carries a UTF-8 BOM, which is what makes Excel read non-ASCII values
-correctly.
-
-**History** is stored per user and per source on the server, so it follows you
-between browsers. Expand **History** at the bottom of the panel to see every
-statement you have run against this source, newest first, with the date it last
-ran. Click a row to load it back into the editor; click `×` to remove it.
-
-The list is keyboard-navigable. `Tab` into it (expanding **History** focuses it
-for you), then:
-
-| Key | Action |
-|-----|--------|
-| `↑` / `↓` | Move the highlight. It stops at the ends rather than wrapping. |
-| `Home` / `End` | Jump to the newest / oldest entry. |
-| `Enter` | Load the highlighted statement into the editor and focus it. |
-| `Delete` / `Backspace` | Remove the highlighted entry. The highlight stays put, so repeated presses walk down the list. |
-
-`↑`/`↓` inside the SQL editor still move the caret between lines — the history
-keys only apply while the list itself has focus.
-Running the same statement again updates its date rather than adding a second
-entry, and only the 100 most recent are kept. A query that failed or timed out
-is still recorded — usually that is exactly the one you want back.
-
-**Panel chrome.** Drag the header to move the panel, drag the bottom-right
-corner to resize it. Position, size, open state and whether History is expanded
-are remembered in this browser. `Escape` deliberately does *not* close the
-panel — it would discard whatever you had typed; use the `×`.
-
-*Internals: see [`docs/chart-app.md`](docs/chart-app.md), "Query console",
-for how the four read-only layers and cross-process cancellation are wired.*
-
-### Preferences
-
-**Preferences** in the ☰ menu (top right) opens a popover. It is available
-logged out too — every setting in it is browser-local.
-
-**Y axis** — the chart's y-axis is a *density*, so bars of different time
-resolutions stay the same height and only the numbers change when the chart
-switches resolution. This picks which unit those numbers are in:
-
-| Option | Axis |
-|--------|------|
-| Rate, unit follows zoom (default) | `txns/min` while minute bars are drawn, `txns/h` once hourly bars take over — the numbers change with a short dissolve, the bars do not move |
-| Rate, fixed per second/minute/hour/day | never switches unit; useful when comparing two zoom levels by eye |
-| Count per bar | the raw count in each bar; the axis then rescales when the resolution changes |
-
-The setting applies to counts and sums only — an average or a percentile is
-already per-unit and is never rescaled. Tooltips, the legend and the drill-down
-always show absolute counts; the tooltip adds the rate (`≙ 9.32/min`) when it
-differs from the count. The choice is remembered in the browser and can be put
-in a shared link with `?yaxis=auto|s|min|h|d|count`. No account needed.
-
-**Bar pixel target** — the source ships with a default (set via **Sources →
-Edit**). The chart's preferences popover lets every visitor override it for
-the current browser via **Save** (stored in `localStorage['starcubes-bar-target']`)
-or clear it via **Reset** (falls back to the source default). Per-browser,
-no account needed.
-
-### URL state and bookmarks
-
-All chart parameters are serialised to the URL query string:
-
-```
-?name=mydb&group_by=response&measure=count(*)&from=2026-04-27+00:00&to=2026-04-27+12:00&filter=response:is_in:ok&andor=AND&indent=0
-```
-
-- `name` — datasource
-- `group_by` — dimension column
-- `measure` — aggregation function
-- `from` / `to` — viewport time range
-- `filter` / `andor` / `indent` — active filters
-- `yaxis` — y-axis mode (omitted when it is the default `auto`)
-
-Bookmarking or sharing this URL restores the exact chart state. The browser
-back/forward buttons also work — `popstate` events re-apply the saved
-parameters.
