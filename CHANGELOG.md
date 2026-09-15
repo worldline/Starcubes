@@ -7,7 +7,31 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [2.0.0-beta.1] — 2026-09-15
+
 ### Added
+
+- **The chart marks suspected outages — the gap overlay.** Bars answer
+  "how much"; they cannot answer "was the stream down": a quiet bin and an
+  empty bin look alike at any tier, and zoomed out far enough an outage is
+  a bar one pixel shorter than its neighbours. A new chart toggle scans the
+  span on screen at 1 s granularity and brackets every stretch between two
+  transactions whose emptiness a Poisson day profile calls a 6σ outage
+  (μ = ∫λ̂ dt over the transaction distance, marked past the one-sided
+  tail). The rate profile λ̂(h) is the hour-of-day rate over the last 7
+  whole days, anchored at the high watermark rather than at the request
+  window, so a gap scores the same however it is looked at — one verdict
+  per source and filter set, and `gaps.json` and `gap_estimate.json` share
+  one cache entry. A click opens an estimate dialog in the drill-down's
+  own layout (counts are profile shares scaled by μ, and wear a `~`);
+  a list beside the brackets collects everything the session has found
+  and a row click frames its gap in the middle third of the plot. The
+  brackets are plain ink, not series colour: a gap is an absence, not one
+  more thing being measured. Requires the timeseries.js pin below —
+  through 0.10.8 a bracket's vertical pin resolved through the shared
+  value axis and wandered on every zoom.
 
 - **The audit now says why rows were missing, not just which.** A row is
   absent because it arrived after the high watermark had passed its
@@ -85,6 +109,20 @@ Notable changes per release. Format follows
 
 ### Changed
 
+- **The vendored `@hgruber/timeseries.js` is pinned to 0.10.9 exactly**
+  (was `~0.10.8`). 0.10.9 fixes pinned span events (`yPos`) resolving
+  through the shared value axis, which the gap overlay's brackets need;
+  the span-glyph work in 0.10.8 otherwise concerns the gantt renderer,
+  which starcubes does not use. Pinned exactly rather than by range, so a
+  silent in-range drift — which is how 0.10.8 arrived, unannounced inside
+  a feature commit — cannot happen again. The About dialog reports the
+  version from the lockfile.
+
+- The How-to serves its GUI chapters chart-first — the page almost
+  everyone opens — and its table of contents lists both GUI chapters at
+  the same depth, which it previously did not. It also documents gap
+  marking and outlier clamping.
+
 - **Every source connection now opens with its session clock on UTC.**
   `SET TIME ZONE 'UTC'` on Postgres, `ALTER SESSION SET TIME_ZONE = 'UTC'`
   on Oracle, `SET time_zone = '+00:00'` on MySQL, issued once per pooled
@@ -102,6 +140,21 @@ Notable changes per release. Format follows
   timezone-aware watermark column to work at all (below).
 
 ### Fixed
+
+- **An unreachable warehouse is named instead of answered with HTTP 500.**
+  A datasource whose warehouse side does not exist yet — the metadata row
+  is created first, Create Schema later, or never — or that has gone away
+  is a normal operating state, not a server fault. The chart's meta call
+  probes `<schema>.fact` alongside the dimension tables and reports a
+  reason with it; the chart shows the reason in its status line and stops
+  auto-fetching and polling against a source that cannot answer. The
+  plot, drill-down and transaction endpoints translate the same state to
+  a friendly error shape (HTTP 200 + `{"ok": false, "error": …}`, the
+  shape the query console already uses) instead of an empty plot object,
+  which the chart would have booked as covered data. The request path
+  gets its own pooled engine with a 10 s connect timeout, so a warehouse
+  that accepts the connection and then never answers fails in seconds
+  instead of hanging the chart.
 
 - **The ETL load window is no longer Oracle-only, and no longer depends on
   two session clocks agreeing.** The extract's `WHERE` used to render its
