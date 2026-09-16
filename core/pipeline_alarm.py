@@ -50,14 +50,16 @@ from typing import Callable, Optional
 from sqlalchemy import text
 
 from .alarm import _COND_OPS, episode_step, stamp_transitions
+from .pglock import LOCK_CLASS, PIPELINE_EVAL_OBJID
 
 logger = logging.getLogger(__name__)
 
 # Advisory-lock key for "somebody is evaluating pipeline alarms right now".
 # Same class id as the datasource lock so both are recognisable in pg_locks;
 # objid 0 is free because no datasource can have id 0 (serial starts at 1).
-_LOCK_CLASS = 0x53544152
-_LOCK_OBJID = 0
+# The whole key space is listed in core/pglock.py.
+_LOCK_CLASS = LOCK_CLASS
+_LOCK_OBJID = PIPELINE_EVAL_OBJID
 
 # How long a middleware-driven evaluation waits before bothering again.
 # Read here rather than in the middleware so the CLI and the supervisor

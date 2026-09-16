@@ -6,6 +6,15 @@ Both paths share the same setup logic; only collectstatic is production-only.
 
 On an existing database (schema already present), migrations still run
 (idempotent) but the admin user is NOT created.
+
+Several containers may start against one database at the same moment, so
+everything that writes to it runs under one session advisory lock
+(``core.pglock.BOOTSTRAP_OBJID``): the second container waits, then finds an
+installation that is no longer fresh and changes nothing. Postgres DDL is
+not safe to race even with ``IF NOT EXISTS`` — two sessions can both pass the
+check and one fails on a catalog unique index — and neither is Django's
+``migrate``. collectstatic writes only to this container's filesystem and
+stays outside the lock.
 """
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
@@ -22,28 +31,39 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        # 0. Force-apply the consolidated starcubes_meta.sql even on an
-        #    existing installation. SourcesConfig.ready() (which fires
-        #    during the migrate call below) only probes cheaply and skips
-        #    the script once `datasource` exists, so this is the only path
-        #    that lets an existing container pick up new idempotent
-        #    ALTER TABLE ... ADD COLUMN IF NOT EXISTS blocks added to
-        #    starcubes_meta.sql after first boot (e.g. etl_run.log_path).
-        #    The return value is captured locally rather than read back from
-        #    core.schema._freshly_bootstrapped below, because migrate()
-        #    triggers ready() -> ensure_starcubes_meta() again (without
-        #    force) and that second call would overwrite the module global
-        #    with False now that `datasource` exists.
         from django.conf import settings
 
-        from core.schema import ensure_starcubes_meta
+        dsn = settings.STARCUBES_POSTGRES_DSN
+        if dsn:
+            from core.pglock import BOOTSTRAP_OBJID, session_lock
+
+            def _waiting():
+                self.stdout.write("Another starcubes container is bootstrapping "
+                                  "this database — waiting for it to finish...")
+                self.stdout.flush()
+
+            with session_lock(dsn, BOOTSTRAP_OBJID, on_wait=_waiting):
+                self._bootstrap_database(dsn)
+        else:
+            call_command("migrate", interactive=False, stdout=self.stdout)
+
+        # 3. Collect static files (production only; skipped for dev server).
+        if not options["skip_collectstatic"]:
+            self.stdout.write("Collecting static files...")
+            call_command("collectstatic", interactive=False, clear=True, stdout=self.stdout)
+
+    def _bootstrap_database(self, dsn: str) -> None:
+        from core.schema import ensure_starcubes_meta, freshly_bootstrapped
         from core.source import _get_cached_engine
 
-        dsn = settings.STARCUBES_POSTGRES_DSN
-        freshly_bootstrapped = False
-        if dsn:
-            self.stdout.write("Applying starcubes_meta.sql...")
-            freshly_bootstrapped = ensure_starcubes_meta(_get_cached_engine(dsn), force=True)
+        # 0. Force-apply the consolidated starcubes_meta.sql even on an
+        #    existing installation. SourcesConfig.ready() only probes cheaply
+        #    and skips the script once `datasource` exists, so this is the
+        #    only path that lets an existing container pick up new idempotent
+        #    ALTER TABLE ... ADD COLUMN IF NOT EXISTS blocks added to
+        #    starcubes_meta.sql after first boot (e.g. etl_run.log_path).
+        self.stdout.write("Applying starcubes_meta.sql...")
+        ensure_starcubes_meta(_get_cached_engine(dsn), force=True)
 
         # 1. Run Django migrations.
         self.stdout.write("Running migrations...")
@@ -56,12 +76,14 @@ class Command(BaseCommand):
         #     install the guarded ALTER was a no-op). Re-running the
         #     script is its idempotency contract, so this costs one cheap
         #     pass and closes the gap.
-        if dsn:
-            self.stdout.write("Applying starcubes_meta.sql (post-migrate pass)...")
-            ensure_starcubes_meta(_get_cached_engine(dsn), force=True)
+        self.stdout.write("Applying starcubes_meta.sql (post-migrate pass)...")
+        ensure_starcubes_meta(_get_cached_engine(dsn), force=True)
 
-        # 2. Create default admin user only on a fresh install.
-        if freshly_bootstrapped:
+        # 2. Create default admin user only on a fresh install. Asked of the
+        #    process, not of step 0: on a fresh database SourcesConfig.ready()
+        #    has already created the tables during django.setup(), before
+        #    this command ran, and step 0 then finds them present.
+        if freshly_bootstrapped():
             from django.contrib.auth import get_user_model
 
             User = get_user_model()
@@ -69,8 +91,3 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS("Created default admin user (admin/admin)."))
         else:
             self.stdout.write("Existing installation — skipping admin creation.")
-
-        # 3. Collect static files (production only; skipped for dev server).
-        if not options["skip_collectstatic"]:
-            self.stdout.write("Collecting static files...")
-            call_command("collectstatic", interactive=False, clear=True, stdout=self.stdout)

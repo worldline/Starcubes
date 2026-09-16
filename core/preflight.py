@@ -29,10 +29,9 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-import sqlalchemy
 from sqlalchemy import text
-from sqlalchemy.pool import NullPool
 
+from .pglock import LOCK_CLASS, open_dedicated
 from .schema import create_dim_tables, create_fact
 from .source import _SESSION_UTC_SQL, Source
 
@@ -711,9 +710,9 @@ def blocking_message(report: dict) -> Optional[str]:
 # Single occupancy per datasource
 # ---------------------------------------------------------------------------
 
-# Advisory-lock class id, shared by every starcubes process. Any int32 does;
-# this one spells "STAR" so it is recognisable in pg_locks.
-_LOCK_CLASS = 0x53544152
+# Advisory-lock class id, shared by every starcubes process; the objid is the
+# datasource id. The whole key space is listed in core/pglock.py.
+_LOCK_CLASS = LOCK_CLASS
 
 
 class DatasourceLocked(RuntimeError):
@@ -730,9 +729,9 @@ class DatasourceLocked(RuntimeError):
 
 
 class _LockHandle:
-    def __init__(self, engine, conn, datasource_id: int):
-        self.engine = engine
-        self.conn = conn
+    def __init__(self, dedicated, datasource_id: int):
+        self.dedicated = dedicated
+        self.conn = dedicated.conn
         self.datasource_id = datasource_id
 
 
@@ -750,32 +749,30 @@ def acquire_datasource_lock(dsn: str, datasource_id: int, *,
     silently worthless — `_install_fork_safety` invalidates records across
     pids, `pool_recycle` drops the session after 30 minutes, and a
     `pool_pre_ping` reconnect would carry on without the lock and without a
-    word. So this opens its own NullPool connection and keeps exactly that
-    one.
+    word. So this opens its own NullPool connection (`core.pglock`, with TCP
+    keepalives, so a partitioned host does not keep the lock for hours) and
+    keeps exactly that one.
 
     The acquiring transaction is committed straight away: a session lock
     survives the commit, whereas leaving the transaction open would pin the
     snapshot for the whole run.
     """
-    engine = sqlalchemy.create_engine(dsn, poolclass=NullPool)
-    conn = engine.connect()
+    dedicated = open_dedicated(dsn)
     try:
-        got = conn.execute(text("SELECT pg_try_advisory_lock(:c, :d)"),
-                           {"c": _LOCK_CLASS,
-                            "d": int(datasource_id)}).scalar()
-        conn.commit()
+        got = dedicated.conn.execute(
+            text("SELECT pg_try_advisory_lock(:c, :d)"),
+            {"c": _LOCK_CLASS, "d": int(datasource_id)}).scalar()
+        dedicated.conn.commit()
     except Exception:
-        conn.close()
-        engine.dispose()
+        dedicated.close()
         raise
     if not got:
-        conn.close()
-        engine.dispose()
+        dedicated.close()
         raise DatasourceLocked(
             f"datasource {datasource_id} is already held by another "
             f"starcubes process — refusing to run a second {holder} on it. "
             f"Stop the running ETL first.")
-    return _LockHandle(engine, conn, int(datasource_id))
+    return _LockHandle(dedicated, int(datasource_id))
 
 
 def release_datasource_lock(handle: Optional[_LockHandle]) -> None:
@@ -791,10 +788,7 @@ def release_datasource_lock(handle: Optional[_LockHandle]) -> None:
         logger.debug("advisory unlock failed; closing the connection "
                      "releases it anyway", exc_info=True)
     finally:
-        try:
-            handle.conn.close()
-        finally:
-            handle.engine.dispose()
+        handle.dedicated.close()
 
 
 @contextmanager

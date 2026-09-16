@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy import text
 
+from .pglock import LOCK_CLASS, META_SQL_OBJID
 from .source import Source
 
 logger = logging.getLogger(__name__)
@@ -184,23 +185,54 @@ def ensure_starcubes_meta(engine, *, force: bool = False) -> bool:
     ``manage.py bootstrap`` calls this with ``force=True`` once per container
     start instead.
 
-    Returns True if the starcubes_meta tables were freshly created (first boot),
-    False if they already existed.  The module-level ``_freshly_bootstrapped``
-    flag is set accordingly and can be read by callers in the same process.
+    Returns True if *this call* created the starcubes_meta tables (first boot),
+    False if they already existed.
+
+    ``freshly_bootstrapped()`` answers the question ``manage.py bootstrap``
+    actually has — did *this process* create them, by whichever call — and
+    it is sticky for that reason. The first call in a bootstrap process is
+    not bootstrap's own: ``SourcesConfig.ready()`` runs during
+    ``django.setup()``, finds a fresh database and applies the script
+    itself, so bootstrap's explicit call a moment later sees the tables and
+    returns False. With a plain return value (or a flag each call
+    overwrites) a fresh install never got its admin user.
+
+    **Several containers may start against one database at once**, and
+    concurrent ``CREATE TABLE IF NOT EXISTS`` is not safe in Postgres — two
+    sessions can both pass the existence check and one fails on the catalog's
+    unique index. So applying the script happens under a transaction-scoped
+    advisory lock (``core.pglock.META_SQL_OBJID``), and the existence check
+    is repeated inside it: whoever waited finds the tables the other created.
+    The cheap probe before it stays unlocked — every request-serving process
+    runs it once, and on an existing installation it must not queue behind a
+    bootstrap. The lock is released by the commit, so a caller holding the
+    bootstrap session lock (``BOOTSTRAP_OBJID``, a different key) cannot
+    deadlock against it.
     """
     global _freshly_bootstrapped
+    probe = text(
+        "SELECT 1 FROM information_schema.tables "
+        " WHERE table_schema = 'starcubes_meta' AND table_name = 'datasource'")
     with engine.begin() as conn:
-        exists = conn.execute(text(
-            "SELECT 1 FROM information_schema.tables "
-            " WHERE table_schema = 'starcubes_meta' AND table_name = 'datasource'"
-        )).scalar()
+        exists = conn.execute(probe).scalar()
     if exists and not force:
-        _freshly_bootstrapped = False
         return False
     sql = _MIGRATION_SQL.read_text()
     with engine.begin() as conn:
+        conn.execute(text("SELECT pg_advisory_xact_lock(:c, :o)"),
+                     {"c": LOCK_CLASS, "o": META_SQL_OBJID})
+        exists = conn.execute(probe).scalar()
+        if exists and not force:
+            return False
         conn.execute(text(sql))
-    _freshly_bootstrapped = not exists
+    created = not exists
+    _freshly_bootstrapped = _freshly_bootstrapped or created
+    return created
+
+
+def freshly_bootstrapped() -> bool:
+    """True once any ``ensure_starcubes_meta`` call in this process created
+    the starcubes_meta tables. See that function for why this is sticky."""
     return _freshly_bootstrapped
 
 

@@ -1,6 +1,15 @@
 #!/bin/sh
 set -e
 
+# ── Instance id: one per container start ─────────────────────────────────────
+# Names this container to every other one sharing the database (core/node.py).
+# Always generated here, never taken from the environment: replicas of one
+# deployment share their environment, and a shared id would make two
+# containers indistinguishable. Exported first so bootstrap, pipeline_watch,
+# uwsgi and every ETL process spawned later inherit the same value.
+STARCUBES_INSTANCE_ID="$(cat /proc/sys/kernel/random/uuid)"
+export STARCUBES_INSTANCE_ID
+
 # ── Bootstrap (migrations, admin user on fresh install, collectstatic) ───────
 python3 /app/manage.py bootstrap
 

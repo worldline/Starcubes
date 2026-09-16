@@ -162,6 +162,28 @@ applied its migrations, the previous image is not guaranteed to read the
 schema it finds. Rolling back means restoring the database alongside the
 image — plan a major upgrade with a backup, not with a rollback.
 
+### Two versions on one database
+
+Several containers may share one `starcubes_meta`, and a rolling update means
+the old image keeps running for a while against a schema the new image has
+already migrated. That is only safe while every migration a minor release
+ships is **expand-only**:
+
+- add tables, columns (nullable or with a default), indexes, views, and
+  values to a `CHECK` list — never remove a value from one;
+- no rename and no drop in the same release that stops using the object.
+  Stop using it in one release, drop it in a later one;
+- no change to what an existing column *means*.
+
+The old image then finds nothing missing and nothing reinterpreted. The
+other direction needs no rule: the new image migrates at start, and an ETL
+load that finds the schema behind its code refuses to run
+(`core/preflight.py`, check `meta_migrations`). A migration that cannot be
+written this way is a **major** change, whatever else the release contains.
+
+Concurrent starts are serialised by `manage.py bootstrap` itself (an advisory
+lock, see `core/pglock.py`); nothing needs to be staggered by hand.
+
 ## Pre-releases
 
 A pre-release is a tag like any other; SemVer's ordering does the rest:

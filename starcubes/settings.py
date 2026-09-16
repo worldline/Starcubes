@@ -166,6 +166,14 @@ STARCUBES_ETL_LOG_INTERVAL_S = int(os.environ.get("STARCUBES_ETL_LOG_INTERVAL_S"
 from core.source import init_oracle_client
 init_oracle_client()
 
+# This container's instance id (core/node.py). docker/entrypoint.sh exports
+# one per container start; anywhere else — runserver, a shell — the first
+# call generates it and writes it back into os.environ. Called here, at
+# import, so it happens before uwsgi forks its workers and before any command
+# spawns a child: every process of one container then carries the same id.
+from core.node import instance_id
+STARCUBES_INSTANCE_ID = instance_id()
+
 STATIC_URL       = "/static/"
 STATIC_ROOT      = os.environ.get("STARCUBES_STATIC_ROOT", str(BASE_DIR / "staticfiles"))
 # `viz/static/` is picked up via `INSTALLED_APPS` + the default
