@@ -406,6 +406,14 @@ a terminal, and an operator's Stop must not be undone by another container.
 Two containers adopting at once serialise on a per-datasource transaction lock
 and re-read the candidate inside it; the loser skips.
 
+Two rules make adoption survive a partition, where the old process is still
+running when its session is taken over. **A forever loop that meets
+`DatasourceLocked` waits for its next iteration** instead of ending — the
+holder is usually the old owner finishing the load it was in (a single run
+still refuses and exits). **A loop's final status only lands on a row that is
+still active**, so the old process leaving cannot overwrite the `failed` the
+adopting container recorded.
+
 ---
 
 ## Deleting: repair, disposal, and the dedupe flag

@@ -91,6 +91,7 @@ class Lease:
         self.os_pid = os_pid
         self.instance_id = instance_id()
         self.hostname = hostname()
+        self.lost = False
 
     def columns(self) -> dict:
         """The owner columns every run row this process writes carries."""
@@ -99,12 +100,20 @@ class Lease:
                 "lease_start": self.backend_start, "pid": self.os_pid}
 
     def check(self) -> bool:
-        """True while the lease connection still answers."""
+        """True while the lease connection still answers.
+
+        A lost lease stays lost, so it is reported once: the ETL's progress
+        thread asks every 5 s until the run reaches a chunk boundary, and a
+        traceback per question buried the log in identical ERROR blocks.
+        """
+        if self.lost:
+            return False
         try:
             self.dedicated.conn.execute(text("SELECT 1"))
             self.dedicated.conn.commit()
             return True
         except Exception:
+            self.lost = True
             logger.error("lease connection lost (backend pid %s) — this process "
                          "is dead to every other container", self.backend_pid,
                          exc_info=True)

@@ -485,11 +485,21 @@ class Command(BaseCommand):
                                        log_path=log_path)
                 except DatasourceLocked as exc:
                     # Another starcubes process owns this datasource. No
-                    # etl_run row was written, and looping would only repeat
-                    # the refusal — say so once and stop.
-                    self.stderr.write(f"\n{exc}\n")
-                    self.stderr.flush()
-                    raise SystemExit(1)
+                    # etl_run row was written.
+                    if forever_id is None:
+                        self.stderr.write(f"\n{exc}\n")
+                        self.stderr.flush()
+                        raise SystemExit(1)
+                    # A forever session waits instead of ending. With several
+                    # containers the holder is usually this session's previous
+                    # owner, finishing the load it was in when it lost its
+                    # lease and the session was adopted here; the other case
+                    # is a run started by hand. Both end, and a loop that
+                    # stopped for good on the first refusal would leave the
+                    # datasource with no ETL at all.
+                    log.warning("%s: %s — retrying at the next iteration",
+                                source.name, exc)
+                    rows = 0
                 except EtlAborted as exc:
                     # import_fact's finally already reaped the workers and
                     # wrote the etl_run row as 'failed'. Exit quietly —
@@ -689,7 +699,9 @@ class Command(BaseCommand):
             if forever_id is not None:
                 # `released` hands the session to another container; a stop
                 # request always wins over it, so an operator's Stop is never
-                # undone by an adoption.
+                # undone by an adoption. Only a row that is still active: a
+                # loop that lost its lease may already have been closed and
+                # adopted by another container, whose record must stand.
                 with meta.begin() as conn:
                     status = conn.execute(text(
                         "UPDATE starcubes_meta.etl_forever "
@@ -697,7 +709,8 @@ class Command(BaseCommand):
                         "                   THEN 'released' ELSE 'stopped' END, "
                         "     pid = NULL, "
                         "     stopped_at = now(), stop_requested = false "
-                        " WHERE id = :id RETURNING status"
+                        " WHERE id = :id AND status IN ('running', 'stopping') "
+                        " RETURNING status"
                     ), {"id": forever_id,
                         "release": _release_on_exit}).scalar()
                     if status == "released":

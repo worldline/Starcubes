@@ -57,6 +57,13 @@ branch — **`master` is the only long-lived branch.**
 - **[`docs/deployment-config.md`](docs/deployment-config.md)** — read when
   editing `Dockerfile`, `docker/build.sh`, `starcubes/settings.py`,
   `starcubes/oidc.py`, `requirements.txt`, or `package.json`.
+- **[`docs/multi-container.md`](docs/multi-container.md)** — several containers
+  on one database: what must hold outside the app, and how leases, stop
+  requests, adoption, the drain and the one log fit together. Read before
+  touching `core/lease.py`, `core/pglock.py`, `core/node.py`,
+  `core/log_ship.py`, `sources/forever_adopt.py`, the `node_agent`/`node_drain`
+  commands, `docker/entrypoint.sh`'s shutdown, or anything that decides
+  whether a process is alive.
 - **[`docs/chart-rendering.md`](docs/chart-rendering.md)** — ladder plot types
   and partial-bin drawing. Read when editing the plot code paths in
   `viz/templates/viz/chart.html` or `core/query.py`.

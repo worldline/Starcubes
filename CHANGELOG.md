@@ -80,6 +80,9 @@ Notable changes per release. Format follows
   `immutable` cache is finally true across releases, and a rolling update
   cannot hand a new page an old script.
 - The About dialog lists the containers sharing the database.
+- **`docs/multi-container.md`**: what must hold outside the application, how
+  the pieces fit, and the one upgrade rule — do not run a pre-lease image
+  next to a newer one while forever sessions are active.
 
 ### Fixed
 
@@ -90,6 +93,10 @@ Notable changes per release. Format follows
   container resumes only sessions whose process is really gone.
 - **A load running longer than an hour was marked failed** while it was
   still running (the old "stale run" age). The lease has no age limit.
+- **A forever loop no longer ends for good when the datasource is locked.**
+  It waits for its next iteration; before, a session adopted while its old
+  owner was finishing a load stopped permanently, leaving no ETL at all.
+  Single runs still refuse.
 
 - **A fresh install created no admin user.** On an empty database the app's
   own startup applied `starcubes_meta.sql` a moment before `bootstrap` did,
