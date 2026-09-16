@@ -192,10 +192,13 @@ A pre-release is a tag like any other; SemVer's ordering does the rest:
 2.0.0-alpha.1  <  2.0.0-beta.1  <  2.0.0-rc.1  <  2.0.0
 ```
 
-The current tag is **`v2.0.0-beta.1`**: the 2.0.0 feature set is in place
+The current tag is **`v2.0.0-beta.2`**: the 2.0.0 feature set is in place
 and the schema, the environment variables and the profile format are
 frozen for 2.0.0 — what remains before final is polish and bug fixes.
-Moving on is just another tag — `v2.0.0-beta.2` for another beta,
+beta.2 broke that freeze once, for running several containers on one
+database (migrations 0042–0046, the log variables replaced, saved profiles
+moved into the database); its changelog names every step an operator has
+to take. Moving on is just another tag — `v2.0.0-beta.3` for another beta,
 `v2.0.0-rc.1` for the release candidate, `v2.0.0` to release. Nothing in
 the tree changes for any of them.
 

@@ -7,6 +7,8 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+## [2.0.0-beta.2] — 2026-09-16
+
 ### Added
 
 - **Several containers may bootstrap one database at the same time.**
@@ -25,9 +27,24 @@ Notable changes per release. Format follows
   whether they are alive.** Each ETL, forever and rollup process holds a
   lease — one database connection of its own — and writes it onto its run
   rows together with the host name and instance id (migration 0042). The
-  forever status and the rollup progress name the host. A new view, `starcubes_meta.run`, lists every run
-  of every kind (etl, backfill, forever, rollup, audit, housekeeping) in one
-  place, with an `alive` column.
+  forever status and the rollup progress name the host. A new view,
+  `starcubes_meta.run`, lists every run of every kind (etl, backfill,
+  forever, rollup, audit, housekeeping) in one place, with an `alive` column.
+- **`GET /healthz`** for load balancers and Kubernetes readiness probes: no
+  login, 200 when the database answers and this container's `node_agent` is
+  alive, 503 naming the failed check otherwise.
+- The About dialog lists the containers sharing the database.
+- **`docs/multi-container.md`**: what must hold outside the application, how
+  the pieces fit, and the one upgrade rule — do not run a pre-lease image
+  next to a newer one while forever sessions are active.
+- **Oracle sources ask for Oracle Net compression** when the Oracle client
+  runs in thick mode (an Instant Client mounted at `/app/oracle`), and the
+  container log states at startup which mode the client runs in. Measured
+  over 200 000 rows: 63.6 MB on the wire without, 1.9 MB with.
+  **Operators:** compression is only used if the database server has
+  `SQLNET.COMPRESSION = on` too — it belongs to Oracle's Advanced
+  Compression option, so check the licence first. A tnsnames alias or a
+  `?dsn=` Easy Connect string cannot carry it and logs a warning instead.
 
 ### Changed
 
@@ -68,9 +85,6 @@ Notable changes per release. Format follows
   needed. `STARCUBES_LOG_KEEP` and `STARCUBES_LOG_MAX_DAYS` are gone; use
   `STARCUBES_LOG_RETENTION_DAYS` (14) and `STARCUBES_LOG_MAX_LINES_PER_RUN`
   (200 000). The JSON endpoints `etl/logs/` and `etl/log/` are removed.
-- **`GET /healthz`** for load balancers and Kubernetes readiness probes: no
-  login, 200 when the database answers and this container's `node_agent` is
-  alive, 503 naming the failed check otherwise.
 - **A container with a different `STARCUBES_SECRET_KEY` refuses to start**
   (with `STARCUBES_DEBUG=0`): `bootstrap` compares a fingerprint recorded by
   the first container, because mismatched keys between containers show up
@@ -79,10 +93,6 @@ Notable changes per release. Format follows
 - **Static files have content hashes in their names**, so the 30-day
   `immutable` cache is finally true across releases, and a rolling update
   cannot hand a new page an old script.
-- The About dialog lists the containers sharing the database.
-- **`docs/multi-container.md`**: what must hold outside the application, how
-  the pieces fit, and the one upgrade rule — do not run a pre-lease image
-  next to a newer one while forever sessions are active.
 
 ### Fixed
 
@@ -97,7 +107,6 @@ Notable changes per release. Format follows
   It waits for its next iteration; before, a session adopted while its old
   owner was finishing a load stopped permanently, leaving no ETL at all.
   Single runs still refuse.
-
 - **A fresh install created no admin user.** On an empty database the app's
   own startup applied `starcubes_meta.sql` a moment before `bootstrap` did,
   so `bootstrap` saw an existing installation and skipped `admin`/`admin` —
