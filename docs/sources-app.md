@@ -731,9 +731,12 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   `views._signal_target` sends one only when the row's `instance_id` is this
   container's and the pid is verified against the lease connection's
   `application_name` — a bare PID is a small number any process may hold
-  after a restart. A run on another container gets a 409 naming its host;
-  Stop Forever still works from anywhere, because the loop reads
-  `stop_requested` before every iteration.
+  after a restart. A run on another container gets its stop request written
+  onto the row instead (`core/lease.py:request_stop`, column `control`): the
+  process ends itself at its next check, and a forced kill is carried out by
+  that container's `node_agent`. Stop Forever works from anywhere, because
+  the loop reads `stop_requested` before every iteration and every 5 s while
+  it sleeps.
 - **`.action-result` is `display:none` without a modifier.** Only `.ok`,
   `.err`, `.banner` and (since the Rollup tab) `.warn` make it visible. A
   banner written with the class alone renders into the DOM and is simply

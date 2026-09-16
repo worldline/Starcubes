@@ -17,7 +17,7 @@ and migrations — to the mechanism that implements each.
 
 The forever session is the only periodic engine in the system. There is no
 cron, no systemd timer, no Celery. `docker/entrypoint.sh` runs
-`bootstrap` → `etl_resume_forever` → `pipeline_watch &` → nginx → uwsgi, and
+`bootstrap` → `etl_resume_forever` → `pipeline_watch &` → `node_agent &` → nginx → uwsgi, and
 a datasource in production is one `etl_run --forever N` process tracked in
 `starcubes_meta.etl_forever`, revived on container start.
 
@@ -372,6 +372,16 @@ ran longer. A process whose lease connection breaks while it keeps running
 (a network partition) is dead to everyone else, so it stops at the next chunk
 boundary instead of writing on. Rows from before 0042 have no lease and keep
 the old rules.
+
+**A stop request travels on the row** (migration 0043), because a signal only
+reaches a process in its own container. `control = 'term'` is read by the
+process itself — the ETL's progress thread every 5 s, a rollup command at each
+progress report, a forever loop every 5 s of its sleep — and ends it the way
+SIGTERM does, at the next chunk boundary. A run blocked inside one long
+source query reaches no boundary until the query returns; that is what
+`control = 'kill'` is for: the owning container's `node_agent`, woken by
+`NOTIFY starcubes_control`, sends SIGKILL after verifying the pid against the
+lease, and closes the row itself.
 
 ---
 

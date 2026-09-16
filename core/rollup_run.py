@@ -105,18 +105,27 @@ def progress(meta_engine, run_id: Optional[int], line: str) -> None:
     Best-effort by design: a backfill that loses its meta connection should
     keep aggregating, not abort. The caller has already printed the same line
     to stdout, so nothing is lost but the live display.
+
+    Also where a stop request from another container arrives (`control`,
+    migration 0043): it raises `KeyboardInterrupt`, the same ending
+    `install_abort_handler` gives a SIGTERM — every batch has committed, so a
+    stopped build leaves a valid, shorter rollup.
     """
     if run_id is None:
         return
+    control = None
     try:
         with meta_engine.begin() as conn:
-            conn.execute(text(
+            control = conn.execute(text(
                 "UPDATE starcubes_meta.rollup_run "
                 "   SET progress = :line, progress_at = now() "
-                " WHERE id = :id"), {"id": run_id, "line": line[:2000]})
+                " WHERE id = :id RETURNING control"),
+                {"id": run_id, "line": line[:2000]}).scalar()
     except Exception:
         logger.debug("rollup_run %s: progress update failed", run_id,
                      exc_info=True)
+    if control in ("term", "kill"):
+        raise KeyboardInterrupt("killed by user (stop requested)")
 
 
 def finish_run(meta_engine, run_id: Optional[int], status: str, *,

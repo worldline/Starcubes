@@ -48,11 +48,28 @@ APPLICATION_NAME_PREFIX = "starcubes/"
 # Past this age with still no pid and no lease, the subprocess never started.
 STARTING_GRACE_S = 60
 
+# LISTEN/NOTIFY channel for stop requests (migration 0043). The payload is
+# the instance id of the container that runs the process; every node_agent
+# listens and acts only on its own processes.
+CONTROL_CHANNEL = "starcubes_control"
 
-def application_name(os_pid: Optional[int] = None) -> str:
-    """`starcubes/<instance8>/<pid>` — what the lease connection is called."""
-    return (f"{APPLICATION_NAME_PREFIX}{short_instance_id()}/"
+# The run tables that carry a `control` column, by the kind prefix the view
+# `run` uses for them.
+CONTROL_TABLES = {"etl_run": "starcubes_meta.etl_run",
+                  "rollup_run": "starcubes_meta.rollup_run"}
+
+
+def application_name(os_pid: Optional[int] = None,
+                     role: Optional[str] = None) -> str:
+    """`starcubes/<instance8>/<pid>[/<role>]` — what the lease is called.
+
+    Run processes carry no role; that exact name is what `verify_local_pid`
+    matches. A long-lived helper (the node_agent) names its role so it can be
+    told apart in `pg_stat_activity`.
+    """
+    name = (f"{APPLICATION_NAME_PREFIX}{short_instance_id()}/"
             f"{os_pid if os_pid is not None else os.getpid()}")
+    return f"{name}/{role}" if role else name
 
 
 def alive_sql(alias: str) -> str:
@@ -111,7 +128,7 @@ class Lease:
 _lease: Optional[Lease] = None
 
 
-def acquire_process_lease(dsn: str) -> Lease:
+def acquire_process_lease(dsn: str, *, role: Optional[str] = None) -> Lease:
     """This process's lease, opened on first use.
 
     Keyed on `os.getpid()`: the ETL forks its transform and load workers, and a
@@ -121,7 +138,8 @@ def acquire_process_lease(dsn: str) -> Lease:
     if _lease is not None and _lease.os_pid == os.getpid():
         return _lease
     os_pid = os.getpid()
-    dedicated = open_dedicated(dsn, application_name=application_name(os_pid))
+    dedicated = open_dedicated(dsn,
+                               application_name=application_name(os_pid, role))
     try:
         backend_pid, backend_start = dedicated.conn.execute(text(
             "SELECT pid, backend_start FROM pg_stat_activity "
@@ -178,6 +196,25 @@ def verify_local_pid(conn, row) -> bool:
         " WHERE pid = :p AND backend_start = :s AND application_name = :a)"),
         {"p": row["lease_pid"], "s": row["lease_start"],
          "a": application_name(row["pid"])}).scalar())
+
+
+def request_stop(conn, table: str, run_id: int, *, force: bool,
+                 instance: Optional[str]) -> None:
+    """Ask the process of a running row to stop, from any container.
+
+    `table` is a key of `CONTROL_TABLES`. 'term' is honoured by the process
+    itself at its next check; 'kill' additionally wakes the node_agent of the
+    owning container (`instance`) to send SIGKILL. Never downgrades a pending
+    'kill' to 'term'. The NOTIFY is delivered when the caller's transaction
+    commits, together with the row it points at.
+    """
+    conn.execute(text(
+        f"UPDATE {CONTROL_TABLES[table]} "
+        "   SET control = CASE WHEN control = 'kill' THEN 'kill' ELSE :c END "
+        " WHERE id = :id AND status = 'running'"),
+        {"c": "kill" if force else "term", "id": run_id})
+    conn.execute(text("SELECT pg_notify(:ch, :payload)"),
+                 {"ch": CONTROL_CHANNEL, "payload": instance or ""})
 
 
 def reap_dead_runs(conn, datasource_id: Optional[int] = None) -> int:

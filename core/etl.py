@@ -1680,22 +1680,28 @@ def import_fact(source: Source, meta_engine, *,
                             # Only advance progress_at when rows actually
                             # moved — a wedged run must go stale, not look
                             # perpetually alive (see GUI stall detection).
-                            meta.execute(text(
+                            control = meta.execute(text(
                                 "UPDATE starcubes_meta.etl_run "
                                 "   SET progress_rows = :r, "
                                 "       progress_at   = now(), "
                                 "       stats         = CAST(:stats AS jsonb) "
-                                " WHERE id = :id"
+                                " WHERE id = :id RETURNING control"
                             ), {"r": rows_total, "stats": _json.dumps(snap),
-                                "id": run_id})
+                                "id": run_id}).scalar()
                         else:
-                            meta.execute(text(
+                            control = meta.execute(text(
                                 "UPDATE starcubes_meta.etl_run "
                                 "   SET progress_rows = :r, "
                                 "       stats         = CAST(:stats AS jsonb) "
-                                " WHERE id = :id"
+                                " WHERE id = :id RETURNING control"
                             ), {"r": rows_total, "stats": _json.dumps(snap),
-                                "id": run_id})
+                                "id": run_id}).scalar()
+                    # A stop request written by any container (migration
+                    # 0043). 'kill' is honoured the same way first: a process
+                    # that still checks can close its own row, and the
+                    # node_agent's SIGKILL is only for one that cannot.
+                    if control in ("term", "kill"):
+                        budget.interrupt("killed by user (stop requested)")
                     _tick[0] += 1
                     if _tick[0] % log_every_ticks == 0:
                         logger.info(

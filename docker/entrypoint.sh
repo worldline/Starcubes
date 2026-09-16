@@ -29,6 +29,13 @@ python3 /app/manage.py etl_resume_forever
 # loop evaluates them too after every load.
 python3 /app/manage.py pipeline_watch &
 
+# ── The per-container agent ──────────────────────────────────────────────────
+# Carries out what only this container can do for its own processes: a forced
+# kill requested from any container sharing the database. Same caveat as
+# pipeline_watch — nothing supervises it. See sources/management/commands/
+# node_agent.py.
+python3 /app/manage.py node_agent &
+
 # ── Trust (or not) the proxy's forwarded scheme ──────────────────────────────
 # uwsgi honours X-Forwarded-Proto / X-Forwarded-Ssl by itself when setting
 # wsgi.url_scheme, which is what Django's request.is_secure() reads. That is

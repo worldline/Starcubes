@@ -31,11 +31,14 @@ Notable changes per release. Format follows
 
 ### Changed
 
-- **Kill and Stop only signal a process they have verified.** A kill aimed
-  at a run on another container is refused with its host name instead of
-  signalling whatever local process holds the same PID; Stop Forever still
-  works from any container. A lost lease connection stops a run at the next
-  chunk boundary.
+- **Kill and Stop work from any container, and only ever signal a verified
+  process.** A kill aimed at a run on another container is written onto the
+  run (migration 0043) instead of signalling whatever local process holds
+  the same PID: the run stops itself at its next chunk boundary, and a forced
+  kill is carried out within a moment by the new `manage.py node_agent` of
+  the container that runs it (started by the entrypoint). A forever loop now
+  notices a stop request while it sleeps, not only before its next run. A
+  lost lease connection stops a run at the next chunk boundary.
 
 ### Fixed
 

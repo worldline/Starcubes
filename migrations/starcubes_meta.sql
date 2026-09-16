@@ -1446,7 +1446,44 @@ COMMENT ON COLUMN starcubes_meta.etl_run.lease_pid IS
 COMMENT ON COLUMN starcubes_meta.etl_run.instance_id IS
   'The container that runs this process (core/node.py). Signals are only ever sent by the same instance.';
 
-CREATE OR REPLACE VIEW starcubes_meta.run AS
+-- The view `run` is defined once, in its current shape, in the newest block
+-- that changed it (0043 below). Postgres cannot drop a column from a view,
+-- so re-running an older CREATE OR REPLACE after a newer one would fail and
+-- break this script's idempotency.
+
+-- 0043_run_control.sql -- stopping a run from any container. A signal only
+-- reaches a process in its own container, so the request travels on the row:
+-- control = 'term' (the process stops itself at its next check) or 'kill'
+-- (the node_agent of the owning container sends SIGKILL after verifying the
+-- pid against the lease, and closes the row). A forever session keeps using
+-- stop_requested. The view `run` gains `control` as its last column.
+ALTER TABLE starcubes_meta.etl_run
+    ADD COLUMN IF NOT EXISTS control text;
+ALTER TABLE starcubes_meta.rollup_run
+    ADD COLUMN IF NOT EXISTS control text;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                    WHERE conname = 'etl_run_control_check') THEN
+        ALTER TABLE starcubes_meta.etl_run ADD CONSTRAINT etl_run_control_check
+            CHECK (control IN ('term', 'kill'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                    WHERE conname = 'rollup_run_control_check') THEN
+        ALTER TABLE starcubes_meta.rollup_run ADD CONSTRAINT rollup_run_control_check
+            CHECK (control IN ('term', 'kill'));
+    END IF;
+END $$;
+
+COMMENT ON COLUMN starcubes_meta.etl_run.control IS
+  'A stop request from any container: term = the process stops itself at its next check; kill = the node_agent of the container that runs it sends SIGKILL after verifying the pid against the lease. Left on the finished row as a record.';
+
+-- Dropped and re-created rather than replaced: the definition here is the only
+-- one in this script, and DROP + CREATE survives any future change of shape.
+-- Atomic to readers, because the whole script runs in one transaction.
+DROP VIEW IF EXISTS starcubes_meta.run;
+CREATE VIEW starcubes_meta.run AS
 SELECT CASE WHEN r.kind = 'backfill' THEN 'backfill' ELSE 'etl' END AS kind,
        r.id, r.datasource_id, r.status, r.started_at, r.finished_at,
        r.hostname, r.pid,
@@ -1462,7 +1499,8 @@ SELECT CASE WHEN r.kind = 'backfill' THEN 'backfill' ELSE 'etl' END AS kind,
             THEN coalesce(r.progress_rows, 0) || ' rows so far'
             ELSE coalesce(r.rows, 0) || ' rows'
        END AS summary,
-       r.instance_id, r.lease_pid, r.lease_start
+       r.instance_id, r.lease_pid, r.lease_start,
+       r.control
   FROM starcubes_meta.etl_run r
 UNION ALL
 SELECT 'forever',
@@ -1479,7 +1517,8 @@ SELECT 'forever',
          ORDER BY r.id DESC LIMIT 1),
        f.error,
        'every ' || f.interval_s || ' s',
-       f.instance_id, f.lease_pid, f.lease_start
+       f.instance_id, f.lease_pid, f.lease_start,
+       CASE WHEN f.stop_requested THEN 'term' END
   FROM starcubes_meta.etl_forever f
 UNION ALL
 SELECT 'rollup_' || u.kind,
@@ -1494,7 +1533,8 @@ SELECT 'rollup_' || u.kind,
        u.log_path,
        u.error,
        left(u.progress, 200),
-       u.instance_id, u.lease_pid, u.lease_start
+       u.instance_id, u.lease_pid, u.lease_start,
+       u.control
   FROM starcubes_meta.rollup_run u
 UNION ALL
 SELECT 'audit',
@@ -1502,7 +1542,8 @@ SELECT 'audit',
        NULL::text, NULL::int, NULL::boolean, NULL::text,
        a.error,
        coalesce(a.missing_count, 0) || ' missing',
-       NULL::text, NULL::int, NULL::timestamptz
+       NULL::text, NULL::int, NULL::timestamptz,
+       NULL::text
   FROM starcubes_meta.audit_run a
 UNION ALL
 -- A housekeeping row is written once the work is done: ran_at is its end,
@@ -1514,8 +1555,9 @@ SELECT 'housekeeping',
        NULL::text, NULL::int, NULL::boolean, NULL::text,
        NULL::text,
        coalesce(jsonb_array_length(h.report -> 'warnings'), 0) || ' warnings',
-       NULL::text, NULL::int, NULL::timestamptz
+       NULL::text, NULL::int, NULL::timestamptz,
+       NULL::text
   FROM starcubes_meta.housekeeping_run h;
 
 COMMENT ON VIEW starcubes_meta.run IS
-  'Every run of every kind in one list: etl, backfill, forever, rollup_advise/build/verify, audit, housekeeping. (kind, id) is unique. alive: true/false where a lease exists, NULL where there is no process (audit, housekeeping) or a legacy row without a lease. run_ref points at the run''s log.';
+  'Every run of every kind in one list: etl, backfill, forever, rollup_advise/build/verify, audit, housekeeping. (kind, id) is unique. alive: true/false where a lease exists, NULL where there is no process (audit, housekeeping) or a legacy row without a lease. run_ref points at the run''s log. control: a pending or recorded stop request.';

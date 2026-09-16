@@ -298,9 +298,18 @@ STARCUBES_SMTP_FROM=bot@example.com
 ## Processes in the container
 
 `docker/entrypoint.sh` runs `bootstrap`, then `etl_resume_forever`, then
-starts **three** long-lived things: `pipeline_watch &`, `nginx &` and
-`exec uwsgi`. The third of those was the whole architecture until pipeline
-alarms landed.
+starts **four** long-lived things: `pipeline_watch &`, `node_agent &`,
+`nginx &` and `exec uwsgi`. The last of those was the whole architecture until
+pipeline alarms landed.
+
+`manage.py node_agent` is the one thing a container must do for its own
+processes when several containers share a database: a forced Kill pressed on
+any of them is written onto the run row (`control = 'kill'`), and only the
+container that runs the process can send the SIGKILL. The agent is woken by
+`NOTIFY starcubes_control`, verifies the pid against the run's lease before
+signalling, and closes the row. Without it a forced kill across containers
+waits forever; a plain Kill does not need it, because the process reads the
+request itself. Same caveat as below: nothing supervises it.
 
 `manage.py pipeline_watch` evaluates pipeline alarms and dispatches their
 notifications on an interval (`STARCUBES_PIPELINE_ALARM_INTERVAL_S`, default

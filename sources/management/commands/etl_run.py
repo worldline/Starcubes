@@ -646,13 +646,28 @@ class Command(BaseCommand):
                 self.stdout.write(f"\n--- next run in {interval}s (iteration {iteration}) ---\n")
                 self.stdout.flush()
 
-                # Interruptible sleep: check _stopping every second
-                for _ in range(interval):
+                # Interruptible sleep: check _stopping every second, and the
+                # stop flag every few seconds — a Stop pressed on another
+                # container has no signal to send, so without this a long
+                # interval would keep the loop alive until its next run.
+                stop_flag = False
+                for tick in range(interval):
                     if _stopping:
                         break
+                    if tick and tick % 5 == 0:
+                        with meta.begin() as conn:
+                            stop_flag = bool(conn.execute(text(
+                                "SELECT stop_requested "
+                                "  FROM starcubes_meta.etl_forever WHERE id = :id"
+                            ), {"id": forever_id}).scalar())
+                        if stop_flag:
+                            break
                     time.sleep(1)
                 if _stopping:
                     self.stdout.write("\nSignal during sleep, stopping.\n")
+                    break
+                if stop_flag:
+                    self.stdout.write("\nStop requested during sleep, exiting forever loop.\n")
                     break
 
         finally:

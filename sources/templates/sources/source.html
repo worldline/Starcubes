@@ -1509,7 +1509,9 @@ on('etlKillBtn', 'click', function() {
   resultEl.textContent = '';
   postJSON('/sources/' + DS_PK + '/etl/kill/', body).then(function(d) {
     if (d.ok) {
-      showCmdResult(resultEl, true, '✓ Kill signal sent (' + (d.signal || '—') + ')');
+      showCmdResult(resultEl, true, d.remote
+        ? '✓ Stop requested — ' + (d.hostname || 'the other container') + ' ends the run'
+        : '✓ Kill signal sent (' + (d.signal || '—') + ')');
       etlKillForce = true;
       btn.textContent = 'Force kill';
       setTimeout(pollEtlStatus, 500);

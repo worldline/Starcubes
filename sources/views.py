@@ -38,7 +38,7 @@ from core.etl import (truncate_last_partition, truncate_partition,
                       clear_etl_history, set_highwatermark)
 from core.housekeeping import run_housekeeping
 from core.lease import (is_local as lease_is_local, lease_state,
-                        reap_dead_runs, verify_local_pid)
+                        reap_dead_runs, request_stop, verify_local_pid)
 from core.pipeline_alarm import CONDITIONS as _PIPELINE_CONDS
 from core.preflight import run_preflight
 from core.utils import _parse_dt, _pid_alive
@@ -891,13 +891,12 @@ def _signal_target(conn, row) -> str:
 
 
 def _signal_refusal(target: str, row):
-    """The 409 for a target this container must not signal, else None."""
-    if target == "remote":
-        return JsonResponse(
-            {"ok": False, "remote": True, "hostname": row.get("hostname"),
-             "error": f"This run is on container {row.get('hostname') or '?'} "
-                      f"— it can only be stopped from there."},
-            status=409)
+    """The 409 for a target nobody may signal, else None.
+
+    A ``remote`` target is not refused: the caller writes a stop request onto
+    the row instead (``core.lease.request_stop``), which the process or its
+    container's node_agent carries out.
+    """
     if target == "unverified":
         return JsonResponse(
             {"ok": False,
@@ -1153,6 +1152,15 @@ def etl_kill(request, pk: int):
             refusal = _signal_refusal(target, row)
             if refusal is not None:
                 return refusal
+            if target == "remote":
+                # No signal reaches another container: the request goes on
+                # the row, the process stops itself at its next check, and a
+                # forced one is carried out by that container's node_agent.
+                request_stop(conn, "etl_run", row["id"], force=force,
+                             instance=row["instance_id"])
+                return JsonResponse({"ok": True, "signal": "requested",
+                                     "remote": True, "pid": pid,
+                                     "hostname": row["hostname"]})
 
             if target == "gone":
                 conn.execute(text(
@@ -4692,15 +4700,22 @@ def rollup_kill(request, pk: int):
             return JsonResponse({"ok": False, "error": "No rollup running"},
                                 status=404)
         pid = live["pid"]
+        force = request.POST.get("force") == "1"
         with meta.begin() as conn:
             target = _signal_target(conn, live)
+            if target == "remote":
+                request_stop(conn, "rollup_run", live["id"], force=force,
+                             instance=live["instance_id"])
         refusal = _signal_refusal(target, live)
         if refusal is not None:
             return refusal
+        if target == "remote":
+            return JsonResponse({"ok": True, "signal": "requested",
+                                 "remote": True, "pid": pid,
+                                 "hostname": live["hostname"]})
         if target == "gone":
             rollup_run.reap_stale(meta, pk)
             return JsonResponse({"ok": True, "signal": None, "pid": pid})
-        force = request.POST.get("force") == "1"
         try:
             if force:
                 os.killpg(os.getpgid(pid), signal.SIGKILL)
