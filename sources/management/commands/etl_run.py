@@ -23,7 +23,8 @@ from sqlalchemy import text
 from core.alarm import run_alarm_cycle
 from core.audit import audit_due, audit_window_seconds, backfill_ids_for_run, run_audit
 from core.housekeeping import housekeeping_due, run_housekeeping
-from core.lease import acquire_process_lease, current_lease, reap_dead_runs
+from core.lease import (CONTROL_CHANNEL, acquire_process_lease,
+                        current_lease, reap_dead_runs)
 from core.etl import import_fact, truncate_last_partition, delete_fact_from, \
                       clear_etl_history, set_highwatermark, EtlAborted
 from core.preflight import DatasourceLocked
@@ -37,6 +38,11 @@ from sources.alarm_notify import dispatch_transitions
 
 
 _stopping = False
+# Why a forever loop is leaving, for the status it writes on the way out.
+# SIGTERM without a stop request means the container is draining, and the
+# session is released for another container to adopt (migration 0044); SIGINT
+# is a person at a terminal and means stop.
+_release_on_exit = False
 
 # Cap on how many buckets one post-load rollup refresh may build. A
 # datasource that has been idle for months would otherwise turn its first run
@@ -47,9 +53,16 @@ _ROLLUP_MAX_BUCKETS = 168
 
 
 def _signal_handler(signum, frame):
-    """Forever mode: extend the existing flag-based stop protocol."""
-    global _stopping
+    """Forever mode: extend the existing flag-based stop protocol.
+
+    SIGTERM marks the session for release rather than stop: it is what a
+    draining container sends (manage.py node_drain). The GUI's Stop Forever
+    sends SIGTERM too, but writes `stop_requested` first, and that wins.
+    """
+    global _stopping, _release_on_exit
     _stopping = True
+    if signum == signal.SIGTERM:
+        _release_on_exit = True
 
 
 def _abort_signal_handler(signum, frame):
@@ -202,6 +215,7 @@ class Command(BaseCommand):
             raise SystemExit(1)
 
     def handle(self, *args, **options):
+        global _release_on_exit
         log = configure_etl_logging()
         log_path = os.environ.get("STARCUBES_ETL_LOG_PATH")
         log.info("etl_run start: argv=%s pid=%d log=%s",
@@ -453,6 +467,7 @@ class Command(BaseCommand):
                     # container, which may already be adopting this session.
                     lease = current_lease()
                     if lease is not None and not lease.check():
+                        _release_on_exit = True
                         self.stderr.write(
                             "\nLease connection to the metadata database lost "
                             "— leaving the loop so no other container has to "
@@ -672,10 +687,19 @@ class Command(BaseCommand):
 
         finally:
             if forever_id is not None:
+                # `released` hands the session to another container; a stop
+                # request always wins over it, so an operator's Stop is never
+                # undone by an adoption.
                 with meta.begin() as conn:
-                    conn.execute(text(
+                    status = conn.execute(text(
                         "UPDATE starcubes_meta.etl_forever "
-                        " SET status = 'stopped', pid = NULL, "
+                        " SET status = CASE WHEN :release AND NOT stop_requested "
+                        "                   THEN 'released' ELSE 'stopped' END, "
+                        "     pid = NULL, "
                         "     stopped_at = now(), stop_requested = false "
-                        " WHERE id = :id"
-                    ), {"id": forever_id})
+                        " WHERE id = :id RETURNING status"
+                    ), {"id": forever_id,
+                        "release": _release_on_exit}).scalar()
+                    if status == "released":
+                        conn.execute(text("SELECT pg_notify(:ch, '')"),
+                                     {"ch": CONTROL_CHANNEL})

@@ -20,6 +20,10 @@ Each cycle:
   `start_new_session`), else to the process alone, so a run started from a
   shell cannot take the shell down with it. The row is closed here, since a
   killed process writes nothing.
+- **Forever adoption** (sources/forever_adopt.py): a session whose process is
+  gone, or which its draining container released, is taken over and run here.
+  On every notification and at least once a minute; off with
+  `STARCUBES_FOREVER_ADOPT=0`, for a container that must never run ETL.
 
 Woken by `NOTIFY starcubes_control` and polling every few seconds as a
 fallback, so a lost notification costs seconds, not a stuck run.
@@ -47,10 +51,12 @@ from core.node import instance_id
 from core.pglock import open_dedicated
 from core.source import _get_cached_engine
 from sources.etl_logging import configure_etl_logging
+from sources.forever_adopt import adopt_orphans
 
 log = logging.getLogger("sources.node_agent")
 
 POLL_S = 5
+ADOPT_EVERY_S = 60
 
 _stopping = False
 
@@ -87,6 +93,9 @@ class Command(BaseCommand):
         acquire_process_lease(dsn, role="node_agent")
         self._me = instance_id()
         self._unverified: set = set()
+        self._adopt = os.environ.get("STARCUBES_FOREVER_ADOPT", "1") != "0"
+        self._adopt_due = 0.0
+        self._notified = False
 
         if options["once"]:
             self._cycle(meta)
@@ -147,6 +156,7 @@ class Command(BaseCommand):
                     raw.poll()
                     if raw.notifies:
                         raw.notifies.clear()
+                        self._notified = True
                         return True
             return True
         except Exception:
@@ -162,6 +172,19 @@ class Command(BaseCommand):
             self._kill_pass(meta)
         except Exception:
             log.exception("node_agent: kill pass failed, continuing")
+        # Adoption on a notification (a session was released, or something
+        # changed) and otherwise once a minute: it scans every forever row,
+        # which the 5 s kill poll has no reason to do.
+        now = time.monotonic()
+        if self._adopt and (self._notified or now >= self._adopt_due):
+            self._notified = False
+            self._adopt_due = now + ADOPT_EVERY_S
+            try:
+                adopted, _ = adopt_orphans(meta, include_legacy=False)
+                if adopted:
+                    log.info("node_agent: adopted %d forever session(s)", adopted)
+            except Exception:
+                log.exception("node_agent: adoption failed, continuing")
 
     def _kill_pass(self, meta) -> None:
         with meta.begin() as conn:

@@ -127,6 +127,8 @@ Environment variables, all with sane defaults and none normally set:
 | `STARCUBES_MAX_RETENTION_DROPS` | 2 | Partitions retention may drop per housekeeping run. |
 | `STARCUBES_MAX_OVERLAP_PKS` | 5 000 000 | Ceiling on a de-duplicated reload. |
 | `STARCUBES_BACKFILL_IDS_MAX` | 100 000 | Missing ids an audit will store for a targeted backfill. Past it the run is marked `ids_truncated` and only a window backfill is offered. |
+| `STARCUBES_FOREVER_ADOPT` | 1 | `0` stops this container's `node_agent` from adopting other containers' forever sessions. A container start still resumes dead ones. |
+| `STARCUBES_DRAIN_TIMEOUT_S` | 25 | How long `node_drain` waits at shutdown for this container's runs to hand over. Must be shorter than the runtime's stop timeout. |
 
 ---
 
@@ -382,6 +384,25 @@ source query reaches no boundary until the query returns; that is what
 `control = 'kill'` is for: the owning container's `node_agent`, woken by
 `NOTIFY starcubes_control`, sends SIGKILL after verifying the pid against the
 lease, and closes the row itself.
+
+**A forever session outlives its container** (migration 0044). There are two
+ways a session becomes an orphan, and `sources/forever_adopt.py` handles both
+the same way whether a starting container (`etl_resume_forever`) or a running
+one (`node_agent`, on NOTIFY and once a minute) finds it:
+
+- *Released.* On SIGTERM a container runs `manage.py node_drain` before it
+  stops uwsgi: it stops its own `node_agent` (which would otherwise adopt the
+  session straight back), then signals its runs. A forever loop finishes its
+  current load and writes `released` instead of `stopped`, and another
+  container adopts it within a second.
+- *Dead.* A container killed outright leaves `running` rows whose lease has
+  ended; they are adopted on the next minute tick, with the interrupted load
+  failed.
+
+`stopped` is never adopted — it is written by Stop Forever and by SIGINT from
+a terminal, and an operator's Stop must not be undone by another container.
+Two containers adopting at once serialise on a per-datasource transaction lock
+and re-read the candidate inside it; the loser skips.
 
 ---
 

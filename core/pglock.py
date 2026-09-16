@@ -19,7 +19,7 @@ minute. libpq ignores them on a Unix-domain socket, which is correct: a local
 socket cannot be partitioned.
 
 **The key registry.** Every advisory lock in the application uses the
-two-int form under one class id, so `pg_locks` shows them together:
+two-int form under one of these class ids, so `pg_locks` shows them together:
 
     classid 0x53544152 ("STAR")
       objid  > 0   the datasource lock, objid = datasource.id (core.preflight)
@@ -27,7 +27,13 @@ two-int form under one class id, so `pg_locks` shows them together:
       objid   -1   bootstrap, held for the whole command  (manage.py bootstrap)
       objid   -2   applying starcubes_meta.sql            (core.schema)
 
+    classid 0x53544144 ("STAD")
+      objid  > 0   adopting a forever session, objid = datasource.id
+                   (sources/forever_adopt.py, transaction-scoped)
+
 The negative ids are free because `datasource.id` is a serial and starts at 1.
+Adoption has a class of its own because its objid is a datasource id too, and
+must not collide with the datasource lock a running load holds.
 
 No Django imports — same constraint as the rest of `core/`.
 """
@@ -48,6 +54,7 @@ LOCK_CLASS = 0x53544152
 PIPELINE_EVAL_OBJID = 0
 BOOTSTRAP_OBJID = -1
 META_SQL_OBJID = -2
+ADOPT_CLASS = 0x53544144
 
 # idle 30 s, then a probe every 10 s, dead after 3 missed probes.
 KEEPALIVE_CONNECT_ARGS = {

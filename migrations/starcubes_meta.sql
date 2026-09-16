@@ -1561,3 +1561,27 @@ SELECT 'housekeeping',
 
 COMMENT ON VIEW starcubes_meta.run IS
   'Every run of every kind in one list: etl, backfill, forever, rollup_advise/build/verify, audit, housekeeping. (kind, id) is unique. alive: true/false where a lease exists, NULL where there is no process (audit, housekeeping) or a legacy row without a lease. run_ref points at the run''s log. control: a pending or recorded stop request.';
+
+-- 0044_forever_released.sql -- a forever session handed over at shutdown.
+-- A loop ended by SIGTERM without a stop request writes `released` instead of
+-- `stopped`, and any container adopts it; `stopped` stays the user's word and
+-- is never adopted. Not part of ux_etl_forever_active.
+DO $$
+DECLARE cdef text;
+BEGIN
+    SELECT pg_get_constraintdef(c.oid) INTO cdef
+      FROM pg_constraint c
+     WHERE c.conrelid = 'starcubes_meta.etl_forever'::regclass
+       AND c.conname = 'etl_forever_status_check';
+    IF cdef IS NULL OR position('released' in cdef) = 0 THEN
+        ALTER TABLE starcubes_meta.etl_forever
+            DROP CONSTRAINT IF EXISTS etl_forever_status_check;
+        ALTER TABLE starcubes_meta.etl_forever
+            ADD CONSTRAINT etl_forever_status_check
+            CHECK (status IN ('running', 'stopping', 'stopped', 'failed',
+                              'released'));
+    END IF;
+END $$;
+
+COMMENT ON COLUMN starcubes_meta.etl_forever.status IS
+  'running/stopping: active (one per datasource, ux_etl_forever_active). stopped: ended on request, never adopted. failed: the process died or never started. released: left on SIGTERM without a stop request while its container drained -- adopted by another container.';

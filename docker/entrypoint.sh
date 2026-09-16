@@ -57,4 +57,30 @@ fi
 
 # ── Start nginx (foreground, daemon off) + uwsgi ──────────────────────────────
 nginx &
-exec uwsgi --ini /etc/uwsgi.ini
+uwsgi --ini /etc/uwsgi.ini &
+UWSGI_PID=$!
+
+# ── Shutdown: hand this container's runs over, then stop uwsgi ───────────────
+# This shell stays PID 1 instead of exec'ing uwsgi, because PID 1 is the only
+# process a container stop signals. On SIGTERM, node_drain stops this
+# container's node_agent and asks every ETL/rollup process here to finish, so
+# forever sessions are released to another container at once instead of after
+# their leases time out (sources/management/commands/node_drain.py). The
+# runtime's stop timeout must exceed STARCUBES_DRAIN_TIMEOUT_S (default 25 s):
+# podman defaults to 10 s (--stop-timeout), Kubernetes to 30 s.
+#
+# PID 1 also reaps orphans, which uwsgi's master did when it was PID 1: an ETL
+# process outlives the uwsgi worker that spawned it and is reparented here.
+# dash's `wait` collects any exited child, which is why the loop below keeps
+# waiting rather than returning after the first interruption (verified in the
+# image: no zombies left).
+shutdown() {
+    trap - TERM INT
+    python3 /app/manage.py node_drain || true
+    kill -TERM "$UWSGI_PID" 2>/dev/null || true
+}
+trap shutdown TERM INT
+
+while kill -0 "$UWSGI_PID" 2>/dev/null; do
+    wait "$UWSGI_PID" || true
+done

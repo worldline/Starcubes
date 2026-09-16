@@ -39,6 +39,15 @@ Notable changes per release. Format follows
   the container that runs it (started by the entrypoint). A forever loop now
   notices a stop request while it sleeps, not only before its next run. A
   lost lease connection stops a run at the next chunk boundary.
+- **Forever sessions move to another container instead of dying with theirs.**
+  On SIGTERM the container runs the new `manage.py node_drain` before stopping
+  uwsgi; its forever loops finish their current load and are released
+  (status `released`, migration 0044), and another container's `node_agent`
+  adopts them within a second. A container killed outright has its sessions
+  adopted within a minute. Stop Forever and Ctrl-C still stop for good.
+  **Operators:** the stop timeout must exceed `STARCUBES_DRAIN_TIMEOUT_S`
+  (25 s) — podman's default is 10 s, so run with `--stop-timeout 35`.
+  `STARCUBES_FOREVER_ADOPT=0` keeps a container from adopting.
 
 ### Fixed
 

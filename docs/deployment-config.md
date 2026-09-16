@@ -319,6 +319,16 @@ stopped produces no loads for an in-loop evaluator to ride on. See U7 in
 [`etl-automation.md`](etl-automation.md), which sets out the two honest
 options and their prices.
 
+**Shutdown hands the work over.** The entrypoint no longer `exec`s uwsgi: the
+shell stays PID 1, because PID 1 is the only process a container stop
+signals. On SIGTERM it runs `manage.py node_drain` — stop this container's
+`node_agent`, SIGTERM this container's ETL and rollup processes, wait up to
+`STARCUBES_DRAIN_TIMEOUT_S` (25 s) — and only then stops uwsgi. A forever
+session released that way is adopted by another container at once. Give the
+runtime a longer stop timeout than the drain: **podman's default is 10 s**
+(`podman run --stop-timeout 35`), Kubernetes' `terminationGracePeriodSeconds`
+is 30 s. PID 1 also reaps orphaned ETL processes, as uwsgi's master did.
+
 **Nothing supervises it.** If it dies, nothing restarts it and nothing says
 so — exactly as for the `nginx &` on the next line. That is stated here and
 in the entrypoint rather than left to be discovered. Two mitigations exist
