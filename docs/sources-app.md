@@ -196,17 +196,9 @@ Notes:
   terminal UPDATE writes them) — the GUI reads live per-stage rates and
   queue depths from `stats.{extract,transform,load}.rows_s` and
   `stats.queues.{transform,load}` instead.
-- `GET  .../etl/logs/` — list this datasource's per-run log files
-  (`sources/etl_spawn.py` writes one per spawn under `STARCUBES_LOG_DIR`),
-  newest first, joined against the last 20 `etl_run` rows for `run_id`/
-  `run_status`.
-- `GET  .../etl/log/?file=<name>&offset=<n>` — incremental tail of one log
-  file from byte `offset` (capped at 256 KB per response). Without `file`,
-  defaults to the newest log this datasource owns, falling back to the
-  latest `etl_run.log_path`. `name` is validated against
-  `^etl-[A-Za-z0-9_.-]+\.log$` and must start with this datasource's slug
-  prefix — the one thing standing between this public-ish JSON endpoint
-  and an arbitrary path read.
+- The per-datasource log endpoints `etl/logs/` and `etl/log/` are gone:
+  logs live in `starcubes_meta.log_line`, served by the global
+  `/sources/logs/api/lines/` and `/sources/logs/api/runs/` (below).
 - `POST .../etl/kill/` — kill the running single-shot ETL run. Plain POST
   sends `SIGTERM` to the parent PID (which writes its own `etl_run` row as
   `failed`, error `killed by user...`, via `EtlAborted`); `{force: 1}`
@@ -690,16 +682,25 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   moment when no lag is configured.
   The summary says **raise by**, not set to: with a lag already in force the
   figure is the additional amount, and it is a lower bound either way.
-- **Log sub-tab** (`etlsub-log`, source.html): lazy-loaded on first activation
-  via `etlLogActivate()` — populates the `<select>` from `etl/logs/`, then
-  tails the selected file from `etl/log/`. Polls every 2s only while the
-  sub-tab is active — `activateEtlSub()` starts and stops it, and the
-  top-level tab switcher stops it whenever the ETL tab is left (mirrors `startEtlPoll`/`stopEtlPoll`'s idiom) **and** the last
-  known status is `running`; `pollEtlStatus()` calls `etlLogStopPoll()`
-  alongside `stopEtlPoll()` once a run resolves. `etlLogOffsets` is a
-  per-filename byte offset so re-fetches are incremental; a `truncated`
-  response (the server-side `core/etl.py:_bound_log_size` shrank the file)
-  resets to offset 0 and clears the pane instead of appending garbage.
+- **Log sub-tab** (`etlsub-log`, source.html) embeds the one log viewer
+  (`sources/_log_viewer.html` + `static/sources/log_viewer.js`) pinned to this
+  datasource — the same component as `/sources/logs/`, whose link sits in the
+  card header. The four old entry points stay as thin wrappers because the
+  rest of the page calls them: `etlLogActivate`/`etlLogStartPoll`/
+  `etlLogStopPoll` activate and deactivate the viewer (it polls every 2 s by
+  `after_id` only while active and **Follow** is on), and
+  `openEtlLogFile(log_path)` switches tabs and shows that run — the basename
+  of `log_path` is the `run_ref` its lines carry. The History table's and the
+  Rollup tab's "Log" links go through it.
+- **The Logs page** (`/sources/logs/`, `sources/log_views.py`, superuser):
+  **Lines** from `log_line` and **Runs** from the view `run` behind one filter
+  bar — datasource, kind, host, from/to for both; level, text and run for
+  lines. A badge on a line sets that filter; a run row shows its lines framed
+  by its own time span (audit and housekeeping, which have no lines, frame the
+  datasource instead). The filters live in the URL, so a view is a link.
+  `logs/api/lines/` pages by id (`after_id` follows, `before_id` goes back);
+  a text search without a `from` is limited to 24 hours so it cannot scan the
+  whole table. `logs/api/runs/` pages by `(started_at, kind, id)`.
 - **Rollup tab: three commands run out of process, two run in it.**
   `docker/uwsgi.ini` sets `harakiri = 120`, which kills the whole worker
   *process* and takes its other in-flight requests with it. `rollup_advise`

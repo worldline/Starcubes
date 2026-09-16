@@ -167,7 +167,8 @@ def _spawn(meta, row, new_id: int, say) -> bool:
            "--name", row["name"], "--forever", str(row["interval_s"]),
            "--forever-id", str(new_id)]
     try:
-        spawn_etl_subprocess(cmd, datasource_name=row["name"])
+        spawn_etl_subprocess(cmd, datasource_name=row["name"], kind="forever",
+                             datasource_id=row["datasource_id"])
     except OSError as exc:
         with meta.begin() as conn:
             conn.execute(text(

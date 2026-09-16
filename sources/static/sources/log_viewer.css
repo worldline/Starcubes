@@ -1,0 +1,60 @@
+/* The one log viewer (sources/_log_viewer.html, log_viewer.js): /sources/logs/
+   and the ETL tab's Log sub-tab. Colours only through the shared tokens in
+   sources/base.html, so light and dark follow the page. */
+
+.lv { display: flex; flex-direction: column; gap: 8px; }
+/* `hidden` must win over every display rule below. */
+.lv [hidden] { display: none !important; }
+.lv-group { display: contents; }
+
+.lv-bar {
+  display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;
+  padding: 8px 12px; border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.lv-bar label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
+.lv-bar select, .lv-bar input[type=text], .lv-bar input[type=datetime-local] {
+  font-size: 12px; padding: 2px 4px; background: var(--input-bg);
+  color: var(--fg); border: 1px solid var(--input-border); border-radius: 3px;
+}
+.lv-bar input[type=text] { width: 14em; }
+.lv-kinds { display: inline-flex; flex-wrap: wrap; gap: 2px 8px; }
+.lv-kinds label { color: var(--fg); cursor: pointer; }
+.lv-mode { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.lv-mode button {
+  font-size: 12px; padding: 2px 10px; border: 0; background: var(--bg2);
+  color: var(--fg); cursor: pointer;
+}
+.lv-mode button.active { background: var(--tab-active-bg); color: var(--tab-active-fg); font-weight: 600; }
+.lv-spacer { flex: 1; }
+.lv-chip {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px;
+  border-radius: 10px; background: var(--bg3); color: var(--fg); font-family: var(--mono, monospace);
+}
+.lv-chip button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; font-size: 13px; }
+
+.lv-pane {
+  margin: 0; padding: 6px 0; max-height: 70vh; overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+}
+.lv-line { display: flex; gap: 6px; padding: 0 12px; align-items: baseline; }
+.lv-line:hover { background: var(--bg2); }
+.lv-ts { color: var(--muted); white-space: nowrap; flex: none; }
+.lv-text { white-space: pre-wrap; word-break: break-all; flex: 1; min-width: 0; }
+.lv-b {
+  flex: none; font-size: 10px; padding: 0 5px; border-radius: 3px; cursor: pointer;
+  background: var(--bg3); color: var(--muted); white-space: nowrap;
+}
+.lv-b:hover { color: var(--fg); }
+.lv-lvl-WARNING .lv-text { color: var(--warn); }
+.lv-lvl-ERROR .lv-text, .lv-lvl-CRITICAL .lv-text { color: var(--danger); }
+.lv-lvl-ERROR, .lv-lvl-CRITICAL { box-shadow: inset 3px 0 0 var(--danger); }
+.lv-lvl-WARNING { box-shadow: inset 3px 0 0 var(--warn); }
+.lv-lvl-DEBUG .lv-text { color: var(--muted); }
+.lv-older { padding: 4px 12px; }
+.lv-empty { padding: 12px; color: var(--muted); }
+.lv-status { font-size: 11px; color: var(--muted); padding: 0 12px 6px; }
+
+.lv-runs { max-height: 70vh; overflow: auto; }
+.lv-runs tr[data-open] { cursor: pointer; }
+.lv-live { color: var(--success); font-weight: 600; }

@@ -521,7 +521,7 @@ overlap can usually go to 0, which removes the PK check entirely.
   `try:` — so e.g. a `no partition of relation "fact" found for row` (see
   the partition pre-flight note below) killed it silently.
 
-- **ETL logging goes to a per-run file, not `/dev/null`.**
+- **ETL logging: a spool file, shipped into one table.**
   `sources/etl_spawn.py:spawn_etl_subprocess` used to detach stdin/stdout/
   stderr to `DEVNULL` — deliberately, to stop a uWSGI worker's SIGTERM/
   SIGHUP or log rotation from reaching the child (still true) — which also
@@ -546,11 +546,28 @@ overlap can usually go to 0, which removes the PK check entirely.
   `SIG_IGN`, so a dead reader raises a catchable `BrokenPipeError`
   instead of killing the process. `etl_run.log_path`/`log_tail`
   (migration `0021`) record the file path on every run and the last ~8 KB
-  on failure, so the GUI's ETL Log sub-tab and history table work even
-  without shell access to the log volume. `core/etl.py:_bound_log_size`
-  `ftruncate`s the file in place once it exceeds
-  `STARCUBES_LOG_MAX_BYTES` — safe specifically because the fd is
-  `O_APPEND`, so the next write lands back at offset 0.
+  on failure. `core/etl.py:_bound_log_size` `ftruncate`s the file in place
+  once it exceeds `STARCUBES_LOG_MAX_BYTES` — safe specifically because the
+  fd is `O_APPEND`, so the next write lands back at offset 0.
+
+  **The file is only a spool** (migration 0046). A file under
+  `STARCUBES_LOG_DIR` can be served only by the container holding it, and the
+  old viewer opened one file at a time. Now the process ships its own file
+  into `starcubes_meta.log_line`, one row per line, and removes it at exit
+  (`core/log_ship.py:LogShipper`, started for every spawned command by
+  `SourcesConfig.ready()` → `sources/etl_logging.start_log_shipper`, since the
+  rollup commands never call `configure_etl_logging`). The spawner writes a
+  sidecar `<spool>.json` first — kind, datasource, offset — so even a
+  process that dies during import is attributable. The shipper holds a
+  `flock` on the file for its life; the container's `node_agent` ships the
+  remainder of any file nobody holds (`sweep_spool_dir`, after 60 s of
+  quiet), so a SIGKILLed run loses nothing and nothing is shipped twice. A
+  line gets its level from the log prefix; a traceback's lines inherit the
+  ERROR that opened them. A database outage only delays shipping: lines stay
+  pending and in the file. Retention: `STARCUBES_LOG_RETENTION_DAYS`
+  (default 14, purged hourly by the node_agent) and
+  `STARCUBES_LOG_MAX_LINES_PER_RUN` (default 200 000, oldest dropped with a
+  marker line). The viewer is `sources/log_views.py`.
 
 - **`import_fact` ensures partitions exist before starting the worker
   pool** (`core/schema.py:ensure_partitions_for`, called from

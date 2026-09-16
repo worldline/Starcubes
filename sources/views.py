@@ -74,8 +74,7 @@ from sources.alarm_fields import (PIPELINE_CONDITIONS, alarm_row_to_dict,
                                   context_labels, parse_alarm_fields,
                                   parse_context_field)
 from sources.etl_spawn import (PYTHON_EXE as _PYTHON_EXE,
-                               spawn_etl_subprocess as _spawn_etl_subprocess,
-                               log_dir as _log_dir, slugify_ds as _slugify_ds)
+                               spawn_etl_subprocess as _spawn_etl_subprocess)
 from sources.alarm_notify import send_pagerduty_test
 from core import config as core_config
 
@@ -539,6 +538,10 @@ def _render_source_page(request, pk: int, force_expert: bool):
     ctx["expert_allowed"] = request.user.is_superuser
     ctx["force_expert"] = force_expert
     ctx.update(firings)
+    if ctx["expert_allowed"]:
+        # The ETL tab's embedded log viewer (sources/_log_viewer.html).
+        from sources.log_views import viewer_context
+        ctx.update(viewer_context(pk))
     return render(request, "sources/source.html", ctx)
 
 
@@ -955,7 +958,8 @@ def etl_run(request, pk: int):
             cmd += ["--end", end]
         if limit:
             cmd += ["--limit", str(limit)]
-        _proc, log_path = _spawn_etl_subprocess(cmd, env, datasource_name=ds["name"])
+        _proc, log_path = _spawn_etl_subprocess(cmd, env, datasource_name=ds["name"],
+                                                kind="etl", datasource_id=pk)
         return JsonResponse({"ok": True, "status": "started", "log_path": log_path})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
@@ -983,135 +987,6 @@ def etl_status(request, pk: int):
     except Exception as exc:
         return JsonResponse({"error": str(exc)}, status=500)
 
-
-@_admin_required_json
-def etl_logs(request, pk: int):
-    """List this datasource's per-run log files, newest first.
-
-    Joined against the last 20 etl_run rows by log_path so the GUI can
-    show status/run_id alongside each file without a second round trip.
-    """
-    try:
-        ds = _load_datasource(pk)
-        slug = _slugify_ds(ds["name"])
-        d = _log_dir()
-        prefix = f"etl-{slug}-"
-        files = []
-        try:
-            for name in os.listdir(d):
-                if name.startswith(prefix) and name.endswith(".log"):
-                    path = os.path.join(d, name)
-                    try:
-                        st = os.stat(path)
-                    except OSError:
-                        continue
-                    files.append({"name": name, "size": st.st_size,
-                                 "mtime": st.st_mtime})
-        except OSError:
-            pass  # log dir not present yet — no runs spawned since deploy
-        files.sort(key=lambda f: f["mtime"], reverse=True)
-
-        with _meta_engine().begin() as conn:
-            runs = conn.execute(text(
-                "SELECT id, status, log_path FROM starcubes_meta.etl_run "
-                " WHERE datasource_id = :id AND log_path IS NOT NULL "
-                " ORDER BY id DESC LIMIT 20"
-            ), {"id": pk}).mappings().all()
-        by_path = {r["log_path"]: r for r in runs}
-        for f in files:
-            r = by_path.get(os.path.join(d, f["name"]))
-            f["run_id"] = r["id"] if r else None
-            f["run_status"] = r["status"] if r else None
-
-        return JsonResponse({"ok": True, "files": files})
-    except Exception as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
-
-
-_LOG_FILE_RE = re.compile(r"^etl-[A-Za-z0-9_.-]+\.log$")
-_LOG_TAIL_MAX_BYTES = 256 * 1024
-
-
-@_admin_required_json
-def etl_log_tail(request, pk: int):
-    """Incremental tail of one of this datasource's log files.
-
-    ?file=<basename>&offset=<int> -> the file's bytes from `offset`
-    onward (capped at 256 KB — seeks forward if the caller is further
-    behind than that). Without `file`, defaults to the newest log this
-    datasource owns, falling back to the most recent etl_run row's
-    log_path.
-    """
-    try:
-        ds = _load_datasource(pk)
-        slug = _slugify_ds(ds["name"])
-        d = _log_dir()
-        prefix = f"etl-{slug}-"
-
-        name = request.GET.get("file")
-        if name:
-            # Must be a plain log filename belonging to this datasource —
-            # this is the one thing standing between a public JSON
-            # endpoint and arbitrary path reads.
-            if not _LOG_FILE_RE.match(name) or not name.startswith(prefix):
-                return JsonResponse({"ok": False, "error": "invalid file"}, status=400)
-            path = os.path.realpath(os.path.join(d, name))
-            if not path.startswith(os.path.realpath(d) + os.sep):
-                return JsonResponse({"ok": False, "error": "invalid file"}, status=400)
-        else:
-            candidates = []
-            try:
-                for fname in os.listdir(d):
-                    if fname.startswith(prefix) and fname.endswith(".log"):
-                        candidates.append(fname)
-            except OSError:
-                candidates = []
-            if candidates:
-                candidates.sort(reverse=True)  # timestamp is in the name
-                name = candidates[0]
-                path = os.path.join(d, name)
-            else:
-                with _meta_engine().begin() as conn:
-                    row = conn.execute(text(
-                        "SELECT log_path FROM starcubes_meta.etl_run "
-                        " WHERE datasource_id = :id AND log_path IS NOT NULL "
-                        " ORDER BY id DESC LIMIT 1"
-                    ), {"id": pk}).scalar()
-                if not row:
-                    return JsonResponse({"ok": False, "error": "no logs yet"})
-                path = row
-                name = os.path.basename(path)
-
-        try:
-            size = os.path.getsize(path)
-        except OSError:
-            return JsonResponse({"ok": False, "error": "log file not found"}, status=404)
-
-        try:
-            offset = int(request.GET.get("offset", "0"))
-        except ValueError:
-            offset = 0
-        truncated = False
-        if offset > size:
-            # _bound_log_size() in core/etl.py truncates the file in
-            # place once it exceeds STARCUBES_LOG_MAX_BYTES.
-            offset = 0
-            truncated = True
-        if size - offset > _LOG_TAIL_MAX_BYTES:
-            offset = size - _LOG_TAIL_MAX_BYTES
-
-        with open(path, "rb") as f:
-            f.seek(offset)
-            data = f.read(_LOG_TAIL_MAX_BYTES)
-
-        return JsonResponse({
-            "ok": True, "name": name, "size": size,
-            "offset": offset + len(data),
-            "text": data.decode("utf-8", errors="replace"),
-            "truncated": truncated,
-        })
-    except Exception as exc:
-        return JsonResponse({"ok": False, "error": str(exc)}, status=500)
 
 
 @require_POST
@@ -1257,7 +1132,8 @@ def etl_forever_start(request, pk: int):
                "--name", ds["name"], "--forever", str(interval),
                "--forever-id", str(forever_id)]
         try:
-            _spawn_etl_subprocess(cmd, env, datasource_name=ds["name"])
+            _spawn_etl_subprocess(cmd, env, datasource_name=ds["name"],
+                                  kind="forever", datasource_id=pk)
         except OSError:
             # Popen failed — mark the row so the status endpoint reports it.
             with _meta_engine().begin() as conn:
@@ -1716,7 +1592,8 @@ def etl_backfill(request, pk: int):
         else:
             cmd += ["--start", start, "--end", end]
         _proc, log_path = _spawn_etl_subprocess(cmd, env,
-                                                datasource_name=ds["name"])
+                                                datasource_name=ds["name"],
+                                                kind="backfill", datasource_id=pk)
         return JsonResponse({"ok": True, "status": "started",
                              "log_path": log_path})
     except Exception as exc:
@@ -4395,15 +4272,16 @@ def _rollup_busy_response(pk: int):
 def _spawn_rollup(pk: int, command: str, extra_args: list[str]):
     """Spawn one rollup management command, ETL-style.
 
-    Reuses `spawn_etl_subprocess` unchanged: it takes an arbitrary argv, and
-    the per-run log file it opens is already served by `etl_log_tail`, so the
+    Reuses `spawn_etl_subprocess`: it takes an arbitrary argv, and the spool
+    file it opens is shipped into `log_line` like an ETL run's, so the
     rollup tab links into the ETL Log sub-tab instead of growing a second
     tailer.
     """
     ds = _load_datasource(pk)
     cmd = [_PYTHON_EXE, "manage.py", command, "--name", ds["name"]] + extra_args
     _proc, log_path = _spawn_etl_subprocess(cmd, os.environ.copy(),
-                                            datasource_name=ds["name"])
+                                            datasource_name=ds["name"],
+                                            kind=command, datasource_id=pk)
     return JsonResponse({"ok": True, "status": "started",
                          "log_path": log_path,
                          "log_file": os.path.basename(log_path) if log_path else None})

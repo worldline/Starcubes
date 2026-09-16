@@ -92,3 +92,46 @@ def configure_etl_logging() -> logging.Logger:
         _configured = True
 
     return logging.getLogger("sources.etl")
+
+
+_shipper = None
+
+
+def start_log_shipper() -> None:
+    """Ship this process's spool file into starcubes_meta.log_line, if it has one.
+
+    A process spawned by sources/etl_spawn.py finds its spool file in
+    STARCUBES_ETL_LOG_PATH, with the sidecar the spawner wrote next to it.
+    Anything else — uwsgi, a command run by hand in a terminal — has neither,
+    and this does nothing. Called from SourcesConfig.ready(), so every
+    management command a spawn can start gets it without each one having to
+    remember (the rollup commands never called configure_etl_logging).
+
+    The final flush runs at interpreter exit. A forked multiprocessing worker
+    inherits neither the thread nor the atexit handler (it leaves through
+    os._exit), so the ETL's workers cannot ship the parent's file twice.
+    """
+    global _shipper
+    if _shipper is not None:
+        return
+    import atexit
+    import os
+
+    path = os.environ.get("STARCUBES_ETL_LOG_PATH")
+    if not path:
+        return
+    from django.conf import settings
+
+    from core.log_ship import LogShipper, read_sidecar
+
+    dsn = settings.STARCUBES_POSTGRES_DSN
+    if not dsn or read_sidecar(path) is None:
+        return
+    try:
+        _shipper = LogShipper(dsn, path).start()
+    except (OSError, ValueError):
+        # Another process already ships this file (it holds the lock), or
+        # the file is gone. The node_agent's sweep is the backstop either way.
+        _shipper = None
+        return
+    atexit.register(_shipper.stop)

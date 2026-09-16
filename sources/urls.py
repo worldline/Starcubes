@@ -1,5 +1,5 @@
 from django.urls import path
-from . import views
+from . import log_views, views
 
 app_name = "sources"
 
@@ -26,6 +26,11 @@ urlpatterns = [
     # per-datasource test-send endpoint. Literal paths, like
     # alarms/firings/ and recipients/, so the <int:pk>/ routes stay clear.
     path("transports/",                                views.transports_page,   name="transports"),
+    # The one log: every process's lines and every run, filterable
+    # (sources/log_views.py). Literal paths, like transports/.
+    path("logs/",                                      log_views.logs_page,      name="logs"),
+    path("logs/api/lines/",                            log_views.logs_lines_api, name="logs_lines_api"),
+    path("logs/api/runs/",                             log_views.logs_runs_api,  name="logs_runs_api"),
     path("transports/test/",                           views.transports_test,   name="transports_test"),
     path("new/",                                       views.source_new,     name="new"),
     path("<int:pk>/",                                  views.source_detail,  name="detail"),
@@ -38,8 +43,6 @@ urlpatterns = [
     path("<int:pk>/preview-import/",                   views.preview_import,   name="preview_import"),
     path("<int:pk>/etl/run/",                          views.etl_run,          name="etl_run"),
     path("<int:pk>/etl/status/",                       views.etl_status,       name="etl_status"),
-    path("<int:pk>/etl/logs/",                          views.etl_logs,         name="etl_logs"),
-    path("<int:pk>/etl/log/",                           views.etl_log_tail,     name="etl_log_tail"),
     path("<int:pk>/etl/kill/",                          views.etl_kill,         name="etl_kill"),
     path("<int:pk>/etl/forever/start/",                 views.etl_forever_start, name="etl_forever_start"),
     path("<int:pk>/etl/forever/stop/",                  views.etl_forever_stop,  name="etl_forever_stop"),

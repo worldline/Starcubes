@@ -1038,9 +1038,8 @@ Shows the last 20 ETL runs:
 | Rows | Number of rows loaded |
 | Runtime (ms) | Wall-clock duration |
 | Error | Truncated error message (hover for full text) |
-| Log | **Log** button opens that run's log file in the **Log** sub-tab. A failed
-run also shows a collapsible **tail** with the last ~8 KB of the log
-(readable even without shell/volume access to the container). |
+| Log | **Log** button opens that run's lines in the **Log** sub-tab. A failed
+run also shows a collapsible **tail** with the last ~8 KB of its output. |
 
 The table refreshes live while an ETL is running. While a run is `running`,
 the statusbar at the bottom of the page shows live per-stage throughput
@@ -1053,20 +1052,21 @@ downstream (usually the load stage) has stopped making progress. Check the
 #### Log
 
 
-Tails the raw log file of a spawned ETL process — every `manage.py etl_run`
-invocation started from the GUI (single run or forever) writes its own
-timestamped file under `STARCUBES_LOG_DIR` (`/app/logs` in the container
-image; mount a volume there to keep logs across `podman rm`).
+Shows everything this datasource's ETL, forever and rollup processes wrote —
+from every container, because the lines are stored in the database
+(`starcubes_meta.log_line`). It is the same viewer as the global **Logs** page
+(menu → Logs), pinned to this datasource; **all logs ↗** opens the global one.
 
-- The dropdown lists this datasource's log files, newest first, each
-  labelled with the run ID and status it belongs to.
-- **Follow** (checked by default) auto-scrolls to the bottom as new lines
-  arrive.
-- **Refresh** fetches immediately instead of waiting for the next 2s poll.
-  Polling only runs while this sub-tab is open and the selected run is still
-  active.
-- Clicking **Log** on a **History** row jumps here with that run's file
-  preselected.
+- **Lines** shows the log, oldest at the top; **Runs** lists every run of every
+  kind. Clicking a run shows its lines.
+- Filter by kind, host, time, minimum **Level** (a traceback counts as the
+  ERROR that produced it) and **Text**. Clicking a badge on a line (kind,
+  host, run) filters by it; the run chip's **×** removes that filter.
+- **Follow** (checked by default) appends new lines as they arrive, polling
+  every 2 s while the sub-tab is open. **Load older** pages back.
+- Clicking **Log** on a **History** row jumps here filtered to that run.
+- Logs are kept `STARCUBES_LOG_RETENTION_DAYS` (default 14) days, and at most
+  `STARCUBES_LOG_MAX_LINES_PER_RUN` (default 200 000) lines per run.
 
 If a run stalls, this is the first place to look — every 30s (tunable via
 `STARCUBES_ETL_LOG_INTERVAL_S`) the ETL writes a heartbeat line with each

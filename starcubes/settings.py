@@ -137,21 +137,20 @@ DATABASES = {
 STARCUBES_QUERY_TIMEOUT_MS = int(os.environ.get("STARCUBES_QUERY_TIMEOUT_MS", "30000"))
 STARCUBES_QUERY_ROW_LIMIT = int(os.environ.get("STARCUBES_QUERY_ROW_LIMIT", "1000"))
 
-# ── ETL logging (sources/etl_spawn.py, sources/etl_logging.py) ──────────────
-# Every spawned ETL process (GUI-triggered or forever-mode) writes its own
-# per-run log file here instead of the historical /dev/null — see
-# `docs/etl-engine.md` "ETL logging goes to a per-run file". STARCUBES_LOG_DIR must be writable by the
-# process; the Dockerfile creates /app/logs for the container image.
+# ── ETL logging (sources/etl_spawn.py, sources/etl_logging.py, core/log_ship.py)
+# Every spawned ETL/forever/rollup process writes a spool file here, which it
+# ships line by line into starcubes_meta.log_line and removes at exit; the
+# node_agent ships what a crashed process left. So this directory is local,
+# ephemeral scratch (an emptyDir is enough) — the log itself is the table. See
+# `docs/etl-engine.md` "ETL logging". Must be writable by the process; the
+# Dockerfile creates /app/logs. Retention of the table is
+# STARCUBES_LOG_RETENTION_DAYS / STARCUBES_LOG_MAX_LINES_PER_RUN, read from the
+# environment by core/log_ship.py.
 STARCUBES_LOG_DIR = os.environ.get("STARCUBES_LOG_DIR", str(BASE_DIR / "logs"))
 STARCUBES_LOG_LEVEL = os.environ.get("STARCUBES_LOG_LEVEL", "INFO")
-# Max number of per-datasource log files kept; oldest beyond this are pruned
-# on each spawn.
-STARCUBES_LOG_KEEP = int(os.environ.get("STARCUBES_LOG_KEEP", "20"))
-# Log files older than this many days are pruned on each spawn regardless of
-# STARCUBES_LOG_KEEP.
-STARCUBES_LOG_MAX_DAYS = int(os.environ.get("STARCUBES_LOG_MAX_DAYS", "14"))
-# A single log file is truncated in place once it exceeds this size (bounds
-# a long-running forever session); see core/etl.py:_bound_log_size.
+# A single spool file is truncated in place once it exceeds this size (bounds
+# a long-running forever session's local disk use; the shipper follows the
+# truncation); see core/etl.py:_bound_log_size.
 STARCUBES_LOG_MAX_BYTES = int(os.environ.get("STARCUBES_LOG_MAX_BYTES", str(64 * 1024 * 1024)))
 # Mirror ETL log lines to the container's PID-1 stdout (so `podman logs` /
 # `docker logs` show them), in addition to the per-run log file. Off by

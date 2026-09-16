@@ -814,21 +814,15 @@
       </div>
     </div>
 
-    <!-- ETL Log tab: tails the per-run log file the spawner points a
-         detached ETL process's stdout/stderr at (sources/etl_spawn.py). -->
+    <!-- ETL Log tab: the one log viewer (sources/_log_viewer.html), pinned to
+         this datasource. The same component is /sources/logs/. -->
     <div class="etl-subpanel" id="etlsub-log">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">ETL Log</span>
-          <span style="display:flex;gap:8px;align-items:center;margin-left:auto">
-            <select id="etlLogFile" style="max-width:420px"></select>
-            <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);cursor:pointer">
-              <input type="checkbox" id="etlLogFollow" checked> Follow
-            </label>
-            <button type="button" class="btn btn-secondary btn-sm" id="etlLogRefresh">Refresh</button>
-          </span>
+          <span class="card-title">Log</span>
+          <a style="margin-left:auto;font-size:12px" href="{% url 'sources:logs' %}?datasource={{ ds.id }}">all logs ↗</a>
         </div>
-        <pre id="etlLogPane" class="text-mono" style="margin:0;padding:12px;max-height:70vh;overflow:auto;font-size:12px;white-space:pre-wrap;word-break:break-all">(select a log file)</pre>
+        {% include "sources/_log_viewer.html" with viewer_id="etlLogViewer" fixed_datasource=ds.id kinds=log_kinds levels=log_levels hosts=log_hosts %}
       </div>
     </div>
   </div>
@@ -870,6 +864,7 @@
 {# Must load AFTER the panel markup, never deferred. #}
 <script src="{% static 'sources/inline_edit.js' %}"></script>
 <script src="{% static 'sources/group_dims.js' %}"></script>
+<script src="{% static 'sources/log_viewer.js' %}"></script>
 <script>
 var DS_PK = {{ ds.id }};
 var DS_NAME = '{{ ds.name|escapejs }}';
@@ -1237,77 +1232,26 @@ function refreshHistTable(runs) {
 }
 
 // --- ETL Log tab ---
-var etlLogPollTimer = null;
-var etlLogOffsets = {};
-var etlLogPendingSelect = null;
+// The tab embeds the one log viewer (sources/static/sources/log_viewer.js).
+// These four names predate it and are what the rest of the page calls: the
+// tab switchers, the status poll and the History/Rollup "Log" links.
+var etlLogViewerEl = document.getElementById('etlLogViewer');
+var etlLogViewer = etlLogViewerEl ? new StarcubesLogViewer(etlLogViewerEl) : null;
 
-function etlLogPopulateFiles(preselect) {
-  getJSON('/sources/' + DS_PK + '/etl/logs/').then(function(data) {
-    if (!data.ok) return;
-    var sel = document.getElementById('etlLogFile');
-    var cur = preselect || sel.value;
-    sel.innerHTML = '';
-    data.files.forEach(function(f) {
-      var opt = document.createElement('option');
-      opt.value = f.name;
-      opt.textContent = f.name + (f.run_id ? (' (run ' + f.run_id + (f.run_status ? ', ' + f.run_status : '') + ')') : '');
-      sel.appendChild(opt);
-    });
-    if (!data.files.length) {
-      document.getElementById('etlLogPane').textContent = '(no log files yet — run the ETL at least once)';
-      return;
-    }
-    if (cur && data.files.some(function(f){ return f.name === cur; })) sel.value = cur;
-    etlLogFetch(true);
-  }).catch(function(e) {
-    document.getElementById('etlLogPane').textContent = '✗ Could not list log files: ' + e;
-  });
-}
+function etlLogActivate() { if (etlLogViewer) etlLogViewer.activate(); }
+function etlLogStartPoll() { if (etlLogViewer && !etlLogViewer.active) etlLogViewer.activate(); }
+function etlLogStopPoll() { if (etlLogViewer) etlLogViewer.deactivate(); }
 
-function etlLogFetch(reset) {
-  var sel = document.getElementById('etlLogFile');
-  var name = sel.value;
-  if (!name) return;
-  if (reset) etlLogOffsets[name] = 0;
-  var offset = etlLogOffsets[name] || 0;
-  getJSON('/sources/' + DS_PK + '/etl/log/?file=' + encodeURIComponent(name) + '&offset=' + offset)
-    .then(function(data) {
-      if (!data.ok) { if (data.error) document.getElementById('etlLogPane').textContent = data.error; return; }
-      var pane = document.getElementById('etlLogPane');
-      if (data.truncated || offset === 0) pane.textContent = '';
-      pane.textContent += data.text;
-      etlLogOffsets[name] = data.offset;
-      if (document.getElementById('etlLogFollow').checked) pane.scrollTop = pane.scrollHeight;
-    }).catch(function(e) {
-      console.error('ETL log tail failed:', e);
-    });
-}
-
-function etlLogStartPoll() {
-  if (etlLogPollTimer) return;
-  etlLogPollTimer = setInterval(function(){ etlLogFetch(false); }, 2000);
-}
-function etlLogStopPoll() { clearInterval(etlLogPollTimer); etlLogPollTimer = null; }
-
-function etlLogActivate() {
-  etlLogPopulateFiles(etlLogPendingSelect);
-  etlLogPendingSelect = null;
-  if (etlStrip.classList.contains('running')) etlLogStartPoll(); else etlLogStopPoll();
-}
-
+// `path` is a run's log_path; its basename is the run_ref its lines carry.
 function openEtlLogFile(path) {
-  if (!path) return;
-  etlLogPendingSelect = path.split('/').pop();
-  // Two tiers to switch now: the ETL tab, then its Log sub-tab. The main
-  // tab's own handler reads activeEtlSub, so set the sub-tab afterwards —
-  // activateEtlSub is what actually starts the tail.
+  if (!path || !etlLogViewer) return;
+  // Two tiers to switch: the ETL tab, then its Log sub-tab. The main tab's
+  // own handler reads activeEtlSub, so set the sub-tab afterwards.
   var btn = document.querySelector('#tabNav .tab-btn[data-tab="etl"]');
   if (btn) btn.click();
   activateEtlSub('log');
+  etlLogViewer.showRun(path.split('/').pop());
 }
-
-on('etlLogFile', 'change', function(){ etlLogFetch(true); });
-on('etlLogRefresh', 'click', function(){ etlLogFetch(false); });
 
 // Check on page load if ETL is already running
 pollEtlStatus();

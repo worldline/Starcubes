@@ -24,6 +24,10 @@ Each cycle:
   gone, or which its draining container released, is taken over and run here.
   On every notification and at least once a minute; off with
   `STARCUBES_FOREVER_ADOPT=0`, for a container that must never run ETL.
+- **Log housekeeping** (core/log_ship.py): every 30 s the spool files in
+  STARCUBES_LOG_DIR whose process died without shipping its log are shipped
+  into `log_line` and removed; once an hour lines older than
+  STARCUBES_LOG_RETENTION_DAYS are deleted.
 
 Woken by `NOTIFY starcubes_control` and polling every few seconds as a
 fallback, so a lost notification costs seconds, not a stuck run.
@@ -45,6 +49,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from sqlalchemy import text
 
+from core.log_ship import purge_old_lines, sweep_spool_dir
 from core.lease import (CONTROL_CHANNEL, acquire_process_lease,
                         reap_dead_runs, verify_local_pid)
 from core.node import instance_id
@@ -57,6 +62,8 @@ log = logging.getLogger("sources.node_agent")
 
 POLL_S = 5
 ADOPT_EVERY_S = 60
+SWEEP_EVERY_S = 30
+PURGE_EVERY_S = 3600
 
 _stopping = False
 
@@ -96,6 +103,8 @@ class Command(BaseCommand):
         self._adopt = os.environ.get("STARCUBES_FOREVER_ADOPT", "1") != "0"
         self._adopt_due = 0.0
         self._notified = False
+        self._sweep_due = 0.0
+        self._purge_due = 0.0
 
         if options["once"]:
             self._cycle(meta)
@@ -185,6 +194,22 @@ class Command(BaseCommand):
                     log.info("node_agent: adopted %d forever session(s)", adopted)
             except Exception:
                 log.exception("node_agent: adoption failed, continuing")
+        if now >= self._sweep_due:
+            self._sweep_due = now + SWEEP_EVERY_S
+            try:
+                n = sweep_spool_dir(meta, settings.STARCUBES_LOG_DIR)
+                if n:
+                    log.info("node_agent: shipped %d orphaned log file(s)", n)
+            except Exception:
+                log.exception("node_agent: log sweep failed, continuing")
+        if now >= self._purge_due:
+            self._purge_due = now + PURGE_EVERY_S
+            try:
+                n = purge_old_lines(meta)
+                if n:
+                    log.info("node_agent: purged %d log line(s) past retention", n)
+            except Exception:
+                log.exception("node_agent: log purge failed, continuing")
 
     def _kill_pass(self, meta) -> None:
         with meta.begin() as conn:

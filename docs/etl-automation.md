@@ -128,6 +128,8 @@ Environment variables, all with sane defaults and none normally set:
 | `STARCUBES_MAX_OVERLAP_PKS` | 5 000 000 | Ceiling on a de-duplicated reload. |
 | `STARCUBES_BACKFILL_IDS_MAX` | 100 000 | Missing ids an audit will store for a targeted backfill. Past it the run is marked `ids_truncated` and only a window backfill is offered. |
 | `STARCUBES_FOREVER_ADOPT` | 1 | `0` stops this container's `node_agent` from adopting other containers' forever sessions. A container start still resumes dead ones. |
+| `STARCUBES_LOG_RETENTION_DAYS` | 14 | Age after which the node_agent deletes log lines (`log_line`). |
+| `STARCUBES_LOG_MAX_LINES_PER_RUN` | 200 000 | Lines one run may keep; the oldest go, with a marker line. |
 | `STARCUBES_DRAIN_TIMEOUT_S` | 25 | How long `node_drain` waits at shutdown for this container's runs to hand over. Must be shorter than the runtime's stop timeout. |
 
 ---

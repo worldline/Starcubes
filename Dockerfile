@@ -79,8 +79,9 @@ RUN rm -rf /app/viz/static/timeseries
 COPY --from=jsbuilder /js/vendor/timeseries/ /app/viz/static/timeseries/
 
 # Writable dirs for rootless podman (no chown needed — rootless maps to your UID)
-# /app/logs holds per-ETL-run log files (sources/etl_spawn.py); mount it as a
-# volume to survive `podman rm` — see CLAUDE.md "ETL logging".
+# /app/logs is only a spool: each ETL/rollup process ships its output into
+# starcubes_meta.log_line and removes the file (core/log_ship.py). No volume
+# needed — see docs/etl-engine.md "ETL logging".
 RUN mkdir -p /app/staticfiles /app/logs /run/nginx /var/log/nginx
 
 # ── Config files ──────────────────────────────────────────────────────────────

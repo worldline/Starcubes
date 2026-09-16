@@ -104,7 +104,7 @@ single-statement guard, a cancel button, per-user history and CSV export.
 ### Watch the loads
 
 Start an incremental run, override its window, run it forever at an interval,
-or kill it. Every run writes a row and its own log file.
+or kill it. Every run writes a row, and its output lands in one filterable log.
 
 ![ETL commands](docs/img/manage-etlcmds.png)
 

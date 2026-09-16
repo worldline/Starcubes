@@ -55,6 +55,19 @@ Notable changes per release. Format follows
   start of this version — `bootstrap` imports its files once and logs each
   one; afterwards the mount can go. A saved profile can reference only
   shipped CSVs by name (Save as Profile has always written values inline).
+- **One log for every process, from every container** (migration 0046).
+  Spawned ETL, forever and rollup processes ship their output line by line
+  into `starcubes_meta.log_line`; a crashed process's remainder is shipped by
+  its container's `node_agent`, and a database outage only delays it. The
+  new **Logs** page (menu and tab bar, superuser) shows **Lines** and
+  **Runs** behind one filter bar — datasource, kind, host, level, text, run,
+  time — with the filters in the URL; a traceback matches the ERROR filter
+  as a whole. The ETL tab's Log sub-tab is the same viewer pinned to its
+  datasource. The view `run`'s `run_ref` is now the log's name.
+  **Operators:** `STARCUBES_LOG_DIR` is only a local spool now — no volume
+  needed. `STARCUBES_LOG_KEEP` and `STARCUBES_LOG_MAX_DAYS` are gone; use
+  `STARCUBES_LOG_RETENTION_DAYS` (14) and `STARCUBES_LOG_MAX_LINES_PER_RUN`
+  (200 000). The JSON endpoints `etl/logs/` and `etl/log/` are removed.
 
 ### Fixed
 

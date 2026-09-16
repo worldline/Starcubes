@@ -1,0 +1,25 @@
+{% extends "sources/base.html" %}
+{% load static %}
+{% block title %}Logs — starcubes{% endblock %}
+
+{% block content %}
+{% include "sources/_global_tabs.html" %}
+
+<p class="text-muted" style="margin:0 0 12px;font-size:12px">
+  Everything every ETL, forever and rollup process wrote, from every container,
+  in one log. Filter instead of switching pages; <em>Runs</em> lists every run of
+  every kind with the same filters, and a click shows its lines.
+</p>
+
+<div class="card">
+  {% include "sources/_log_viewer.html" with viewer_id="logViewer" url_state=1 %}
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script src="{% static 'sources/log_viewer.js' %}"></script>
+<script>
+new StarcubesLogViewer(document.getElementById('logViewer')).activate();
+</script>
+{% endblock %}
