@@ -337,8 +337,10 @@ The five `rollup_*` management commands, split by how long they run. See
 ### JSON: source profiles
 A **profile** is a datasource's whole configuration as one YAML file, minus
 the DSN. See [`docs/source-profiles.md`](source-profiles.md).
-- `GET  /sources/profiles/list/` — catalogue: every profile in `profiles/user/`
-  and `profiles/examples/` with `origin`, description, dialect and counts.
+- `GET  /sources/profiles/list/` — catalogue: every saved profile
+  (`starcubes_meta.profile`) and every file in `profiles/examples/`, with
+  `origin`, description, dialect, counts and, for a saved one,
+  `updated_at`/`updated_by`.
   A profile that fails to parse is listed with an `error` instead of taking
   the catalogue down. Login-only (any authenticated user — the catalogue
   backs the new-datasource "Use profile" picker).

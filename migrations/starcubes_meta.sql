@@ -1585,3 +1585,18 @@ END $$;
 
 COMMENT ON COLUMN starcubes_meta.etl_forever.status IS
   'running/stopping: active (one per datasource, ux_etl_forever_active). stopped: ended on request, never adopted. failed: the process died or never started. released: left on SIGTERM without a stop request while its container drained -- adopted by another container.';
+
+-- 0045_profile.sql -- saved source profiles live in the database, not in
+-- profiles/user/: with several containers on one database a file saved on one
+-- is missing on the next. Shipped examples stay files in the image; a row with
+-- an example's name shadows it. bootstrap imports leftover files once.
+CREATE TABLE IF NOT EXISTS starcubes_meta.profile (
+    name        text PRIMARY KEY
+                CHECK (name ~ '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'),
+    yaml        text NOT NULL,
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    updated_by  text
+);
+
+COMMENT ON TABLE starcubes_meta.profile IS
+  'Saved source profiles (YAML), shared by every container. Shipped examples stay files under profiles/examples/ in the image; a row with the same name shadows one.';

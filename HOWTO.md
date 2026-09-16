@@ -728,8 +728,8 @@ changes required.
 - **Hamburger menu → Profiles** (or the Profiles tab) — the catalogue: what is available, what
   each profile contains, and buttons to use, upload or delete one.
 - **Detail page → Basics → Save as Profile…** — writes this datasource's
-  whole configuration to `profiles/user/<name>.yaml`, or downloads it as a
-  file. The source DSN is never included.
+  whole configuration as a saved profile (stored in the database, so every
+  container sees it), or downloads it as a file. The source DSN is never included.
 - **Detail page → Basics → Apply Profile…** — shows what would change
   first (added, removed and changed rows per section, plus scalar
   settings); a second, red button applies it. This **replaces** the

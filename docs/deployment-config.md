@@ -44,29 +44,25 @@ codebase won't reveal.
   break every fresh install. Rows are cleaned up explicitly by the
   `delete_user` branch of `sources/views.py:settings_page` instead.
 
-## Saved profiles need a volume
+## Saved profiles need no volume
 
-Source profiles are YAML files under `profiles/` (see
-[`docs/source-profiles.md`](source-profiles.md)). Two directories:
+Source profiles (see [`docs/source-profiles.md`](source-profiles.md)) come
+from two places:
 
 - `profiles/examples/` — shipped, tracked in git, arrives via `COPY . /app/`.
-- `profiles/user/` — written at runtime by **Save as Profile** and
-  **Upload**.
+- `starcubes_meta.profile` — written at runtime by **Save as Profile** and
+  **Upload** (migration 0045).
 
-`COPY . /app/` puts `profiles/user/` inside the image, so anything saved
-there is **discarded by the next build**. Mount it:
-
-```
--v starcubes-profiles:/app/profiles/user
-```
-
-`STARCUBES_PROFILE_DIR` redirects the saved-profile directory somewhere
-else entirely, if a volume at that path is inconvenient. It is read from
-the environment in `core/profile.py` rather than from Django settings —
-`core/` must not import Django.
+They used to be files under `profiles/user/`, which needed a volume
+(`COPY . /app/` put the directory inside the image, where the next build
+discarded it) and could not be shared by several containers. **An existing
+volume can stay mounted for one upgrade:** `manage.py bootstrap` imports its
+files into the table — once, never over an existing row, without deleting
+anything — and reports each one in the container log. After that the mount
+(and `STARCUBES_PROFILE_DIR`, which only that import still reads) can go.
 
 The shipped examples stay read-only from the GUI: `profile_delete` refuses
-anything that is not in the user directory.
+anything that is not a saved profile.
 
 ## CSRF
 

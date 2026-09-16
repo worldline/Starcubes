@@ -11,17 +11,24 @@ datasource that has no DSN yet.
 
 ## Where profiles live
 
-| Directory | Role |
+| Where | Role |
 |---|---|
 | `profiles/examples/` | Shipped with the repo, tracked in git, read-only from the GUI |
-| `profiles/user/` | Saved from a running installation; redirect with `STARCUBES_PROFILE_DIR` |
+| `starcubes_meta.profile` | Saved from a running installation (Save as Profile, Upload) — one row per profile, the YAML stored byte for byte |
 
-A name present in both resolves to the **user** copy, so a site can shadow a
+A name present in both resolves to the **saved** copy, so a site can shadow a
 shipped example without editing a tracked file.
 
-In a container, `profiles/user/` belongs on a volume — `COPY . /app/` would
-otherwise put saved profiles inside the image, where the next build discards
-them. See [`docs/deployment-config.md`](deployment-config.md).
+Saved profiles were files under `profiles/user/` until migration 0045. In a
+container that needed a volume, and with several containers on one database
+a profile saved on one was missing on the next. As rows they need neither.
+`manage.py bootstrap` imports any files still in `profiles/user/` (or
+`STARCUBES_PROFILE_DIR`) once, never over an existing row, and leaves the
+files alone. A saved profile can reference only shipped CSVs by name — a file
+next to it no longer has anywhere to live — or carry its values inline, which
+is what Save as Profile writes anyway. Every `core/profile.py` function that
+reads or writes saved profiles takes the metadata engine; without one only
+the examples are visible.
 
 ## Entry points
 
@@ -47,8 +54,9 @@ browser cannot write a profile differently.
 
 ## Adding a profile by hand
 
-1. Drop `profiles/examples/<name>.yaml` (or `profiles/user/<name>.yaml`).
-   The filename stem is the profile name; `iter_profiles()` discovers it.
+1. Drop `profiles/examples/<name>.yaml` (shipped with the image), or upload
+   the file on the Profiles page (stored in `starcubes_meta.profile`). The
+   filename stem is the profile name; `iter_profiles()` discovers both.
 2. Make sure `source.dialect` matches the SQL in
    `fact_columns[*].source_expr`. The GUI warns when the form's dialect and
    the profile's disagree.
@@ -268,7 +276,7 @@ profile was loaded at module import.
 - [`docs/star-schema.md`](star-schema.md) — `fact_column.role`,
   `dimension.*` semantics.
 - [`docs/sources-app.md`](sources-app.md) — the `/sources/` URL map.
-- [`docs/deployment-config.md`](deployment-config.md) —
-  `STARCUBES_PROFILE_DIR` and the container volume.
+- [`docs/deployment-config.md`](deployment-config.md) — why saved profiles
+  no longer need a volume.
 - [`docs/etl-engine.md`](etl-engine.md) — how `watermark_fact_expr` is
   consumed by the ETL window's upper bound.

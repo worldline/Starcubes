@@ -48,8 +48,8 @@ from core.audit import (audit_id_details, audit_window,
 from core.alarm_io import (MAX_ALARM_FILE_BYTES, AlarmIOError,
                            dump_alarms, parse_alarms_text)
 from core.profile import (ProfileError, delete_profile, dump_profile,
-                          iter_profiles, load_profile, profile_origin,
-                          profile_path, save_profile, validate_profile_name,
+                          iter_profiles, load_profile, profile_source,
+                          save_profile, validate_profile_name,
                           MAX_PROFILE_BYTES)
 from core.alarm import normalize_context_rows
 from core.query import (EXTENT_STYLES, LADDER_STYLES, grouped_label,
@@ -245,7 +245,7 @@ def source_new(request):
         profile = None
         if preload:
             try:
-                profile = load_profile(preload)
+                profile = load_profile(preload, _meta_engine())
             except ProfileError as exc:
                 return HttpResponseBadRequest(str(exc))
         with _meta_engine().begin() as conn:
@@ -315,7 +315,7 @@ def source_new(request):
         # The profile picker lists every profile under profiles/ — shipped
         # examples and saved ones alike. Selecting one prefills the form
         # from ``profile_detail``; see ``docs/source-profiles.md``.
-        "profiles": iter_profiles(),
+        "profiles": iter_profiles(_meta_engine()),
         "selected_profile": request.GET.get("profile", ""),
         "current_source_id": "new",
         "current_source_name": None,
@@ -3799,7 +3799,7 @@ def profiles_list(request):
     """Catalogue of every profile, shipped and saved. Login-only."""
     if not request.user.is_authenticated:
         return JsonResponse({"ok": False, "error": "login required"}, status=403)
-    return JsonResponse({"ok": True, "profiles": iter_profiles()})
+    return JsonResponse({"ok": True, "profiles": iter_profiles(_meta_engine())})
 
 
 @_admin_required_page
@@ -3817,7 +3817,7 @@ def profiles_page(request):
     """
     msg = request.GET.get("msg", "")
     err = request.GET.get("err", "")
-    profiles = iter_profiles()
+    profiles = iter_profiles(_meta_engine())
     # The apply/save flows are implemented once, on the manage page. This page
     # only needs enough to build the target picker that deep-links there.
     with _meta_engine().begin() as conn:
@@ -4033,22 +4033,23 @@ def transports_test(request):
 
 @_admin_required_json
 def profile_file_download(request, slug: str):
-    """Stream one catalogue profile's YAML file as an attachment.
+    """Stream one catalogue profile's YAML as an attachment.
 
-    Serves the file as it sits on disk — the same bytes an upload stored —
-    so a download/upload trip round-trips losslessly. Profiles exported via
+    Serves the text as stored — the same bytes an upload stored — so a
+    download/upload trip round-trips losslessly. Profiles exported via
     ``dump_profile`` carry their inline dimensions as ``values:``, so they
     are self-contained by construction; a hand-written profile using
     ``csv:`` references keeps those references, exactly as it reads here.
     """
     try:
-        path = profile_path(validate_profile_name(slug))
+        source = profile_source(validate_profile_name(slug), _meta_engine())
     except ProfileError as exc:
         return _profile_error(exc, status=404)
-    if path is None:
+    if source is None:
         return _profile_error(ValueError(f"profile {slug!r} not found"),
                               status=404)
-    response = HttpResponse(path.read_bytes(), content_type="application/x-yaml")
+    response = HttpResponse(source[1].encode("utf-8"),
+                            content_type="application/x-yaml")
     response["Content-Disposition"] = f'attachment; filename="{slug}.yaml"'
     return response
 
@@ -4056,14 +4057,15 @@ def profile_file_download(request, slug: str):
 @_admin_required_json
 def profile_detail(request, slug: str):
     """One profile's metadata plus the scalars the create form prefills from."""
+    meta = _meta_engine()
     try:
-        profile = load_profile(validate_profile_name(slug))
+        source = profile_source(validate_profile_name(slug), meta)
+        profile = load_profile(slug, meta)
     except ProfileError as exc:
         return _profile_error(exc, status=404)
-    path = profile_path(slug)
     return JsonResponse({"ok": True, "profile": {
         "name": profile.name,
-        "origin": profile_origin(path) if path else "example",
+        "origin": source[0] if source else "example",
         "description": profile.description,
         "dialect": profile.source_dialect,
         "scalars": profile.datasource_scalars(),
@@ -4078,7 +4080,7 @@ def profile_detail(request, slug: str):
 @require_POST
 @_admin_required_json
 def profile_upload(request):
-    """Validate an uploaded YAML and store it under ``profiles/user/``."""
+    """Validate an uploaded YAML and store it as a saved profile."""
     upload = request.FILES.get("file")
     if upload is None:
         return _profile_error(ValueError("no file uploaded"))
@@ -4092,13 +4094,14 @@ def profile_upload(request):
     except UnicodeDecodeError as exc:
         return _profile_error(ValueError(f"file is not UTF-8 text: {exc}"))
     try:
-        # Validates before anything is written; an invalid profile never
-        # reaches the filesystem.
-        path = save_profile(name, raw)
+        # Validates before anything is written; an invalid profile is never
+        # stored.
+        save_profile(_meta_engine(), name, raw,
+                     updated_by=request.user.get_username())
     except ProfileError as exc:
         return _profile_error(exc)
-    return JsonResponse({"ok": True, "name": name, "path": str(path),
-                         "profiles": iter_profiles()})
+    return JsonResponse({"ok": True, "name": name,
+                         "profiles": iter_profiles(_meta_engine())})
 
 
 @require_POST
@@ -4106,16 +4109,16 @@ def profile_upload(request):
 def profile_delete(request, slug: str):
     """Delete a saved profile. Shipped examples are not deletable."""
     try:
-        delete_profile(slug)
+        delete_profile(_meta_engine(), slug)
     except ProfileError as exc:
         return _profile_error(exc)
-    return JsonResponse({"ok": True, "profiles": iter_profiles()})
+    return JsonResponse({"ok": True, "profiles": iter_profiles(_meta_engine())})
 
 
 @require_POST
 @_admin_required_json
 def profile_save(request, pk: int):
-    """Save this datasource's configuration as ``profiles/user/<name>.yaml``."""
+    """Save this datasource's configuration as a saved profile ``name``."""
     name = (request.POST.get("name") or "").strip()
     description = (request.POST.get("description") or "").strip()
     overwrite = request.POST.get("overwrite") == "true"
@@ -4123,23 +4126,25 @@ def profile_save(request, pk: int):
         validate_profile_name(name)
     except ProfileError as exc:
         return _profile_error(exc)
-    existing = profile_path(name)
+    meta = _meta_engine()
+    existing = profile_source(name, meta)
     if existing is not None and not overwrite:
         return JsonResponse({
-            "ok": False, "exists": True, "origin": profile_origin(existing),
+            "ok": False, "exists": True, "origin": existing[0],
             "error": f"profile {name!r} already exists",
         }, status=409)
-    if existing is not None and profile_origin(existing) == "example":
+    if existing is not None and existing[0] == "example":
         return _profile_error(ValueError(
             f"{name!r} is a shipped example; choose another name"))
     try:
         yaml_text = _datasource_profile_yaml(pk, name=name, description=description)
-        path = save_profile(name, yaml_text)
+        save_profile(meta, name, yaml_text,
+                     updated_by=request.user.get_username())
     except (ProfileError, ValueError) as exc:
         return _profile_error(exc)
-    return JsonResponse({"ok": True, "name": name, "path": str(path),
+    return JsonResponse({"ok": True, "name": name,
                          "bytes": len(yaml_text.encode("utf-8")),
-                         "profiles": iter_profiles()})
+                         "profiles": iter_profiles(meta)})
 
 
 @_admin_required_json
@@ -4325,7 +4330,7 @@ def profile_apply(request, pk: int):
     """
     slug = (request.POST.get("profile") or "").strip()
     try:
-        profile = load_profile(validate_profile_name(slug))
+        profile = load_profile(validate_profile_name(slug), _meta_engine())
     except ProfileError as exc:
         return _profile_error(exc)
     try:

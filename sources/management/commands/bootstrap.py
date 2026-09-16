@@ -79,6 +79,17 @@ class Command(BaseCommand):
         self.stdout.write("Applying starcubes_meta.sql (post-migrate pass)...")
         ensure_starcubes_meta(_get_cached_engine(dsn), force=True)
 
+        # 1c. Saved profiles moved from profiles/user/ into the database
+        #     (migration 0045). An installation upgraded with files still in
+        #     that directory, or in STARCUBES_PROFILE_DIR, gets them imported
+        #     here — once, never over a row that exists, never deleting a
+        #     file. Under the bootstrap lock, so two containers starting on
+        #     the same volume cannot import the same file twice.
+        from core.profile import import_legacy_profiles
+
+        for line in import_legacy_profiles(_get_cached_engine(dsn)):
+            self.stdout.write(line)
+
         # 2. Create default admin user only on a fresh install. Asked of the
         #    process, not of step 0: on a fresh database SourcesConfig.ready()
         #    has already created the tables during django.setup(), before

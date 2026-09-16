@@ -1,9 +1,10 @@
 """Seed a datasource into starcubes_meta from a profile.
 
-The profile is loaded via ``core.profile.load_profile``, which looks in
-``profiles/user/`` first and then ``profiles/examples/``. Default profile is
-``oracle_payments``; override with ``--profile <name>``. To add one, drop a
-YAML file in either directory — no Python changes required.
+The profile is loaded via ``core.profile.load_profile``, which looks at the
+saved profiles in ``starcubes_meta.profile`` first and then at
+``profiles/examples/``. Default profile is ``oracle_payments``; override with
+``--profile <name>``. To add one, upload it on the Profiles page or drop a
+YAML file in ``profiles/examples/`` — no Python changes required.
 
 The INSERTs live in ``sources/profile_store.py``, shared with the GUI, so
 the CLI and the browser cannot write a profile differently.
@@ -26,7 +27,11 @@ from sources.profile_store import (insert_datasource,
 
 
 def _available_profiles() -> str:
-    """Comma-separated profile names for the --profile help text."""
+    """Comma-separated shipped profile names for the --profile help text.
+
+    Only the examples: the help text is built before any database
+    connection, and a missing profile's error message lists the saved ones.
+    """
     return ", ".join(p["name"] for p in iter_profiles()) or "<none>"
 
 
@@ -72,8 +77,8 @@ class Command(BaseCommand):
                             help="Postgres schema for this datasource's warehouse "
                                  "tables (default: starcubes_source)")
         parser.add_argument("--profile", default="oracle_payments",
-                            help="name of the profile under profiles/ "
-                                 "(default: oracle_payments). Available: "
+                            help="saved profile or shipped example (default: "
+                                 "oracle_payments). Shipped: "
                                  f"{_available_profiles()}")
         parser.add_argument("--force", action="store_true",
                             help="delete an existing datasource with the same name "
@@ -97,8 +102,9 @@ class Command(BaseCommand):
             self.stderr.flush()
             raise SystemExit(1)
 
+        meta_engine = _get_cached_engine(dsn)
         try:
-            profile = load_profile(options["profile"])
+            profile = load_profile(options["profile"], meta_engine)
         except ProfileError as exc:
             raise CommandError(str(exc))
 
@@ -107,7 +113,6 @@ class Command(BaseCommand):
                           f"{len(profile.dimensions)} dimensions, "
                           f"{len(profile.measures)} measures")
 
-        meta_engine = _get_cached_engine(dsn)
         try:
             ds_id = _upsert_datasource(meta_engine, options["name"],
                                         options["schema"], source_dsn,

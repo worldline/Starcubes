@@ -48,6 +48,13 @@ Notable changes per release. Format follows
   **Operators:** the stop timeout must exceed `STARCUBES_DRAIN_TIMEOUT_S`
   (25 s) — podman's default is 10 s, so run with `--stop-timeout 35`.
   `STARCUBES_FOREVER_ADOPT=0` keeps a container from adopting.
+- **Saved profiles live in the database** (`starcubes_meta.profile`,
+  migration 0045), so every container sees a profile saved on any of them
+  and no volume is needed. **Operators:** keep an existing
+  `profiles/user` volume (or `STARCUBES_PROFILE_DIR`) mounted for the first
+  start of this version — `bootstrap` imports its files once and logs each
+  one; afterwards the mount can go. A saved profile can reference only
+  shipped CSVs by name (Save as Profile has always written values inline).
 
 ### Fixed
 

@@ -3,16 +3,20 @@
 A **source profile** is a YAML file describing one datasource's complete
 ``starcubes_meta`` configuration — the source-side scalars plus its fact
 columns, dimensions, indices, measures and group dimensions. Profiles live
-in two directories:
+in two places:
 
 ``profiles/examples/``
     Shipped with the repo, tracked in git, read-only from the GUI.
 
-``profiles/user/``
-    Configurations saved from a running installation. Overridable with
-    ``STARCUBES_PROFILE_DIR`` so a container can mount it on a volume.
+``starcubes_meta.profile``
+    Configurations saved from a running installation (migration 0045). They
+    used to be files under ``profiles/user/``; with several containers on one
+    database a file saved on one container is missing on the next, so they
+    are rows now. Every function that touches them takes the metadata engine
+    explicitly — without one, only the shipped examples are visible.
+    ``import_legacy_profiles`` reads the old directory once, at bootstrap.
 
-A name present in both resolves to the user copy, so a site can shadow a
+A name present in both resolves to the saved copy, so a site can shadow a
 shipped example without editing tracked files.
 
 Profiles are consumed by ``manage.py seed_example --profile <name>``, by the
@@ -37,9 +41,10 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 import yaml
+from sqlalchemy import text as _sql
 
 
 # Project-root path layout: ``core/profile.py`` lives at
@@ -49,17 +54,16 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _PROFILES_DIR = _PROJECT_ROOT / "profiles"
 _EXAMPLES_DIR = _PROFILES_DIR / "examples"
 
-# Saved profiles. Redirectable so a container can point it at a volume —
-# ``COPY . /app/`` would otherwise put saved profiles inside the image,
-# where the next build discards them. Read from the environment rather than
-# Django settings because ``core/`` must not import Django.
-_USER_DIR = Path(os.environ.get("STARCUBES_PROFILE_DIR")
-                 or (_PROFILES_DIR / "user"))
+# Where saved profiles were files before migration 0045. Only
+# ``import_legacy_profiles`` reads it, once; nothing writes it any more. Read
+# from the environment rather than Django settings because ``core/`` must not
+# import Django.
+_LEGACY_USER_DIR = Path(os.environ.get("STARCUBES_PROFILE_DIR")
+                        or (_PROFILES_DIR / "user"))
 
-# Profile names double as filenames, so they are the one piece of
-# user-controlled input that reaches the filesystem. Same hardening idea as
-# the log-filename check in ``sources/views.py:etl_log_tail``: an explicit
-# allowlist, no dots (no ``..``), no separators.
+# Profile names become download filenames, URL segments and example file
+# names, so they are constrained to an explicit allowlist: no dots (no
+# ``..``), no separators. ``starcubes_meta.profile`` repeats it as a CHECK.
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 # Cap on an uploaded/saved profile. Inline dimension CSVs make profiles
@@ -304,19 +308,20 @@ def _resolve_csv_path(name: str) -> Path:
 
     Most users will write ``iso4217.csv`` (project root, where it already
     lives). Profiles may also reference files inside the profiles tree with
-    a ``profiles/…`` path or a sibling basename.
+    a ``profiles/…`` path or a sibling of the shipped examples. A saved
+    profile has no directory of its own any more (it is a database row), so
+    it can only reference shipped CSVs — or carry its values inline, which is
+    what ``dump_profile`` writes.
     """
     p = Path(name)
     if p.is_absolute():
         return p
     if p.parts and p.parts[0] == "profiles":
         return _PROJECT_ROOT / p
-    # Try the profile directories first (siblings of the profile); fall back
-    # to the project root.
-    for base in (_USER_DIR, _EXAMPLES_DIR):
-        candidate = base / p.name
-        if candidate.is_file():
-            return candidate
+    # Siblings of the shipped examples first; fall back to the project root.
+    candidate = _EXAMPLES_DIR / p.name
+    if candidate.is_file():
+        return candidate
     candidate_root = _PROJECT_ROOT / p.name
     if candidate_root.is_file():
         return candidate_root
@@ -330,10 +335,10 @@ def _resolve_csv_path(name: str) -> Path:
 # --------------------------------------------------------------------------
 
 def validate_profile_name(name: str) -> str:
-    """Return ``name`` if it is a safe profile/file name, else raise.
+    """Return ``name`` if it is a safe profile name, else raise.
 
-    Profile names become filenames, so this is the boundary that keeps a
-    request from writing outside the profiles directory.
+    The name becomes a download filename, a URL segment and possibly an
+    example's file name, so this is the boundary for all three.
     """
     if not isinstance(name, str) or not _NAME_RE.match(name):
         raise ProfileError(
@@ -342,57 +347,60 @@ def validate_profile_name(name: str) -> str:
     return name
 
 
-def profile_path(name: str) -> Path | None:
-    """Return the file backing ``name``, or ``None`` if there is none.
+def profile_source(name: str, meta_engine=None) -> Optional[tuple[str, str]]:
+    """``(origin, yaml_text)`` for ``name``, or ``None`` if there is none.
 
-    ``profiles/user/`` wins over ``profiles/examples/`` so a site can shadow
-    a shipped profile without editing a tracked file.
+    ``origin`` is ``"user"`` for a saved profile and ``"example"`` for a
+    shipped one. A saved profile wins, so a site can shadow an example.
+    Without ``meta_engine`` only the examples are visible.
     """
     validate_profile_name(name)
-    for base in (_USER_DIR, _EXAMPLES_DIR):
-        candidate = base / f"{name}.yaml"
-        if candidate.is_file():
-            return candidate
+    if meta_engine is not None:
+        with meta_engine.begin() as conn:
+            saved = conn.execute(_sql(
+                "SELECT yaml FROM starcubes_meta.profile WHERE name = :n"),
+                {"n": name}).scalar()
+        if saved is not None:
+            return "user", saved
+    path = _EXAMPLES_DIR / f"{name}.yaml"
+    if path.is_file():
+        return "example", path.read_text()
     return None
 
 
-def user_profile_path(name: str) -> Path:
-    """Return the ``profiles/user/`` path for ``name`` (may not exist yet)."""
-    return _USER_DIR / f"{validate_profile_name(name)}.yaml"
-
-
-def profile_origin(path: Path) -> str:
-    """``"user"`` or ``"example"``, by which directory ``path`` sits in."""
-    return "user" if path.parent == _USER_DIR else "example"
-
-
-def iter_profiles() -> list[dict[str, Any]]:
-    """Return catalogue metadata for every profile, user copies first.
+def iter_profiles(meta_engine=None) -> list[dict[str, Any]]:
+    """Return catalogue metadata for every profile, saved ones first.
 
     One dict per profile: ``name``, ``origin`` (``user``/``example``),
-    ``description``, ``dialect``, the three count fields the picker shows,
-    ``path``, and — for a file that fails to parse — ``error``. A broken
-    profile must not take the catalogue down with it, so parsing is
-    per-entry and defensive; ``load_profile`` still raises for the one
-    profile actually being used.
+    ``description``, ``dialect``, the count fields the picker shows,
+    ``updated_at``/``updated_by`` for a saved one, and — for a profile that
+    fails to parse — ``error``. A broken profile must not take the catalogue
+    down with it, so parsing is per-entry and defensive; ``load_profile``
+    still raises for the one profile actually being used.
     """
     seen: dict[str, dict[str, Any]] = {}
-    for base in (_USER_DIR, _EXAMPLES_DIR):
-        if not base.is_dir():
-            continue
-        for path in sorted(base.glob("*.yaml")):
-            name = path.stem
-            if name in seen or not path.is_file():
-                continue
-            seen[name] = _catalogue_entry(name, path)
+    if meta_engine is not None:
+        with meta_engine.begin() as conn:
+            rows = conn.execute(_sql(
+                "SELECT name, yaml, updated_at, updated_by "
+                "  FROM starcubes_meta.profile ORDER BY name")).mappings().all()
+        for row in rows:
+            entry = _catalogue_entry(row["name"], "user", row["yaml"])
+            entry["updated_at"] = row["updated_at"]
+            entry["updated_by"] = row["updated_by"]
+            seen[row["name"]] = entry
+    if _EXAMPLES_DIR.is_dir():
+        for path in sorted(_EXAMPLES_DIR.glob("*.yaml")):
+            if path.stem not in seen and path.is_file():
+                seen[path.stem] = _catalogue_entry(path.stem, "example",
+                                                   path.read_text())
     return sorted(seen.values(), key=lambda e: (e["origin"] != "user", e["name"]))
 
 
-def _catalogue_entry(name: str, path: Path) -> dict[str, Any]:
+def _catalogue_entry(name: str, origin: str, yaml_text: str) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "name": name,
-        "origin": profile_origin(path),
-        "path": str(path),
+        "origin": origin,
         "description": "",
         "dialect": "",
         "n_fact_columns": 0,
@@ -402,7 +410,7 @@ def _catalogue_entry(name: str, path: Path) -> dict[str, Any]:
         "error": None,
     }
     try:
-        raw = yaml.safe_load(path.read_text())
+        raw = yaml.safe_load(yaml_text)
         if not isinstance(raw, dict):
             raise ProfileError("top level is not a mapping")
         src = raw.get("source") or {}
@@ -417,22 +425,22 @@ def _catalogue_entry(name: str, path: Path) -> dict[str, Any]:
     return entry
 
 
-def load_profile(name: str = "oracle_payments") -> ExampleProfile:
+def load_profile(name: str = "oracle_payments", meta_engine=None) -> ExampleProfile:
     """Load and validate the profile named ``name``."""
-    path = profile_path(name)
-    if path is None:
-        available = [p["name"] for p in iter_profiles()] or ["<none>"]
+    source = profile_source(name, meta_engine)
+    if source is None:
+        available = [p["name"] for p in iter_profiles(meta_engine)] or ["<none>"]
         raise ProfileError(
-            f"profile {name!r} not found in {_USER_DIR} or {_EXAMPLES_DIR}. "
-            f"Available profiles: {available}")
-    return parse_profile_text(path.read_text(), name)
+            f"profile {name!r} not found among the saved profiles or in "
+            f"{_EXAMPLES_DIR}. Available profiles: {available}")
+    return parse_profile_text(source[1], name)
 
 
 def parse_profile_text(text: str, name: str) -> ExampleProfile:
     """Validate profile YAML held in memory.
 
     Split out from ``load_profile`` so an upload can be validated before
-    anything touches the filesystem.
+    anything is stored.
     """
     try:
         raw = yaml.safe_load(text)
@@ -445,11 +453,12 @@ def parse_profile_text(text: str, name: str) -> ExampleProfile:
     return _parse_profile(name, raw)
 
 
-def save_profile(name: str, text: str) -> Path:
-    """Validate ``text`` and write it to ``profiles/user/<name>.yaml``.
+def save_profile(meta_engine, name: str, text: str, *,
+                 updated_by: Optional[str] = None) -> None:
+    """Validate ``text`` and store it as the saved profile ``name``.
 
     Validation happens first and on the text as given, so a malformed
-    profile never lands on disk.
+    profile is never stored. Replaces a saved profile of the same name.
     """
     validate_profile_name(name)
     encoded = text.encode("utf-8")
@@ -458,21 +467,60 @@ def save_profile(name: str, text: str) -> Path:
             f"profile is {len(encoded)} bytes, over the "
             f"{MAX_PROFILE_BYTES}-byte limit")
     parse_profile_text(text, name)
-    _USER_DIR.mkdir(parents=True, exist_ok=True)
-    path = user_profile_path(name)
-    path.write_text(text)
-    return path
+    with meta_engine.begin() as conn:
+        conn.execute(_sql(
+            "INSERT INTO starcubes_meta.profile (name, yaml, updated_at, updated_by) "
+            "VALUES (:n, :y, now(), :u) "
+            "ON CONFLICT (name) DO UPDATE "
+            "   SET yaml = EXCLUDED.yaml, updated_at = now(), "
+            "       updated_by = EXCLUDED.updated_by"),
+            {"n": name, "y": text, "u": updated_by})
 
 
-def delete_profile(name: str) -> Path:
+def delete_profile(meta_engine, name: str) -> None:
     """Delete a saved profile. Shipped examples are never deletable."""
-    path = user_profile_path(name)
-    if not path.is_file():
+    validate_profile_name(name)
+    with meta_engine.begin() as conn:
+        gone = conn.execute(_sql(
+            "DELETE FROM starcubes_meta.profile WHERE name = :n RETURNING name"),
+            {"n": name}).scalar()
+    if gone is None:
         raise ProfileError(
             f"profile {name!r} is not a saved profile — shipped examples "
             f"cannot be deleted")
-    path.unlink()
-    return path
+
+
+def import_legacy_profiles(meta_engine) -> list[str]:
+    """Copy the pre-0045 profile files into ``starcubes_meta.profile``, once.
+
+    Reads ``STARCUBES_PROFILE_DIR`` (or ``profiles/user/``). A name that
+    already has a row is left alone, so a later edit in the database is never
+    overwritten by a stale file, and running this again changes nothing. The
+    files are not deleted. Returns one line per file for the bootstrap log.
+    A file that no longer validates — typically one referencing a CSV that
+    lived next to it in the old directory — is reported and skipped.
+    """
+    if not _LEGACY_USER_DIR.is_dir():
+        return []
+    lines: list[str] = []
+    for path in sorted(_LEGACY_USER_DIR.glob("*.yaml")):
+        name = path.stem
+        try:
+            validate_profile_name(name)
+            text = path.read_text()
+            parse_profile_text(text, name)
+        except (ProfileError, OSError, UnicodeDecodeError) as exc:
+            lines.append(f"profile file {path.name}: not imported — {exc}")
+            continue
+        with meta_engine.begin() as conn:
+            inserted = conn.execute(_sql(
+                "INSERT INTO starcubes_meta.profile (name, yaml, updated_by) "
+                "VALUES (:n, :y, 'bootstrap import') "
+                "ON CONFLICT (name) DO NOTHING RETURNING name"),
+                {"n": name, "y": text}).scalar()
+        if inserted is not None:
+            lines.append(f"profile file {path.name}: imported into starcubes_meta.profile")
+    return lines
 
 
 # --------------------------------------------------------------------------
