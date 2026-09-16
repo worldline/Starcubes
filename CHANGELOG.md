@@ -7,19 +7,6 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- **In a container, seven transport settings could not be edited on the
-  Transports page.** The image set SMTP port, TLS mode and subject prefix,
-  XMPP port, the PagerDuty events URL and severity, and the SSO display name
-  to their defaults in the environment — and a value in the environment locks
-  the field. The image no longer sets them; the defaults come from the code,
-  as in a checkout. A value you pass with `-e` still wins, as before.
-- **The e-mail subject prefix could not be switched off.** An empty value
-  counts as unset and brings `[starcubes]` back, so `none` now sends subjects
-  without a prefix. An empty `STARCUBES_SMTP_PORT` or `STARCUBES_XMPP_PORT`
-  no longer stops the app from starting.
-
 ## [2.0.0-beta.2] — 2026-09-16
 
 ### Added
@@ -58,6 +45,10 @@ Notable changes per release. Format follows
   `SQLNET.COMPRESSION = on` too — it belongs to Oracle's Advanced
   Compression option, so check the licence first. A tnsnames alias or a
   `?dsn=` Easy Connect string cannot carry it and logs a warning instead.
+- **One list of every environment variable**, in
+  [`docs/deployment-config.md`](docs/deployment-config.md#environment-variable-reference):
+  grouped, with the default in a checkout and in the image side by side, and
+  the variables starcubes sets for itself marked as such.
 
 ### Changed
 
@@ -125,6 +116,16 @@ Notable changes per release. Format follows
   so `bootstrap` saw an existing installation and skipped `admin`/`admin` —
   leaving a password-login deployment with no way in. Whether this process
   created the schema is now remembered, whichever call did it.
+- **In a container, seven transport settings could not be edited on the
+  Transports page.** The image set SMTP port, TLS mode and subject prefix,
+  XMPP port, the PagerDuty events URL and severity, and the SSO display name
+  to their defaults in the environment — and a value in the environment locks
+  the field. The image no longer sets them; the defaults come from the code,
+  as in a checkout. A value you pass with `-e` still wins, as before.
+- **The e-mail subject prefix could not be switched off.** An empty value
+  counts as unset and brings `[starcubes]` back, so `none` now sends subjects
+  without a prefix. An empty `STARCUBES_SMTP_PORT` or `STARCUBES_XMPP_PORT`
+  no longer stops the app from starting.
 
 ## [2.0.0-beta.1] — 2026-09-15
 
