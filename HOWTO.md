@@ -1199,6 +1199,20 @@ Example: `oracle+oracledb://user:pass@host:1521/SID`. The password is
 masked in the GUI. Use the **Test Connection** button to verify connectivity
 before running ETL.
 
+For Oracle, the container log states at startup whether the Oracle client
+runs in *thick* mode (an Instant Client mounted at `/app/oracle`) or *thin*
+mode. In thick mode starcubes asks for Oracle Net compression on every
+connection (`COMPRESSION=on`), which pays off on large extracts over a slow
+link. Two caveats:
+
+- Compression is negotiated: it is only used if the database server has
+  `SQLNET.COMPRESSION = on` in its `sqlnet.ora` as well. It is part of
+  Oracle's Advanced Compression option — check the licence before enabling
+  it on the server.
+- It can only be added to the `host:port/SID` form above (and
+  `?service_name=`). A tnsnames alias or a `?dsn=` Easy Connect string logs a
+  warning instead; set compression in `sqlnet.ora` or the tnsnames entry.
+
 **Import Query** — A bare `SELECT ... FROM ...` that projects every fact
 column you want to store. Must **not** include a WHERE clause — the ETL
 engine adds the watermark range filter automatically. If left blank, the

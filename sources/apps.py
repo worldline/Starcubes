@@ -1,3 +1,5 @@
+import logging
+
 from django.apps import AppConfig
 
 
@@ -8,7 +10,13 @@ class SourcesConfig(AppConfig):
     def ready(self):
         from django.conf import settings
         from core.schema import ensure_starcubes_meta
-        from core.source import _get_cached_engine
+        from core.source import _get_cached_engine, oracle_client_mode
+
+        # Here and not in init_oracle_client(): settings.py calls that
+        # before LOGGING is applied, and ready() is the first point after.
+        mode = oracle_client_mode()
+        if mode:
+            logging.getLogger("starcubes.oracle").info(mode)
 
         dsn = settings.STARCUBES_POSTGRES_DSN
         if dsn:

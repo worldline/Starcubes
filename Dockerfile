@@ -98,7 +98,8 @@ RUN chmod +x /entrypoint.sh
 # LD_LIBRARY_PATH includes /app/oracle so the dynamic linker and
 # oracledb thick mode find Oracle instantclient in all processes
 # (including podman exec).  init_oracle_client() scans LD_LIBRARY_PATH
-# for libclntsh.so and enables thick mode automatically.
+# for libclntsh.so and enables thick mode automatically, with Oracle Net
+# compression requested on every connection; the log names the mode.
 # STARCUBES_ALLOWED_HOSTS is a security setting, not a convenience one:
 # docker/nginx.conf forwards the raw client Host header (uwsgi_param HTTP_HOST
 # $http_host) so Django sees the port it needs for the CSRF origin and the OIDC

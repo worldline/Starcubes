@@ -13,6 +13,7 @@ from typing import Optional
 
 import logging
 import os
+import re
 
 import sqlalchemy
 from sqlalchemy import event, exc, text
@@ -31,6 +32,11 @@ _engine_cache: dict[tuple, sqlalchemy.Engine] = {}
 REQUEST_CONNECT_TIMEOUT_S = 10
 
 _oracle_client_initialized = False
+# One sentence on the mode `init_oracle_client` settled on, for the startup
+# log line `SourcesConfig.ready()` writes. It cannot log it itself: it runs
+# while settings.py is still being imported, before Django has applied
+# LOGGING, so an INFO record emitted there is dropped by `lastResort`.
+_oracle_client_mode: str | None = None
 
 # Whitelist of `measure.graph_style` values accepted by `Source.load`.
 # Ladder styles are duplicated here (rather than imported from `core.query`)
@@ -50,10 +56,14 @@ def init_oracle_client() -> None:
     """Initialize oracledb thick mode if Oracle client libs are on
     ``LD_LIBRARY_PATH``.  Looks for ``libclntsh.so`` in every directory
     listed there.  If found, calls ``oracledb.init_oracle_client()`` with
-    that directory so thick mode is used.  If not found, oracledb stays
-    in thin mode (pure Python, no client libs needed).
+    that directory so thick mode is used, and requests Oracle Net
+    compression on every Oracle connection (`_request_oracle_compression`).
+    If not found, oracledb stays in thin mode (pure Python, no client libs
+    needed) -- which cannot compress at all.
+
+    Either way the outcome is recorded for `oracle_client_mode()`.
     """
-    global _oracle_client_initialized
+    global _oracle_client_initialized, _oracle_client_mode
     if _oracle_client_initialized:
         return
     _oracle_client_initialized = True
@@ -62,7 +72,68 @@ def init_oracle_client() -> None:
         if os.path.isfile(os.path.join(d, "libclntsh.so")):
             import oracledb
             oracledb.init_oracle_client(lib_dir=d)
+            # On the Engine class, not on one engine: Oracle connections are
+            # opened from five create_engine() call sites, and a hook each
+            # one has to remember is a hook the sixth forgets.
+            event.listen(sqlalchemy.engine.Engine, "do_connect",
+                         _request_oracle_compression)
+            version = ".".join(str(n) for n in oracledb.clientversion())
+            _oracle_client_mode = (
+                f"oracledb thick mode, Oracle Client {version} from {d}; "
+                "Oracle Net compression requested (COMPRESSION=on) -- it is "
+                "only used if the database server enables it as well")
             return
+    _oracle_client_mode = (
+        "oracledb thin mode, no libclntsh.so on LD_LIBRARY_PATH; "
+        "Oracle Net compression is not available in thin mode")
+
+
+def oracle_client_mode() -> str | None:
+    """What `init_oracle_client` settled on, as one log-ready sentence;
+    ``None`` if it has not run in this process."""
+    return _oracle_client_mode
+
+
+# `(DESCRIPTION=` but not `(DESCRIPTION_LIST=`; Oracle allows blanks around
+# the parentheses and the `=`, and keywords are case-insensitive.
+_DESCRIPTION_RE = re.compile(r"\(\s*DESCRIPTION\s*=", re.IGNORECASE)
+_COMPRESSION_RE = re.compile(r"\(\s*COMPRESSION\s*=", re.IGNORECASE)
+_uncompressed_dsns: set[str] = set()
+
+
+def _request_oracle_compression(dialect, _conn_rec, _cargs, cparams) -> None:
+    """``do_connect`` hook: put ``(COMPRESSION=on)`` into an Oracle connect
+    descriptor before the driver sees it.
+
+    In the connect descriptor rather than in ``sqlnet.ora`` because the
+    descriptor needs no file: the only config directory the client would
+    read is the operator's instantclient mount, which is not ours to write.
+    SQLAlchemy builds a descriptor itself from the documented URL form
+    (``oracle+oracledb://user:pass@host:1521/SID`` and ``?service_name=``),
+    so that form is always covered. A descriptor-level COMPRESSION overrides
+    ``SQLNET.COMPRESSION``; a descriptor that already names COMPRESSION is
+    left alone, so an explicit choice still wins.
+
+    A tnsnames alias or an Easy Connect string (``?dsn=host:port/svc``) has
+    no descriptor to edit. That is said once per DSN rather than guessed
+    around -- compression then depends on ``sqlnet.ora``/``tnsnames.ora``.
+    Compression is negotiated: without ``SQLNET.COMPRESSION = on`` on the
+    database server the connection stays uncompressed, silently.
+    """
+    if dialect.name != "oracle":
+        return
+    dsn = cparams.get("dsn")
+    if not isinstance(dsn, str) or _COMPRESSION_RE.search(dsn):
+        return
+    if _DESCRIPTION_RE.search(dsn):
+        cparams["dsn"] = _DESCRIPTION_RE.sub(
+            lambda m: m.group(0) + "(COMPRESSION=on)", dsn)
+    elif dsn not in _uncompressed_dsns:
+        _uncompressed_dsns.add(dsn)
+        logger.warning(
+            "Oracle DSN %r is not a connect descriptor -- COMPRESSION=on "
+            "cannot be added to it; set SQLNET.COMPRESSION = on in sqlnet.ora "
+            "or COMPRESSION=on in its tnsnames.ora entry", dsn)
 
 
 logger = logging.getLogger(__name__)

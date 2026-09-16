@@ -161,7 +161,8 @@ STARCUBES_ETL_LOG_STDOUT = os.environ.get("STARCUBES_ETL_LOG_STDOUT", "0") == "1
 # line with queue depths and per-stage rates.
 STARCUBES_ETL_LOG_INTERVAL_S = int(os.environ.get("STARCUBES_ETL_LOG_INTERVAL_S", "30"))
 
-# Initialize oracledb thick mode if Oracle client libs are available.
+# Initialize oracledb thick mode if Oracle client libs are available; the
+# mode is logged by SourcesConfig.ready(), once LOGGING is in effect.
 from core.source import init_oracle_client
 init_oracle_client()
 
@@ -342,6 +343,14 @@ LOGGING = {
         "starcubes.oidc": {
             "handlers": ["console"],
             "level": STARCUBES_LOG_LEVEL,
+            "propagate": False,
+        },
+        # One line per process on whether oracledb runs in thick mode and so
+        # can compress (see core/source.py:init_oracle_client). INFO, not
+        # STARCUBES_LOG_LEVEL: it is the one record this logger ever emits.
+        "starcubes.oracle": {
+            "handlers": ["console"],
+            "level": "INFO",
             "propagate": False,
         },
     },

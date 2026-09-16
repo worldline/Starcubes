@@ -578,6 +578,25 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   enable thick mode. Idempotent (guarded by a module flag); must happen
   before any Oracle connection. In the container, mount instantclient at
   `/app/oracle` and `LD_LIBRARY_PATH=/app/oracle` (set in Dockerfile `ENV`).
+- **Thick mode requests Oracle Net compression.** `init_oracle_client()`
+  also registers `_request_oracle_compression` as a `do_connect` listener on
+  the `Engine` *class* — Oracle connections come from five `create_engine()`
+  sites, so a per-engine hook would be one somebody forgets. It inserts
+  `(COMPRESSION=on)` into every `(DESCRIPTION=…)`, which covers the
+  documented URL form because SQLAlchemy builds a descriptor from
+  `host:port/SID` and `?service_name=`. Descriptor, not `sqlnet.ora`: the
+  only config dir the client reads is the operator's `/app/oracle` mount,
+  not ours to write. A descriptor that already names `COMPRESSION` is left
+  alone; a tnsnames alias or `?dsn=` Easy Connect string has no descriptor
+  to edit and logs one warning per DSN. Thin mode cannot compress at all.
+  Compression is *negotiated* — the database server needs
+  `SQLNET.COMPRESSION = on` too, or it stays off without any error.
+- **The mode is logged by `SourcesConfig.ready()`, not by
+  `init_oracle_client()`**: settings.py calls the latter before `LOGGING` is
+  applied, so an INFO record there goes to `lastResort` and is dropped. The
+  sentence comes from `core.source.oracle_client_mode()` and goes to the
+  `starcubes.oracle` logger, pinned to INFO in `LOGGING` — one line per
+  process (uwsgi master, each `manage.py` command, each ETL run).
 - **Python lists in Django templates**: pass `json.dumps(list)` from the
   view (e.g. `pg_types_json`, `roles_json`, `idx_methods_json`) and use
   `{{ var|safe }}` in template JS. `{{ python_list|safe }}` renders Python
