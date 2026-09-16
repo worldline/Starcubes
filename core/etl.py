@@ -34,6 +34,7 @@ from sqlalchemy import text
 from tqdm import tqdm
 
 from .cache import bump_cache_epoch
+from .lease import acquire_process_lease
 from .preflight import (acquire_datasource_lock, blocking_message,
                         datasource_lock, relation_exists,
                         release_datasource_lock, run_preflight)
@@ -929,15 +930,27 @@ class _RunBudget:
     Raising `EtlAborted` rather than inventing a new exception is deliberate:
     the reaping, the `status='failed'` row and the CLI's quiet exit already
     exist for exactly this shape of ending.
+
+    It is also how another thread stops the run: `interrupt(reason)` makes the
+    next check raise. The progress thread uses it when the process lease is
+    lost (`core.lease`) — the one thread that notices cannot raise into the
+    one that has to stop. `seconds <= 0` means no deadline, only interrupts.
     """
 
     def __init__(self, source_name: str, seconds: int):
         self.source_name = source_name
         self.seconds = int(seconds)
-        self.deadline = time.monotonic() + self.seconds
+        self.deadline = (time.monotonic() + self.seconds
+                         if self.seconds > 0 else None)
+        self._interrupted: Optional[str] = None
+
+    def interrupt(self, reason: str) -> None:
+        self._interrupted = reason
 
     def check(self) -> None:
-        if time.monotonic() <= self.deadline:
+        if self._interrupted is not None:
+            raise EtlAborted(f"{self.source_name}: {self._interrupted}")
+        if self.deadline is None or time.monotonic() <= self.deadline:
             return
         raise EtlAborted(
             f"{self.source_name}: run exceeded max_run_s={self.seconds}s "
@@ -1095,7 +1108,6 @@ def import_fact(source: Source, meta_engine, *,
     # legitimately long and a cap would turn them into a retry loop:
     # a backfill, an explicit --start/--end window (the user owns it), and
     # the initial load, whose window is "everything the source has" (N17).
-    budget: Optional[_RunBudget] = None
     with meta_engine.begin() as meta:
         max_run_s = int(meta.execute(text(
             "SELECT max_run_s FROM starcubes_meta.datasource WHERE id = :ds"
@@ -1110,8 +1122,9 @@ def import_fact(source: Source, meta_engine, *,
         initial_window_s = int(meta.execute(text(
             "SELECT initial_window_s FROM starcubes_meta.datasource "
             " WHERE id = :ds"), {"ds": source.id}).scalar() or 0)
-    if capped:
-        budget = _RunBudget(source.name, max_run_s)
+    # Always present, so the progress thread can interrupt any run; it only
+    # carries a deadline when the run is capped.
+    budget = _RunBudget(source.name, max_run_s if capped else 0)
 
     # A source that accepts the connection and then never answers blocks the
     # extract indefinitely — pool_pre_ping and pool_timeout bound the
@@ -1122,7 +1135,13 @@ def import_fact(source: Source, meta_engine, *,
         statement_timeout_ms=max_run_s * 1000 if capped else None)
 
     started = datetime.now(timezone.utc)
-    parent_pid = os.getpid()
+
+    # The process lease (core/lease.py): the connection whose presence in
+    # pg_stat_activity tells every container this run is alive. Taken first,
+    # so the run row below is never written without an owner; a forever
+    # session already holds it, and gets the same one back.
+    lease = acquire_process_lease(
+        meta_engine.url.render_as_string(hide_password=False))
 
     # One ETL per datasource, enforced for every entry point rather than
     # only for the two the GUI knows about. Taken *before* the etl_run row
@@ -1136,11 +1155,14 @@ def import_fact(source: Source, meta_engine, *,
     with meta_engine.begin() as meta:
         run_id = meta.execute(text(
             "INSERT INTO starcubes_meta.etl_run "
-            "  (datasource_id, started_at, status, kind, pid, log_path) "
-            "VALUES (:ds, :t, 'running', :kind, :pid, :log_path) RETURNING id"
-        ), {"ds": source.id, "t": started, "pid": parent_pid,
+            "  (datasource_id, started_at, status, kind, pid, log_path, "
+            "   hostname, instance_id, lease_pid, lease_start) "
+            "VALUES (:ds, :t, 'running', :kind, :pid, :log_path, "
+            "        :hostname, :instance_id, :lease_pid, :lease_start) "
+            "RETURNING id"
+        ), {"ds": source.id, "t": started,
             "kind": "backfill" if backfill else "incremental",
-            "log_path": log_path}).scalar()
+            "log_path": log_path, **lease.columns()}).scalar()
 
     status = "ok"
     error: Optional[str] = None
@@ -1629,6 +1651,15 @@ def import_fact(source: Source, meta_engine, *,
         def _progress_writer():
             assert stats_arr is not None and progress_stop is not None
             while not progress_stop.wait(5.0):
+                # Before the progress write, and outside its try: a lost
+                # lease means another container may already be taking this
+                # datasource over, and the run must stop at the next chunk
+                # boundary whether or not the metadata write below succeeds.
+                if not lease.check():
+                    budget.interrupt(
+                        "the lease connection to the metadata database was "
+                        "lost — to every other container this run is dead, "
+                        "so it stops rather than keep writing")
                 try:
                     snap = _snapshot_stats(
                         stats_arr, load_slot_base, transform_slot_bases,

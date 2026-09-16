@@ -355,7 +355,23 @@ it.
 
 A second, independent advisory lock
 (`core/pipeline_alarm.py:pipeline_eval_lock`) keeps the three pipeline-alarm
-evaluators from racing.
+evaluators from racing. Every key in use is listed in `core/pglock.py`, whose
+dedicated connections also set TCP keepalives: a lock held from a host that
+vanished is released in about a minute, not the kernel's two hours.
+
+**The lock says who may write; the lease says who is alive.** The datasource
+lock is held only while a load runs, so it cannot tell a forever loop sleeping
+between runs from a dead one. That is the process lease (`core/lease.py`,
+migration 0042): each managed process keeps one connection of its own for its
+whole life and writes its `(pg_backend_pid, backend_start)` onto every run row
+it owns. The row's process is alive exactly as long as that pair is in
+`pg_stat_activity`, which every container sees alike — unlike a PID, which
+means nothing outside its own namespace. It replaced both `os.kill(pid, 0)`
+and the one-hour "stale run" age, which failed every load that legitimately
+ran longer. A process whose lease connection breaks while it keeps running
+(a network partition) is dead to everyone else, so it stops at the next chunk
+boundary instead of writing on. Rows from before 0042 have no lease and keep
+the old rules.
 
 ---
 

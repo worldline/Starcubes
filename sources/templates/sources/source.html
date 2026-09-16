@@ -1336,7 +1336,8 @@ function pollForeverStatus() {
       // Forever is running
       statusEl.style.display = 'block';
       var info = '<span class="badge badge-running"><span class="dot">●</span> Running</span>'
-        + ' PID ' + (data.pid || '?') + ', interval ' + data.interval_s + 's';
+        + ' PID ' + (data.pid || '?') + (data.hostname ? ' on ' + esc(data.hostname) : '')
+        + ', interval ' + data.interval_s + 's';
       if (data.stop_requested) info += ' <em>(stopping)</em>';
       if (data.latest_run) {
         var lr = data.latest_run;
@@ -1368,7 +1369,8 @@ function pollForeverStatus() {
         etlStripText.textContent = '✗ Forever ETL: last run failed';
       } else {
         etlStrip.className = 'etl-strip show running';
-        etlStripText.textContent = '● Forever ETL running (PID ' + (data.pid || '?') + ')';
+        etlStripText.textContent = '● Forever ETL running (PID ' + (data.pid || '?')
+          + (data.hostname ? ' on ' + data.hostname : '') + ')';
       }
       startEtlPoll();
       // Keep polling
@@ -1428,7 +1430,9 @@ on('foreverStopBtn', 'click', function() {
   resultEl.textContent = '';
   postJSON('/sources/' + DS_PK + '/etl/forever/stop/', {}).then(function(d) {
     if (d.ok) {
-      showCmdResult(resultEl, true, 'Stopping… (PID ' + (d.pid || '?') + ')');
+      showCmdResult(resultEl, true, d.remote
+        ? 'Stop requested — ' + (d.hostname || 'the other container') + ' ends the loop before its next run'
+        : 'Stopping… (PID ' + (d.pid || '?') + ')');
       // Continue polling until status changes
       setTimeout(pollForeverStatus, 1000);
     } else {

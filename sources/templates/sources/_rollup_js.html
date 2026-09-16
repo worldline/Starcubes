@@ -349,7 +349,8 @@
       '<div class="text-muted">Nothing running.</div>'; return; }
     el('rollupProgress').innerHTML =
       '<div><strong>' + esc(run.kind) + '</strong> since ' + fmtLocal(run.started_at)
-      + (run.pid ? ' · pid ' + run.pid : '') + '</div>'
+      + (run.pid ? ' · pid ' + run.pid : '')
+      + (run.hostname ? ' on ' + esc(run.hostname) : '') + '</div>'
       + '<pre class="log-pane" style="margin-top:8px;white-space:pre-wrap">'
       + esc(run.progress || 'no progress reported yet') + '</pre>';
   }

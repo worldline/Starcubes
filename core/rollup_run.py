@@ -29,6 +29,7 @@ from typing import Optional
 
 from sqlalchemy import text
 
+from core.lease import acquire_process_lease, reap_dead_runs
 from core.utils import _pid_alive, tail_file
 
 logger = logging.getLogger(__name__)
@@ -74,20 +75,27 @@ def start_run(meta_engine, datasource_id: int, kind: str, *,
     """Insert the `running` row and return its id.
 
     The pid recorded is this process's own — the command writes its own row,
-    so `os.getpid()` is exactly the process a kill button has to signal.
+    so `os.getpid()` is exactly the process a kill button has to signal. Next
+    to it go the owner columns of the process lease (`core.lease`), which is
+    what every other container judges the run's liveness by.
     """
     if kind not in KINDS:
         raise ValueError(f"unknown rollup run kind: {kind!r}")
+    lease = acquire_process_lease(
+        meta_engine.url.render_as_string(hide_password=False))
     with meta_engine.begin() as conn:
         return conn.execute(text("""
             INSERT INTO starcubes_meta.rollup_run
-                   (datasource_id, kind, status, started_at, pid, args, log_path)
+                   (datasource_id, kind, status, started_at, pid, args, log_path,
+                    hostname, instance_id, lease_pid, lease_start)
             VALUES (:ds, :kind, 'running', now(), :pid,
-                    CAST(:args AS jsonb), :log_path)
+                    CAST(:args AS jsonb), :log_path,
+                    :hostname, :instance_id, :lease_pid, :lease_start)
             RETURNING id
-        """), {"ds": datasource_id, "kind": kind, "pid": os.getpid(),
+        """), {"ds": datasource_id, "kind": kind,
                "args": _json(args),
-               "log_path": log_path or os.environ.get("STARCUBES_ETL_LOG_PATH")}
+               "log_path": log_path or os.environ.get("STARCUBES_ETL_LOG_PATH"),
+               **lease.columns()}
         ).scalar_one()
 
 
@@ -162,16 +170,18 @@ def _alive(pid: Optional[int]) -> bool:
 def reap_stale(meta_engine, datasource_id: int) -> int:
     """Mark `running` rows whose process is gone as failed. Returns the count.
 
-    A pid check rather than the age heuristic `etl_run` uses: an advise never
-    runs an hour and a backfill routinely runs longer than one, so no single
-    timeout separates the two. The pid does — with the caveat that it is only
-    meaningful on the host that spawned the run, which is also true of the
-    kill button and of `etl_resume_forever`.
+    No age heuristic: an advise never runs an hour and a backfill routinely
+    runs longer than one, so no single timeout separates the two. A row with
+    a lease is judged by it (`core.lease.reap_dead_runs`, correct from every
+    container); a legacy row without one keeps the pid check, which only
+    means something on the host that spawned it.
     """
     with meta_engine.begin() as conn:
+        n = reap_dead_runs(conn, datasource_id)
         rows = conn.execute(text(
             "SELECT id, pid FROM starcubes_meta.rollup_run "
-            " WHERE datasource_id = :ds AND status = 'running'"),
+            " WHERE datasource_id = :ds AND status = 'running' "
+            "   AND lease_pid IS NULL"),
             {"ds": datasource_id}).mappings().all()
         dead = [r["id"] for r in rows if not _alive(r["pid"])]
         for run_id in dead:
@@ -180,14 +190,15 @@ def reap_stale(meta_engine, datasource_id: int) -> int:
                 "   SET status = 'failed', finished_at = now(), "
                 "       error = 'stale run: process did not update status' "
                 " WHERE id = :id"), {"id": run_id})
-    return len(dead)
+    return n + len(dead)
 
 
 def running_run(meta_engine, datasource_id: int) -> Optional[dict]:
     """The live run for this datasource, or None. Call `reap_stale` first."""
     with meta_engine.begin() as conn:
         row = conn.execute(text(
-            "SELECT id, kind, started_at, pid, progress, progress_at "
+            "SELECT id, kind, started_at, pid, progress, progress_at, "
+            "       hostname, instance_id, lease_pid, lease_start "
             "  FROM starcubes_meta.rollup_run "
             " WHERE datasource_id = :ds AND status = 'running' "
             " ORDER BY started_at DESC LIMIT 1"),
@@ -204,7 +215,7 @@ def recent_runs(meta_engine, datasource_id: int, limit: int = 20) -> list[dict]:
     """
     with meta_engine.begin() as conn:
         rows = conn.execute(text("""
-            SELECT id, kind, status, started_at, finished_at, pid,
+            SELECT id, kind, status, started_at, finished_at, pid, hostname,
                    args, progress, progress_at, error, log_path, log_tail
               FROM starcubes_meta.rollup_run
              WHERE datasource_id = :ds

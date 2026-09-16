@@ -21,8 +21,31 @@ Notable changes per release. Format follows
 - The dedicated connections behind advisory locks now set TCP keepalives, so
   a lock held by a container whose host vanished is released after about a
   minute instead of the kernel's two hours.
+- **Runs know which container they live on, and every container can tell
+  whether they are alive.** Each ETL, forever and rollup process holds a
+  lease — one database connection of its own — and writes it onto its run
+  rows together with the host name and instance id (migration 0042). The
+  forever status and the rollup progress name the host. A new view, `starcubes_meta.run`, lists every run
+  of every kind (etl, backfill, forever, rollup, audit, housekeeping) in one
+  place, with an `alive` column.
+
+### Changed
+
+- **Kill and Stop only signal a process they have verified.** A kill aimed
+  at a run on another container is refused with its host name instead of
+  signalling whatever local process holds the same PID; Stop Forever still
+  works from any container. A lost lease connection stops a run at the next
+  chunk boundary.
 
 ### Fixed
+
+- **A second container failed the first one's forever sessions.** A status
+  poll judged liveness with `os.kill(pid, 0)`, which cannot see another
+  container's processes, marked a healthy session `failed`, and a container
+  start "resumed" it a second time. Liveness is now the lease; a starting
+  container resumes only sessions whose process is really gone.
+- **A load running longer than an hour was marked failed** while it was
+  still running (the old "stale run" age). The lease has no age limit.
 
 - **A fresh install created no admin user.** On an empty database the app's
   own startup applied `starcubes_meta.sql` a moment before `bootstrap` did,

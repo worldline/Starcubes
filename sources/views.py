@@ -37,6 +37,8 @@ from core.etl import (truncate_last_partition, truncate_partition,
                       drop_partition, delete_fact_from,
                       clear_etl_history, set_highwatermark)
 from core.housekeeping import run_housekeeping
+from core.lease import (is_local as lease_is_local, lease_state,
+                        reap_dead_runs, verify_local_pid)
 from core.pipeline_alarm import CONDITIONS as _PIPELINE_CONDS
 from core.preflight import run_preflight
 from core.utils import _parse_dt, _pid_alive
@@ -868,20 +870,52 @@ def preview_import(request, pk: int):
         return JsonResponse({"ok": False, "error": str(exc)})
 
 
+def _signal_target(conn, row) -> str:
+    """Where the process of a running row is, as far as a signal is concerned.
+
+    ``local``      in this container, and its pid verified against its lease
+    ``remote``     alive, in another container — no signal can reach it
+    ``unverified`` a lease is held here, but not by that pid: never signal
+    ``gone``       no process left to signal
+
+    A row without a lease (written before migration 0042) keeps the old test,
+    a local pid check, which only means something where it was spawned.
+    """
+    if row.get("lease_pid") is None:
+        return "local" if row.get("pid") and _pid_alive(row["pid"]) else "gone"
+    if not lease_state(conn, row["lease_pid"], row["lease_start"]):
+        return "gone"
+    if not lease_is_local(row):
+        return "remote"
+    return "local" if verify_local_pid(conn, row) else "unverified"
+
+
+def _signal_refusal(target: str, row):
+    """The 409 for a target this container must not signal, else None."""
+    if target == "remote":
+        return JsonResponse(
+            {"ok": False, "remote": True, "hostname": row.get("hostname"),
+             "error": f"This run is on container {row.get('hostname') or '?'} "
+                      f"— it can only be stopped from there."},
+            status=409)
+    if target == "unverified":
+        return JsonResponse(
+            {"ok": False,
+             "error": f"pid {row.get('pid')} does not hold this run's lease "
+                      f"— refusing to signal it."},
+            status=409)
+    return None
+
+
 def _etl_busy_response(pk: int):
     """409 JsonResponse if an ETL is already running for this datasource.
 
-    Also reaps stale `running` rows whose process died without updating
-    the status. Returns None when the datasource is free to start a run.
+    Also reaps `running` rows whose process is gone (by its lease — see
+    core/lease.py — so from whichever container this request landed on).
+    Returns None when the datasource is free to start a run.
     """
     with _meta_engine().begin() as conn:
-        # Mark stale runs as failed (process killed/crashed before updating).
-        conn.execute(text(
-            "UPDATE starcubes_meta.etl_run SET status = 'failed', "
-            "  error = 'stale run: process did not update status' "
-            " WHERE datasource_id = :id AND status = 'running' "
-            "   AND started_at < now() - interval '1 hour'"
-        ), {"id": pk})
+        reap_dead_runs(conn, pk)
         running = conn.execute(text(
             "SELECT id FROM starcubes_meta.etl_run "
             "WHERE datasource_id = :id AND status = 'running' LIMIT 1"
@@ -932,17 +966,12 @@ def etl_run(request, pk: int):
 def etl_status(request, pk: int):
     try:
         with _meta_engine().begin() as conn:
-            # Mark stale running rows as failed.
-            conn.execute(text(
-                "UPDATE starcubes_meta.etl_run SET status = 'failed', "
-                "  error = 'stale run: process did not update status' "
-                " WHERE datasource_id = :id AND status = 'running' "
-                "   AND started_at < now() - interval '1 hour'"
-            ), {"id": pk})
+            # Close running rows whose process is gone (core/lease.py).
+            reap_dead_runs(conn, pk)
             runs = conn.execute(text(
                 "SELECT id, status, started_at, finished_at, "
                 "       first_end_time, last_end_time, rows, runtime_ms, error, "
-                "       pid, progress_rows, progress_at, "
+                "       pid, hostname, progress_rows, progress_at, "
                 "       rows_per_s, extract_rows_per_s, transform_rows_per_s, "
                 "       load_rows_per_s, stats, log_path, log_tail "
                 "  FROM starcubes_meta.etl_run "
@@ -1108,8 +1137,10 @@ def etl_kill(request, pk: int):
                     {"ok": False, "error": "Forever ETL is active — use Stop Forever"},
                     status=409)
 
+            reap_dead_runs(conn, pk)
             row = conn.execute(text(
-                "SELECT id, pid FROM starcubes_meta.etl_run "
+                "SELECT id, pid, hostname, instance_id, lease_pid, lease_start "
+                "  FROM starcubes_meta.etl_run "
                 " WHERE datasource_id = :id AND status = 'running' "
                 " ORDER BY id DESC LIMIT 1"
             ), {"id": pk}).mappings().one_or_none()
@@ -1118,8 +1149,12 @@ def etl_kill(request, pk: int):
 
             pid = row["pid"]
             force = request.POST.get("force") == "1"
+            target = _signal_target(conn, row)
+            refusal = _signal_refusal(target, row)
+            if refusal is not None:
+                return refusal
 
-            if not pid or not _pid_alive(pid):
+            if target == "gone":
                 conn.execute(text(
                     "UPDATE starcubes_meta.etl_run "
                     "   SET status = 'failed', "
@@ -1170,26 +1205,26 @@ def etl_forever_start(request, pk: int):
         # Check + insert in one transaction so two concurrent requests cannot
         # both pass the guard and spawn duplicate forever processes.
         with _meta_engine().begin() as conn:
-            # Mark stale forever sessions as failed
-            conn.execute(text(
-                "UPDATE starcubes_meta.etl_forever "
-                " SET status = 'failed', pid = NULL, "
-                "     stopped_at = now(), "
-                "     error = 'stale: process did not update status' "
-                " WHERE datasource_id = :id AND status IN ('running','stopping') "
-                "   AND started_at < now() - interval '1 hour'"
-            ), {"id": pk})
+            # Close sessions whose process is gone — by lease, so correctly
+            # from any container (core/lease.py).
+            reap_dead_runs(conn, pk)
 
             active = conn.execute(text(
-                "SELECT id, pid FROM starcubes_meta.etl_forever "
+                "SELECT id, pid, hostname, lease_pid FROM starcubes_meta.etl_forever "
                 " WHERE datasource_id = :id AND status IN ('running','stopping')"
             ), {"id": pk}).mappings().one_or_none()
 
             if active:
                 pid = active["pid"]
-                if pid and _pid_alive(pid):
+                # With a lease, what survived the reap is alive or starting.
+                # A legacy row (no lease) can only be judged by a local pid.
+                legacy_dead = (active["lease_pid"] is None and pid
+                               and not _pid_alive(pid))
+                if not legacy_dead:
+                    where = (f" on {active['hostname']}"
+                             if active["hostname"] else "")
                     return JsonResponse(
-                        {"ok": False, "error": "Forever ETL already running"},
+                        {"ok": False, "error": f"Forever ETL already running{where}"},
                         status=409)
                 conn.execute(text(
                     "UPDATE starcubes_meta.etl_forever "
@@ -1240,24 +1275,28 @@ def etl_forever_stop(request, pk: int):
     try:
         with _meta_engine().begin() as conn:
             row = conn.execute(text(
-                "SELECT id, pid FROM starcubes_meta.etl_forever "
+                "SELECT id, pid, hostname, instance_id, lease_pid, lease_start "
+                "  FROM starcubes_meta.etl_forever "
                 " WHERE datasource_id = :id AND status IN ('running','stopping')"
             ), {"id": pk}).mappings().one_or_none()
 
-        if not row:
-            return JsonResponse({"ok": False, "error": "No forever ETL running"},
-                                status=404)
+            if not row:
+                return JsonResponse({"ok": False, "error": "No forever ETL running"},
+                                    status=404)
 
-        with _meta_engine().begin() as conn:
+            # The flag reaches the loop from any container: it reads it before
+            # every iteration. The signal below only speeds that up, and only
+            # for a process verified to be this container's own.
             conn.execute(text(
                 "UPDATE starcubes_meta.etl_forever "
                 " SET stop_requested = true, status = 'stopping' "
                 " WHERE id = :id"
             ), {"id": row["id"]})
+            target = _signal_target(conn, dict(row))
 
         killed = False
         pid = row["pid"]
-        if pid:
+        if target == "local" and pid:
             try:
                 os.kill(pid, signal.SIGTERM)
                 killed = True
@@ -1266,7 +1305,9 @@ def etl_forever_stop(request, pk: int):
             except PermissionError:
                 killed = True
 
-        return JsonResponse({"ok": True, "killed": killed, "pid": pid})
+        return JsonResponse({"ok": True, "killed": killed, "pid": pid,
+                             "hostname": row["hostname"],
+                             "remote": target == "remote"})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
 
@@ -1275,9 +1316,13 @@ def etl_forever_stop(request, pk: int):
 def etl_forever_status(request, pk: int):
     try:
         with _meta_engine().begin() as conn:
+            # Closes a session whose process is gone, and one whose
+            # subprocess never started — judged by lease, so a poll landing
+            # on another container no longer fails a healthy session.
+            reap_dead_runs(conn, pk)
             row = conn.execute(text(
                 "SELECT id, pid, interval_s, started_at, stopped_at, "
-                "       status, stop_requested, error "
+                "       status, stop_requested, error, hostname, lease_pid "
                 "  FROM starcubes_meta.etl_forever "
                 " WHERE datasource_id = :id "
                 " ORDER BY id DESC LIMIT 1"
@@ -1297,35 +1342,21 @@ def etl_forever_status(request, pk: int):
             return JsonResponse({"active": False})
 
         result = dict(row)
-        # Verify PID liveness
-        if result["status"] in ("running", "stopping") and result["pid"]:
-            if not _pid_alive(result["pid"]):
-                with _meta_engine().begin() as conn:
-                    conn.execute(text(
-                        "UPDATE starcubes_meta.etl_forever "
-                        " SET status = 'failed', pid = NULL, "
-                        "     stopped_at = now(), "
-                        "     error = 'process died unexpectedly' "
-                        " WHERE id = :id"
-                    ), {"id": result["id"]})
-                result["status"] = "failed"
-                result["pid"] = None
-        # pid=NULL with status running: subprocess hasn't stamped its PID yet.
-        # If started more than 30 s ago the process is stuck or crashed.
+        # A legacy row (written before migration 0042, no lease) keeps the
+        # old local pid check — the only test there is for it.
         if (result["status"] in ("running", "stopping")
-                and not result["pid"]
-                and result.get("started_at")):
-            age = datetime.now(timezone.utc) - result["started_at"]
-            if age > timedelta(seconds=30):
-                with _meta_engine().begin() as conn:
-                    conn.execute(text(
-                        "UPDATE starcubes_meta.etl_forever "
-                        " SET status = 'failed', pid = NULL, "
-                        "     stopped_at = now(), "
-                        "     error = 'subprocess never started (pid NULL)' "
-                        " WHERE id = :id"
-                    ), {"id": result["id"]})
-                result["status"] = "failed"
+                and result.pop("lease_pid") is None
+                and result["pid"] and not _pid_alive(result["pid"])):
+            with _meta_engine().begin() as conn:
+                conn.execute(text(
+                    "UPDATE starcubes_meta.etl_forever "
+                    " SET status = 'failed', pid = NULL, "
+                    "     stopped_at = now(), "
+                    "     error = 'process died unexpectedly' "
+                    " WHERE id = :id"
+                ), {"id": result["id"]})
+            result["status"] = "failed"
+            result["pid"] = None
 
         result["active"] = result["status"] in ("running", "stopping")
         if latest_run:
@@ -4655,12 +4686,18 @@ def rollup_kill(request, pk: int):
     """
     try:
         meta = _meta_engine()
+        rollup_run.reap_stale(meta, pk)
         live = rollup_run.running_run(meta, pk)
         if not live:
             return JsonResponse({"ok": False, "error": "No rollup running"},
                                 status=404)
         pid = live["pid"]
-        if not pid or not _pid_alive(pid):
+        with meta.begin() as conn:
+            target = _signal_target(conn, live)
+        refusal = _signal_refusal(target, live)
+        if refusal is not None:
+            return refusal
+        if target == "gone":
             rollup_run.reap_stale(meta, pk)
             return JsonResponse({"ok": True, "signal": None, "pid": pid})
         force = request.POST.get("force") == "1"

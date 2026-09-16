@@ -718,11 +718,22 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   in `core/rollup_run.py` turns SIGTERM/SIGINT into a `KeyboardInterrupt`, the
   same trick `etl_run.py:_abort_signal_handler` uses. Without it the default
   disposition kills the command outright, `finish_run` never happens, and the
-  row is stuck on `running`: nothing waits on these children, so the pid
-  lingers as a **zombie** and `core/utils.py:_pid_alive` — `os.kill(pid, 0)`,
-  the only portable liveness test — reports it alive forever. `reap_stale`
-  additionally reads `/proc/<pid>/stat` to tell a zombie from a live process,
-  but that is the backstop; the handler is the fix.
+  row is stuck on `running` until its process is gone. Liveness is the
+  process lease since migration 0042 (`core/lease.py`, see "Runs across
+  containers" below), and a zombie still holds nothing: its lease connection
+  closed when it exited. For a legacy row without a lease `reap_stale` still
+  falls back to `os.kill(pid, 0)` plus `/proc/<pid>/stat`, because a zombie
+  answers signal 0.
+- **Runs across containers.** Every kill, stop and status endpoint judges a
+  run by its lease (`core/lease.py:reap_dead_runs`), never by a PID, so a
+  request landing on a container other than the one running the process sees
+  the same truth. A *signal* can only reach a process in the same container:
+  `views._signal_target` sends one only when the row's `instance_id` is this
+  container's and the pid is verified against the lease connection's
+  `application_name` — a bare PID is a small number any process may hold
+  after a restart. A run on another container gets a 409 naming its host;
+  Stop Forever still works from anywhere, because the loop reads
+  `stop_requested` before every iteration.
 - **`.action-result` is `display:none` without a modifier.** Only `.ok`,
   `.err`, `.banner` and (since the Rollup tab) `.warn` make it visible. A
   banner written with the class alone renders into the DOM and is simply

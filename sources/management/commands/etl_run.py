@@ -23,6 +23,7 @@ from sqlalchemy import text
 from core.alarm import run_alarm_cycle
 from core.audit import audit_due, audit_window_seconds, backfill_ids_for_run, run_audit
 from core.housekeeping import housekeeping_due, run_housekeeping
+from core.lease import acquire_process_lease, current_lease, reap_dead_runs
 from core.etl import import_fact, truncate_last_partition, delete_fact_from, \
                       clear_etl_history, set_highwatermark, EtlAborted
 from core.preflight import DatasourceLocked
@@ -362,38 +363,47 @@ class Command(BaseCommand):
             signal.signal(signal.SIGTERM, _signal_handler)
             signal.signal(signal.SIGINT, _signal_handler)
 
+            # The process lease (core/lease.py), held for the whole session:
+            # it is what tells every container this loop is alive, between
+            # runs as much as during one.
+            lease = acquire_process_lease(dsn)
+
             gui_forever_id = options["forever_id"]
             if gui_forever_id:
                 # GUI path: the view already created the etl_forever row
-                # (atomic check+insert).  Just stamp our PID.
+                # (atomic check+insert). Just stamp who we are.
                 forever_id = gui_forever_id
                 with meta.begin() as conn:
                     conn.execute(text(
                         "UPDATE starcubes_meta.etl_forever "
-                        " SET pid = :pid WHERE id = :id"
-                    ), {"pid": os.getpid(), "id": forever_id})
+                        "   SET pid = :pid, hostname = :hostname, "
+                        "       instance_id = :instance_id, "
+                        "       lease_pid = :lease_pid, lease_start = :lease_start "
+                        " WHERE id = :id"
+                    ), {**lease.columns(), "id": forever_id})
             else:
                 # CLI path: check for a running forever session and create
                 # the row ourselves.
                 with meta.begin() as conn:
-                    # Mark stale forever sessions as failed
-                    conn.execute(text(
-                        "UPDATE starcubes_meta.etl_forever "
-                        " SET status = 'failed', pid = NULL, "
-                        "     stopped_at = now(), "
-                        "     error = 'stale: process did not update status' "
-                        " WHERE datasource_id = :ds AND status IN ('running','stopping') "
-                        "   AND started_at < now() - interval '1 hour'"
-                    ), {"ds": source.id})
-
+                    reap_dead_runs(conn, source.id)
                     existing = conn.execute(text(
-                        "SELECT id, pid FROM starcubes_meta.etl_forever "
-                        " WHERE datasource_id = :ds AND status IN ('running','stopping')"
+                        "SELECT id, pid, hostname, lease_pid "
+                        "  FROM starcubes_meta.etl_forever "
+                        " WHERE datasource_id = :ds "
+                        "   AND status IN ('running','stopping')"
                     ), {"ds": source.id}).mappings().one_or_none()
                     if existing:
-                        if existing["pid"] and _pid_alive(existing["pid"]):
+                        # With a lease the reap above already closed a dead
+                        # session, so what is left is alive or still starting.
+                        # A legacy row (no lease) can only be judged locally.
+                        legacy_dead = (existing["lease_pid"] is None
+                                       and existing["pid"]
+                                       and not _pid_alive(existing["pid"]))
+                        if not legacy_dead:
+                            where = (f" on {existing['hostname']}"
+                                     if existing["hostname"] else "")
                             self.stderr.write(
-                                f"Error: forever ETL already running "
+                                f"Error: forever ETL already running{where} "
                                 f"(pid={existing['pid']})")
                             self.stderr.flush()
                             raise SystemExit(1)
@@ -406,11 +416,13 @@ class Command(BaseCommand):
 
                     forever_id = conn.execute(text(
                         "INSERT INTO starcubes_meta.etl_forever "
-                        "  (datasource_id, pid, interval_s, status) "
-                        " VALUES (:ds, :pid, :interval, 'running') "
+                        "  (datasource_id, pid, interval_s, status, "
+                        "   hostname, instance_id, lease_pid, lease_start) "
+                        " VALUES (:ds, :pid, :interval, 'running', "
+                        "         :hostname, :instance_id, :lease_pid, :lease_start) "
                         " RETURNING id"
-                    ), {"ds": source.id, "pid": os.getpid(),
-                         "interval": interval}).scalar()
+                    ), {"ds": source.id, "interval": interval,
+                        **lease.columns()}).scalar()
         else:
             # Single-run mode: SIGTERM/SIGINT abort the run instead of
             # killing the parent outright, so import_fact's finally block
@@ -437,6 +449,16 @@ class Command(BaseCommand):
                     if stop:
                         self.stdout.write("\nStop requested, exiting forever loop.\n")
                         break
+                    # A loop that lost its lease is dead to every other
+                    # container, which may already be adopting this session.
+                    lease = current_lease()
+                    if lease is not None and not lease.check():
+                        self.stderr.write(
+                            "\nLease connection to the metadata database lost "
+                            "— leaving the loop so no other container has to "
+                            "share this datasource with it.\n")
+                        self.stderr.flush()
+                        raise SystemExit(1)
 
                 try:
                     rows = import_fact(source, meta,
