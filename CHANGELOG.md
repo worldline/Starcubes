@@ -68,6 +68,18 @@ Notable changes per release. Format follows
   needed. `STARCUBES_LOG_KEEP` and `STARCUBES_LOG_MAX_DAYS` are gone; use
   `STARCUBES_LOG_RETENTION_DAYS` (14) and `STARCUBES_LOG_MAX_LINES_PER_RUN`
   (200 000). The JSON endpoints `etl/logs/` and `etl/log/` are removed.
+- **`GET /healthz`** for load balancers and Kubernetes readiness probes: no
+  login, 200 when the database answers and this container's `node_agent` is
+  alive, 503 naming the failed check otherwise.
+- **A container with a different `STARCUBES_SECRET_KEY` refuses to start**
+  (with `STARCUBES_DEBUG=0`): `bootstrap` compares a fingerprint recorded by
+  the first container, because mismatched keys between containers show up
+  only as sporadic logouts and 403s. `bootstrap --rotate-secret` changes the
+  key on purpose.
+- **Static files have content hashes in their names**, so the 30-day
+  `immutable` cache is finally true across releases, and a rolling update
+  cannot hand a new page an old script.
+- The About dialog lists the containers sharing the database.
 
 ### Fixed
 

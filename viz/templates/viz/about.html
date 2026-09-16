@@ -121,6 +121,12 @@
         <tr><th>Built</th><td>{{ about.build_date }}</td></tr>
       {% endif %}
       <tr><th>Python</th><td>{{ about.python_version }}</td></tr>
+      {% comment %}
+        Filled on open from /sources/nodes/: every container sharing this
+        database, found by its node_agent lease (starcubes/health.py). Left
+        empty for a visitor without a login, whom that endpoint refuses.
+      {% endcomment %}
+      <tr id="about-nodes-row" hidden><th>Containers</th><td id="about-nodes"></td></tr>
       <tr><th>Django</th><td>{{ about.django_version }}</td></tr>
       {% comment %}
         The project URL is hard-coded because it cannot be discovered at
@@ -164,7 +170,29 @@
   var opener  = document.getElementById('about-open');
   if (!overlay || !opener) return;
 
-  function open()  { overlay.classList.add('visible'); }
+  function open()  { overlay.classList.add('visible'); loadNodes(); }
+
+  function loadNodes() {
+    var row = document.getElementById('about-nodes-row');
+    var cell = document.getElementById('about-nodes');
+    if (!row || !cell) return;
+    fetch('/sources/nodes/', {headers: {'Accept': 'application/json'}})
+      .then(function(r) { return r.ok ? r.json() : null; })
+      .then(function(d) {
+        if (!d || !d.ok) return;
+        cell.textContent = '';
+        d.nodes.forEach(function(n) {
+          var div = document.createElement('div');
+          div.textContent = (n.hostname || n.instance) + (n.this ? ' (this one)' : '')
+            + (n.since ? ' · up since ' + new Date(n.since).toLocaleString() : '');
+          div.title = 'instance ' + n.instance;
+          cell.appendChild(div);
+        });
+        if (!d.nodes.length) cell.textContent = 'no node_agent running';
+        row.hidden = false;
+      })
+      .catch(function() {});
+  }
   function close() { overlay.classList.remove('visible'); }
 
   opener.addEventListener('click', open);

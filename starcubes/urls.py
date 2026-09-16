@@ -4,6 +4,8 @@ from django.contrib import admin
 from django.contrib.auth.views import LoginView, LogoutView
 from django.urls import include, path
 
+from starcubes import health
+
 
 class LoginViewWithDbConfig(LoginView):
     """The login page's SSO button follows the DB-stored configuration
@@ -27,7 +29,13 @@ class LoginViewWithDbConfig(LoginView):
 
 
 urlpatterns = [
+    # Readiness probe, no login (starcubes/middleware.py only gates /sources/
+    # and /admin/). Before the viz include so no chart route can shadow it.
+    path("healthz", health.healthz, name="healthz"),
     path("", include("viz.urls")),
+    # The containers sharing this database, for the About dialog. Under
+    # /sources/, so RequireLoginMiddleware gates it like the rest.
+    path("sources/nodes/", health.nodes, name="nodes"),
     path("sources/", include("sources.urls")),
     path(
         "login/",

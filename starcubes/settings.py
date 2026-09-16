@@ -175,6 +175,20 @@ STARCUBES_INSTANCE_ID = instance_id()
 
 STATIC_URL       = "/static/"
 STATIC_ROOT      = os.environ.get("STARCUBES_STATIC_ROOT", str(BASE_DIR / "staticfiles"))
+
+# Hashed static file names (app.3f9a1c2b.js) in the rendered pages. nginx
+# serves /static/ as `immutable` for 30 days, which is only true of a name that
+# changes with its content; and with several containers behind one proxy
+# during a rolling update, a page from the new image must not be handed the
+# old image's script under the same name by an old container. collectstatic
+# (run by bootstrap) writes the hashed copies and the manifest; with DEBUG on
+# the storage falls back to plain names, so runserver needs no collectstatic.
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {
+        "BACKEND": "starcubes.storage.StaticFilesStorage",
+    },
+}
 # `viz/static/` is picked up via `INSTALLED_APPS` + the default
 # `STATICFILES_FINDERS` (`AppDirectoriesFinder`) — no `STATICFILES_DIRS`
 # entry, which would otherwise collide with the same path discovered

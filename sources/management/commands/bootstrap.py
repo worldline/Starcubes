@@ -16,8 +16,15 @@ check and one fails on a catalog unique index — and neither is Django's
 ``migrate``. collectstatic writes only to this container's filesystem and
 stays outside the lock.
 """
+import hashlib
+import hmac
+
 from django.core.management import call_command
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
+
+# The app_config key holding a fingerprint of STARCUBES_SECRET_KEY. Not one of
+# core/config.py's editable keys, so no GUI page lists or changes it.
+SECRET_FINGERPRINT_KEY = "STARCUBES_SECRET_KEY_FINGERPRINT"
 
 
 class Command(BaseCommand):
@@ -28,6 +35,12 @@ class Command(BaseCommand):
             "--skip-collectstatic",
             action="store_true",
             help="Skip collectstatic (used by the dev server override).",
+        )
+        parser.add_argument(
+            "--rotate-secret",
+            action="store_true",
+            help="Accept a changed STARCUBES_SECRET_KEY and record it as the "
+                 "one every container must use. Existing sessions end.",
         )
 
     def handle(self, *args, **options):
@@ -44,6 +57,7 @@ class Command(BaseCommand):
 
             with session_lock(dsn, BOOTSTRAP_OBJID, on_wait=_waiting):
                 self._bootstrap_database(dsn)
+                self._check_secret_key(dsn, rotate=options["rotate_secret"])
         else:
             call_command("migrate", interactive=False, stdout=self.stdout)
 
@@ -51,6 +65,55 @@ class Command(BaseCommand):
         if not options["skip_collectstatic"]:
             self.stdout.write("Collecting static files...")
             call_command("collectstatic", interactive=False, clear=True, stdout=self.stdout)
+
+    def _check_secret_key(self, dsn: str, *, rotate: bool) -> None:
+        """Refuse to start with a different STARCUBES_SECRET_KEY than the others.
+
+        Every container sharing a database must sign sessions and CSRF tokens
+        with the same key, or a request served by one container rejects what
+        another issued — which shows up as sporadic logouts and 403s, the
+        worst kind of symptom to trace back to a missing environment
+        variable. The first start records an HMAC fingerprint of the key
+        (never the key) in app_config; every later start compares.
+
+        Skipped with DEBUG on: a developer's `runserver` against a database a
+        container also uses keeps its dev key, as it always could, and a
+        production image runs with STARCUBES_DEBUG=0.
+        """
+        from django.conf import settings
+        from sqlalchemy import text
+
+        from core.source import _get_cached_engine
+
+        if settings.DEBUG:
+            return
+
+        fingerprint = hmac.new(settings.SECRET_KEY.encode("utf-8"),
+                               b"starcubes secret-key fingerprint",
+                               hashlib.sha256).hexdigest()[:32]
+        with _get_cached_engine(dsn).begin() as conn:
+            stored = conn.execute(text(
+                "SELECT value FROM starcubes_meta.app_config WHERE key = :k"),
+                {"k": SECRET_FINGERPRINT_KEY}).scalar()
+            if stored == fingerprint:
+                return
+            if stored is not None and not rotate:
+                raise CommandError(
+                    "STARCUBES_SECRET_KEY differs from the key the other "
+                    "containers on this database use. Every container must "
+                    "share one key, or sessions and CSRF tokens issued by one "
+                    "are rejected by another. Set the same key everywhere — "
+                    "or, to change it deliberately, run `manage.py bootstrap "
+                    "--rotate-secret` once with the new key (existing sessions "
+                    "end) and restart the other containers with it.")
+            conn.execute(text(
+                "INSERT INTO starcubes_meta.app_config (key, value, updated_by) "
+                "VALUES (:k, :v, 'bootstrap') "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+                "    updated_at = now(), updated_by = EXCLUDED.updated_by"),
+                {"k": SECRET_FINGERPRINT_KEY, "v": fingerprint})
+        self.stdout.write("Recorded the STARCUBES_SECRET_KEY fingerprint"
+                          + (" (rotated)." if stored is not None else "."))
 
     def _bootstrap_database(self, dsn: str) -> None:
         from core.schema import ensure_starcubes_meta, freshly_bootstrapped

@@ -114,6 +114,57 @@ anything that is not a saved profile.
   still 403s; if only one access path works, suspect the `$host`/`$http_host`
   issue above rather than adding more entries.
 
+## Several containers behind a reverse proxy
+
+Any number of identical containers may share one database behind a load
+balancer — round robin, no sticky sessions. Sessions live in the database,
+mozilla-django-oidc keeps its `state`/`nonce` in the session (so the SSO
+callback may land on another container than the login redirect), and every
+run, stop request, log line and saved profile is in the database too. What
+has to be true outside the application:
+
+- **The same `STARCUBES_SECRET_KEY` everywhere.** A session or CSRF token is
+  signed with it; a container with another key rejects what its neighbours
+  issued, which shows as sporadic logouts and 403s. `manage.py bootstrap`
+  therefore records an HMAC fingerprint of the key (never the key) in
+  `app_config` under `STARCUBES_SECRET_KEY_FINGERPRINT`, and a container with a
+  different key **refuses to start** with a message saying so. To change the
+  key on purpose, start one container with the new key and
+  `manage.py bootstrap --rotate-secret`, then the rest with the same key.
+  Skipped with `STARCUBES_DEBUG=1`, so a developer's `runserver` against a
+  shared database keeps working.
+- **The same `STARCUBES_ALLOWED_HOSTS`, `STARCUBES_CSRF_TRUSTED_ORIGINS`
+  (the public proxy origin), `STARCUBES_TRUST_PROXY_SSL=1` when TLS ends at
+  the proxy, and all `STARCUBES_OIDC_*`** — Keycloak knows one redirect URI,
+  the public one, for all containers.
+- **The proxy passes `Host` unchanged, port included, and sets
+  `X-Forwarded-Proto`.** Django does not read `X-Forwarded-Host`; the
+  container's own nginx (section CSRF above) stays as it is. Proxy timeouts at
+  least 120 s, matching uwsgi's `harakiri`.
+- **Every container connects as the same database role, directly or through
+  session pooling** — never a transaction pooler. Run liveness is read from
+  `pg_stat_activity`, which hides another role's `backend_start`, and advisory
+  locks are session-scoped (`core/lease.py`, `core/pglock.py`).
+- **`GET /healthz`** is the readiness probe: no login, 200 when the metadata
+  database answers and this container's `node_agent` is alive, else 503 with
+  the failing check named (`STARCUBES_HEALTHZ_REQUIRE_AGENT=0` drops the
+  agent check). The body names no host, version or credential.
+- **A stop timeout longer than the drain** (see Processes below): podman
+  `--stop-timeout 35`, Kubernetes' default 30 s grace against the 25 s
+  `STARCUBES_DRAIN_TIMEOUT_S`.
+
+Static files carry a content hash in their names
+(`starcubes/storage.py`, `STORAGES` in settings), because nginx serves
+`/static/` as `immutable` for 30 days and a rolling update puts two image
+versions behind one proxy: without hashes a page from the new image could be
+given the old image's script by an old container, under the same name.
+Source-map comments in vendored bundles are left alone — their `.map` files
+are not shipped and would otherwise abort `collectstatic`.
+
+Configuration edited in the GUI (`app_config`) reaches the other containers
+within 30 s (`core/config.py`'s cache). The About dialog lists the containers
+currently sharing the database (`/sources/nodes/`).
+
 ## SSO / OIDC
 
 - **Keycloak/OIDC SSO configuration is env-first with a DB fallback**
