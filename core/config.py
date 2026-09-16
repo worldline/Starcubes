@@ -5,7 +5,8 @@ global settings an operator may edit in the GUI instead of passing env
 vars: the notification transports and the SSO/OIDC login. The key IS the
 env-var name it shadows. Resolution is env-first everywhere:
 
-    1. env var set  -> the env value wins
+    1. env var set  -> the env value wins (an empty one counts as unset, on
+                       every path below — the image ships some as ENV "")
     2. DB row       -> the stored value
     3. neither      -> the caller's default
 
@@ -119,7 +120,7 @@ def _snapshot() -> dict:
     global _cache, _cache_at
     dsn = os.environ.get("STARCUBES_POSTGRES_DSN")
     if not dsn:
-        return {k: os.environ.get(k) for k in _CONFIG_KEYS}
+        return {k: os.environ.get(k) or None for k in _CONFIG_KEYS}
     now = time.monotonic()
     if _cache is not None and now - _cache_at < _TTL_S:
         out = dict(_cache)
@@ -139,7 +140,7 @@ def _snapshot() -> dict:
                        "snapshot (env/default values)")
         if _cache is not None:
             return dict(_cache)
-        return {k: os.environ.get(k) for k in _CONFIG_KEYS}
+        return {k: os.environ.get(k) or None for k in _CONFIG_KEYS}
     with _lock:
         _cache = merged
         _cache_at = now

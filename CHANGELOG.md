@@ -7,6 +7,19 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **In a container, seven transport settings could not be edited on the
+  Transports page.** The image set SMTP port, TLS mode and subject prefix,
+  XMPP port, the PagerDuty events URL and severity, and the SSO display name
+  to their defaults in the environment — and a value in the environment locks
+  the field. The image no longer sets them; the defaults come from the code,
+  as in a checkout. A value you pass with `-e` still wins, as before.
+- **The e-mail subject prefix could not be switched off.** An empty value
+  counts as unset and brings `[starcubes]` back, so `none` now sends subjects
+  without a prefix. An empty `STARCUBES_SMTP_PORT` or `STARCUBES_XMPP_PORT`
+  no longer stops the app from starting.
+
 ## [2.0.0-beta.2] — 2026-09-16
 
 ### Added

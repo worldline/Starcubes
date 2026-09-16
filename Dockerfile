@@ -126,27 +126,27 @@ ENV STARCUBES_POSTGRES_DSN="" \
 # means the login page shows password-only). See HOWTO.md "SSO login".
 ENV STARCUBES_OIDC_ISSUER="" \
     STARCUBES_OIDC_CLIENT_ID="" \
-    STARCUBES_OIDC_CLIENT_SECRET="" \
-    STARCUBES_OIDC_DISPLAY_NAME="Keycloak"
+    STARCUBES_OIDC_CLIENT_SECRET=""
 
 # Alarm notification transports — off by default (presence-as-switch, see
 # starcubes/settings.py). SMTP needs HOST+FROM; XMPP needs the bot JID and
 # its password; PagerDuty is enabled per datasource by its routing key, so
 # only the endpoint/severity knobs are global. Full table in
 # docs/deployment-config.md.
+#
+# Only empty values here, never a default. These keys are also editable on the
+# Transports page, where a non-empty environment value counts as "set via
+# environment" and locks the field — a default spelled out here would lock
+# SMTP port/TLS/subject prefix, XMPP port, the PagerDuty knobs and the SSO
+# display name in every container. The defaults live in the code (settings.py
+# and the resolvers), which is where a checkout gets them too.
 ENV STARCUBES_SMTP_HOST="" \
-    STARCUBES_SMTP_PORT="25" \
     STARCUBES_SMTP_USER="" \
     STARCUBES_SMTP_PASSWORD="" \
     STARCUBES_SMTP_FROM="" \
-    STARCUBES_SMTP_TLS="starttls" \
-    STARCUBES_SMTP_SUBJECT_PREFIX="[starcubes]" \
     STARCUBES_XMPP_JID="" \
     STARCUBES_XMPP_PASSWORD="" \
-    STARCUBES_XMPP_HOST="" \
-    STARCUBES_XMPP_PORT="5222" \
-    STARCUBES_PAGERDUTY_EVENTS_URL="https://events.pagerduty.com/v2/enqueue" \
-    STARCUBES_PAGERDUTY_SEVERITY="critical"
+    STARCUBES_XMPP_HOST=""
 
 # ── Build identity ────────────────────────────────────────────────────────────
 # The version comes from the git tag, and the tag cannot travel in the COPY

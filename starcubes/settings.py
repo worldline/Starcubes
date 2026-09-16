@@ -230,7 +230,7 @@ STARCUBES_OIDC_ISSUER = os.environ.get("STARCUBES_OIDC_ISSUER", "").rstrip("/")
 STARCUBES_OIDC_CLIENT_ID = os.environ.get("STARCUBES_OIDC_CLIENT_ID", "")
 STARCUBES_OIDC_CLIENT_SECRET = os.environ.get("STARCUBES_OIDC_CLIENT_SECRET", "")
 # White-labels the login-page button text without a template edit.
-STARCUBES_OIDC_DISPLAY_NAME = os.environ.get("STARCUBES_OIDC_DISPLAY_NAME", "Keycloak")
+STARCUBES_OIDC_DISPLAY_NAME = os.environ.get("STARCUBES_OIDC_DISPLAY_NAME") or "Keycloak"
 
 OIDC_ENABLED = bool(
     STARCUBES_OIDC_ISSUER and STARCUBES_OIDC_CLIENT_ID and STARCUBES_OIDC_CLIENT_SECRET
@@ -258,23 +258,29 @@ OIDC_ENABLED = bool(
 # Transports that are off are simply skipped by the dispatcher — a channel
 # selected on an alarm whose transport is not configured logs a WARNING and
 # counts as an error, it never fails the ETL.
+#
+# `or`, not a get() default, wherever the default is non-empty: an empty
+# variable counts as unset, as it does in core/config.py — so
+# `-e STARCUBES_SMTP_PORT=` falls back to 25 instead of failing int("") and
+# taking the whole settings import down with it.
 STARCUBES_SMTP_HOST = os.environ.get("STARCUBES_SMTP_HOST", "")
-STARCUBES_SMTP_PORT = int(os.environ.get("STARCUBES_SMTP_PORT", "25"))
+STARCUBES_SMTP_PORT = int(os.environ.get("STARCUBES_SMTP_PORT") or "25")
 STARCUBES_SMTP_USER = os.environ.get("STARCUBES_SMTP_USER", "")
 STARCUBES_SMTP_PASSWORD = os.environ.get("STARCUBES_SMTP_PASSWORD", "")
 STARCUBES_SMTP_FROM = os.environ.get("STARCUBES_SMTP_FROM", "")
-STARCUBES_SMTP_TLS = os.environ.get("STARCUBES_SMTP_TLS", "starttls")
-STARCUBES_SMTP_SUBJECT_PREFIX = os.environ.get("STARCUBES_SMTP_SUBJECT_PREFIX", "[starcubes]")
+STARCUBES_SMTP_TLS = os.environ.get("STARCUBES_SMTP_TLS") or "starttls"
+# `none` sends subjects without a prefix; see sources/alarm_notify.py.
+STARCUBES_SMTP_SUBJECT_PREFIX = os.environ.get("STARCUBES_SMTP_SUBJECT_PREFIX") or "[starcubes]"
 
 STARCUBES_XMPP_JID = os.environ.get("STARCUBES_XMPP_JID", "")
 STARCUBES_XMPP_PASSWORD = os.environ.get("STARCUBES_XMPP_PASSWORD", "")
 # Host override: without it slixmpp resolves the JID domain's SRV records.
 STARCUBES_XMPP_HOST = os.environ.get("STARCUBES_XMPP_HOST", "")
-STARCUBES_XMPP_PORT = int(os.environ.get("STARCUBES_XMPP_PORT", "5222"))
+STARCUBES_XMPP_PORT = int(os.environ.get("STARCUBES_XMPP_PORT") or "5222")
 
-STARCUBES_PAGERDUTY_EVENTS_URL = os.environ.get(
-    "STARCUBES_PAGERDUTY_EVENTS_URL", "https://events.pagerduty.com/v2/enqueue")
-STARCUBES_PAGERDUTY_SEVERITY = os.environ.get("STARCUBES_PAGERDUTY_SEVERITY", "critical")
+STARCUBES_PAGERDUTY_EVENTS_URL = (os.environ.get("STARCUBES_PAGERDUTY_EVENTS_URL")
+                                  or "https://events.pagerduty.com/v2/enqueue")
+STARCUBES_PAGERDUTY_SEVERITY = os.environ.get("STARCUBES_PAGERDUTY_SEVERITY") or "critical"
 
 STARCUBES_ALARM_EMAIL_ENABLED = bool(STARCUBES_SMTP_HOST and STARCUBES_SMTP_FROM)
 STARCUBES_ALARM_XMPP_ENABLED = bool(STARCUBES_XMPP_JID and STARCUBES_XMPP_PASSWORD)

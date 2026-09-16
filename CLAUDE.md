@@ -56,7 +56,9 @@ branch — **`master` is the only long-lived branch.**
   (dataclasses), or adding/removing dimensions or measures.
 - **[`docs/deployment-config.md`](docs/deployment-config.md)** — read when
   editing `Dockerfile`, `docker/build.sh`, `starcubes/settings.py`,
-  `starcubes/oidc.py`, `requirements.txt`, or `package.json`.
+  `starcubes/oidc.py`, `requirements.txt`, or `package.json`. Its
+  "Environment variable reference" is the one complete list of env vars —
+  a new `os.environ.get("STARCUBES_…")` or `Dockerfile` `ENV` needs a row there.
 - **[`docs/multi-container.md`](docs/multi-container.md)** — several containers
   on one database: what must hold outside the app, and how leases, stop
   requests, adoption, the drain and the one log fit together. Read before

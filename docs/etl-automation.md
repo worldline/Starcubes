@@ -114,23 +114,11 @@ the engine, never edited by hand:
 | `dedupe_from` | A watermark rewind is pending; the next incremental run must filter the reloaded span by primary key. Cleared by the run that honours it. |
 | `dim_refreshed_at` | When `import_dimensions` last actually ran. |
 
-Environment variables, all with sane defaults and none normally set:
-
-| Variable | Default | Effect |
-|---|---|---|
-| `STARCUBES_INDEX_WARN_ROWS` | 1 000 000 | Rows loaded before a missing index is worth a warning. |
-| `STARCUBES_INDEX_WARN_HOURS` | 24 | And how long the datasource must have existed. |
-| `STARCUBES_HWM_GAP_WARN_S` | 86400 | Watermark-above-fact-tip gap that becomes a warning. |
-| `STARCUBES_DIM_FULL_WARN_PCT` | 80 | Dimension fill level that becomes a warning. |
-| `STARCUBES_ALARM_TIMEOUT_MS` | 30000 | Statement timeout on the alarm evaluator's fact queries. |
-| `STARCUBES_PIPELINE_ALARM_INTERVAL_S` | 60 | Throttle for the request-path pipeline-alarm evaluator. |
-| `STARCUBES_MAX_RETENTION_DROPS` | 2 | Partitions retention may drop per housekeeping run. |
-| `STARCUBES_MAX_OVERLAP_PKS` | 5 000 000 | Ceiling on a de-duplicated reload. |
-| `STARCUBES_BACKFILL_IDS_MAX` | 100 000 | Missing ids an audit will store for a targeted backfill. Past it the run is marked `ids_truncated` and only a window backfill is offered. |
-| `STARCUBES_FOREVER_ADOPT` | 1 | `0` stops this container's `node_agent` from adopting other containers' forever sessions. A container start still resumes dead ones. |
-| `STARCUBES_LOG_RETENTION_DAYS` | 14 | Age after which the node_agent deletes log lines (`log_line`). |
-| `STARCUBES_LOG_MAX_LINES_PER_RUN` | 200 000 | Lines one run may keep; the oldest go, with a marker line. |
-| `STARCUBES_DRAIN_TIMEOUT_S` | 25 | How long `node_drain` waits at shutdown for this container's runs to hand over. Must be shorter than the runtime's stop timeout. |
+The thresholds and ceilings behind these checks — `STARCUBES_INDEX_WARN_*`,
+`STARCUBES_HWM_GAP_WARN_S`, `STARCUBES_MAX_RETENTION_DROPS` and the rest —
+are environment variables with sane defaults, none normally set. They are
+listed with every other variable in the
+[environment variable reference](deployment-config.md#environment-variable-reference).
 
 ---
 

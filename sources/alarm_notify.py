@@ -104,8 +104,13 @@ def render_message(t: dict) -> tuple[str, str]:
     other user-visible string in the app is English too."""
     opened = t.get("kind") == "opened"
     word = "OPENED" if opened else "RESOLVED"
+    # `none` rather than an empty value turns the prefix off: empty counts as
+    # unset everywhere in core/config.py and brings the default back, and it
+    # has to — an image's empty ENV must not shadow what the GUI stored.
+    prefix = _cfg("STARCUBES_SMTP_SUBJECT_PREFIX", "[starcubes]").strip()
+    prefix = "" if prefix == "none" else f"{prefix} "
     subject = (
-        f"{_cfg('STARCUBES_SMTP_SUBJECT_PREFIX', '[starcubes]')} {word}: "
+        f"{prefix}{word}: "
         f"{t['ds_name']} / {t['alarm_name']} — "
         f"{t['measure']} {t['cond_op']} {_fmt(t['threshold'])} "
         f"(value {_fmt(t['value'])})"

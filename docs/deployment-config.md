@@ -288,7 +288,8 @@ everywhere (`core/config.py`):
 2. otherwise the `app_config` row;
 3. otherwise the hardcoded default.
 
-The env vars below are therefore still the "how to configure at first
+The env vars (listed under [Alarm transports and SSO](#alarm-transports-and-sso)
+in the reference below) are therefore still the "how to configure at first
 boot" path — the GUI (global tab **Transports**, superuser-only) edits the
 DB rows for exactly these keys. Env-set keys render disabled on that page
 (a GUI edit would be invisible); secrets are stored like
@@ -300,29 +301,9 @@ route mount and the backend list are fixed at process start); the client
 secret and endpoints re-read per request, so a corrected secret works
 immediately.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `STARCUBES_SMTP_HOST` | `""` | SMTP relay; with `…_FROM` set, the e-mail transport is on |
-| `STARCUBES_SMTP_PORT` | `25` | |
-| `STARCUBES_SMTP_USER` / `STARCUBES_SMTP_PASSWORD` | `""` | both set → `AUTH LOGIN` after STARTTLS |
-| `STARCUBES_SMTP_FROM` | `""` | envelope From and the `From:` header; required for e-mail to be on |
-| `STARCUBES_SMTP_TLS` | `starttls` | `starttls` \| `ssl` (implicit TLS, port 465) \| `none` |
-| `STARCUBES_SMTP_SUBJECT_PREFIX` | `[starcubes]` | subject prefix; set it empty to remove |
-| `STARCUBES_XMPP_JID` | `""` | bot account's JID; with `…_PASSWORD` set, the XMPP transport is on |
-| `STARCUBES_XMPP_PASSWORD` | `""` | |
-| `STARCUBES_XMPP_HOST` / `STARCUBES_XMPP_PORT` | `""` / `5222` | host override (skips SRV lookup of the JID domain); port only with host |
-| `STARCUBES_PAGERDUTY_EVENTS_URL` | `https://events.pagerduty.com/v2/enqueue` | point at the sandbox for a dry run |
-| `STARCUBES_PAGERDUTY_SEVERITY` | `critical` | fallback severity when an alarm sets none (`alarm.severity`) |
-| `STARCUBES_OIDC_ISSUER` | `""` | realm URL, no trailing slash — with client id + secret, SSO is on |
-| `STARCUBES_OIDC_CLIENT_ID` / `_CLIENT_SECRET` | `""` | |
-| `STARCUBES_OIDC_DISPLAY_NAME` | `Keycloak` | button text on the login page (applies live) |
-
-Everything else stays **env-only**: `STARCUBES_POSTGRES_DSN`,
-`STARCUBES_SECRET_KEY`, `STARCUBES_ALLOWED_HOSTS`, `STARCUBES_DEBUG`,
-`STARCUBES_CSRF_TRUSTED_ORIGINS`, `STARCUBES_TRUST_PROXY_SSL`, the
-`STARCUBES_LOG_*`/`STARCUBES_ETL_LOG_*` family, `STARCUBES_QUERY_*`,
-`STARCUBES_STATIC_ROOT` and the build identity — the infrastructure an
-instance cannot ask its own database about.
+Everything else in the [reference](#environment-variable-reference) is
+**env-only** — the infrastructure an instance cannot ask its own database
+about, and the tuning knobs read once at import.
 
 PagerDuty has **no global on/off**: it is enabled per datasource by its
 `pagerduty_routing_key` (the Events API v2 integration token, maintained on
@@ -341,6 +322,143 @@ STARCUBES_SMTP_HOST=smtp.gmail.com STARCUBES_SMTP_PORT=465 STARCUBES_SMTP_TLS=ss
 STARCUBES_SMTP_USER=bot@example.com STARCUBES_SMTP_PASSWORD=… \
 STARCUBES_SMTP_FROM=bot@example.com
 ```
+
+## Environment variable reference
+
+Every environment variable starcubes reads, and the few it sets for itself.
+Two default columns, because there are two fallbacks: **Default** is what
+the code assumes when the variable is unset — a checkout under `manage.py
+runserver` — and **Image** is what a container gets from the `Dockerfile`'s
+`ENV` unless you pass `-e`. `=` means the image ends up with the code default.
+Four pairs differ on purpose — `STARCUBES_DEBUG`, `STARCUBES_ALLOWED_HOSTS`,
+`STARCUBES_SECRET_KEY`, `STARCUBES_ETL_LOG_STDOUT`: the checkout defaults suit
+a developer, the image defaults something reachable.
+
+A process reads its environment once, so a change takes a restart. The one
+live path is the GUI, and only for the
+[alarm transports and SSO](#alarm-transports-and-sso).
+
+### Database, HTTP and Django
+
+| Variable | Default | Image | Effect |
+|---|---|---|---|
+| `STARCUBES_POSTGRES_DSN` | `""` | `""` | **Required.** URL of the PostgreSQL database holding `starcubes_meta` and the fact tables, e.g. `postgresql://user:pw@host:5432/starcubes`. Django and `core/` both read it; empty leaves Django on a dummy backend and nothing works. |
+| `STARCUBES_SECRET_KEY` | `dev-key-change-me` | `change-me-in-production` | Django's signing key for sessions and CSRF tokens. Set it on every real deployment, the same in every container — `bootstrap` refuses a key that does not match the recorded fingerprint ([Several containers](#several-containers-behind-a-reverse-proxy)). |
+| `STARCUBES_DEBUG` | `1` | `0` | Django `DEBUG`. `1` also skips the secret-key fingerprint check. |
+| `STARCUBES_ALLOWED_HOSTS` | `*` | `127.0.0.1,localhost,[::1]` | Comma-separated host names Django answers. A security setting, not a convenience one — see [CSRF](#csrf). |
+| `STARCUBES_CSRF_TRUSTED_ORIGINS` | `""` | = | Comma-separated `scheme://host[:port]` origins trusted besides the one Django derives from `Host`. |
+| `STARCUBES_TRUST_PROXY_SSL` | `0` | `0` | `1` trusts `X-Forwarded-Proto`; only behind a TLS-terminating proxy that sets it. `docker/entrypoint.sh` reads it too, for nginx's scheme pinning — see [SSO / OIDC](#sso-oidc). |
+| `STARCUBES_STATIC_ROOT` | `<repo>/staticfiles` | = | Target directory of `collectstatic`. The image's nginx serves `/static/` from `/app/staticfiles` whatever this says, so leave it alone in a container. |
+
+### Alarm transports and SSO
+
+Also editable in the GUI (global tab **Transports**, stored in `app_config`),
+with the environment winning — see
+[Global configuration](#global-configuration-db-first-environment-overrides).
+An **empty** value counts as unset in both places: an empty environment
+variable falls through to the stored row, and clearing a field in the GUI
+deletes the row, so the code default comes back.
+
+A container gets the code defaults too: the `Dockerfile` sets these keys
+empty or not at all, never to a value, because a non-empty environment value
+counts as set and locks the field on the Transports page.
+
+| Variable | Default | Image | Effect |
+|---|---|---|---|
+| `STARCUBES_SMTP_HOST` | `""` | = | SMTP relay. With `STARCUBES_SMTP_FROM` also set, the e-mail transport is on. |
+| `STARCUBES_SMTP_PORT` | `25` | = | |
+| `STARCUBES_SMTP_USER` | `""` | = | With `STARCUBES_SMTP_PASSWORD` also set, the connection logs in (`AUTH LOGIN`) after STARTTLS. |
+| `STARCUBES_SMTP_PASSWORD` | `""` | = | See `STARCUBES_SMTP_USER`. |
+| `STARCUBES_SMTP_FROM` | `""` | = | Envelope From and the `From:` header; required for e-mail to be on. |
+| `STARCUBES_SMTP_TLS` | `starttls` | = | `starttls`, `ssl` (implicit TLS, port 465) or `none`. |
+| `STARCUBES_SMTP_SUBJECT_PREFIX` | `[starcubes]` | = | Subject prefix. `none` sends subjects without one — an empty value would bring the default back. |
+| `STARCUBES_XMPP_JID` | `""` | = | The bot account's JID. With `STARCUBES_XMPP_PASSWORD` also set, the XMPP transport is on. |
+| `STARCUBES_XMPP_PASSWORD` | `""` | = | |
+| `STARCUBES_XMPP_HOST` | `""` | = | Host override; skips the SRV lookup of the JID's domain. |
+| `STARCUBES_XMPP_PORT` | `5222` | = | Used only together with `STARCUBES_XMPP_HOST`. |
+| `STARCUBES_PAGERDUTY_EVENTS_URL` | `https://events.pagerduty.com/v2/enqueue` | = | Point it at the sandbox for a dry run. PagerDuty itself is switched on per datasource, by its routing key. |
+| `STARCUBES_PAGERDUTY_SEVERITY` | `critical` | = | Severity for an alarm that sets none (`alarm.severity`). |
+| `STARCUBES_OIDC_ISSUER` | `""` | = | Keycloak realm URL, no trailing slash. With client id and secret also set, SSO is on (after a restart). |
+| `STARCUBES_OIDC_CLIENT_ID` | `""` | = | |
+| `STARCUBES_OIDC_CLIENT_SECRET` | `""` | = | |
+| `STARCUBES_OIDC_DISPLAY_NAME` | `Keycloak` | = | Button text on the login page. |
+
+### Chart query console
+
+| Variable | Default | Image | Effect |
+|---|---|---|---|
+| `STARCUBES_QUERY_TIMEOUT_MS` | `30000` | = | Statement timeout of an ad-hoc query. Clamped to 90 000 whatever is set, because uwsgi's `harakiri` kills the whole worker at 120 s. |
+| `STARCUBES_QUERY_ROW_LIMIT` | `1000` | = | Rows a query result returns at most. |
+
+### Logging
+
+| Variable | Default | Image | Effect |
+|---|---|---|---|
+| `STARCUBES_LOG_LEVEL` | `INFO` | = | Level of the root logger in the background commands (`etl_run`, `alarm_run`, `etl_audit`, `etl_housekeeping`, `node_agent`, `node_drain`, `pipeline_watch`, `etl_resume_forever`), and of the SSO loggers (`mozilla_django_oidc`, `starcubes.oidc`). A Python level name. |
+| `STARCUBES_LOG_DIR` | `<repo>/logs` | `/app/logs` | Local spool directory: each spawned process writes its log here and ships it into `log_line`. Ephemeral scratch — an `emptyDir` is enough, the table is the log. Must be writable. |
+| `STARCUBES_LOG_MAX_BYTES` | `67108864` (64 MiB) | = | Size at which a spool file is truncated in place. |
+| `STARCUBES_LOG_RETENTION_DAYS` | `14` | = | Age after which the `node_agent` deletes log lines. |
+| `STARCUBES_LOG_MAX_LINES_PER_RUN` | `200000` | = | Lines one run may keep; the oldest go, with a marker line. |
+| `STARCUBES_ETL_LOG_STDOUT` | `0` | `1` | `1` mirrors ETL log lines onto PID 1's stdout, so `podman logs` shows them. |
+| `STARCUBES_ETL_LOG_INTERVAL_S` | `30` | = | Interval of the ETL's progress heartbeat line (queue depths, per-stage rates). |
+
+See [`etl-engine.md`](etl-engine.md), "ETL logging", for how spool files and
+the table fit together.
+
+### Checks, limits and alarms
+
+The context for these is [`etl-automation.md`](etl-automation.md). All have
+sane defaults and none is normally set.
+
+| Variable | Default | Image | Effect |
+|---|---|---|---|
+| `STARCUBES_INDEX_WARN_ROWS` | `1000000` | = | Rows loaded before a missing index is worth a warning. |
+| `STARCUBES_INDEX_WARN_HOURS` | `24` | = | And how long the datasource must have existed. |
+| `STARCUBES_HWM_GAP_WARN_S` | `86400` | = | Watermark-above-fact-tip gap that becomes a warning. |
+| `STARCUBES_DIM_FULL_WARN_PCT` | `80` | = | Dimension fill level that becomes a warning. |
+| `STARCUBES_MAX_RETENTION_DROPS` | `2` | = | Partitions retention may drop per housekeeping run. |
+| `STARCUBES_MAX_OVERLAP_PKS` | `5000000` | = | Ceiling on a de-duplicated reload. |
+| `STARCUBES_MAX_AUDIT_IDS` | `2000000` | = | Per-side ceiling on an audit's id comparison (about 46 bytes per id per side, measured). Above it the comparison refuses rather than exhaust a web worker. |
+| `STARCUBES_BACKFILL_IDS_MAX` | `100000` | = | Missing ids an audit will store for a targeted backfill. Past it the run is marked `ids_truncated` and only a window backfill is offered. |
+| `STARCUBES_ALARM_TIMEOUT_MS` | `30000` | = | Statement timeout on the alarm evaluator's fact queries. |
+| `STARCUBES_PIPELINE_ALARM_INTERVAL_S` | `60` | = | Interval of `pipeline_watch`, and the throttle of the request-path pipeline-alarm evaluator. |
+
+### Containers and processes
+
+| Variable | Default | Image | Effect |
+|---|---|---|---|
+| `STARCUBES_HEALTHZ_REQUIRE_AGENT` | `1` | = | `0` drops the `node_agent` check from `GET /healthz`. |
+| `STARCUBES_FOREVER_ADOPT` | `1` | = | `0` stops this container's `node_agent` from adopting other containers' forever sessions. A container start still resumes dead ones. |
+| `STARCUBES_DRAIN_TIMEOUT_S` | `25` | = | How long `node_drain` waits at shutdown for this container's runs to hand over. Must be shorter than the runtime's stop timeout. |
+
+### Build, command line and upgrades
+
+| Variable | Default | Image | Effect |
+|---|---|---|---|
+| `STARCUBES_VERSION` | from git | from `docker/build.sh` | The version the About dialog names. Passed in as a build argument; an image built without one is refused. See [`releases.md`](releases.md). |
+| `STARCUBES_BUILD_REF` | from git | from `docker/build.sh` | Short commit the image was built from. |
+| `STARCUBES_BUILD_DATE` | `""` | from `docker/build.sh` | Build time, UTC. |
+| `CONTAINER_ENGINE` | `podman` | — | Read by `docker/build.sh` on the build host: `docker` builds with Docker. |
+| `LD_LIBRARY_PATH` | unset | `/app/oracle` | Where `init_oracle_client()` looks for `libclntsh.so`. Found: oracledb runs in thick mode and can compress; not found: thin mode, no compression. |
+| `STARCUBES_SOURCE_DSN` | `""` | = | Fallback for `seed_example --source-dsn`. |
+| `STARCUBES_PROFILE_DIR` | `<repo>/profiles/user` | = | Directory of file-based saved profiles from before migration 0045. Read only by the one-time import in `bootstrap`; see [Saved profiles need no volume](#saved-profiles-need-no-volume). |
+
+### Set by starcubes itself
+
+These show up in a process's environment, but are not configuration —
+setting them has no useful effect.
+
+| Variable | Set by | Purpose |
+|---|---|---|
+| `STARCUBES_INSTANCE_ID` | `docker/entrypoint.sh`, else the first `core/node.py:instance_id()` call | One id per container start, inherited by every child process. The entrypoint overwrites any value passed in. |
+| `STARCUBES_ETL_LOG_PATH` | `sources/etl_spawn.py` | The spool file a spawned child writes its log to. |
+| `STARCUBES_BOOTSTRAPPED` | `manage.py` | Makes `runserver` bootstrap only once, not again in its autoreload child. |
+| `DJANGO_SETTINGS_MODULE` | `manage.py`, `starcubes/wsgi.py` | `starcubes.settings`, as a default only. |
+
+Two names look like environment variables and are not:
+`STARCUBES_SECRET_KEY_FINGERPRINT` is a row in `app_config`, written by
+`bootstrap`, and `STARCUBES_ALARM_EMAIL_ENABLED` / `_XMPP_ENABLED` are Django
+settings derived from the transport variables.
 
 ## Processes in the container
 

@@ -3729,7 +3729,7 @@ _TRANSPORT_SECTIONS = [
         ("STARCUBES_SMTP_PASSWORD", "SMTP password", "secret"),
         ("STARCUBES_SMTP_FROM", "Envelope From", "text"),
         ("STARCUBES_SMTP_TLS", "TLS mode (starttls / ssl / none)", "tls"),
-        ("STARCUBES_SMTP_SUBJECT_PREFIX", "Subject prefix", "text"),
+        ("STARCUBES_SMTP_SUBJECT_PREFIX", "Subject prefix (none = no prefix)", "text"),
     ], "On when host and envelope-from are set."),
     ("xmpp", "XMPP", [
         ("STARCUBES_XMPP_JID", "Bot JID", "text"),
