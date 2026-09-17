@@ -14,7 +14,7 @@
 </script>
 {% endblock %}
 
-{% block content %}
+{% block tabs %}
 {% comment %}
   Sub-tabs: lower tier of the double-tab header, full-bleed beneath the top
   nav. Two different mechanisms decide what a visitor sees here, and they
@@ -47,7 +47,9 @@
   </div>
   {% include "sources/_mode_toggle.html" %}
 </div>
+{% endblock %}
 
+{% block content %}
 <!-- Basics tab -->
 <div class="tab-panel active" id="tab-basics">
   <div class="card">
@@ -846,6 +848,9 @@
   {% include "sources/_firings.html" %}
 </div>
 
+{% endblock %}
+
+{% block footer %}
 <!-- Persistent bottom status bar: ETL status segment on the left,
      dialect badge + schema name pinned bottom-right. Mirrors the canvas page #info bar. -->
 <div class="statusbar">

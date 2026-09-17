@@ -1,8 +1,9 @@
 {% extends "sources/base.html" %}
 {% block title %}Settings — starcubes{% endblock %}
 
+{% block tabs %}{% include "sources/_global_tabs.html" %}{% endblock %}
+
 {% block content %}
-{% include "sources/_global_tabs.html" %}
 
 {% if msg %}
 <div class="action-result ok banner">{{ msg }}</div>

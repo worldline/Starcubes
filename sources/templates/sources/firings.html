@@ -1,7 +1,8 @@
 {% extends "sources/base.html" %}
 {% block title %}starcubes — Alarm firings{% endblock %}
 
+{% block tabs %}{% include "sources/_global_tabs.html" %}{% endblock %}
+
 {% block content %}
-{% include "sources/_global_tabs.html" %}
 {% include "sources/_firings.html" %}
 {% endblock %}

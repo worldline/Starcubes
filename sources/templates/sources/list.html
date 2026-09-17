@@ -1,8 +1,9 @@
 {% extends "sources/base.html" %}
 {% block title %}starcubes — Sources{% endblock %}
 
+{% block tabs %}{% include "sources/_global_tabs.html" %}{% endblock %}
+
 {% block content %}
-{% include "sources/_global_tabs.html" %}
 
 {% if user.is_superuser %}
 <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin:0 0 12px">

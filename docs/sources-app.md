@@ -30,6 +30,33 @@ Create-new-source and Manage used to be menu rows; they live on their
 pages now (`+ New Datasource` on the list; the expert half of the datasource
 page behind its Basic/Expert switch).
 
+## Page layout: what scrolls
+
+**The window never scrolls, on any page.** `base.html` makes the body exactly
+one viewport tall; the nav, the tab bar and — on the datasource page — the
+status bar stay put, and only `#page-body`, the box around
+`{% block content %}`, scrolls. Three blocks decide where markup lands:
+
+- `{% block tabs %}` — the page's `.subtabs-bar` (`_global_tabs.html`, or the
+  datasource page's own bar). **A tab bar written into `content` scrolls away
+  with it**; that was the bug on every page but Logs and Help.
+- `{% block content %}` — everything that scrolls. `.page-body` bleeds to both
+  viewport edges and pads back to `.page`'s content lines (`--page-pad-l`,
+  `--page-bleed-r`, shared with the tab bar), so content sits where it always
+  did and the scrollbar is at the window edge. The 20px gap under a tab bar is
+  its padding-top.
+- `{% block footer %}` — a bar under the scroller (`.statusbar`), a flex row
+  of the body rather than `position: fixed`, so the scroller ends above it.
+
+The in-content tab rows (`#dimSubTabs`, `#etlSubTabs`, `#rollupSubTabs`) are
+`position: sticky` in `.page-body` with `top: -20px` — a sticky box's
+constraint rectangle is the scroller *inside its padding*, so `top: 0` parks
+the row 20px low. Below 768px a tab row that stays put does not wrap but
+scrolls sideways; the datasource page's eleven expert tabs otherwise made a
+fixed header of a third of a phone screen. `page-fill` (Logs, Help) goes one
+step further: `.page-body` does not scroll either, and a `.card-fill` takes
+the remaining height and scrolls its own content.
+
 ## Shared panels and scripts
 
 There used to be two datasource pages — `detail.html` and `manage.html` —
@@ -715,8 +742,8 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   browser and locale and cut the time off; the picker shows minutes while the
   filter keeps the exact instant, so a run's frame survives a re-commit. The page is
   `page-wide` (`base.html`'s `{% block page_class %}` lifts `.page`'s 1200px
-  cap) and `page-fill` (`{% block body_class %}`): the page itself never
-  scrolls, the viewer sits in a `.card-fill` that takes the height below the
+  cap) and `page-fill` (`{% block body_class %}`, see "Page layout: what
+  scrolls"): not even the content box scrolls, the viewer sits in a `.card-fill` that takes the height below the
   tab bar, and only the lines pane or the runs table scrolls — so the nav and
   the tab bar stay put. The help section uses the same pair. Where the wrapped
   filters leave no room (a phone), the pane keeps a 180px floor and the viewer

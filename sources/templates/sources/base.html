@@ -161,60 +161,83 @@ a:hover { text-decoration: underline; }
 /* Layout — left-anchored under the nav's first source tab (not centered),
    so the content column, sub-tab row, and dim-tab row share one left edge.
    Left padding = --tabs-left; the max-width grows by the same amount so the
-   usable content width stays ~1200px. */
-.page { max-width: calc(1200px + var(--tabs-left)); margin: 0; padding: 0 16px 64px var(--tabs-left); }
-/* A page that needs every pixel (the Logs page) lifts the cap. The subtab bar's
-   bleed formula below assumes the cap, so it gets the uncapped bleed instead. */
-.page-wide { max-width: none; }
-.page-wide .subtabs-bar { margin-right: -16px; padding-right: 16px; }
+   usable content width stays ~1200px.
+   --page-pad-l is the left indent, --page-bleed-r the distance from .page's
+   content edge to the viewport's right edge. The tab bar and the scroller
+   below both use them to reach the viewport edges from inside .page. The
+   right one has two regimes: 16px while .page fills the width, growing with
+   the viewport once .page hits its max-width — max() picks whichever applies.
+   100vw is exact here because the window itself never scrolls (see "Shell
+   layout"), so it has no scrollbar to include. */
+.page {
+  --page-pad-l: var(--tabs-left);
+  --page-bleed-r: max(16px, 100vw - var(--tabs-left) - 1200px + 16px);
+  max-width: calc(1200px + var(--tabs-left)); margin: 0; padding: 0 16px 0 var(--page-pad-l);
+}
+/* A page that needs every pixel (the Logs page) lifts the cap, and with it the
+   growing half of the bleed. */
+.page-wide { max-width: none; --page-bleed-r: 16px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
-/* Fill layout — opt-in per page: fill the body_class block with page-fill.
-   The page is exactly one viewport tall and never scrolls, in either
-   direction: the nav and the tab bars stay put, and a .card-fill takes
-   whatever height is left and scrolls its own content. For pages whose content is one long
-   scrollable thing (the Logs page, the help section), where a page scroll
-   would only carry the header away. body's overflow propagates to the
-   viewport, so absolutely placed popups are not clipped by it. */
-body.page-fill {
+/* Shell layout — every page. The page is exactly one viewport tall and the
+   window never scrolls: the nav and the tab bar (the tabs block) stay put,
+   and only .page-body, the content block's box, scrolls. It bleeds to both
+   viewport edges and pads back to .page's content lines, so the content sits
+   where it always did and the scrollbar is at the window's edge, not in the
+   middle of a wide screen. body's overflow propagates to the viewport, so
+   absolutely placed popups are not clipped by it. */
+body {
   height: 100vh; height: 100dvh;
   display: flex; flex-direction: column;
   overflow: hidden;
 }
-body.page-fill > .nav { flex-shrink: 0; }
-body.page-fill > main {
+body > .nav { flex-shrink: 0; }
+body > main {
   flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+}
+body > main > .subtabs-bar { flex-shrink: 0; }
+.page-body {
+  flex: 1 1 auto; min-height: 0;
+  overflow: auto;
+  margin: 0 calc(-1 * var(--page-bleed-r)) 0 calc(-1 * var(--page-pad-l));
+  padding: 0 var(--page-bleed-r) 64px var(--page-pad-l);
+}
+/* The gap under the tab bar is the scroller's, not the bar's: content then
+   scrolls right up to the bar's border instead of vanishing 20px below it. */
+.subtabs-bar + .page-body { padding-top: 20px; }
+/* Fill layout — opt-in per page: fill the body_class block with page-fill.
+   .page-body does not scroll either; a .card-fill takes whatever height is
+   left and scrolls its own content. For pages whose content is one long
+   scrollable thing (the Logs page, the help section), where even the content
+   box scrolling would carry the pane's own chrome away. */
+body.page-fill .page-body {
+  overflow: hidden;
   display: flex; flex-direction: column;
   padding-bottom: 16px;
 }
-body.page-fill > main > * { flex-shrink: 0; }
-body.page-fill > main > .card-fill {
+body.page-fill .page-body > * { flex-shrink: 0; }
+body.page-fill .page-body > .card-fill {
   flex: 1 1 auto; min-height: 0; min-width: 0;
   display: flex; flex-direction: column;
   margin-bottom: 0;
 }
 
 /* Double-tab header — lower tier, full-bleed flush beneath the top nav.
-   Breaks out of the (left-anchored) .page so the bottom border/shadow spans
-   the full viewport, then re-pads its content back to the --tabs-left line so
-   the first sub-tab sits directly under the nav's first source tab.
-   .page offsets this bar's box --tabs-left from the viewport's left, so the
-   left bleed is just -(--tabs-left). On the right the bar must reach the
-   viewport edge in BOTH regimes: when .page fills the width its content box
-   ends 16px short of the edge (bleed 16px); once .page hits its max-width
-   (1200px + --tabs-left) the gap grows with the viewport, so the bleed is
-   100vw - --tabs-left - 1200px - (-16px). max() picks whichever applies, and
-   padding-right matches the bleed so content lands on the .page content edge
-   (16px in narrow regime, more once max-width clamps). */
+   Lives in the page's tabs block, outside the scrolling .page-body, so it
+   never moves. Breaks out of the (left-anchored) .page so the bottom
+   border/shadow spans the full viewport, then re-pads its content back to the
+   .page content lines (--page-pad-l, --page-bleed-r: see .page) so the first
+   sub-tab sits directly under the nav's first source tab and a trailing
+   control ends on the content's right edge. */
 .subtabs-bar {
   /* A row, so a trailing control (the Basic/Expert switch) sits beside the
      tab strip rather than wrapping under it. The tabs take the slack. */
   display: flex;
   align-items: stretch;
-  margin-left: calc(-1 * var(--tabs-left));
-  margin-right: calc(-1 * max(16px, 100vw - var(--tabs-left) - 1200px + 16px));
-  margin-bottom: 20px;
-  padding-left: var(--tabs-left);
-  padding-right: max(16px, 100vw - var(--tabs-left) - 1200px + 16px);
+  margin-left: calc(-1 * var(--page-pad-l));
+  margin-right: calc(-1 * var(--page-bleed-r));
+  padding-left: var(--page-pad-l);
+  padding-right: var(--page-bleed-r);
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   box-shadow: 0 1px 0 var(--border);
@@ -428,7 +451,29 @@ tr.editing .row-edit { display: flex; }
    itself a tab row, so the sub-tabs should hug the bar with the same 4px
    button headroom as the Basics tab sits under the nav, not 20px lower. */
 #dimDataTabs, #etlSubWrap, #rollupSubWrap { margin-top: -20px; }
-#dimSubTabs.tabs, #etlSubTabs.tabs, #rollupSubTabs.tabs { margin: 0; border-bottom: 1px solid var(--border); }
+/* A tab row, so it stays put too: sticky at the top edge of .page-body. The
+   offset is -20px, not 0, because a sticky box's constraint rectangle is the
+   scroller's box *inside its padding* — top: 0 would park the row 20px below
+   the tab bar, under that 20px padding-top. */
+#dimSubTabs.tabs, #etlSubTabs.tabs, #rollupSubTabs.tabs {
+  margin: 0; border-bottom: 1px solid var(--border);
+  position: sticky; top: -20px; z-index: 5; background: var(--bg);
+}
+/* Phone width: a tab row that stays put must not wrap — the datasource page's
+   eleven expert tabs, one per line under the --tabs-left indent, made a fixed
+   header of a third of the screen. The row scrolls sideways instead. The
+   1px padding/-1px margin pair keeps the tabs' -1px overlap onto the border
+   below inside the scroll box, so the active underline is not clipped. */
+@media (max-width: 768px) {
+  .subtabs-bar .tabs, #dimSubTabs.tabs, #etlSubTabs.tabs, #rollupSubTabs.tabs {
+    flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden;
+    scrollbar-width: none;
+    padding-bottom: 1px; margin-bottom: -1px;
+  }
+  .subtabs-bar .tab-btn, #dimSubTabs .tab-btn, #etlSubTabs .tab-btn, #rollupSubTabs .tab-btn {
+    flex-shrink: 0; white-space: nowrap;
+  }
+}
 #dimSubTabs .tab-btn, #etlSubTabs .tab-btn, #rollupSubTabs .tab-btn {
   display: flex;
   align-items: center;
@@ -475,10 +520,11 @@ tr.editing .row-edit { display: flex; }
 
 /* Persistent bottom status bar — always visible, mirrors the canvas page
    #info bar. Left region = ETL status segment (#etlStrip), right region =
-   dialect badge + schema name. */
+   dialect badge + schema name. Rendered in the footer block, so it is the
+   body's last flex row: .page-body ends above it instead of scrolling (and
+   hiding its scrollbar's end) underneath. */
 .statusbar {
-  position: fixed;
-  left: 0; right: 0; bottom: 0;
+  flex-shrink: 0;
   z-index: 300;
   display: flex;
   align-items: center;
@@ -832,9 +878,19 @@ function getJSON(url, opts) {
   return fetch(url, opts).then(function(r){ return r.json(); });
 }
 </script>
+{% comment %}
+  The tabs block holds a page's tab bar (.subtabs-bar) and stays put; the
+  content block scrolls in .page-body below it; the footer block (a status
+  bar) stays put under both. See "Shell layout" above — a tab bar written
+  into the content block would scroll away with it.
+{% endcomment %}
 <main class="{% block page_class %}page{% endblock %}">
+  {% block tabs %}{% endblock %}
+  <div class="page-body" id="page-body">
   {% block content %}{% endblock %}
+  </div>
 </main>
+{% block footer %}{% endblock %}
 {% block extra_js %}
 <script src="{% static 'sources/nav.js' %}"></script>
 {# Shared with viz/chart.html. Plain and synchronous: source.html constructs #}

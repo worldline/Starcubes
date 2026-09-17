@@ -294,8 +294,9 @@
   /* sources/base.html indents .page by --tabs-left (~94px) so a table lines
      up under the nav's first source tab. Prose has nothing to line up with,
      and on a phone that indent is a quarter of the screen. Only help pages
-     load this file, so the override cannot reach another page. */
-  .page { padding-left: 16px; }
+     load this file, so the override cannot reach another page. The variable,
+     not padding-left: .page-body's bleed reads it too. */
+  .page { --page-pad-l: 16px; }
   .help-layout { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .help-side {
     position: static; max-height: none; overflow: visible;
