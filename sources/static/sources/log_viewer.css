@@ -168,7 +168,7 @@
 .lv-panewrap { position: relative; }
 .lv-pane {
   /* Time (+ the kind dot) | Level | Kind | Datasource | Host | Run | Message */
-  --lv-cols: calc(15ch + 12px) 8ch 14ch minmax(8ch, 16ch) 16ch 15ch minmax(0, 1fr);
+  --lv-cols: calc(15ch + 12px) 8ch 14ch var(--lv-ds-line-w, 16ch) 16ch 15ch minmax(0, 1fr);
   max-height: var(--lv-pane-h); overflow: auto;
   /* prependLines() compensates scrollTop itself; the browser's own scroll
      anchoring would correct the same jump a second time. */
@@ -254,12 +254,15 @@
 .lv-table col { font: 12px var(--lv-mono); }
 .lv-w-kind { width: calc(14ch + 20px); }
 .lv-w-id { width: calc(5ch + 20px); }
-.lv-w-ds { width: calc(18ch + 20px); }
-.lv-w-status { width: calc(11ch + 20px); }
+/* Datasource and status are measured by log_viewer.js (sizeColumns); the
+   fallbacks only apply until then. */
+.lv-w-ds { width: calc(var(--lv-ds-run-w, 14ch) + 20px); }
+.lv-w-status { width: var(--lv-status-w, calc(11ch + 20px)); }
 .lv-w-time { width: calc(15ch + 20px); }
+.lv-w-clock { width: calc(8ch + 20px); }
 .lv-w-dur { width: calc(9ch + 20px); }
 .lv-w-host { width: calc(16ch + 20px); }
-.lv-w-error { width: 22%; }
+.lv-w-error { width: 15%; }
 .lv-table th, .lv-table td {
   padding: 5px 10px; text-align: left; vertical-align: middle;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -280,6 +283,13 @@
 .lv-num { color: var(--muted); text-align: right; }
 .lv-table th:nth-child(2) { text-align: right; }
 .lv-err { color: var(--danger); }
+/* Summary wraps rather than hiding what a run did; an error keeps to two
+   lines (a traceback would otherwise make one row a page), full text in the title. */
+.lv-table td.lv-wrap { white-space: normal; overflow-wrap: anywhere; }
+.lv-clamp {
+  white-space: normal; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
 .lv-alive {
   display: inline-block; width: 7px; height: 7px; margin-left: 7px; vertical-align: middle;
   border-radius: 50%; background: var(--success);

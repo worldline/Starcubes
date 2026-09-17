@@ -18,6 +18,8 @@
 
   var FOLLOW_MS = 2000;        // Lines: after_id poll
   var RUNS_MS = 5000;          // Runs: first-page reload
+  // Every status the view `run` can report, for sizing the status column.
+  var STATUSES = ['running', 'stopping', 'ok', 'failed', 'stopped', 'released'];
   var MAX_DOM_LINES = 5000;
   var TOP_SLACK = 40;          // px from the top that still counts as "at the top"
 
@@ -38,6 +40,27 @@
     var t = pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
     return d.toDateString() === new Date().toDateString()
       ? t : pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + '. ' + t;
+  }
+
+  // Only the clock: a run's end is read next to its start and its duration,
+  // and the duration already says when it crossed a day.
+  function clockOnly(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+
+  // Pixel width of the widest string in `el`'s font, for columns sized to
+  // what they actually hold rather than to a guess.
+  var measureCtx = null;
+  function widest(texts, el) {
+    measureCtx = measureCtx || document.createElement('canvas').getContext('2d');
+    var cs = window.getComputedStyle(el);
+    measureCtx.font = cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
+    return texts.reduce(function (w, t) {
+      return Math.max(w, Math.ceil(measureCtx.measureText(t).width));
+    }, 0);
   }
 
   // 42s, 3m 12s, 2h 05m, 1d 3h — two units at most; a log reader wants the
@@ -129,10 +152,45 @@
     Array.prototype.forEach.call(this.el('host').options, function (o) {
       if (o.value) { o.textContent = shortHost(o.value); o.title = o.value; }
     });
+    this.sizeColumns();
     if (this.urlState) this.readUrl();
     this.syncControls();
     this.wire();
   }
+
+  // The datasource column is as wide as the longest datasource name (within
+  // bounds), and the status column as wide as its widest badge: fixed widths
+  // either wasted space or cut the summary.
+  LogViewer.prototype.sizeColumns = function () {
+    var root = this.root;
+    var names = Object.keys(this.dsNames).map(function (k) { return this.dsNames[k]; }, this);
+    // 78px is the DATASOURCE header itself (10px caps, letter-spaced).
+    var clamp = function (w) { return Math.min(Math.max(w, 78), 220) + 'px'; };
+    if (names.length) {
+      root.style.setProperty('--lv-ds-line-w', clamp(widest(names, this.el('lines'))));
+      root.style.setProperty('--lv-ds-run-w', clamp(widest(names, this.el('runs-body'))));
+    }
+    this.sizeStatus();
+  };
+
+  // Measured in a throwaway table with the real classes, so the badge gets
+  // the table's padding. An embed constructed inside a hidden tab lays out
+  // nothing — then this returns false and the first runs render retries.
+  LogViewer.prototype.sizeStatus = function () {
+    if (this.statusSized) return true;
+    var probe = document.createElement('table');
+    probe.className = 'lv-table';
+    probe.style.cssText = 'position:absolute;visibility:hidden;width:auto;min-width:0;table-layout:auto';
+    probe.innerHTML = '<tbody>' + STATUSES.map(function (st) {
+      return '<tr><td>' + statusBadge(st) + '<span class="lv-alive"></span></td></tr>';
+    }).join('') + '</tbody>';
+    this.root.appendChild(probe);
+    var w = probe.offsetWidth;
+    probe.remove();
+    if (!w) return false;
+    this.root.style.setProperty('--lv-status-w', w + 'px');
+    return (this.statusSized = true);
+  };
 
   LogViewer.prototype.readUrl = function () {
     var q = new URLSearchParams(window.location.search);
@@ -600,6 +658,7 @@
       if (!d.ok) { self.status('✗ ' + d.error); self.schedule(); return; }
       var body = self.el('runs-body');
       var now = Date.now();
+      self.sizeStatus();
       var html = d.runs.map(function (r) { return self.runHtml(r, now); }).join('');
       if (more) {
         body.insertAdjacentHTML('beforeend', html);
@@ -651,11 +710,12 @@
       + (r.alive ? '<span class="lv-alive" aria-label="process alive"></span>' : '') + '</td>'
       + '<td class="lv-mono" title="' + esc(fmtLocal(r.started_at)) + '">' + esc(timeOnly(r.started_at)) + '</td>'
       + '<td class="lv-mono" title="' + esc(r.finished_at ? fmtLocal(r.finished_at) : 'not finished') + '">'
-      + (r.finished_at ? esc(timeOnly(r.finished_at)) : '<span class="lv-dim">—</span>') + '</td>'
+      + (r.finished_at ? esc(clockOnly(r.finished_at)) : '<span class="lv-dim">—</span>') + '</td>'
       + '<td class="lv-mono">' + dur + '</td>'
       + cell(shortHost(r.hostname), 'lv-mono lv-muted', r.hostname || '')
-      + cell(r.summary || '', '')
-      + cell(r.error || '', 'lv-err')
+      + cell(r.summary || '', 'lv-wrap')
+      + '<td class="lv-err" title="' + esc(r.error || '') + '">'
+      + (r.error ? '<div class="lv-clamp">' + esc(r.error) + '</div>' : '<span class="lv-dim">—</span>') + '</td>'
       + '</tr>';
   };
 

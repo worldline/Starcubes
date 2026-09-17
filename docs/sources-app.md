@@ -701,7 +701,9 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   levels). **Both views are newest first** — lines included, which is the
   reverse of a log file and says so above the pane — so a run and its lines
   sit in the same place. Both are strict columns (lines a CSS grid sharing one
-  `--lv-cols`, runs a fixed-layout table); host names show their first label
+  `--lv-cols`, runs a fixed-layout table whose datasource and status columns are measured to
+  their content, so the summary gets the room and wraps rather than being cut;
+  Finished shows only the clock, the duration says when a run crossed a day); host names show their first label
   only, the FQDN in the tooltip. A cell on a line sets that filter; a run row
   shows its lines framed by its own time span (audit and housekeeping, which
   have no lines, frame the datasource instead). The filters live in the URL,
