@@ -152,11 +152,11 @@ firings, transports (notification transports + SSO, editing
 `starcubes_meta.app_config` under env-first precedence), settings
 (Users) and me (My Profile) — share the link-based tab bar
 `_global_tabs.html`, included at the top of each page. Tab order mirrors
-the two hamburger menus: Datasources, Profiles, Firings, Transports,
-Users, My Profile. The active tab is derived from
+the two hamburger menus: Datasources, Profiles, Transports, Users,
+My Profile, Firings, Logs. The active tab is derived from
 `request.resolver_match.url_name`, and the bar is permission-filtered to
-mirror the views: superusers see all six tabs, other logged-in users
-Datasources, Firings and My Profile.
+mirror the views: superusers see all seven tabs, other logged-in users
+Datasources, My Profile and Firings.
 
 ## Role gates
 

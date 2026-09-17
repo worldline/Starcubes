@@ -13,8 +13,8 @@ Parameters (all optional, via `{% include ... with ... %}`):
                    sources/base.html; chart.html passes its own.
 
 Kept in sync BY HAND with _global_tabs.html — the tab bar's order must
-mirror this menu's order (Datasources, Profiles*, Firings, Logs*,
-Transports*, Users*, My Profile). The toggle button, the logout form and (chart only)
+mirror this menu's order (Datasources, Profiles*, Transports*, Users*,
+My Profile, Firings, Logs*). The toggle button, the logout form and (chart only)
 #prefs-popover stay in the shells.
 {% endcomment %}
 {% if user.is_authenticated %}
@@ -31,16 +31,6 @@ Transports*, Users*, My Profile). The toggle button, the logout form and (chart 
     <svg class="ic" aria-hidden="true"><use href="#ic-book-open"></use></svg>
     <span class="menu-label">Profiles</span>
   </a>
-  {% endif %}
-  <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
-    <span class="menu-label">Firings</span>
-  </a>
-  {% if user.is_superuser %}
-  <a class="menu-item" role="menuitem" href="{% url 'sources:logs' %}">
-    <svg class="ic" aria-hidden="true"><use href="#ic-terminal"></use></svg>
-    <span class="menu-label">Logs</span>
-  </a>
   <a class="menu-item" role="menuitem" href="{% url 'sources:transports' %}">
     <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
     <span class="menu-label">Transports</span>
@@ -54,6 +44,16 @@ Transports*, Users*, My Profile). The toggle button, the logout form and (chart 
     <svg class="ic" aria-hidden="true"><use href="#ic-user"></use></svg>
     <span class="menu-label">My Profile</span>
   </a>
+  <a class="menu-item" role="menuitem" href="{% url 'sources:alarm_firings' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-bell"></use></svg>
+    <span class="menu-label">Firings</span>
+  </a>
+  {% if user.is_superuser %}
+  <a class="menu-item" role="menuitem" href="{% url 'sources:logs' %}">
+    <svg class="ic" aria-hidden="true"><use href="#ic-terminal"></use></svg>
+    <span class="menu-label">Logs</span>
+  </a>
+  {% endif %}
   <div class="menu-sep"></div>
 {% endif %}
 {% if include_prefs %}
