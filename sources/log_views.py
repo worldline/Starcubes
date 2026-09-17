@@ -10,8 +10,10 @@ log files they replace:
   without a level counts as INFO), `run`, `from`/`to`, `q` (ILIKE — limited
   to the last 24 hours unless a `from` is given, so a text search cannot
   scan the whole table). Paging by id: `after_id` follows the tail,
-  `before_id` pages back, neither returns the newest page. Each page also
-  names the run behind every `run_ref` on it, so a line can link to its run.
+  `before_id` pages back, neither returns the newest page. Every page is
+  newest first, like the runs — the viewer shows both in that order. Each
+  page also names the run behind every `run_ref` on it, so a line can link
+  to its run.
 - `logs/api/runs/` reads the view `starcubes_meta.run` — every run of every
   kind, the five history tables stay where they are — with the same
   datasource/kind/host/time filters plus `status` and `alive`, newest first,
@@ -156,7 +158,7 @@ def logs_lines_api(request):
            + f" ORDER BY l.id {order} LIMIT :limit")
     with _meta_engine().begin() as conn:
         rows = [dict(r) for r in conn.execute(text(sql), params).mappings()]
-        if order == "DESC":
+        if order == "ASC":
             rows.reverse()
         refs = sorted({r["run_ref"] for r in rows})
         runs = {}

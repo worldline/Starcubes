@@ -1,7 +1,7 @@
 {% load static %}
 {% comment %}
 The one log viewer: lines from starcubes_meta.log_line and runs from the view
-starcubes_meta.run, behind one filter bar (sources/log_views.py). Included by
+starcubes_meta.run, behind one filter panel (sources/log_views.py). Included by
 sources/logs.html (all datasources, filters in the URL) and by source.html's
 ETL Log sub-tab (fixed_datasource set, no URL state). Behaviour in
 sources/static/sources/log_viewer.js; the includer constructs it:
@@ -10,66 +10,126 @@ sources/static/sources/log_viewer.js; the includer constructs it:
 Parameters:
 - viewer_id          id of the root element
 - kinds, levels      the vocabularies (log_views.RUN_KINDS / core.log_ship.LEVELS)
-- hosts              host names for the host filter
+- hosts              host names for the host filter (the JS shortens the labels)
 - datasources        [{id, name}] for the datasource filter (omit with fixed_datasource)
-- fixed_datasource   a datasource id the viewer is pinned to
+- fixed_datasource   a datasource id the viewer is pinned to; adds .lv-fixed,
+                     which drops the Datasource column from both views
 - url_state          truthy: mirror the filters into the page URL
+
+Layout: filter panel (two rows) / view header / pane / status line. Both views
+are newest first. The Lines column header lives inside the pane as a sticky
+row, so it scrolls sideways with the rows on a narrow screen. The kind options
+in kind-add are the vocabulary the JS reads once; it rebuilds the list from it.
 {% endcomment %}
 <link rel="stylesheet" href="{% static 'sources/log_viewer.css' %}">
-<div class="lv" id="{{ viewer_id }}"
+<div class="lv{% if fixed_datasource %} lv-fixed{% endif %}" id="{{ viewer_id }}"
      data-lines-url="{% url 'sources:logs_lines_api' %}"
      data-runs-url="{% url 'sources:logs_runs_api' %}"
      {% if fixed_datasource %}data-fixed-datasource="{{ fixed_datasource }}"{% endif %}
      {% if url_state %}data-url-state="1"{% endif %}>
-  <div class="lv-bar">
-    <span class="lv-mode" role="group" aria-label="Show">
-      <button type="button" data-lv="mode-lines">Lines</button>
-      <button type="button" data-lv="mode-runs">Runs</button>
-    </span>
-    {% if not fixed_datasource %}
-    <label>Datasource
-      <select data-lv="datasource">
-        <option value="">all</option>
-        {% for ds in datasources %}<option value="{{ ds.id }}">{{ ds.name }}</option>{% endfor %}
-      </select>
-    </label>
-    {% endif %}
-    <span class="lv-kinds" title="process kind — none checked means all">
-      {% for k in kinds %}<label><input type="checkbox" data-lv="kind" value="{{ k }}"> {{ k }}</label>{% endfor %}
-    </span>
-    <label>Host
-      <select data-lv="host">
-        <option value="">all</option>
-        {% for h in hosts %}<option value="{{ h }}">{{ h }}</option>{% endfor %}
-      </select>
-    </label>
-    <label>From <input type="datetime-local" data-lv="from"></label>
-    <label>To <input type="datetime-local" data-lv="to"></label>
-    <span class="lv-group" data-lv="lines-only">
-      <label>Level
-        <select data-lv="level">
+  <div class="lv-filters">
+    <div class="lv-frow">
+      <div class="lv-field">
+        <span class="lv-label">View</span>
+        <span class="chip-group lv-mode" role="group" aria-label="Show">
+          <button type="button" class="chip" data-lv="mode-lines">Lines</button>
+          <button type="button" class="chip" data-lv="mode-runs">Runs</button>
+        </span>
+      </div>
+      <div class="lv-field lv-field-grow">
+        <span class="lv-label">Kind</span>
+        <div class="lv-kindfield" data-lv="kinds">
+          <span class="lv-kind-chips" data-lv="kind-chips"></span>
+          <select data-lv="kind-add" aria-label="Add a kind filter" title="filter by process kind">
+            <option value="">+ kind</option>
+            {% for k in kinds %}<option value="{{ k }}">{{ k }}</option>{% endfor %}
+          </select>
+        </div>
+      </div>
+      <button type="button" class="lv-live" data-lv="live" aria-pressed="true"
+              title="Live: keep fetching what arrives"><span class="lv-live-dot" aria-hidden="true"></span>Live</button>
+      <button type="button" class="lv-iconbtn" data-lv="refresh" title="Refresh now" aria-label="Refresh">↻</button>
+    </div>
+    <div class="lv-frow">
+      {% if not fixed_datasource %}
+      <label class="lv-field">
+        <span class="lv-label">Datasource</span>
+        <select data-lv="datasource">
           <option value="">all</option>
-          {% for l in levels %}<option value="{{ l }}">{{ l }}+</option>{% endfor %}
+          {% for ds in datasources %}<option value="{{ ds.id }}">{{ ds.name }}</option>{% endfor %}
         </select>
       </label>
-      <label>Text <input type="text" data-lv="q" placeholder="contains…"></label>
-      <span class="lv-chip" data-lv="run-chip" hidden>run <span data-lv="run-name"></span>
-        <button type="button" data-lv="run-clear" title="show all runs">×</button></span>
-      <label><input type="checkbox" data-lv="follow" checked> Follow</label>
-    </span>
-    <span class="lv-spacer"></span>
-    <button type="button" class="btn btn-secondary btn-sm" data-lv="refresh">Refresh</button>
+      {% endif %}
+      <label class="lv-field">
+        <span class="lv-label">Host</span>
+        <select data-lv="host">
+          <option value="">all</option>
+          {% for h in hosts %}<option value="{{ h }}" title="{{ h }}">{{ h }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="lv-field">
+        <span class="lv-label">From</span>
+        <input type="datetime-local" data-lv="from">
+      </label>
+      <label class="lv-field">
+        <span class="lv-label">To</span>
+        <input type="datetime-local" data-lv="to">
+      </label>
+      <span class="lv-group" data-lv="lines-only">
+        <label class="lv-field">
+          <span class="lv-label">Level</span>
+          <select data-lv="level">
+            <option value="">all</option>
+            {% for l in levels %}<option value="{{ l }}">{{ l }}+</option>{% endfor %}
+          </select>
+        </label>
+        <label class="lv-field lv-field-search">
+          <span class="lv-label">Text</span>
+          <span class="lv-search">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.5" cy="6.5" r="4.5"/><path d="M10 10l4 4"/></svg>
+            <input type="search" data-lv="q" placeholder="contains…">
+          </span>
+        </label>
+        <span class="lv-field" data-lv="run-chip" hidden>
+          <span class="lv-label">Run</span>
+          <span class="lv-runchip"><span data-lv="run-name"></span>
+            <button type="button" data-lv="run-clear" title="show all runs" aria-label="Clear run filter">×</button></span>
+        </span>
+      </span>
+    </div>
   </div>
-  <div class="lv-pane" data-lv="lines"></div>
+
+  <div class="lv-viewhead">
+    <span class="lv-notice" data-lv="lines-notice"><span class="lv-notice-glyph" aria-hidden="true">↑</span>Newest first — lines are in reverse order, matching Runs</span>
+    <span class="lv-notice" data-lv="runs-notice" hidden><span class="lv-notice-glyph" aria-hidden="true">↑</span>Newest first — click a run to see its lines</span>
+  </div>
+
+  <div class="lv-panewrap" data-lv="lines-wrap">
+    <div class="lv-pane" data-lv="lines">
+      <div class="lv-ln lv-hrow" aria-hidden="true">
+        <span>Time</span><span>Level</span><span>Kind</span>{% if not fixed_datasource %}<span>Datasource</span>{% endif %}<span>Host</span><span>Run</span><span>Message</span>
+      </div>
+      <div data-lv="lines-body"></div>
+      <div class="lv-older" data-lv="older-wrap" hidden><button type="button" class="btn btn-secondary btn-sm" data-lv="older">Load older</button></div>
+    </div>
+    <button type="button" class="lv-newpill" data-lv="new-pill" hidden></button>
+  </div>
+
   <div class="lv-runs" data-lv="runs" hidden>
-    <table class="data-table">
+    <table class="lv-table">
+      <colgroup>
+        <col class="lv-w-kind"><col class="lv-w-id">{% if not fixed_datasource %}<col class="lv-w-ds">{% endif %}<col class="lv-w-status">
+        <col class="lv-w-time"><col class="lv-w-time"><col class="lv-w-dur"><col class="lv-w-host">
+        <col class="lv-w-summary"><col class="lv-w-error">
+      </colgroup>
       <thead><tr>
-        <th>Kind</th>{% if not fixed_datasource %}<th>Datasource</th>{% endif %}<th>Status</th>
-        <th>Started</th><th>Finished</th><th>Host</th><th>Summary</th><th>Error</th>
+        <th>Kind</th><th>#</th>{% if not fixed_datasource %}<th>Datasource</th>{% endif %}<th>Status</th>
+        <th>Started</th><th>Finished</th><th>Duration</th><th>Host</th><th>Summary</th><th>Error</th>
       </tr></thead>
       <tbody data-lv="runs-body"></tbody>
     </table>
     <div class="lv-older"><button type="button" class="btn btn-secondary btn-sm" data-lv="more-runs" hidden>Load older runs</button></div>
   </div>
-  <div class="lv-status" data-lv="status"></div>
+
+  <div class="lv-status" data-lv="status" aria-live="polite"></div>
 </div>

@@ -1,6 +1,7 @@
 {% extends "sources/base.html" %}
 {% load static %}
 {% block title %}Logs — starcubes{% endblock %}
+{% block page_class %}page page-wide{% endblock %}
 
 {% block content %}
 {% include "sources/_global_tabs.html" %}
@@ -8,7 +9,9 @@
 <p class="text-muted" style="margin:0 0 12px;font-size:12px">
   Everything every ETL, forever and rollup process wrote, from every container,
   in one log. Filter instead of switching pages; <em>Runs</em> lists every run of
-  every kind with the same filters, and a click shows its lines.
+  every kind with the same filters, and a click shows its lines. Both are
+  newest first — the log reads in reverse order, so a run and its lines sit in
+  the same place.
 </p>
 
 <div class="card">

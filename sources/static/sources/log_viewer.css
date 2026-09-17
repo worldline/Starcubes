@@ -1,60 +1,304 @@
 /* The one log viewer (sources/_log_viewer.html, log_viewer.js): /sources/logs/
    and the ETL tab's Log sub-tab. Colours only through the shared tokens in
-   sources/base.html, so light and dark follow the page. */
+   sources/base.html, so light and dark follow the page — the one exception is
+   the per-kind palette below, which defines its own light and dark values. */
 
-.lv { display: flex; flex-direction: column; gap: 8px; }
+.lv {
+  --lv-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --lv-h: 28px;                                   /* every filter control */
+  --lv-hair: color-mix(in srgb, var(--border) 55%, transparent);
+  --lv-pane-h: max(420px, calc(100vh - 300px));
+  display: flex; flex-direction: column; min-width: 0;
+}
+.lv.lv-fixed { --lv-pane-h: 70vh; }
 /* `hidden` must win over every display rule below. */
 .lv [hidden] { display: none !important; }
 .lv-group { display: contents; }
 
-.lv-bar {
-  display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center;
-  padding: 8px 12px; border-bottom: 1px solid var(--border);
+/* ---- Kind palette: .lv-k-<kind> sets --lv-k, chips and dots read it ---- */
+.lv-k-etl           { --lv-k: #2563eb; }
+.lv-k-backfill      { --lv-k: #7c3aed; }
+.lv-k-forever       { --lv-k: #0d9488; }
+.lv-k-rollup_advise { --lv-k: #a16207; }
+.lv-k-rollup_build  { --lv-k: #4d7c0f; }
+.lv-k-rollup_verify { --lv-k: #15803d; }
+.lv-k-audit         { --lv-k: #be185d; }
+.lv-k-housekeeping  { --lv-k: #475569; }
+[data-theme="dark"] .lv-k-etl           { --lv-k: #60a5fa; }
+[data-theme="dark"] .lv-k-backfill      { --lv-k: #a78bfa; }
+[data-theme="dark"] .lv-k-forever       { --lv-k: #2dd4bf; }
+[data-theme="dark"] .lv-k-rollup_advise { --lv-k: #facc15; }
+[data-theme="dark"] .lv-k-rollup_build  { --lv-k: #a3e635; }
+[data-theme="dark"] .lv-k-rollup_verify { --lv-k: #4ade80; }
+[data-theme="dark"] .lv-k-audit         { --lv-k: #f472b6; }
+[data-theme="dark"] .lv-k-housekeeping  { --lv-k: #94a3b8; }
+
+.lv-kchip {
+  --lv-kc: var(--lv-k, var(--muted));
+  display: inline-block; max-width: 100%; vertical-align: top;
+  padding: 0 7px; border-radius: 999px;
+  font: 600 11px/16px system-ui, -apple-system, sans-serif;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--lv-kc);
+  background: color-mix(in srgb, var(--lv-kc) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--lv-kc) 35%, transparent);
+}
+
+/* ---- Filter panel ---- */
+.lv-filters {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--bg2) 55%, var(--bg));
+  border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
-.lv-bar label { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); }
-.lv-bar select, .lv-bar input[type=text], .lv-bar input[type=datetime-local] {
-  font-size: 12px; padding: 2px 4px; background: var(--input-bg);
-  color: var(--fg); border: 1px solid var(--input-border); border-radius: 3px;
+.lv-frow { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; }
+.lv-field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.lv-field-grow { flex: 1 1 280px; }
+.lv-label {
+  font-size: 10px; line-height: 12px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.07em; white-space: nowrap;
 }
-.lv-bar input[type=text] { width: 14em; }
-.lv-kinds { display: inline-flex; flex-wrap: wrap; gap: 2px 8px; }
-.lv-kinds label { color: var(--fg); cursor: pointer; }
-.lv-mode { display: inline-flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
-.lv-mode button {
-  font-size: 12px; padding: 2px 10px; border: 0; background: var(--bg2);
-  color: var(--fg); cursor: pointer;
+.lv-filters select,
+.lv-filters input[type=search],
+.lv-filters input[type=datetime-local] {
+  height: var(--lv-h); box-sizing: border-box; margin: 0;
+  padding: 0 8px; font: 12px system-ui, -apple-system, sans-serif;
+  color: var(--fg); background: var(--input-bg);
+  border: 1px solid var(--input-border); border-radius: 5px;
 }
-.lv-mode button.active { background: var(--tab-active-bg); color: var(--tab-active-fg); font-weight: 600; }
-.lv-spacer { flex: 1; }
-.lv-chip {
-  display: inline-flex; align-items: center; gap: 4px; padding: 1px 6px;
-  border-radius: 10px; background: var(--bg3); color: var(--fg); font-family: var(--mono, monospace);
+.lv-filters select { padding-right: 4px; max-width: 16em; }
+.lv-filters option { color: var(--fg); background: var(--input-bg); }
+.lv-filters input[type=datetime-local] { width: 13.5em; font-family: var(--lv-mono); font-size: 11px; }
+.lv-filters select:focus-visible,
+.lv-filters input:focus-visible,
+.lv-kindfield:focus-within {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
-.lv-chip button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0; font-size: 13px; }
+[data-theme="dark"] .lv-filters input[type=datetime-local] { color-scheme: dark; }
 
+.lv-mode .chip { height: var(--lv-h); display: inline-flex; align-items: center; padding: 0 14px; }
+
+/* The kind field looks like an input holding chips. */
+.lv-kindfield {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  min-height: var(--lv-h); box-sizing: border-box; padding: 3px 4px 3px 5px;
+  background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 5px;
+  cursor: text;
+}
+.lv-kind-chips { display: contents; }
+.lv-kinds-all { color: var(--muted); padding: 0 4px; font-style: italic; }
+.lv-kchip-rm { display: inline-flex; align-items: center; gap: 2px; padding-right: 2px; line-height: 18px; }
+.lv-kchip-rm button {
+  width: 16px; height: 16px; padding: 0; border: 0; border-radius: 50%;
+  background: none; color: inherit; font-size: 13px; line-height: 16px; cursor: pointer; opacity: 0.7;
+}
+.lv-kchip-rm button:hover, .lv-kchip-rm button:focus-visible {
+  opacity: 1; outline: none; background: color-mix(in srgb, var(--lv-kc) 22%, transparent);
+}
+.lv-filters .lv-kindfield select {
+  appearance: none; -webkit-appearance: none;
+  height: 20px; width: 6.2em; padding: 0 8px; margin-left: 2px; text-align-last: center;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  background: transparent; border: 1px dashed var(--input-border); border-radius: 999px;
+  cursor: pointer;
+}
+.lv-filters .lv-kindfield select:hover { color: var(--fg); border-color: var(--muted); }
+.lv-filters .lv-kindfield select:focus-visible { color: var(--accent); border-color: var(--accent); box-shadow: none; }
+
+/* Live pill and refresh */
+.lv-live, .lv-iconbtn {
+  height: var(--lv-h); box-sizing: border-box; cursor: pointer;
+  font: 600 12px system-ui, -apple-system, sans-serif;
+  color: var(--muted); background: var(--bg); border: 1px solid var(--border);
+}
+.lv-live {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 0 13px 0 11px; border-radius: 999px;
+}
+.lv-live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); opacity: 0.6; }
+.lv-live.on {
+  color: var(--success);
+  background: color-mix(in srgb, var(--success) 10%, var(--bg));
+  border-color: color-mix(in srgb, var(--success) 45%, transparent);
+}
+.lv-live.on .lv-live-dot { background: var(--success); opacity: 1; animation: lv-pulse 1.6s ease-in-out infinite; }
+.lv-iconbtn { width: var(--lv-h); padding: 0; border-radius: 5px; font-size: 15px; font-weight: 400; line-height: 1; }
+.lv-live:hover, .lv-iconbtn:hover { color: var(--fg); border-color: var(--muted); }
+.lv-live.on:hover { color: var(--success); border-color: var(--success); }
+.lv-live:focus-visible, .lv-iconbtn:focus-visible, .lv-newpill:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 1px;
+}
+@keyframes lv-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--success) 55%, transparent); }
+  60%      { box-shadow: 0 0 0 5px transparent; }
+}
+
+/* Text search with a glyph inside the box */
+.lv-search { position: relative; display: block; }
+.lv-search svg {
+  position: absolute; left: 8px; top: 50%; width: 13px; height: 13px; margin-top: -6.5px;
+  fill: none; stroke: var(--muted); stroke-width: 1.6; stroke-linecap: round; pointer-events: none;
+}
+.lv-filters .lv-search input { width: 15em; padding-left: 27px; }
+
+/* The run filter chip */
+.lv-runchip {
+  display: inline-flex; align-items: center; gap: 4px; height: var(--lv-h); box-sizing: border-box;
+  padding: 0 3px 0 6px; border: 1px solid var(--input-border); border-radius: 5px; background: var(--input-bg);
+}
+.lv-runchip .lv-kchip, .lv-runref { max-width: 16em; }
+.lv-runref { font: 11px var(--lv-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-runchip button {
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px;
+  background: none; color: var(--muted); font-size: 14px; line-height: 20px; cursor: pointer;
+}
+.lv-runchip button:hover { color: var(--fg); background: var(--bg3); }
+
+/* ---- View header ---- */
+.lv-viewhead {
+  display: flex; align-items: center; gap: 10px; min-height: 26px;
+  padding: 4px 14px; font-size: 11px; color: var(--muted);
+}
+.lv-notice { display: inline-flex; align-items: center; gap: 6px; }
+.lv-notice-glyph { font-size: 13px; line-height: 1; color: var(--accent); opacity: 0.8; }
+
+/* ---- Lines ---- */
+.lv-panewrap { position: relative; }
 .lv-pane {
-  margin: 0; padding: 6px 0; max-height: 70vh; overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;
+  /* Time (+ the kind dot) | Level | Kind | Datasource | Host | Run | Message */
+  --lv-cols: calc(15ch + 12px) 8ch 14ch minmax(8ch, 16ch) 16ch 15ch minmax(0, 1fr);
+  max-height: var(--lv-pane-h); overflow: auto;
+  /* prependLines() compensates scrollTop itself; the browser's own scroll
+     anchoring would correct the same jump a second time. */
+  overflow-anchor: none;
+  border-top: 1px solid var(--border);
+  font: 12px/18px var(--lv-mono);
 }
-.lv-line { display: flex; gap: 6px; padding: 0 12px; align-items: baseline; }
-.lv-line:hover { background: var(--bg2); }
-.lv-ts { color: var(--muted); white-space: nowrap; flex: none; }
-.lv-text { white-space: pre-wrap; word-break: break-all; flex: 1; min-width: 0; }
-.lv-b {
-  flex: none; font-size: 10px; padding: 0 5px; border-radius: 3px; cursor: pointer;
-  background: var(--bg3); color: var(--muted); white-space: nowrap;
+.lv-fixed .lv-pane { --lv-cols: calc(15ch + 12px) 8ch 14ch 16ch 15ch minmax(0, 1fr); }
+.lv-fixed .lv-ln { min-width: 960px; }
+.lv-ln {
+  display: grid; grid-template-columns: var(--lv-cols); column-gap: 12px;
+  align-items: start; min-width: 1100px;
+  padding: 2px 14px 2px 12px;
+  border-bottom: 1px solid var(--lv-hair);
 }
-.lv-b:hover { color: var(--fg); }
-.lv-lvl-WARNING .lv-text { color: var(--warn); }
-.lv-lvl-ERROR .lv-text, .lv-lvl-CRITICAL .lv-text { color: var(--danger); }
-.lv-lvl-ERROR, .lv-lvl-CRITICAL { box-shadow: inset 3px 0 0 var(--danger); }
-.lv-lvl-WARNING { box-shadow: inset 3px 0 0 var(--warn); }
-.lv-lvl-DEBUG .lv-text { color: var(--muted); }
-.lv-older { padding: 4px 12px; }
-.lv-empty { padding: 12px; color: var(--muted); }
-.lv-status { font-size: 11px; color: var(--muted); padding: 0 12px 6px; }
+.lv-ln:not(.lv-hrow):hover { background: var(--bg2); }
+/* The header row keeps the rows' font: --lv-cols is in ch, and ch is
+   measured in the font of the row that uses it. Only the labels shrink. */
+.lv-hrow {
+  position: sticky; top: 0; z-index: 2;
+  padding-top: 4px; padding-bottom: 4px;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+}
+.lv-hrow > span {
+  font: 600 10px/18px system-ui, -apple-system, sans-serif;
+  color: var(--muted); text-transform: uppercase; letter-spacing: 0.07em; white-space: nowrap;
+}
+.lv-hrow > span:first-child { padding-left: 12px; }
+.lv-c { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lv-c-ts { position: relative; padding-left: 12px; color: var(--muted); }
+.lv-c-ts::before {
+  content: ''; position: absolute; left: 1px; top: 6px;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--lv-k, var(--muted));
+}
+.lv-c-host, .lv-c-run { color: var(--muted); }
+.lv-c-msg { white-space: pre-wrap; overflow-wrap: anywhere; overflow: visible; }
+.lv-dim { color: var(--muted); opacity: 0.6; }
+.lv-f, .lv-ln .lv-kchip[data-f] { cursor: pointer; }
+.lv-f:hover { color: var(--accent); text-decoration: underline dotted; text-underline-offset: 3px; }
+.lv-ln .lv-kchip[data-f]:hover { background: color-mix(in srgb, var(--lv-kc) 26%, transparent); }
+.lv-ln .lv-kchip { margin-top: 1px; }
 
-.lv-runs { max-height: 70vh; overflow: auto; }
-.lv-runs tr[data-open] { cursor: pointer; }
-.lv-live { color: var(--success); font-weight: 600; }
+/* Level: a badge in its column; warnings and errors also mark the row. */
+.lv-lvl {
+  display: inline-block; vertical-align: top; margin-top: 1px; padding: 0 5px; border-radius: 3px;
+  font: 600 10px/16px system-ui, -apple-system, sans-serif; letter-spacing: 0.02em;
+  color: var(--muted); background: var(--bg3);
+}
+.lv-lvl-b-DEBUG { background: transparent; box-shadow: inset 0 0 0 1px var(--lv-hair); }
+.lv-lvl-b-WARNING { color: var(--warn); background: color-mix(in srgb, var(--warn) 15%, transparent); }
+.lv-lvl-b-ERROR { color: var(--danger); background: color-mix(in srgb, var(--danger) 15%, transparent); }
+.lv-lvl-b-CRITICAL { color: var(--bg); background: var(--danger); }
+.lv-lvl-DEBUG .lv-c-msg { color: var(--muted); }
+.lv-lvl-WARNING { box-shadow: inset 3px 0 0 var(--warn); }
+.lv-lvl-WARNING .lv-c-msg { color: var(--warn); }
+.lv-lvl-ERROR, .lv-lvl-CRITICAL {
+  box-shadow: inset 3px 0 0 var(--danger);
+  background: color-mix(in srgb, var(--danger) 4%, transparent);
+}
+.lv-lvl-ERROR .lv-c-msg, .lv-lvl-CRITICAL .lv-c-msg { color: var(--danger); }
+
+.lv-newpill {
+  position: absolute; top: 36px; left: 50%; transform: translateX(-50%); z-index: 3;
+  padding: 4px 12px; border: 0; border-radius: 999px; cursor: pointer;
+  font: 600 11px/16px system-ui, -apple-system, sans-serif;
+  color: var(--accent-fg); background: var(--accent);
+  box-shadow: 0 2px 8px var(--shadow), 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+.lv-newpill:hover { background: var(--accent-hover); }
+
+.lv-older { padding: 10px 14px; text-align: center; font-family: system-ui, -apple-system, sans-serif; }
+.lv-empty { padding: 28px 14px; color: var(--muted); text-align: center; font-family: system-ui, -apple-system, sans-serif; }
+
+/* ---- Runs ---- */
+.lv-runs { max-height: var(--lv-pane-h); overflow: auto; border-top: 1px solid var(--border); }
+.lv-table {
+  width: 100%; min-width: 1180px; table-layout: fixed; border-collapse: separate; border-spacing: 0;
+  font-size: 12px; line-height: 18px;
+}
+.lv-fixed .lv-table { min-width: 1040px; }
+/* Widths in ch of the monospace face (a col's ch uses the col's own font),
+   plus the cell's 20px of horizontal padding. */
+.lv-table col { font: 12px var(--lv-mono); }
+.lv-w-kind { width: calc(14ch + 20px); }
+.lv-w-id { width: calc(5ch + 20px); }
+.lv-w-ds { width: calc(18ch + 20px); }
+.lv-w-status { width: calc(11ch + 20px); }
+.lv-w-time { width: calc(15ch + 20px); }
+.lv-w-dur { width: calc(9ch + 20px); }
+.lv-w-host { width: calc(16ch + 20px); }
+.lv-w-error { width: 22%; }
+.lv-table th, .lv-table td {
+  padding: 5px 10px; text-align: left; vertical-align: middle;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-bottom: 1px solid var(--lv-hair);
+}
+.lv-table th {
+  position: sticky; top: 0; z-index: 1;
+  background: var(--bg2); border-bottom-color: var(--border);
+  font-size: 10px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.07em;
+}
+.lv-table tr[data-open] { cursor: pointer; }
+.lv-table tr[data-open]:hover td { background: var(--bg2); }
+.lv-table td.lv-empty { padding: 28px 14px; }
+.lv-table .badge { padding: 1px 8px; vertical-align: middle; }
+.lv-mono { font-family: var(--lv-mono); }
+.lv-muted { color: var(--muted); }
+.lv-num { color: var(--muted); text-align: right; }
+.lv-table th:nth-child(2) { text-align: right; }
+.lv-err { color: var(--danger); }
+.lv-alive {
+  display: inline-block; width: 7px; height: 7px; margin-left: 7px; vertical-align: middle;
+  border-radius: 50%; background: var(--success);
+  animation: lv-pulse 1.6s ease-in-out infinite;
+}
+.lv-dur-open { font-style: italic; color: var(--muted); }
+.lv-dur-live { color: var(--success); }
+
+/* ---- Status ---- */
+.lv-status {
+  min-height: 28px; padding: 6px 14px; box-sizing: border-box;
+  border-top: 1px solid var(--border);
+  font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.lv-status-err { color: var(--danger); }
+
+@media (prefers-reduced-motion: reduce) {
+  .lv-live.on .lv-live-dot, .lv-alive { animation: none; }
+}
+
+/* On /sources/logs/ the viewer is a card's first child: follow its corners. */
+.card > .lv:first-child > .lv-filters { border-radius: 7px 7px 0 0; }

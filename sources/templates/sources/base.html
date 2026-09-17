@@ -163,6 +163,10 @@ a:hover { text-decoration: underline; }
    Left padding = --tabs-left; the max-width grows by the same amount so the
    usable content width stays ~1200px. */
 .page { max-width: calc(1200px + var(--tabs-left)); margin: 0; padding: 0 16px 64px var(--tabs-left); }
+/* A page that needs every pixel (the Logs page) lifts the cap. The subtab bar's
+   bleed formula below assumes the cap, so it gets the uncapped bleed instead. */
+.page-wide { max-width: none; }
+.page-wide .subtabs-bar { margin-right: -16px; padding-right: 16px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
 
 /* Double-tab header — lower tier, full-bleed flush beneath the top nav.
@@ -804,7 +808,7 @@ function getJSON(url, opts) {
   return fetch(url, opts).then(function(r){ return r.json(); });
 }
 </script>
-<main class="page">
+<main class="{% block page_class %}page{% endblock %}">
   {% block content %}{% endblock %}
 </main>
 {% block extra_js %}

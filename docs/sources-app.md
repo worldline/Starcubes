@@ -687,18 +687,28 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   datasource — the same component as `/sources/logs/`, whose link sits in the
   card header. The four old entry points stay as thin wrappers because the
   rest of the page calls them: `etlLogActivate`/`etlLogStartPoll`/
-  `etlLogStopPoll` activate and deactivate the viewer (it polls every 2 s by
-  `after_id` only while active and **Follow** is on), and
+  `etlLogStopPoll` activate and deactivate the viewer (while active and
+  **Live** is on — the default — it polls lines every 2 s by `after_id` and
+  the first page of runs every 5 s, and pauses while the tab is hidden), and
   `openEtlLogFile(log_path)` switches tabs and shows that run — the basename
   of `log_path` is the `run_ref` its lines carry. The History table's and the
   Rollup tab's "Log" links go through it.
 - **The Logs page** (`/sources/logs/`, `sources/log_views.py`, superuser):
   **Lines** from `log_line` and **Runs** from the view `run` behind one filter
   bar — datasource, kind, host, from/to for both; level, text and run for
-  lines. A badge on a line sets that filter; a run row shows its lines framed
-  by its own time span (audit and housekeeping, which have no lines, frame the
-  datasource instead). The filters live in the URL, so a view is a link.
-  `logs/api/lines/` pages by id (`after_id` follows, `before_id` goes back);
+  lines. Kinds are a chip field fed from a dropdown, each kind in its own
+  colour (the palette is in `log_viewer.css`; red and orange stay reserved for
+  levels). **Both views are newest first** — lines included, which is the
+  reverse of a log file and says so above the pane — so a run and its lines
+  sit in the same place. Both are strict columns (lines a CSS grid sharing one
+  `--lv-cols`, runs a fixed-layout table); host names show their first label
+  only, the FQDN in the tooltip. A cell on a line sets that filter; a run row
+  shows its lines framed by its own time span (audit and housekeeping, which
+  have no lines, frame the datasource instead). The filters live in the URL,
+  so a view is a link (`live=0` only when Live is off). The page is the one
+  `page-wide` page: `base.html`'s `{% block page_class %}` lifts `.page`'s
+  1200px cap. `logs/api/lines/` returns every page newest first and pages by
+  id (`after_id` follows, `before_id` goes back);
   a text search without a `from` is limited to 24 hours so it cannot scan the
   whole table. `logs/api/runs/` pages by `(started_at, kind, id)`.
 - **Rollup tab: three commands run out of process, two run in it.**
