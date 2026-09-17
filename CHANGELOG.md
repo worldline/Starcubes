@@ -97,6 +97,8 @@ Notable changes per release. Format follows
 - **Static files have content hashes in their names**, so the 30-day
   `immutable` cache is finally true across releases, and a rolling update
   cannot hand a new page an old script.
+- **The login page's help link is an icon in the corner of the sign-in
+  box** instead of a line of text below it.
 
 ### Fixed
 

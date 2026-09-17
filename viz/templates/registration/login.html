@@ -62,6 +62,7 @@ a:hover { text-decoration: underline; }
   flex: 1; padding: 24px;
 }
 .login-card {
+  position: relative;
   background: var(--bg2); border: 1px solid var(--border);
   border-radius: 8px; padding: 32px; width: 100%; max-width: 380px;
 }
@@ -74,9 +75,15 @@ a:hover { text-decoration: underline; }
   background: var(--input-bg); color: var(--fg); font-size: 14px;
 }
 .login-card input:focus { outline: none; border-color: var(--accent); }
-.login-help { margin-top: 18px; text-align: center; font-size: 12.5px; }
-.login-help a { color: var(--muted); text-decoration: none; }
-.login-help a:hover { color: var(--accent); text-decoration: underline; }
+.ic { width: 1em; height: 1em; vertical-align: -.125em;
+      fill: none; stroke: currentColor; stroke-width: 1.75;
+      stroke-linecap: round; stroke-linejoin: round; }
+.login-help {
+  position: absolute; top: 10px; right: 10px;
+  display: flex; padding: 6px; border-radius: 5px;
+  font-size: 18px; color: var(--muted);
+}
+.login-help:hover, .login-help:focus-visible { color: var(--accent); background: var(--bg3); text-decoration: none; }
 .errorlist { margin: 0 0 12px; padding: 10px 14px; background: #fff5f5; border: 1px solid var(--danger); border-radius: 4px; color: var(--danger); font-size: 13px; list-style: none; }
 [data-theme="dark"] .errorlist { background: #2d1b1b; }
 .btn {
@@ -90,6 +97,7 @@ a:hover { text-decoration: underline; }
 </style>
 </head>
 <body>
+{% include 'viz/_icons.html' %}
 <nav class="nav">
   <a class="nav-brand" href="/">
     <img class="nav-brand-logo nav-brand-logo-light" src="{% static 'viz/starcubes_lockup.svg' %}" alt="starcubes">
@@ -100,6 +108,14 @@ a:hover { text-decoration: underline; }
 </nav>
 <div class="login-wrap">
   <div class="login-card">
+    {% comment %}
+      The help is public — RequireLoginMiddleware guards /sources/ and /admin/
+      only — so someone who cannot get in can still read what this is and how
+      it is configured. That is the case where documentation helps most.
+    {% endcomment %}
+    <a class="login-help" href="{% url 'viz:help_index' %}" title="Help &amp; documentation" aria-label="Help &amp; documentation">
+      <svg class="ic" aria-hidden="true"><use href="#ic-help-circle"></use></svg>
+    </a>
     <h1>Sign in</h1>
     {% if request.GET.sso == "failed" %}
     <ul class="errorlist">
@@ -131,14 +147,6 @@ a:hover { text-decoration: underline; }
       Sign in with {{ oidc_display_name }}
     </a>
     {% endif %}
-  </div>
-  {% comment %}
-    The help is public — RequireLoginMiddleware guards /sources/ and /admin/
-    only — so someone who cannot get in can still read what this is and how
-    it is configured. That is the case where documentation helps most.
-  {% endcomment %}
-  <div class="login-help">
-    <a href="{% url 'viz:help_index' %}">Help &amp; documentation</a>
   </div>
 </div>
 <script>
