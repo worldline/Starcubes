@@ -29,6 +29,9 @@
     });
   }
 
+  function copyFilter(v) { return Array.isArray(v) ? v.slice() : v; }
+  function sameFilter(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
   // The time of day, with the date in front unless it is today: a log
@@ -267,12 +270,13 @@
   };
 
   LogViewer.prototype.syncRunChip = function () {
-    var ref = this.filters.run, run = this.runsMap[ref];
+    var ref = this.filters.run;
+    var run = this.runsMap[ref] || (this.runFrame && this.runFrame.label);
     var name = this.el('run-name');
-    this.el('run-chip').hidden = !ref;
+    this.el('run-chip').hidden = !ref && !this.runFrame;
     name.className = run ? 'lv-kchip ' + kindClass(run.kind) : 'lv-runref';
     name.textContent = run ? run.kind + ' #' + run.id : ref;
-    name.title = ref;
+    name.title = ref || 'the lines around this run — it has no log of its own';
   };
 
   LogViewer.prototype.syncLive = function () {
@@ -287,8 +291,13 @@
     if (el('datasource') && !this.fixedDs) f.datasource = el('datasource').value;
     f.host = el('host').value;
     f.level = el('level').value;
-    f.from = localInputToIso(el('from').value);
-    f.to = localInputToIso(el('to').value);
+    // datetime-local holds minutes only: keep the exact instant while the
+    // field still shows its minute, or any other change would round a run's
+    // frame away (and a restored frame would no longer match).
+    ['from', 'to'].forEach(function (k) {
+      var v = el(k).value;
+      if (v !== isoToLocalInput(f[k])) f[k] = localInputToIso(v);
+    });
     f.q = el('q').value.trim();
   };
 
@@ -337,10 +346,7 @@
       }
     });
 
-    el('run-clear').addEventListener('click', function () {
-      self.filters.run = '';
-      self.changed();
-    });
+    el('run-clear').addEventListener('click', function () { self.clearRun(); });
     el('mode-lines').addEventListener('click', function () { self.setMode('lines'); });
     el('mode-runs').addEventListener('click', function () { self.setMode('runs'); });
     el('refresh').addEventListener('click', function () { self.reload(); });
@@ -400,13 +406,7 @@
   };
 
   LogViewer.prototype.showRun = function (runRef, fromIso, toIso) {
-    this.filters.run = runRef || '';
-    this.filters.from = fromIso || '';
-    this.filters.to = toIso || '';
-    this.filters.level = '';
-    this.filters.q = '';
-    this.mode = 'lines';
-    this.changed();
+    this.frameRun({run: runRef || '', from: fromIso || '', to: toIso || ''});
   };
 
   LogViewer.prototype.openRun = function (run) {
@@ -416,14 +416,47 @@
     var pad = 5000;
     var from = run.started_at ? new Date(new Date(run.started_at).getTime() - pad).toISOString() : '';
     var to = run.finished_at ? new Date(new Date(run.finished_at).getTime() + pad).toISOString() : '';
-    this.filters.kind = [];
+    var changes = {run: run.run_ref || '', from: from, to: to, kind: []};
     if (run.run_ref) {
       if (run.kind) this.runsMap[run.run_ref] = {kind: run.kind, id: run.id};
-      this.showRun(run.run_ref, from, to);
-    } else {
-      if (!this.fixedDs) this.filters.datasource = String(run.datasource_id || '');
-      this.showRun('', from, to);
+    } else if (!this.fixedDs) {
+      changes.datasource = String(run.datasource_id || '');
     }
+    this.frameRun(changes, run.kind ? {kind: run.kind, id: run.id} : null);
+  };
+
+  // Opening a run replaces the reader's time frame, kind, level and text
+  // filters. What it replaced is kept, so the run chip's × goes back to the
+  // view the reader came from instead of leaving them inside the run's few
+  // seconds — where Runs, sharing the frame, would show nothing else. A second
+  // run opened from inside the first keeps the original snapshot.
+  LogViewer.prototype.frameRun = function (changes, label) {
+    var f = this.filters;
+    changes.level = '';
+    changes.q = '';
+    var frame = this.runFrame || {saved: {}};
+    Object.keys(changes).forEach(function (k) {
+      if (!(k in frame.saved)) frame.saved[k] = copyFilter(f[k]);
+      f[k] = copyFilter(changes[k]);
+    });
+    frame.set = changes;
+    frame.label = label || null;
+    this.runFrame = frame;
+    this.mode = 'lines';
+    this.changed();
+  };
+
+  // Restores each replaced filter the reader has not changed since.
+  LogViewer.prototype.clearRun = function () {
+    var f = this.filters, frame = this.runFrame;
+    this.runFrame = null;
+    f.run = '';
+    if (frame) {
+      Object.keys(frame.saved).forEach(function (k) {
+        if (k !== 'run' && sameFilter(f[k], frame.set[k])) f[k] = copyFilter(frame.saved[k]);
+      });
+    }
+    this.changed();
   };
 
   LogViewer.prototype.activate = function () {

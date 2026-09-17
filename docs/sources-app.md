@@ -706,7 +706,10 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   Finished shows only the clock, the duration says when a run crossed a day); host names show their first label
   only, the FQDN in the tooltip. A cell on a line sets that filter; a run row
   shows its lines framed by its own time span (audit and housekeeping, which
-  have no lines, frame the datasource instead). The filters live in the URL,
+  have no lines, frame the datasource instead). Opening a run replaces the
+  time frame, kind, level and text filters; the run chip's × puts back each one
+  the reader has not changed since — otherwise Runs, which shares the frame,
+  would show only that run. The filters live in the URL,
   so a view is a link (`live=0` only when Live is off). The page is the one
   `page-wide` page: `base.html`'s `{% block page_class %}` lifts `.page`'s
   1200px cap. `logs/api/lines/` returns every page newest first and pages by
