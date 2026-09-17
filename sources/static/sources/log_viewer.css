@@ -60,8 +60,7 @@
   text-transform: uppercase; letter-spacing: 0.07em; white-space: nowrap;
 }
 .lv-filters select,
-.lv-filters input[type=search],
-.lv-filters input[type=datetime-local] {
+.lv-filters input[type=search] {
   height: var(--lv-h); box-sizing: border-box; margin: 0;
   padding: 0 8px; font: 12px system-ui, -apple-system, sans-serif;
   color: var(--fg); background: var(--input-bg);
@@ -69,14 +68,35 @@
 }
 .lv-filters select { padding-right: 4px; max-width: 16em; }
 .lv-filters option { color: var(--fg); background: var(--input-bg); }
-.lv-filters input[type=datetime-local] { width: 13.5em; font-family: var(--lv-mono); font-size: 11px; }
+/* From/To: the shared picker's text field (sources/datetimepicker.js), in the
+   chart's chrome — a bordered box holding the input and a calendar button.
+   Not <input type=datetime-local>: its rendering is the browser's and the
+   locale's, and at a width that suits one it cut the time off in another. */
+.lv-dtp {
+  display: inline-flex; align-items: center; box-sizing: border-box; height: var(--lv-h);
+  background: var(--input-bg); border: 1px solid var(--input-border); border-radius: 5px;
+}
+.lv-dtp input {
+  /* 16 characters; the placeholder's capitals are wider than digits, and a
+     browser's own UI font may be wider still — hence the slack. */
+  width: 18ch; height: 100%; box-sizing: border-box; margin: 0; padding: 0 2px 0 8px;
+  border: 0; background: none; outline: none; box-shadow: none;
+  font: 12px system-ui, -apple-system, sans-serif; font-variant-numeric: tabular-nums; color: var(--fg);
+}
+.lv-dtp input::placeholder { color: var(--muted); font-size: 11px; }
+.lv-dtp-open {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: calc(var(--lv-h) - 6px); margin-right: 2px; padding: 0;
+  border: 0; border-radius: 3px; background: none; color: var(--muted); cursor: pointer;
+}
+.lv-dtp-open:hover { color: var(--accent); background: var(--bg3); }
 .lv-filters select:focus-visible,
-.lv-filters input:focus-visible,
+.lv-filters input[type=search]:focus-visible,
+.lv-dtp:focus-within,
 .lv-kindfield:focus-within {
   outline: none; border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 22%, transparent);
 }
-[data-theme="dark"] .lv-filters input[type=datetime-local] { color-scheme: dark; }
 
 .lv-mode .chip { height: var(--lv-h); display: inline-flex; align-items: center; padding: 0 14px; }
 

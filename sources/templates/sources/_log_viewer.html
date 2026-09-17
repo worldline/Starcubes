@@ -67,14 +67,20 @@ in kind-add are the vocabulary the JS reads once; it rebuilds the list from it.
           {% for h in hosts %}<option value="{{ h }}" title="{{ h }}">{{ h }}</option>{% endfor %}
         </select>
       </label>
-      <label class="lv-field">
+      <span class="lv-field">
         <span class="lv-label">From</span>
-        <input type="datetime-local" data-lv="from">
-      </label>
-      <label class="lv-field">
+        <span class="lv-dtp">
+          <input type="text" data-lv="from" autocomplete="off" placeholder="YYYY-MM-DD HH:MM" aria-label="From">
+          <button type="button" class="lv-dtp-open" data-lv="from-open" title="Pick a date" aria-label="Pick a from date"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/></svg></button>
+        </span>
+      </span>
+      <span class="lv-field">
         <span class="lv-label">To</span>
-        <input type="datetime-local" data-lv="to">
-      </label>
+        <span class="lv-dtp">
+          <input type="text" data-lv="to" autocomplete="off" placeholder="YYYY-MM-DD HH:MM" aria-label="To">
+          <button type="button" class="lv-dtp-open" data-lv="to-open" title="Pick a date" aria-label="Pick a to date"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/></svg></button>
+        </span>
+      </span>
       <span class="lv-group" data-lv="lines-only">
         <label class="lv-field">
           <span class="lv-label">Level</span>

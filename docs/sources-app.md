@@ -710,7 +710,10 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   time frame, kind, level and text filters; the run chip's × puts back each one
   the reader has not changed since — otherwise Runs, which shares the frame,
   would show only that run. The filters live in the URL,
-  so a view is a link (`live=0` only when Live is off). The page is the one
+  so a view is a link (`live=0` only when Live is off). From/To are the chart's
+  `DateTimePicker`, not `<input type=datetime-local>`, whose width depends on
+  browser and locale and cut the time off; the picker shows minutes while the
+  filter keeps the exact instant, so a run's frame survives a re-commit. The page is the one
   `page-wide` page: `base.html`'s `{% block page_class %}` lifts `.page`'s
   1200px cap. `logs/api/lines/` returns every page newest first and pages by
   id (`after_id` follows, `before_id` goes back);

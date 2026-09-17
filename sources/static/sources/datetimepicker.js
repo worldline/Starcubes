@@ -231,6 +231,15 @@ class DateTimePicker {
     this.input.value = this._fmt(d);
   }
 
+  // Empties the field and forgets the value, without firing onChange: the
+  // caller that clears it already knows. Emptying the text by hand does not
+  // reach _commitInput (it ignores an empty field), so a page that treats an
+  // empty field as "no bound" listens for the input's change and calls this.
+  clear() {
+    this._value = null;
+    this.input.value = '';
+  }
+
   getValue() { return this._value ? this._value.getTime() : null; }
 
   // The picked instant as an ISO UTC string, or null.

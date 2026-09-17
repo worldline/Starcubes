@@ -12,7 +12,8 @@
    (initial, before_id and after_id alike), so Live inserts at the top and
    "Load older" appends at the bottom.
 
-   Needs getJSON() and fmtLocal() from sources/base.html. */
+   Needs getJSON(), fmtLocal() and DateTimePicker (sources/datetimepicker.js),
+   all loaded by sources/base.html. */
 (function () {
   'use strict';
 
@@ -97,19 +98,6 @@
     return '<span class="lv-kchip ' + kindClass(kind) + '"' + (extra || '') + '>' + esc(kind) + '</span>';
   }
 
-  // datetime-local shows local time without a zone; the API wants an instant.
-  function localInputToIso(v) {
-    if (!v) return '';
-    var d = new Date(v);
-    return isNaN(d.getTime()) ? '' : d.toISOString();
-  }
-  function isoToLocalInput(iso) {
-    if (!iso) return '';
-    var d = new Date(iso);
-    if (isNaN(d.getTime())) return '';
-    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
-      + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
-  }
 
   function statusBadge(status) {
     var cls = {running: 'badge-running', stopping: 'badge-running', ok: 'badge-ok',
@@ -157,8 +145,8 @@
     });
     this.sizeColumns();
     if (this.urlState) this.readUrl();
-    this.syncControls();
     this.wire();
+    this.syncControls();
   }
 
   // The datasource column is as wide as the longest datasource name (within
@@ -233,8 +221,11 @@
     this.syncKinds();
     el('host').value = f.host;
     el('level').value = f.level;
-    el('from').value = isoToLocalInput(f.from);
-    el('to').value = isoToLocalInput(f.to);
+    var pickers = this.pickers;
+    ['from', 'to'].forEach(function (k) {
+      if (f[k]) pickers[k].setValue(Date.parse(f[k]));
+      else pickers[k].clear();
+    });
     el('q').value = f.q;
     this.syncRunChip();
     this.syncLive();
@@ -291,21 +282,39 @@
     if (el('datasource') && !this.fixedDs) f.datasource = el('datasource').value;
     f.host = el('host').value;
     f.level = el('level').value;
-    // datetime-local holds minutes only: keep the exact instant while the
-    // field still shows its minute, or any other change would round a run's
-    // frame away (and a restored frame would no longer match).
-    ['from', 'to'].forEach(function (k) {
-      var v = el(k).value;
-      if (v !== isoToLocalInput(f[k])) f[k] = localInputToIso(v);
-    });
     f.q = el('q').value.trim();
   };
 
   LogViewer.prototype.wire = function () {
     var self = this, el = this.el;
     var onChange = function () { self.readControls(); self.changed(); };
-    ['datasource', 'host', 'level', 'from', 'to'].forEach(function (n) {
+    ['datasource', 'host', 'level'].forEach(function (n) {
       if (el(n)) el(n).addEventListener('change', onChange);
+    });
+    // From/To are the shared picker (sources/datetimepicker.js, as in the
+    // chart): it shows minutes, the filter keeps the exact instant — a run's
+    // frame has seconds — so the filter is set from the picker's callback and
+    // never read back from the text.
+    this.pickers = {};
+    ['from', 'to'].forEach(function (k) {
+      var input = el(k);
+      var setBound = function (ms) {
+        // The picker commits what its field shows whenever it loses focus.
+        // That is the bound rounded to the minute, which is no change.
+        var cur = self.filters[k] ? Date.parse(self.filters[k]) : NaN;
+        if (ms != null && Math.floor(cur / 60000) * 60000 === ms) return;
+        self.filters[k] = ms == null ? '' : new Date(ms).toISOString();
+        self.changed();
+      };
+      self.pickers[k] = new DateTimePicker(input, {
+        onChange: setBound, trigger: el(k + '-open'),
+        nextFocus: el(k === 'from' ? 'to' : 'from')});
+      input.addEventListener('change', function () {
+        if (!input.value.trim() && self.filters[k]) {
+          self.pickers[k].clear();
+          setBound(null);
+        }
+      });
     });
     var qTimer = null;
     el('q').addEventListener('input', function () {
