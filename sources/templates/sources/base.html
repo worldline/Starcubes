@@ -168,6 +168,30 @@ a:hover { text-decoration: underline; }
 .page-wide { max-width: none; }
 .page-wide .subtabs-bar { margin-right: -16px; padding-right: 16px; }
 .page-title { font-size: 20px; font-weight: 600; margin: 0; }
+/* Fill layout — opt-in per page: fill the body_class block with page-fill.
+   The page is exactly one viewport tall and never scrolls, in either
+   direction: the nav and the tab bars stay put, and a .card-fill takes
+   whatever height is left and scrolls its own content. For pages whose content is one long
+   scrollable thing (the Logs page, the help section), where a page scroll
+   would only carry the header away. body's overflow propagates to the
+   viewport, so absolutely placed popups are not clipped by it. */
+body.page-fill {
+  height: 100vh; height: 100dvh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+body.page-fill > .nav { flex-shrink: 0; }
+body.page-fill > main {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+  padding-bottom: 16px;
+}
+body.page-fill > main > * { flex-shrink: 0; }
+body.page-fill > main > .card-fill {
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column;
+  margin-bottom: 0;
+}
 
 /* Double-tab header — lower tier, full-bleed flush beneath the top nav.
    Breaks out of the (left-anchored) .page so the bottom border/shadow spans
@@ -722,7 +746,7 @@ th.sortable.desc .sort-indicator::after { content: ' ▼'; }
 {% endcomment %}
 {% block extra_css %}{% endblock %}
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
 {% include "viz/_icons.html" %}
 <nav id="nav-tabs" class="nav">
   <a class="nav-brand" href="/{% if current_source_name %}?name={{ current_source_name|urlencode }}{% endif %}" title="Back to chart">

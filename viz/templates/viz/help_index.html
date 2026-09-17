@@ -13,8 +13,12 @@ per-document markup to keep in sync with the registry.
 {% block title %}starcubes — Help{% endblock %}
 
 {% block extra_css %}<link rel="stylesheet" href="{% static 'viz/help.css' %}">{% endblock %}
+{% block body_class %}page-fill{% endblock %}
+{% block page_class %}page page-wide{% endblock %}
 
 {% block content %}
+<div class="card card-fill help-frame">
+<div class="help-scroll" id="help-scroll">
 
 <div class="help-hero">
   <h1>Help</h1>
@@ -47,6 +51,8 @@ per-document markup to keep in sync with the registry.
   </div>
 </section>
 {% endfor %}
+</div>
+</div>
 {% endblock %}
 
 {% block extra_js %}

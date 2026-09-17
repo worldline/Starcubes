@@ -713,9 +713,14 @@ Fact columns, dimensions, indices each have `/add/`, `/<id>/edit/`, `/<id>/delet
   so a view is a link (`live=0` only when Live is off). From/To are the chart's
   `DateTimePicker`, not `<input type=datetime-local>`, whose width depends on
   browser and locale and cut the time off; the picker shows minutes while the
-  filter keeps the exact instant, so a run's frame survives a re-commit. The page is the one
-  `page-wide` page: `base.html`'s `{% block page_class %}` lifts `.page`'s
-  1200px cap. `logs/api/lines/` returns every page newest first and pages by
+  filter keeps the exact instant, so a run's frame survives a re-commit. The page is
+  `page-wide` (`base.html`'s `{% block page_class %}` lifts `.page`'s 1200px
+  cap) and `page-fill` (`{% block body_class %}`): the page itself never
+  scrolls, the viewer sits in a `.card-fill` that takes the height below the
+  tab bar, and only the lines pane or the runs table scrolls — so the nav and
+  the tab bar stay put. The help section uses the same pair. Where the wrapped
+  filters leave no room (a phone), the pane keeps a 180px floor and the viewer
+  scrolls inside the card. `logs/api/lines/` returns every page newest first and pages by
   id (`after_id` follows, `before_id` goes back);
   a text search without a `from` is limited to 24 hours so it cannot scan the
   whole table. `logs/api/runs/` pages by `(started_at, kind, id)`.

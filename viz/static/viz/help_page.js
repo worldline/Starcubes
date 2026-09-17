@@ -90,9 +90,11 @@
     entries.forEach(function (e) { visible[e.target.id] = e.isIntersecting; });
     update();
   }, {
-    /* Only the top slice of the viewport counts as "here", so the mark moves
-     * with reading position instead of racing ahead. */
-    rootMargin: '-56px 0px -70% 0px',
+    /* The document scrolls inside the help card, not the page, so that is
+     * the root. Only its top slice counts as "here", so the mark moves with
+     * reading position instead of racing ahead. */
+    root: document.getElementById('help-scroll'),
+    rootMargin: '0px 0px -70% 0px',
     threshold: 0
   });
   headings.forEach(function (h) { observer.observe(h); });

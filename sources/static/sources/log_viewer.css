@@ -332,3 +332,18 @@
 
 /* On /sources/logs/ the viewer is a card's first child: follow its corners. */
 .card > .lv:first-child > .lv-filters { border-radius: 7px 7px 0 0; }
+
+/* On /sources/logs/ that card is a .card-fill (sources/base.html): the page
+   never scrolls, and the pane takes every pixel the filters, the view header
+   and the status line leave — instead of guessing at the chrome with
+   --lv-pane-h. Where the wrapped filters leave less than a usable pane (a
+   phone), the pane keeps a floor and the viewer as a whole scrolls inside
+   the card instead — the page and its header still never move. */
+.card-fill > .lv { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.card-fill > .lv > .lv-filters,
+.card-fill > .lv > .lv-viewhead,
+.card-fill > .lv > .lv-status { flex-shrink: 0; }
+.card-fill .lv-panewrap,
+.card-fill .lv-runs { flex: 1 1 0; min-height: 180px; max-height: none; }
+.card-fill .lv-panewrap { display: flex; flex-direction: column; }
+.card-fill .lv-pane { flex: 1 1 auto; min-height: 0; max-height: none; }
