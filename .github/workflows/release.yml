@@ -1,0 +1,101 @@
+# The release pipeline. Pushing a `v*` tag publishes the release this repo
+# used to cut by hand — see docs/releases.md, "Releasing from GitHub":
+# the image on ghcr.io, a source zip packed from the tag, and a release
+# whose body is the tag's own CHANGELOG.md section.
+#
+# starcubes/version.py stays the one definition of what a version is: the
+# job asks it — not the tag name — for the version, and stops unless the
+# two agree. The changelog guard runs before the build, so a missing
+# section costs a minute, not a full image build.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to release, e.g. v2.0.0-beta.3
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tag (full history — the version comes from the tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Resolve the version with starcubes/version.py
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          version=$(python3 -c 'from starcubes.version import __version__; print(__version__)')
+          case "$version" in
+            "" | "unknown")
+              echo "version.py could not resolve a version — is $tag on the remote?" >&2
+              exit 1 ;;
+            "${tag#v}") ;;
+            *)
+              echo "version.py says '$version', but the tag is '$tag'" >&2
+              echo "  — refusing to publish a release whose version and tag disagree" >&2
+              exit 1 ;;
+          esac
+          echo "tag=$tag"          >> "$GITHUB_ENV"
+          echo "version=$version"   >> "$GITHUB_ENV"
+          # Same rule as version.py._is_prerelease: a hyphen before the '+'
+          case "${version%%+*}" in
+            *-*) echo "prerelease=true"  >> "$GITHUB_ENV" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Extract the changelog section
+        run: |
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { on = 1; print; next }
+            on && substr($0, 1, 3) == "## " { exit }
+            on
+          ' CHANGELOG.md > notes.md
+          test -s notes.md || {
+            echo "CHANGELOG.md has no '## [$version]' section —" >&2
+            echo "  write it and commit it before tagging (docs/releases.md, step 2)" >&2
+            exit 1
+          }
+
+      - name: Pack the source zip from the tag
+        run: git archive --format=zip "$tag" -o "starcubes-$version.zip"
+
+      - name: Build the image
+        run: CONTAINER_ENGINE=docker ./docker/build.sh
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Push the image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"   # ghcr names are lowercase
+          docker tag "starcubes:$version" "$image:$version"
+          docker push "$image:$version"
+          # :latest says "the newest final release" — a beta must not move it
+          if [ "$prerelease" = false ]; then
+            docker tag "starcubes:$version" "$image:latest"
+            docker push "$image:latest"
+          fi
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(--title "starcubes $version" --notes-file notes.md "starcubes-$version.zip")
+          if [ "$prerelease" = true ]; then args+=(--prerelease); fi
+          gh release create "$tag" "${args[@]}"

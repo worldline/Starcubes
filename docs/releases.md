@@ -254,6 +254,41 @@ commit that is already there.
    single dialog exercises the whole chain: tag → `version.py` → build args →
    image → context processor.
 
+## Releasing from GitHub
+
+The remote at `git@github.com:worldline/Starcubes.git` runs the release
+procedure automatically. Pushing a `v*` tag fires
+`.github/workflows/release.yml`, which does the tag-side work that the
+steps above do by hand:
+
+- builds the image through `docker/build.sh` — the one supported route, so
+  all three build args the Dockerfile demands are set — and pushes it to
+  `ghcr.io/worldline/starcubes`. `:latest` is pushed only when the version
+  is **not** a pre-release, so `:latest` never points at a beta; every tag
+  gets its own version tag either way.
+- packs a source zip from the tag with `git archive`, so the zip names its
+  version through the `export-subst` placeholders and needs no `.git`.
+- extracts the release's section from `CHANGELOG.md` and publishes the
+  release with it as the body, the zip as its asset, and a **pre-release**
+  marker on anything with a hyphen before the `+`.
+
+Two guards fail the job loudly rather than publish something half-named:
+a version that does not resolve, or resolves to something other than the
+pushed tag, and a `CHANGELOG.md` without a `## [<version>]` section for it —
+a release without its changelog entry is exactly what step 2 above exists to
+prevent. The changelog guard runs **before** the build, so a missing section
+costs a minute rather than a full image build.
+
+Pulling the image needs a login for a private package: `podman login
+ghcr.io` with a classic personal access token (`read:packages`), or the
+workflow token from within this repository's own Actions. If the first push
+is refused, the organisation's package creation policy has to be enabled
+first (Organization → Settings → Packages).
+
+The steps a tag push cannot do stay human: deciding the number (step 1),
+writing the changelog (step 2), and the smoke test (step 6) — the pipeline
+builds and publishes, it does not judge.
+
 ## Which version is that container running?
 
 Three answers, in order of how little access they need:
