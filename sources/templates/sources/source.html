@@ -1163,10 +1163,18 @@ function pollEtlStatus() {
         var ageS = (Date.now() - new Date(run.progress_at).getTime()) / 1000;
         if (ageS > 60) {
           // progress_at only advances when rows actually move (see
-          // core/etl.py's heartbeat) — stale here means the pipeline is
-          // wedged, not just that the source DB is slow.
-          stallInfo = ' ⚠ no progress for ' + Math.floor(ageS) + 's';
-          etlStrip.className = 'etl-strip show failed';
+          // core/etl.py's heartbeat), so on its own a stale timestamp says
+          // two very different things. stats.phase is what separates them:
+          // before the first chunk the run is waiting on the source — on a
+          // wide window, and on every initial load, entirely normal and not
+          // a fault to paint red. After it, stale means wedged.
+          if (s.phase === 'extract:awaiting-source') {
+            stallInfo = ' · waiting for the source — no rows yet ('
+              + Math.floor(ageS) + 's)';
+          } else {
+            stallInfo = ' ⚠ no progress for ' + Math.floor(ageS) + 's';
+            etlStrip.className = 'etl-strip show failed';
+          }
         }
       }
       var throughInfo = s.processed_through ? ' · through ' + fmtLocal(s.processed_through) : '';

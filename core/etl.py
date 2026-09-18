@@ -1677,6 +1677,16 @@ def import_fact(source: Source, meta_engine, *,
             os.environ.get("STARCUBES_ETL_LOG_INTERVAL_S", "30")) // 5)
         _last_seen = [-1, -1]  # [rows_total, load rows] as of the last tick
         _tick = [0]
+        # What the run is doing right now, for whoever reads `stats`. The
+        # distinction that matters: a run that has not yet seen its first row
+        # is *waiting on the source*, which on a wide window is both healthy
+        # and normal; one that has seen rows and stopped moving them is
+        # wedged. `progress_at` cannot tell them apart — it advances only when
+        # rows move, so both look identical to a reader watching its age.
+        _phase = ["starting", datetime.now(timezone.utc).isoformat()]
+        def _set_phase(name: str) -> None:
+            _phase[0] = name
+            _phase[1] = datetime.now(timezone.utc).isoformat()
         def _progress_writer():
             assert stats_arr is not None and progress_stop is not None
             while not progress_stop.wait(5.0):
@@ -1700,6 +1710,8 @@ def import_fact(source: Source, meta_engine, *,
                                        for w in workers]
                     snap["processed_through"] = (
                         current_pc_max.isoformat() if current_pc_max is not None else None)
+                    snap["phase"] = _phase[0]
+                    snap["phase_since"] = _phase[1]
                     moved = (rows_total != _last_seen[0]
                             or snap["load"]["rows"] != _last_seen[1])
                     _last_seen[0] = rows_total
@@ -1754,6 +1766,11 @@ def import_fact(source: Source, meta_engine, *,
         progress_thread.start()
 
         source_engine.dispose()  # drop parent pool before the main extract loop
+        # Everything from here to the first chunk is time spent waiting on the
+        # source, and on a wide window that is minutes. Say so, or the only
+        # visible sign is a `progress_at` that stops advancing — which is what
+        # a wedged pipeline looks like too.
+        _set_phase("extract:awaiting-source")
         # `text()`, not a bare string: pandas branches on the type.
         # `SQLDatabase.execute` routes a `str` through
         # `Connection.exec_driver_sql` -- DBAPI paramstyle, so `:name` would
@@ -1794,6 +1811,9 @@ def import_fact(source: Source, meta_engine, *,
             # while the source DB itself is slow (a slow queue.put()
             # inside this iteration is also covered — see below).
             _raise_if_failed(abort_evt, error_q, workers)
+            # The source has answered; from here a stall is a real stall.
+            if _phase[0] != "extract:streaming":
+                _set_phase("extract:streaming")
             # Time inside next() = source DB read + auto-dim INSERTs
             # (= busy). transform_q.put() block time goes to wait.
             _chunk_busy = time.monotonic() - t_fetch_start
@@ -1882,6 +1902,11 @@ def import_fact(source: Source, meta_engine, *,
             if row_limit is not None and rows_total >= row_limit:
                 break
 
+        # The source is read; what is left is the queues draining through the
+        # workers. Rows still move, so `progress_at` keeps up on its own —
+        # this is for the reader who wants to know why the extract rate has
+        # gone to zero while the load rate has not.
+        _set_phase("draining")
         _join_with_abort(transform_q, abort_evt, error_q, workers,
                          budget=budget)
         _join_with_abort(load_q, abort_evt, error_q, workers, budget=budget)

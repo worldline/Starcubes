@@ -464,7 +464,17 @@ overlap can usually go to 0, which removes the PK check entirely.
   count actually moved since the last tick — stamping it unconditionally
   (the original behaviour) made a fully wedged pipeline look perpetually
   alive, which is exactly how a dead load worker went unnoticed for
-  hours. `stats` also carries `queues.{transform,load}` (current
+  hours. That rule leaves one thing unsaid, which `stats.phase` now says:
+  a run that has **not yet seen its first row** is waiting on the source,
+  and its `progress_at` stands as still as a wedged one's. On a wide
+  window — every initial load is one — that wait is minutes and entirely
+  healthy, but a reader watching only the timestamp's age cannot tell it
+  from a dead worker, and the GUI painted both red. The phase is
+  `extract:awaiting-source` until the first chunk arrives, then
+  `extract:streaming`, then `draining` once the source is read and only
+  the queues are left; `phase_since` carries its ISO timestamp. Both the
+  ETL strip and the forever-status endpoint consult it before calling a
+  run stale. `stats` also carries `queues.{transform,load}` (current
   `qsize()`), `workers[].{name,alive,exitcode}`, and `processed_through`
   (an ISO timestamp: the running max of the `partition_column` value seen
   across extracted chunks so far), and a heartbeat log line

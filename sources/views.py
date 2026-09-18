@@ -1214,7 +1214,7 @@ def etl_forever_status(request, pk: int):
 
             latest_run = conn.execute(text(
                 "SELECT id, status, started_at, finished_at, progress_at, "
-                "       rows, runtime_ms, error, "
+                "       rows, runtime_ms, error, stats, "
                 "       rows_per_s, extract_rows_per_s, transform_rows_per_s, "
                 "       load_rows_per_s "
                 "  FROM starcubes_meta.etl_run "
@@ -1257,8 +1257,20 @@ def etl_forever_status(request, pk: int):
             if result["active"]:
                 threshold = timedelta(seconds=(result.get("interval_s") or 60) * 3)
                 reference = None
+                _stats = latest_run.get("stats")
+                _phase = (_stats or {}).get("phase") if isinstance(
+                    _stats, dict) else None
                 if latest_run["status"] == "running":
-                    reference = latest_run.get("progress_at") or latest_run.get("started_at")
+                    # A run that has not yet seen its first row is waiting on
+                    # the source, and `progress_at` stands still for exactly
+                    # as long — which is not the loop falling behind. Same
+                    # distinction the ETL strip makes; calling it stale here
+                    # would put a red badge on a healthy initial load.
+                    if _phase == "extract:awaiting-source":
+                        reference = None
+                    else:
+                        reference = (latest_run.get("progress_at")
+                                     or latest_run.get("started_at"))
                 elif latest_run.get("finished_at"):
                     reference = latest_run["finished_at"]
                 if reference is not None:

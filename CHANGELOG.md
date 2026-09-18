@@ -7,6 +7,18 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A run waiting on its source is no longer reported as broken.** The ETL
+  strip turned red with "⚠ no progress for Ns" after a minute without rows,
+  and the forever strip added a "stale" badge after three loop intervals —
+  both on the honest heartbeat, which only advances when rows actually move.
+  But a run that has not yet received its first row is waiting on the source
+  database, and on a wide window (every initial load is one) that wait is
+  minutes. `etl_run.stats` now carries a `phase`, and both places consult it:
+  before the first chunk the strip stays running and says "waiting for the
+  source"; after it, a stall is still a stall and still turns red.
+
 ### Changed
 
 - **Source connections carry TCP keepalives.** Every source engine now sets
