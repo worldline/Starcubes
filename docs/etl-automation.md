@@ -524,6 +524,20 @@ outlive the run it belongs to.
 Three run shapes are exempt, all legitimately long: a backfill, an explicit
 `--start/--end` window, and the initial load.
 
+**The exemption is narrower than it sounds, and the edge is worth knowing.**
+"Initial load" is decided by `_fact_has_rows` — is the fact table empty right
+now. With `initial_window_s` set, the catch-up is a *series* of runs, and only
+the literally first one finds an empty table. From the second step on, the same
+catch-up runs capped and with a source statement timeout, while the source is
+still being read at catch-up width. So the first step is no measure at all for
+how large `max_run_s` should be: it is the one run the budget never applied to.
+Each run says which regime it is under in its log, naming the reason:
+
+```
+payments: run budget none — the initial load is exempt while fact is empty
+          (max_run_s=1800s applies from the next run on); initial_window_s=21600s
+```
+
 **It is a circuit breaker, not a repair.** An aborted run leaves the watermark
 where it was, so the next window starts in the same place and ends later — it
 is *wider*, not smaller. What it buys is that one wedged run stops holding the

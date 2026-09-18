@@ -1134,6 +1134,35 @@ def import_fact(source: Source, meta_engine, *,
     source_engine = source.source_engine(
         statement_timeout_ms=max_run_s * 1000 if capped else None)
 
+    # Say which of the two regimes this run is under, and why. The cap
+    # otherwise arrives without warning: a fresh datasource's first run is
+    # exempt because `_fact_has_rows` is False, so with `initial_window_s`
+    # set the *second* step of the same initial load suddenly runs capped
+    # and timed. An operator sizing `max_run_s` from what the first step did
+    # is sizing it from the one run it never applied to.
+    #
+    # The chain mirrors the `capped` expression above, in its order — change
+    # that condition and this has to follow, or it names the wrong reason.
+    if capped:
+        _budget_note = (f"max_run_s={max_run_s}s, and source statements "
+                        f"bounded to the same")
+    elif max_run_s <= 0:
+        _budget_note = "none (max_run_s unset), source statements unbounded"
+    elif backfill:
+        _budget_note = (f"none — a backfill is exempt "
+                        f"(max_run_s={max_run_s}s is set)")
+    elif start_time is not None or end_time_override is not None:
+        _budget_note = (f"none — an explicit --start/--end window is exempt "
+                        f"(max_run_s={max_run_s}s is set)")
+    else:
+        _budget_note = (f"none — the initial load is exempt while fact is "
+                        f"empty (max_run_s={max_run_s}s applies from the next "
+                        f"run on)")
+    logger.log(logging.DEBUG if quiet else logging.INFO,
+               "%s: run budget %s; initial_window_s=%s",
+               source.name, _budget_note,
+               f"{initial_window_s}s" if initial_window_s else "off")
+
     started = datetime.now(timezone.utc)
 
     # The process lease (core/lease.py): the connection whose presence in
