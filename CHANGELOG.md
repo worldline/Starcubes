@@ -7,6 +7,16 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Source connections carry TCP keepalives.** Every source engine now sets
+  the libpq keepalive options (30 s idle, a probe every 10 s, dead after 3),
+  whether or not the run asked for a statement timeout. A statement timeout
+  bounds a source that answers *slowly*; it says nothing about one that has
+  silently gone away, which until now was noticed at the kernel default —
+  typically two hours. Postgres sources only; a non-libpq driver is left
+  alone.
+
 ## [2.0.0-beta.2] — 2026-09-16
 
 ### Added

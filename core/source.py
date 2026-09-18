@@ -18,6 +18,8 @@ import re
 import sqlalchemy
 from sqlalchemy import event, exc, text
 
+from .pglock import keepalive_connect_args
+
 # Module-level engine cache keyed by (dsn, frozenset(connect_args)).
 # Prevents per-request create_engine() calls from leaking connection pools.
 _engine_cache: dict[tuple, sqlalchemy.Engine] = {}
@@ -259,6 +261,10 @@ def _bounded_source_engine(dsn: str, dialect: str,
     `timeout_ms=None` means no budget was asked for — not that one was
     wanted and could not be given, so it draws no warning.
 
+    TCP keepalives are set regardless of the budget (libpq drivers only,
+    `core.pglock.keepalive_connect_args`): a statement timeout bounds a source
+    that answers slowly, keepalives bound one that has silently gone away.
+
     Cached on `(dsn, dialect, timeout_ms)`, so the ETL does not build a pool
     per run and a differing budget is naturally a different engine.
     """
@@ -266,10 +272,18 @@ def _bounded_source_engine(dsn: str, dialect: str,
     if key in _bounded_engine_cache:
         return _bounded_engine_cache[key]
 
-    connect_args: dict = {}
+    # Keepalives first, and the statement timeout as an *item* on top of them
+    # — `connect_args = {...}` would drop them again in exactly the case that
+    # needs them most. They matter because a source read is not one continuous
+    # transfer any more: between two FETCHes of the server-side cursor the
+    # connection lies still, and without keepalives a source host that has
+    # gone away is noticed at the kernel default (~2 h), not in a minute.
+    # `keepalive_connect_args` checks backend *and* driver itself, so a
+    # non-libpq DSN gets nothing.
+    connect_args: dict = keepalive_connect_args(dsn)
     if timeout_ms:
         if dialect == "postgresql":
-            connect_args = {"options": f"-cstatement_timeout={timeout_ms}"}
+            connect_args["options"] = f"-cstatement_timeout={timeout_ms}"
         elif dialect not in ("oracle",):
             logger.warning(
                 "no statement timeout is wired up for the %s dialect — source "
