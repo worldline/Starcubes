@@ -7,28 +7,12 @@ Notable changes per release. Format follows
 
 ## [Unreleased]
 
-### Fixed
+Candidates live in [`docs/backlog.md`](docs/backlog.md), and nothing there is
+committed to a release until it is listed here. The road to a final 2.0.0
+runs through further pre-release tags — see
+[`docs/releases.md`](docs/releases.md).
 
-- **A cancelled source statement now says who cancelled it.** A run that hit
-  its statement timeout failed with nothing but
-  `QueryCanceled: canceling statement due to statement timeout` — no mention
-  of `max_run_s`, which is where the timeout came from, and no hint that
-  retrying cannot help: an aborted run leaves the watermark where it was, so
-  the next window is *wider* and fails sooner, which in forever mode is a
-  loop that never advances. The error row now names the cause and the two
-  ways out (narrow the work with `initial_window_s`, or raise the budget),
-  and distinguishes our own budget from a `statement_timeout` the source
-  database sets for itself.
-
-- **A run waiting on its source is no longer reported as broken.** The ETL
-  strip turned red with "⚠ no progress for Ns" after a minute without rows,
-  and the forever strip added a "stale" badge after three loop intervals —
-  both on the honest heartbeat, which only advances when rows actually move.
-  But a run that has not yet received its first row is waiting on the source
-  database, and on a wide window (every initial load is one) that wait is
-  minutes. `etl_run.stats` now carries a `phase`, and both places consult it:
-  before the first chunk the strip stays running and says "waiting for the
-  source"; after it, a stall is still a stall and still turns red.
+## [2.0.0-beta.3] — 2026-09-18
 
 ### Changed
 
@@ -54,6 +38,78 @@ Notable changes per release. Format follows
   silently gone away, which until now was noticed at the kernel default —
   typically two hours. Postgres sources only; a non-libpq driver is left
   alone.
+
+- **Every run says which budget regime it is under.** `max_run_s` exempts the
+  initial load while the fact table is empty — and with `initial_window_s`
+  set, the catch-up is a series of runs of which only the *first* finds an
+  empty table: from the second step on, the same catch-up runs capped and
+  timed at catch-up width, and nothing said so. An operator sizing
+  `max_run_s` from what the first step did was sizing it from the one run
+  the budget never applied to. Each run now logs which of the two regimes it
+  is under and why, at the verbosity of the window line below it — so the
+  jump from step one to step two is visible exactly where it happens,
+  including from a forever loop.
+
+- **Global tabs and menu, one order: configuration, then the account, then
+  what the system reports.** Datasources, Profiles, Transports, Users, My
+  Profile, Firings, Logs — the tab strip and the hamburger menu read the same
+  list now, the hamburger mirroring the tab bar row for row so the two move
+  together. Permission gates are unchanged; every entry keeps appearing only
+  where it appeared before.
+
+- **The window never scrolls; the header and the tab bars stay put.** Every
+  sources page is one viewport tall now and only the box around the content
+  scrolls, so the nav and tab bars never move. Tab bars live outside the
+  scroller, the datasource page's status bar sits under the scroller instead
+  of floating over its scrollbar, and the Dim Data / ETL / Rollup sub-tab
+  rows stay sticky. Below 768 px a fixed tab row scrolls sideways instead of
+  wrapping. The Logs and help pages, which piloted this layout in
+  2.0.0-beta.2, follow the shell now: fixed header, and the card fills the
+  page.
+
+- **The Logs viewer reads like the Runs table it sits beside.** Lines come
+  back newest first (the API returns every page in that order); kinds are a
+  chip field fed from a dropdown, each kind in its own colour across filter,
+  lines and runs; the columns line up — a CSS grid for lines, a fixed-layout
+  table for runs — with datasource and status sized to their content and the
+  summary wrapping instead of being cut. From/To use the chart's date picker
+  instead of a native `datetime-local` input whose German rendering took so
+  much room that only the hour stayed visible. Live polling is on by default
+  for both views and pauses while the tab is hidden.
+
+### Fixed
+
+- **A cancelled source statement now says who cancelled it.** A run that hit
+  its statement timeout failed with nothing but
+  `QueryCanceled: canceling statement due to statement timeout` — no mention
+  of `max_run_s`, which is where the timeout came from, and no hint that
+  retrying cannot help: an aborted run leaves the watermark where it was, so
+  the next window is *wider* and fails sooner, which in forever mode is a
+  loop that never advances. The error row now names the cause and the two
+  ways out (narrow the work with `initial_window_s`, or raise the budget),
+  and distinguishes our own budget from a `statement_timeout` the source
+  database sets for itself.
+
+- **A run waiting on its source is no longer reported as broken.** The ETL
+  strip turned red with "⚠ no progress for Ns" after a minute without rows,
+  and the forever strip added a "stale" badge after three loop intervals —
+  both on the honest heartbeat, which only advances when rows actually move.
+  But a run that has not yet received its first row is waiting on the source
+  database, and on a wide window (every initial load is one) that wait is
+  minutes. `etl_run.stats` now carries a `phase`, and both places consult it:
+  before the first chunk the strip stays running and says "waiting for the
+  source"; after it, a stall is still a stall and still turns red.
+
+- **Clearing a run in the Logs viewer restores the filters opening it
+  replaced.** Opening a run set From/To to its span and cleared kind, level
+  and text; the run chip's × only cleared the run, so the frame stayed and
+  Runs, which shares it, showed nothing but that run until the page was
+  reloaded. Opening now snapshots what it replaces and × restores each filter
+  the reader has not changed since; audit and housekeeping runs, which frame
+  the datasource rather than a run, get the chip too. From/To are also no
+  longer rounded to the minute whenever another filter changes — that
+  rounding shifted a run's ±5 s frame and kept a restored frame from
+  matching.
 
 ## [2.0.0-beta.2] — 2026-09-16
 
@@ -479,11 +535,6 @@ Notable changes per release. Format follows
   there is nothing to compare it to. Its value comparison also stopped
   treating a NULL as a zero — a fact-NULL against a rollup-0.0 is a real
   derivation bug and now fails instead of rounding to equal.
-
-Candidates live in [`docs/backlog.md`](docs/backlog.md), and nothing there is
-committed to a release until it is listed here. The road to a final 2.0.0
-runs through further pre-release tags — see
-[`docs/releases.md`](docs/releases.md).
 
 ## [2.0.0-alpha.7] — 2026-09-11
 
