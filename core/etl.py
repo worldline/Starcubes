@@ -1234,6 +1234,10 @@ def import_fact(source: Source, meta_engine, *,
     abort_evt = mp.Event()
     transform_q: Optional[mp.JoinableQueue] = None
     load_q: Optional[mp.JoinableQueue] = None
+    # The extract's own source connection. Bound here rather than where it is
+    # opened, because the `finally` below has to be able to close it whatever
+    # went wrong -- including before the extract was ever reached.
+    src_conn: Optional[sqlalchemy.Connection] = None
 
     try:
         # Everything that has to be true before the load, in one place --
@@ -1788,8 +1792,29 @@ def import_fact(source: Source, meta_engine, *,
             chunks = _targeted_chunks(source, source_engine, query,
                                       backfill_ids, pc)
         else:
+            # One connection for the whole extract, carrying the server-side
+            # cursor. Without `stream_results` libpq buffers the *entire*
+            # result before pandas sees a row, so `chunksize` only slices RAM
+            # the client has already paid for -- minutes of nothing on a wide
+            # window, and on an initial load ("everything the source has")
+            # the whole table in the parent's memory. pandas calls execute()
+            # eagerly inside read_sql, so that wait is this line, not the
+            # first next().
+            #
+            # It has to sit on a *Connection*: handed an Engine, pandas opens
+            # one itself in SQLDatabase.__init__ and no execution option can
+            # reach it. Handed a Connection, pandas also never closes it --
+            # hence the two closes below. `dispose()` above stays *above*: it
+            # throws away the pool that preflight and import_dimensions used,
+            # and this connection is deliberately opened after that, fresh.
+            #
+            # Harmless on the other dialects: the synchronous Oracle dialect
+            # reports no server-side cursor support and ignores the option;
+            # MySQL gives an unbuffered cursor, which close() drains.
+            src_conn = source_engine.connect().execution_options(
+                stream_results=True, max_row_buffer=source.chunksize)
             chunks = pd.read_sql(
-                text(query + where), source_engine, params=where_params,
+                text(query + where), src_conn, params=where_params,
                 chunksize=source.chunksize,
                 parse_dates={pc: {"utc": True}})
         # A detached spawn's stderr is a regular log file, not a terminal —
@@ -1907,6 +1932,13 @@ def import_fact(source: Source, meta_engine, *,
         # this is for the reader who wants to know why the extract rate has
         # gone to zero while the load rate has not.
         _set_phase("draining")
+        # Let go of the source before the queues drain. A server-side cursor
+        # holds its transaction open, so between here and the last COPY the
+        # session would otherwise sit 'idle in transaction' on the source for
+        # however long the load takes. Closed again in the `finally`, which
+        # is idempotent and covers every path that does not reach this line.
+        if src_conn is not None:
+            src_conn.close()
         _join_with_abort(transform_q, abort_evt, error_q, workers,
                          budget=budget)
         _join_with_abort(load_q, abort_evt, error_q, workers, budget=budget)
@@ -1943,6 +1975,18 @@ def import_fact(source: Source, meta_engine, *,
             progress_stop.set()
         if progress_thread is not None:
             progress_thread.join(timeout=2)
+
+        # Close the extract's source connection. Usually already done on the
+        # happy path; this covers every abort -- the budget raising, a dead
+        # worker, a source that stopped answering mid-cursor. Here rather
+        # than further down because reaping the workers below can take ten
+        # seconds each, and the source session should not wait for that.
+        if src_conn is not None:
+            try:
+                src_conn.close()
+            except Exception:
+                logger.debug("closing the source connection failed",
+                             exc_info=True)
 
         # Release anything still blocked in the abort-aware queue helpers
         # and make sure the parent's own queue feeder threads don't hang

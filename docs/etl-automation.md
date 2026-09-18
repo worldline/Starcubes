@@ -538,6 +538,12 @@ payments: run budget none — the initial load is exempt while fact is empty
           (max_run_s=1800s applies from the next run on); initial_window_s=21600s
 ```
 
+One nuance since the extract reads through a server-side cursor: on Postgres
+the statement timeout now bounds each `FETCH`, not the read as a whole. What
+bounds the run itself is the wall clock in `_RunBudget`, checked between
+chunks. The rule above — a statement may not outlive the run it belongs to —
+still holds for the statement the timeout can actually see.
+
 **It is a circuit breaker, not a repair.** An aborted run leaves the watermark
 where it was, so the next window starts in the same place and ends later — it
 is *wider*, not smaller. What it buys is that one wedged run stops holding the

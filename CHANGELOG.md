@@ -21,6 +21,21 @@ Notable changes per release. Format follows
 
 ### Changed
 
+- **The extract reads through a server-side cursor.** Until now libpq
+  buffered the entire result before pandas saw a row, so `chunksize` only
+  sliced memory the client had already paid for: the first chunk arrived
+  after the *last* row had crossed the network, and an initial load — whose
+  window is everything the source has — held the whole table in the ETL
+  process. The first chunk now arrives early and memory stays at one chunk.
+  It costs throughput, measured worst-case (local socket, no I/O to hide
+  behind): +6.5% at the default `chunksize` of 10 000, +15% at 200 000 —
+  the overhead grows with the chunk, so re-measure a datasource that has
+  raised it. Postgres sources only; the Oracle path is unchanged. Two things
+  to know: `statement_timeout` now bounds each `FETCH` rather than the whole
+  read, and the source session sits `idle in transaction` between chunks, so
+  a source with `idle_in_transaction_session_timeout` set will abort the
+  extract.
+
 - **Source connections carry TCP keepalives.** Every source engine now sets
   the libpq keepalive options (30 s idle, a probe every 10 s, dead after 3),
   whether or not the run asked for a statement timeout. A statement timeout

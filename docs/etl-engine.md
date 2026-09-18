@@ -18,6 +18,43 @@ production incidents.
   throughput numbers that motivated the design. Do **not** replace
   `copy_from` with SQLAlchemy `INSERT` — orders of magnitude slower.
 
+- **The extract reads through a server-side cursor.** `pd.read_sql` gets a
+  `Connection` carrying `stream_results=True`, not the engine — handed an
+  engine, pandas opens its own connection in `SQLDatabase.__init__` and no
+  execution option can reach it; handed a connection, pandas also never
+  closes it, which is why `import_fact` closes it twice (once when the
+  source is read, so the session does not sit `idle in transaction` while
+  the queues drain, and again defensively in the `finally`). Without this,
+  libpq buffers the *whole* result before pandas sees a row: `chunksize`
+  then slices memory the client has already paid for, the first chunk
+  arrives only after the last row has crossed the network, and an initial
+  load — whose window is literally everything the source has — holds the
+  entire table in the parent. pandas calls `execute()` eagerly inside
+  `read_sql`, so that wait is the `read_sql` line itself, not the first
+  `next()`.
+
+  It costs something, and the number is worth knowing: measured against
+  `generate_series` over a local Unix socket — the worst case, all protocol
+  overhead and no I/O to hide it behind — the streaming read is **+6.5%**
+  at `chunksize` 10 000 (the default, and what the example profiles use),
+  +10.6% at 50 000, +15.1% at 200 000. The overhead grows with the chunk,
+  so a datasource that has raised `chunksize` a long way is the one to
+  re-measure. Against a real remote source with disks under it the relation
+  is a different one entirely. `_targeted_chunks` (the audit's id-list
+  backfill) deliberately keeps the buffered read: its batches are ≤ 1000
+  rows and are materialised whole, where a named cursor is pure overhead.
+
+  Three consequences on Postgres, none of them prevented: `statement_timeout`
+  now bounds each `FETCH` rather than the read as a whole (the wall clock in
+  `_RunBudget` is what bounds the run); the planner works under
+  `cursor_tuple_fraction` and may pick a different, fast-first-row plan; and
+  the source session is `idle in transaction` between chunks, so a source
+  with `idle_in_transaction_session_timeout` set will now abort the extract.
+  The snapshot semantics do **not** change — the read was always one
+  statement, hence one snapshot. On other dialects the option is harmless:
+  the synchronous Oracle dialect reports no server-side cursor support and
+  ignores it, MySQL gives an unbuffered cursor that `close()` drains.
+
 - **Each load worker builds its own engine inside the child**, rather than
   inheriting the parent's SQLAlchemy pool via `fork()`. The parent calls
   `source_engine.dispose()` before the extract loop. The original
