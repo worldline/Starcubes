@@ -918,6 +918,56 @@ def _fact_has_rows(source: Source, dest_engine) -> bool:
         )).scalar())
 
 
+def _timeout_explanation(exc: BaseException, capped: bool,
+                         max_run_s: int) -> Optional[str]:
+    """Turn a cancelled source statement into a sentence naming the cause.
+
+    A statement timeout reaches the operator as `QueryCanceled: canceling
+    statement due to statement timeout` and nothing else — no mention of
+    `max_run_s`, which is where the timeout came from, and no mention of the
+    trap behind it. That trap is the reason this exists: an aborted run
+    leaves the watermark where it was, so the *next* window is wider, fails
+    sooner, and a forever loop grinds there indefinitely. The operator has to
+    know that the fix is to narrow the work or widen the budget, because
+    waiting is not one.
+
+    The timeout is not necessarily ours: a source can carry its own
+    `statement_timeout` from a role or database default, and then `max_run_s`
+    has nothing to do with it. `capped` is what tells the two apart — it is
+    exactly the condition under which the engine was given a budget.
+
+    Postgres `57014` is `query_canceled`; Oracle's `call_timeout` surfaces as
+    ORA-01013. Matched on the driver's own code where there is one, on the
+    message otherwise, and `None` when this is some other failure.
+    """
+    orig = getattr(exc, "orig", exc)
+    code = getattr(orig, "pgcode", None)
+    text_ = str(orig)
+    hit = (code == "57014"
+           or "statement timeout" in text_
+           or "ORA-01013" in text_
+           or "DPI-1067" in text_)
+    if not hit:
+        return None
+    if capped:
+        return (
+            f"the source cancelled the statement at the run's own budget — "
+            f"max_run_s={max_run_s}s is applied to source statements as well. "
+            f"Note that retrying will not help by itself: an aborted run "
+            f"leaves the high watermark where it was, so the next window is "
+            f"*wider* and fails sooner. Narrow the work (datasource "
+            f"`initial_window_s`, or --limit) or raise max_run_s. Careful: "
+            f"the very first run of an empty fact table is exempt from this "
+            f"budget, so its duration is no guide to sizing it."
+        )
+    return (
+        "the source cancelled the statement — a `statement_timeout` set on "
+        "the source database itself (role or database default), since "
+        "max_run_s is not capping this run. Either raise it there for the "
+        "ETL's role, or narrow the work with `initial_window_s`."
+    )
+
+
 class _RunBudget:
     """Wall-clock budget for one run (`datasource.max_run_s`).
 
@@ -1954,8 +2004,14 @@ def import_fact(source: Source, meta_engine, *,
         raise
     except Exception as exc:
         status = "failed"
-        error = repr(exc)
+        # A cancelled source statement says only that it was cancelled. Say
+        # who cancelled it and what to do, or the row in the GUI is a
+        # psycopg2 repr the operator cannot act on.
+        _why = _timeout_explanation(exc, capped, max_run_s)
+        error = f"{repr(exc)} — {_why}" if _why else repr(exc)
         logger.exception("%s: ETL run %s failed", source.name, run_id)
+        if _why:
+            logger.error("%s: %s", source.name, _why)
         raise
     finally:
         # Snapshot the manager-list before the workers go away. Aggregate by

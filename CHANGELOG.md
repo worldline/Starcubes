@@ -9,6 +9,17 @@ Notable changes per release. Format follows
 
 ### Fixed
 
+- **A cancelled source statement now says who cancelled it.** A run that hit
+  its statement timeout failed with nothing but
+  `QueryCanceled: canceling statement due to statement timeout` — no mention
+  of `max_run_s`, which is where the timeout came from, and no hint that
+  retrying cannot help: an aborted run leaves the watermark where it was, so
+  the next window is *wider* and fails sooner, which in forever mode is a
+  loop that never advances. The error row now names the cause and the two
+  ways out (narrow the work with `initial_window_s`, or raise the budget),
+  and distinguishes our own budget from a `statement_timeout` the source
+  database sets for itself.
+
 - **A run waiting on its source is no longer reported as broken.** The ETL
   strip turned red with "⚠ no progress for Ns" after a minute without rows,
   and the forever strip added a "stale" badge after three loop intervals —
