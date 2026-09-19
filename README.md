@@ -7,10 +7,10 @@
 
 <p align="center">
   <b>Point starcubes at a SQL database and get a fast, filterable timeseries of
-  what happens in it — without modelling a warehouse by hand.</b>
+  what happens in it — without exporting a single row to a spreadsheet.</b>
 </p>
 
-- **Configure a source in a form, not in dbt.** Base table, watermark column,
+- **Configure a source in a form, not in SQL.** Base table, watermark column,
   a row per fact column — that is the whole model. Save it as a profile and
   the next install is one click.
 - **Built for volume.** The 3.9 million transactions in the screenshots
@@ -18,23 +18,33 @@
   on the time column, `COPY FROM` on the load path. Optional
   pre-aggregation keeps charts over months of history fast — and outlives
   the raw rows once retention starts disposing of them.
-- **One self-hosted container.** No Airbyte, no dbt, no Superset — one image,
-  one Postgres, one login.
+- **One self-hosted container.** One image, one Postgres, one login — and
+  MIT-licensed, so there is no paid tier holding the feature you came for.
 
 ![The chart](docs/img/chart-hero.png)
 
 ## What it's for
 
-You have an operational database — payments, orders, requests, events — and
-you want to see its shape over time: how many, of what kind, broken down by
-whatever dimension you care about right now, over a week or over a year, in
-seconds rather than minutes.
+You have an operational database — payments, orders, requests, events — and a
+question about it: *how many payments per hour, by status, cards only, over the
+last thirty days?* You get an answer, and it immediately raises the next
+question: what did the failures look like, which merchant, was yesterday like
+the week before?
 
-Getting there usually means three products. Airbyte or Meltano move the rows,
-dbt models the star schema, Superset or Grafana draws the chart — three tools,
-three UIs, and the modelling in the middle is still yours to write. starcubes
-is the middle. It reads your source on a high watermark, keeps a compact star
-schema on Postgres, and serves a stacked-bar timeseries straight off it.
+Today each of those answers costs a small ritual. Someone writes the `GROUP
+BY`, exports the result to CSV, pivots it in a spreadsheet, draws a chart, and
+pastes a screenshot into a mail. It works exactly once. The spreadsheet gives
+up long before the 3.9 million rows in the screenshots below, and what lands
+in the mail is a still image of yesterday that answers no follow-up. Write
+Python, of course, and a notebook will draw you whatever you like — this is
+for everyone who doesn't.
+
+starcubes turns that ritual into a page. You configure the source once; after
+that every question is a click, and every view you find is a URL you can send.
+It is the window Splunk or Kibana give you onto your log lines, pointed
+instead at the tables your business actually runs on. Underneath, it reads
+your source on a high watermark, keeps a compact star schema on Postgres, and
+serves a stacked-bar timeseries straight off it.
 
 ## Five minutes to a chart
 

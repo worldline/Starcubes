@@ -59,12 +59,31 @@ datasource lives as metadata rows in `starcubes_meta`, editable from a GUI).
 Known unfinished work is tracked in one place: [`backlog.md`](backlog.md).
 
 ## Why this exists
-No single OSS project delivers "configure an arbitrary SQL source → compact
-star schema with smallint-keyed dimensions → fast filterable stacked-bar
+The job is one question asked over and over — *how many of these, by that,
+filtered on this, over the last month?* — answered in seconds, by someone who
+knows the database but does not write code. Today that answer is a
+hand-written `GROUP BY`, a CSV export and a pivot table, and it is stale the
+moment it is drawn.
+
+Said in data-engineering terms, for readers who arrive from that side: no
+single OSS project delivers "configure an arbitrary SQL source → compact star
+schema with smallint-keyed dimensions → fast filterable stacked-bar
 timeseries" as one self-hosted app. Airbyte / Meltano handle the source side
-but not the star-schema shape. Superset / Metabase / Grafana handle viz but
-expect data already modelled. The closest combo — Airbyte + dbt + Superset —
-is three tools, three UIs, and you still write the star models by hand.
+but not the star-schema shape. Superset / Metabase handle viz but expect data
+already modelled. The closest combo — Airbyte + dbt + Superset — is three
+tools, three UIs, and you still write the star models by hand.
+
+Two non-answers are worth naming, because both come up:
+
+- **pandas in a notebook** answers every one of these questions and a hundred
+  more — for the one person who writes it. The audience here is the operator,
+  the support engineer, the analyst who knows the tables and will not open a
+  notebook. That is a product requirement, not a gap in a comparison.
+- **Grafana** is the obvious timeseries frontend, and on a metrics store it is
+  the right tool. It is open core, though: a fair part of what you reach for
+  next sits in the commercial edition. That is why it is a footnote here and
+  not the reference point — this app is MIT end to end, with no tier holding
+  anything back.
 
 ## Architecture
 ```

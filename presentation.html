@@ -682,48 +682,50 @@ body {
       <img src="viz/static/viz/starcubes_lockup.svg" alt="starcubes" style="height:120px; margin-bottom: 38px;">
       <p class="lede" style="max-width:33em; text-align:center;">
         Point it at a SQL database and get a fast, filterable timeseries
-        of what happens in it — <em>without modelling a warehouse by hand.</em>
+        of what happens in it — <em>without exporting a single row to a spreadsheet.</em>
       </p>
       <p class="sub" style="text-align:center; margin-top:20px;">Oracle · Postgres · MySQL · SQL Server → one Postgres, one app</p>
       <p class="meta"><span class="star">★</span> &nbsp;blueprint · star schema in postgres</p>
     </section>
 
-    <!-- 2 · Hook: three products -->
+    <!-- 2 · Hook: the spreadsheet ritual -->
     <section>
       <div class="eyebrow">The problem</div>
-      <h1>Seeing the shape of your database<br>takes <em>three products.</em></h1>
+      <h1>Seeing the shape of your database<br>takes <em>a query and a spreadsheet.</em></h1>
       <div class="flow">
         <div class="unit">
           <div class="node">
-            <div class="tag">move</div>
-            <div class="name">Airbyte / Meltano</div>
-            <div class="desc">copies the rows somewhere else</div>
+            <div class="tag">write</div>
+            <div class="name"><code>… GROUP BY 1,2</code></div>
+            <div class="desc">hand-written, and the next question is a different query</div>
           </div>
         </div>
         <div class="unit fragment fade-up">
           <div class="arrow">→</div>
           <div class="node hot">
-            <div class="tag">model — still yours to write</div>
-            <div class="name">dbt</div>
-            <div class="desc">the star schema is your SQL to maintain</div>
+            <div class="tag">export — where it breaks</div>
+            <div class="name">CSV → pivot table</div>
+            <div class="desc">the spreadsheet gives up long before four million rows</div>
           </div>
         </div>
         <div class="unit fragment fade-up">
           <div class="arrow">→</div>
           <div class="node">
-            <div class="tag">draw</div>
-            <div class="name">Superset / Grafana</div>
-            <div class="desc">a third UI, tuned for dashboards</div>
+            <div class="tag">send</div>
+            <div class="name">A screenshot in a mail</div>
+            <div class="desc">a still image of yesterday — it answers no follow-up</div>
           </div>
         </div>
       </div>
-      <p class="sub">You wanted one number over time. You got three toolchains.</p>
+      <p class="sub">You wanted one number over time. You got a ritual, and you get to repeat it.</p>
+      <p class="sub fragment fade-up">Write Python, and a notebook will draw you anything you
+      like. This is about everyone who doesn't.</p>
     </section>
 
-    <!-- 3 · The idea: starcubes is the middle -->
+    <!-- 3 · The idea: starcubes keeps the answer ready -->
     <section>
       <div class="eyebrow">The idea</div>
-      <h1>starcubes <em>is</em> the middle.</h1>
+      <h1>starcubes <em>keeps the answer ready.</em></h1>
       <div class="flow">
         <div class="unit">
           <div class="node">
@@ -749,7 +751,8 @@ body {
           </div>
         </div>
       </div>
-      <p class="sub">The chart is served straight off it — stacked bars, any dimension, any filter, in seconds.</p>
+      <p class="sub">The window Splunk or Kibana give you onto your log lines — pointed at the
+      tables your business runs on. Stacked bars, any dimension, any filter, in seconds.</p>
     </section>
 
     <!-- 4 · Built for volume -->
@@ -909,10 +912,10 @@ body {
       </div>
     </section>
 
-    <!-- 9 · Decision 5: configure in a form, not in dbt -->
+    <!-- 9 · Decision 5: configure in a form, not in SQL -->
     <section>
       <div class="eyebrow"><span class="n">05</span> Design decision</div>
-      <h1>Configure a source in a form, <em>not in dbt.</em></h1>
+      <h1>Configure a source in a form, <em>not in SQL.</em></h1>
       <p class="lede" style="margin-top:28px;">Base table, watermark column, a row per fact column —
       that is the whole model.</p>
       <div class="chips">
