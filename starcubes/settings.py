@@ -137,6 +137,17 @@ DATABASES = {
 STARCUBES_QUERY_TIMEOUT_MS = int(os.environ.get("STARCUBES_QUERY_TIMEOUT_MS", "30000"))
 STARCUBES_QUERY_ROW_LIMIT = int(os.environ.get("STARCUBES_QUERY_ROW_LIMIT", "1000"))
 
+# ── Stream character check (viz.views.stream_check_json) ───────────────────
+# The one-second scan behind `manage.py stream_check` when it is driven from
+# the chart. Bounded for the same reason as the console above — harakiri
+# kills the whole worker, not just this request — and more tightly, because
+# this endpoint is reachable by a button rather than by typing SQL. The
+# sample is capped in rows as well (`core.stream_stats.MAX_SAMPLE_HOURS_WEB`);
+# this is the second belt. viz.views clamps it to 30 s regardless of the
+# environment; the CLI path is deliberately not bounded by it.
+STARCUBES_STREAM_TIMEOUT_MS = int(
+    os.environ.get("STARCUBES_STREAM_TIMEOUT_MS", "20000"))
+
 # ── ETL logging (sources/etl_spawn.py, sources/etl_logging.py, core/log_ship.py)
 # Every spawned ETL/forever/rollup process writes a spool file here, which it
 # ships line by line into starcubes_meta.log_line and removes at exit; the

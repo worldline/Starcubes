@@ -348,8 +348,42 @@ Filters apply throughout: the search, the expectation and the breakdown all
 run behind the chart's active filters, so "gaps in the traffic of this one
 site" is a question you can ask by filtering first.
 
+#### Can you trust the marks? — Stream character
+
+The test behind those brackets assumes the transactions arrive **scattered at
+random over time**. That is true of online traffic and false of a batch job,
+and where it is false the marks are wrong in a particular way: if 900 rows
+land every five minutes and nothing arrives in between, every one of those
+ordinary five-minute pauses is reported as an outage.
+
+**Stream character**, the button next to *Mark gaps*, measures which kind of
+stream this source carries and answers in one line — *online traffic*,
+*regular batch*, *irregular bursts* or *clocked*. Below that stands what the
+verdict is built on, and it is worth reading in this order:
+
+| Shown | What to make of it |
+|---|---|
+| **Dispersion** | One row per bin width. All near 1 means the marks are trustworthy. `D detrended` is the column that counts — it has the ordinary rise and fall of traffic across the hour taken out, so what is left is genuine clumping. |
+| **Empty bins** | How often the stream actually falls silent, against how often it should. This is the number the gap detector reacts to; if it matches, the marks are sound even when dispersion looks high. |
+| **Periodicity** | A period here means the source runs on a schedule, and no pause shorter than it is an outage. |
+| **Recommendation** | What to change, if anything. Nothing is applied for you. |
+
+The report always names the stretch it measured, because the answer is about
+that stretch: a source can honestly read *online* one day and *bursty* the
+next. A window shorter than a day is widened to one — a batch beat that is
+obvious at three in the morning disappears inside midday traffic — so zooming
+in will not narrow it, and the panel says when it did that.
+
+It is a measurement, not an overlay: it runs when pressed. Pan or zoom far
+enough and the panel marks itself out of date and offers to re-measure rather
+than quietly recomputing. Changing the filters discards it instead, since a
+verdict measured behind other filters is about a different stream.
+
 *Internals: see [`docs/chart-app.md`](docs/chart-app.md), "The gap overlay",
-for the Poisson model, the scan and the profile cache.*
+for the Poisson model, the scan and the profile cache, and
+[`docs/stream-character.md`](docs/stream-character.md) for the four tests
+behind the verdict. The same measurement is available from the command line
+as `manage.py stream_check --name <source>`.*
 
 ### Query console
 

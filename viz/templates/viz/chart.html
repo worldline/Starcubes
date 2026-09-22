@@ -97,6 +97,11 @@
     --legend-copy-ok-bg: #d4edda;
     --legend-copy-ok-border: #b5d7bf;
     --legend-copy-ok-color: #1e6b34;
+    /* Stream-character verdict. Two of its four outcomes are "fine" and the
+       other two are "read this" — not errors, so neither reuses
+       --info-err-color, which the page spends on real failures. */
+    --sc-ok-color: #1e6b34;
+    --sc-warn-color: #8a5a00;
     --follow-dot: #999;
     --follow-dot-active: #d00;
     /* Gap overlay brackets: plain ink, the darkest thing on the page. A gap
@@ -207,6 +212,8 @@
     --legend-copy-ok-bg: #1e3a2e;
     --legend-copy-ok-border: #34a853;
     --legend-copy-ok-color: #a8e6b8;
+    --sc-ok-color: #8fd6a4;
+    --sc-warn-color: #e0b866;
     --follow-dot: #777;
     --follow-dot-active: #f44;
     /* The mirror of the light theme's black — see there. */
@@ -728,6 +735,66 @@
   .gap-row-when { flex: 1; overflow: hidden; text-overflow: ellipsis; color: var(--body-color); font-size: 11px; }
   .gap-row-span { color: var(--body-color); font-size: 11px; flex-shrink: 0; }
   .gap-row-miss { color: var(--legend-total-color); font-size: 11px; flex-shrink: 0; min-width: 7.5em; text-align: right; }
+  /* Stream character panel. Wider than the gap list because its core is a
+     numeric table that must not wrap — every other block here is prose or
+     a single line, and both re-flow happily. */
+  #stream-panel {
+    width: 460px; max-width: 94vw; max-height: 76vh;
+    min-width: 300px; min-height: 160px;
+    resize: both; overflow: hidden;
+  }
+  #stream-panel-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 8px 12px 12px; }
+  .sc-verdict {
+    font-size: 12px; font-weight: 600; color: var(--body-color);
+    padding: 2px 0 4px;
+  }
+  .sc-verdict.sc-ok { color: var(--sc-ok-color); }
+  .sc-verdict.sc-warn { color: var(--sc-warn-color); }
+  .sc-reason { font-size: 11px; color: var(--legend-total-color); padding-bottom: 8px; }
+  .sc-meta {
+    font-size: 10px; color: var(--legend-total-color);
+    padding-bottom: 6px; margin-bottom: 8px;
+    border-bottom: 1px solid var(--filter-row-border);
+  }
+  .sc-meta b { font-weight: 600; color: var(--body-color); }
+  .sc-section-title {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--legend-total-color);
+    margin: 10px 0 4px;
+  }
+  /* The D table. Tabular numerals so the columns line up as the eye scans
+     down them looking for the one row that is not ~1 — which is the whole
+     way this table is read. */
+  table.sc-table {
+    width: 100%; border-collapse: collapse;
+    font-size: 11px; font-variant-numeric: tabular-nums;
+  }
+  table.sc-table th {
+    text-align: right; font-weight: 600; color: var(--legend-total-color);
+    padding: 2px 4px; border-bottom: 1px solid var(--filter-row-border);
+    white-space: nowrap;
+  }
+  table.sc-table th:first-child, table.sc-table td:first-child { text-align: left; }
+  table.sc-table td { text-align: right; padding: 2px 4px; color: var(--body-color); white-space: nowrap; }
+  table.sc-table tr.sc-weak td { color: var(--legend-total-color); }
+  table.sc-table td.sc-hot { font-weight: 600; }
+  .sc-line { font-size: 11px; color: var(--body-color); padding: 2px 0; display: flex; gap: 8px; }
+  .sc-line span:first-child { flex: 1; color: var(--legend-total-color); }
+  .sc-note {
+    font-size: 11px; color: var(--legend-total-color); line-height: 1.45;
+    padding: 4px 0 4px 10px; margin: 4px 0;
+    border-left: 2px solid var(--filter-row-border);
+  }
+  .sc-rec { font-size: 11px; color: var(--body-color); padding: 3px 0; line-height: 1.45; }
+  .sc-rec.sc-primary { font-weight: 600; }
+  .sc-rec code {
+    font-size: 11px; background: var(--toggle-hover);
+    padding: 0 4px; border-radius: 3px;
+  }
+  .sc-status { padding: 14px 4px; text-align: center; color: var(--legend-total-color); font-size: 11px; }
+  .sc-actions { padding-top: 8px; margin-top: 8px; border-top: 1px solid var(--filter-row-border); }
+    .sc-stale { color: var(--sc-warn-color); font-size: 11px; padding-bottom: 6px; line-height: 1.45; }
+  .sc-stale a { color: inherit; text-decoration: underline; cursor: pointer; }
   .keys-group + .keys-group { margin-top: 13px; }
   .keys-group-title {
     font-size: 10px; font-weight: 600; text-transform: uppercase;
@@ -1263,6 +1330,21 @@
             aria-label="Mark gaps" data-tip="Mark gaps (6σ)&#10;count(*) only" data-tip-align="end">
       <svg class="ic" aria-hidden="true"><use href="#ic-gap"></use></svg>
     </button>
+    {% comment %}
+      Stream character: does the 6σ test above hold for this source at all?
+      It rests on the arrivals being scattered at random over time, and a
+      source fed by a batch job breaks that — the quiet between two bursts
+      is normal, and the overlay calls every one of them an outage. Same
+      gating as the gap toggle (count(*), meta loaded) because the test is
+      defined on the same "did a row fall into this second". Unlike the
+      overlay this is a **measurement, not a layer**: it runs when pressed
+      and never from the viewport tracker, or every pan would fire a
+      second-resolution scan over a day of data.
+    {% endcomment %}
+    <button id="stream-toggle" class="ibtn" type="button" hidden
+            aria-label="Stream character" data-tip="Stream character&#10;count(*) only" data-tip-align="end">
+      <svg class="ic" aria-hidden="true"><use href="#ic-pulse"></use></svg>
+    </button>
     {% if user.is_authenticated %}
     {% comment %}
       `q` opens and closes the console, as a page key like `?` — the canvas
@@ -1424,6 +1506,22 @@
     <button id="gap-panel-close" class="fpanel-close" type="button" aria-label="Close">&times;</button>
   </div>
   <div id="gap-panel-body"></div>
+</div>
+
+{% comment %}
+   The stream-character report. A .fpanel of its own rather than a section
+   inside #gap-panel, deliberately: that one is a list bound to the overlay
+   state — setGapOverlay(false) closes brackets and list together — while
+   this is a one-off measurement that stands whether or not any bracket is
+   drawn. Two states, two panels.
+{% endcomment %}
+<div id="stream-panel" class="fpanel">
+  <div class="fpanel-header">
+    <span class="fpanel-title">Stream character</span>
+    <span id="stream-panel-count" class="fpanel-actions"></span>
+    <button id="stream-panel-close" class="fpanel-close" type="button" aria-label="Close">&times;</button>
+  </div>
+  <div id="stream-panel-body"></div>
 </div>
 
 {% if user.is_authenticated %}
@@ -4178,6 +4276,313 @@ makeFloatingPanel(gapPanel, { onClose: () => setGapOverlay(false) });
 applyPersistedSize(gapPanel, 'starcubes-gap-panel');
 persistPanelSize(gapPanel, 'starcubes-gap-panel');
 
+// ─── Stream character ──────────────────────────────────────────────────────
+// The gap overlay asks "where did the stream stop". This asks whether that
+// question is even well posed here: the 6σ test assumes the arrivals are
+// scattered at random over time, and a source fed by a batch job breaks the
+// assumption rather than the threshold. See docs/stream-character.md.
+//
+// It is a MEASUREMENT, not a layer. It runs when pressed and never from the
+// viewport tracker — a scan at one-second resolution over a day of data on
+// every panned pixel is not a thing to do by accident. When the viewport has
+// moved far enough that the answer would be about a different stretch, the
+// panel says so and offers to re-measure; it does not quietly recompute.
+const streamToggle = document.getElementById('stream-toggle');
+const streamPanel  = document.getElementById('stream-panel');
+let _streamReport  = null;   // the last report, or null
+let _streamSig     = null;   // gapParamSig() at the time it was measured
+let _streamRunning = false;
+let _streamError   = null;
+let _streamAbort   = null;
+
+function streamViewportSeconds() {
+  if (!currentViewport) return null;
+  return [Math.floor(currentViewport.tmin / 1000),
+          Math.ceil(currentViewport.tmax / 1000)];
+}
+
+// The viewport is a *proposal*. core.stream_stats.stream_window has the last
+// word — it widens anything under a day, moves a window back rather than
+// cutting it at the watermark, and clamps to the retention floor — and what
+// it decided comes back in `window.notes` for the panel to explain.
+function buildStreamParams() {
+  const p = new URLSearchParams();
+  p.set('name', starcubesParams.name);
+  const vp = streamViewportSeconds();
+  if (vp) {
+    p.set('from', new Date(vp[0] * 1000).toISOString());
+    p.set('to',   new Date(vp[1] * 1000).toISOString());
+  }
+  appendGapFilters(p);
+  return p;
+}
+
+// Has the chart moved away from what was measured? The question is whether
+// what is on screen is still part of what was measured, so the test is
+// **overlap**, not the viewport's midpoint. Midpoint was the first attempt
+// and it fired immediately every time: the chart shows a little past the
+// high watermark (the current, incomplete bin), the measured window ends at
+// the watermark, so the midpoint sat outside it from the start — and a
+// warning that is always on says nothing.
+function streamIsStale() {
+  if (!_streamReport || !_streamReport.window) return false;
+  const vp = streamViewportSeconds();
+  if (!vp) return false;
+  const w = _streamReport.window;
+  const overlap = Math.min(vp[1], w.to) - Math.max(vp[0], w.from);
+  const scale = Math.min(vp[1] - vp[0], w.to - w.from);
+  return scale > 0 && overlap < 0.25 * scale;
+}
+
+function setStreamPanel(on) {
+  if (!streamPanel) return;
+  if (!on) {
+    streamPanel.classList.remove('fp-open');
+    if (streamToggle) streamToggle.classList.remove('active');
+    if (_streamAbort) { _streamAbort.abort(); _streamAbort = null; }
+    _streamRunning = false;
+    return;
+  }
+  streamPanel.classList.add('fp-open');
+  if (!streamPanel.dataset.fpMoved) {
+    const w = streamPanel.offsetWidth, h = streamPanel.offsetHeight;
+    fpMoveTo(streamPanel, (window.innerWidth - w) / 2,
+             Math.max(16, (window.innerHeight - h) / 2));
+  }
+  if (streamToggle) streamToggle.classList.add('active');
+  // A stored report whose filters no longer apply is not a report about this
+  // chart — same rule as the gap store, and for the same reason.
+  if (_streamReport && _streamSig !== gapParamSig()) _streamReport = null;
+  renderStreamPanel();
+  if (!_streamReport && !_streamRunning) runStreamCheck();
+}
+
+function runStreamCheck() {
+  if (_streamRunning) return;
+  _streamRunning = true;
+  _streamError = null;
+  renderStreamPanel();
+  const sig = gapParamSig();
+  if (_streamAbort) _streamAbort.abort();
+  _streamAbort = new AbortController();
+  fetch('{% url "viz:stream_check_json" %}?' + buildStreamParams().toString(),
+        { signal: _streamAbort.signal })
+    .then(r => r.json())
+    .then(data => {
+      _streamRunning = false;
+      if (data && data.ok === false) { _streamError = data.error || 'failed'; }
+      else if (data && data.error)   { _streamError = data.error; }
+      else { _streamReport = data; _streamSig = sig; }
+      renderStreamPanel();
+    })
+    .catch(err => {
+      if (err && err.name === 'AbortError') return;
+      _streamRunning = false;
+      _streamError = String(err);
+      renderStreamPanel();
+    });
+}
+
+function scFmtP(v) {
+  if (v === null || v === undefined || !isFinite(v)) return '–';
+  if (v < 1e-99) return '<1e-99';
+  if (v < 0.001) return v.toExponential(0);
+  return v.toFixed(3);
+}
+
+function scFmtPeriod(sec) {
+  if (!sec) return '–';
+  if (sec < 90) return Math.round(sec) + ' s';
+  if (sec < 5400) return Math.round(sec / 60) + ' min';
+  return (sec / 3600).toFixed(1) + ' h';
+}
+
+function scWhen(epoch) {
+  return gapDate(epoch) + ' ' + fmtClock(epoch);
+}
+
+const SC_VERDICT_LABEL = {
+  online:        'Online traffic',
+  batch_regular: 'Regular batch',
+  bursty:        'Irregular bursts',
+  clocked:       'Clocked / rate-limited',
+  unknown:       'Not determined',
+};
+
+function renderStreamPanel() {
+  if (!streamPanel || !fpIsOpen(streamPanel)) return;
+  const body  = document.getElementById('stream-panel-body');
+  const count = document.getElementById('stream-panel-count');
+  const r = _streamReport;
+
+  if (_streamError) {
+    count.textContent = '';
+    body.innerHTML = '<div class="sc-status">' + _escHtml(_streamError) +
+                     '</div>' + scActionsHtml();
+    return;
+  }
+  if (!r) {
+    count.textContent = '';
+    body.innerHTML = _streamRunning
+      ? '<div class="sc-status">Measuring&hellip;</div>'
+      : '<div class="sc-status">Nothing measured yet</div>' + scActionsHtml();
+    return;
+  }
+
+  const verdict = r.verdict || 'unknown';
+  const w0 = r.window || {};
+  const ok = verdict === 'online';
+  count.textContent = r.sampled
+    ? (r.sampled.hours_usable ?? r.sampled.hours) + ' h sampled' : '';
+
+  let html = '';
+  if (streamIsStale()) {
+    // Deliberately not "you have moved away": the commonest way to see this
+    // is to open a chart whose default view sits past the end of the data,
+    // where the server clamped the sample back to the watermark and the
+    // reader moved nothing at all. State where the report is about and offer
+    // to go there — same gesture as clicking a row in the gap list.
+    html += '<div class="sc-stale">This report is about <a href="#" ' +
+            'id="stream-goto">' + scWhen(w0.from) + ' → ' + scWhen(w0.to) +
+            '</a>, which is not what the chart is showing.</div>';
+  }
+  html += '<div class="sc-verdict ' + (ok ? 'sc-ok' : 'sc-warn') + '">' +
+          _escHtml(SC_VERDICT_LABEL[verdict] || verdict) + '</div>';
+  html += '<div class="sc-reason">' + _escHtml(r.verdict_reason || '') + '</div>';
+
+  // What this is a statement about. Same reasoning as gapScannedText(): a
+  // verdict only means something together with the stretch it was measured
+  // over — and here also with what the server did to the window that was
+  // asked for, or the reader cannot tell why zooming does not change it.
+  const w = w0;
+  const smp = r.sampled || {};
+  html += '<div class="sc-meta">measured <b>' + scWhen(w.from) + '</b> → <b>' +
+          scWhen(w.to) + '</b><br>' +
+          (smp.hours_usable ?? smp.hours) + ' of ' + smp.hours +
+          ' sampled hours, ' + (smp.rows || 0).toLocaleString() + ' rows';
+  if (w.notes && w.notes.length) {
+    html += '<br>window ' + _escHtml(w.notes.join(', '));
+  }
+  if (r.profile) {
+    html += '<br>day profile from ' + _escHtml(String(r.profile.source || 'fact')) +
+            ', anchored at the watermark';
+  }
+  html += '</div>';
+
+  if (r.scales && r.scales.length) {
+    html += '<div class="sc-section-title">Dispersion — 1 is Poisson</div>';
+    html += '<table class="sc-table"><thead><tr><th>bin</th><th>E[n]</th>' +
+            '<th>D shape</th><th>D detrended</th><th>D model</th><th>p</th>' +
+            '</tr></thead><tbody>';
+    for (const sc of r.scales) {
+      const det = sc.d_detrended;
+      const clump = (det === null || det === undefined) ? sc.d_shape : det;
+      const hot = clump > 1.5 || clump < 0.7 ? ' class="sc-hot"' : '';
+      html += '<tr' + (sc.weak ? ' class="sc-weak"' : '') + '>' +
+              '<td>' + sc.bin_s + ' s</td>' +
+              '<td>' + sc.mean_expected.toFixed(2) + '</td>' +
+              '<td>' + sc.d_shape.toFixed(2) + '</td>' +
+              '<td' + hot + '>' + (det === null || det === undefined ? '–' : det.toFixed(2)) + '</td>' +
+              '<td>' + (sc.d_model === null || sc.d_model === undefined ? '–' : sc.d_model.toFixed(2)) + '</td>' +
+              '<td>' + scFmtP(sc.p_detrended) + '</td></tr>';
+    }
+    html += '</tbody></table>';
+  }
+
+  const z = r.zero_bins;
+  if (z) {
+    html += '<div class="sc-section-title">Emptiness — what the detector reacts to</div>';
+    html += '<div class="sc-line"><span>empty ' + z.bin_s + ' s bins</span>' +
+            '<span>' + (z.observed * 100).toFixed(2) + '% vs ' +
+            (z.expected * 100).toFixed(2) + '% expected (z = ' +
+            (isFinite(z.z) ? z.z.toFixed(1) : '–') + ')</span></div>';
+  }
+  if (r.ks) {
+    html += '<div class="sc-line"><span>uniformity (KS)</span><span>D = ' +
+            r.ks.d_median.toFixed(4) + ', p = ' + scFmtP(r.ks.p) + '</span></div>';
+  }
+  const per = r.periodicity;
+  if (per && per.hours_tested) {
+    html += '<div class="sc-line"><span>periodicity</span><span>' +
+            (r.period_s
+              ? scFmtPeriod(r.period_s) + ' in ' + per.hours_significant + '/' +
+                per.hours_tested + ' hours'
+              : 'none consistent across ' + per.hours_tested + ' hours') +
+            '</span></div>';
+  }
+
+  for (const note of (r.notes || [])) {
+    html += '<div class="sc-note">' + _escHtml(note) + '</div>';
+  }
+
+  if (r.dispersion_factor) {
+    html += '<div class="sc-section-title">Recommendation</div>';
+    const primaryThreshold = r.primary_recommendation === 'threshold';
+    html += '<div class="sc-rec' + (primaryThreshold ? ' sc-primary' : '') + '">' +
+            'Threshold ×' + r.dispersion_factor.toFixed(1) + ' → <code>' +
+            Math.round(r.recommended_threshold_events) +
+            '</code> expected events (read at ' + r.dispersion_factor_scale_s +
+            ' s)</div>';
+    if (r.recommended_min_gap_s) {
+      html += '<div class="sc-rec sc-primary">Minimum gap <code>' +
+              scFmtPeriod(r.recommended_min_gap_s) + '</code> — a silence of ' +
+              'one batch period is not an outage</div>';
+    }
+    if (verdict === 'online') {
+      html += '<div class="sc-rec">Nothing to change: the detector is ' +
+              'calibrated for this stream.</div>';
+    }
+  }
+
+  html += scActionsHtml();
+  body.innerHTML = html;
+}
+
+function scActionsHtml() {
+  if (_streamRunning) return '<div class="sc-status">Measuring&hellip;</div>';
+  return '<div class="sc-actions"><button type="button" class="ibtn" ' +
+         'id="stream-remeasure"><span class="ibtn-label">' +
+         (_streamReport ? 'Re-measure here' : 'Measure') +
+         '</span></button></div>';
+}
+
+document.getElementById('stream-panel-body').addEventListener('click', e => {
+  if (e.target.closest('#stream-remeasure')) { runStreamCheck(); return; }
+  const goto = e.target.closest('#stream-goto');
+  if (goto && _streamReport && _streamReport.window) {
+    e.preventDefault();
+    // applyRange is the single host entry point for a viewport change, the
+    // same one gapZoomTo goes through. The report survives the jump: it is
+    // dropped on a parameter change, never on a range change.
+    const w = _streamReport.window;
+    applyRange(w.from * 1000, w.to * 1000);
+    setTimeout(renderStreamPanel, 0);
+  }
+});
+document.getElementById('stream-panel-close')
+        .addEventListener('click', () => setStreamPanel(false));
+if (streamToggle) {
+  streamToggle.addEventListener('click', () => {
+    setStreamPanel(!fpIsOpen(streamPanel));
+  });
+}
+makeFloatingPanel(streamPanel, { onClose: () => setStreamPanel(false) });
+applyPersistedSize(streamPanel, 'starcubes-stream-panel');
+persistPanelSize(streamPanel, 'starcubes-stream-panel');
+
+// Same gate as the gap toggle, and deliberately so: the test is defined on
+// "did a row fall into this second", which is the count(*) question. A
+// measure selected here would silently compute a different one.
+function syncStreamToggle() {
+  if (!streamToggle) return;
+  if (!currentMeta) { streamToggle.hidden = true; return; }
+  streamToggle.hidden = false;
+  const disabled = !!starcubesParams.measure;
+  streamToggle.disabled = disabled;
+  if (disabled && fpIsOpen(streamPanel)) setStreamPanel(false);
+}
+
+
 // --gap-mark is a CSS token, not a library palette colour: the library draws
 // with a plain string, so the client reads the computed value and re-reads
 // it on every theme switch (refreshGapColor, called from applyTheme).
@@ -5777,9 +6182,26 @@ function gatherParams() {
   // the one point every filter change passes through.
   updateSourceLinks();
   // The gate for the gap toggle rides along: disabled while a measure is
-  // set, hidden until the source meta arrived.
+  // set, hidden until the source meta arrived. The stream-character button
+  // carries the same gate for the same reason, and its stored report is
+  // dropped on a signature change by the same rule as the gap store: a
+  // verdict measured behind other filters is a verdict about another stream.
   syncGapToggle();
+  syncStreamToggle();
   syncGapStore();
+  syncStreamStore();
+}
+
+// The stream report's counterpart to syncGapStore(). A viewport change is
+// deliberately NOT a reason to drop it — the panel marks itself stale and
+// offers a re-measure instead, because re-running a second-resolution scan
+// over a day of data on every pan is exactly what this must not do.
+function syncStreamStore() {
+  if (_streamReport && _streamSig !== gapParamSig()) {
+    _streamReport = null;
+    _streamError = null;
+    renderStreamPanel();
+  }
 }
 
 // What a found gap depends on: the source and the filters it was scanned

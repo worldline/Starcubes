@@ -28,6 +28,7 @@ urlpatterns = [
     path("txn.json",         views.txn_json,        name="txn_json"),
     path("gaps.json",        views.gaps_json,       name="gaps_json"),
     path("gap_estimate.json", views.gap_estimate_json, name="gap_estimate_json"),
+    path("stream_check.json", views.stream_check_json, name="stream_check_json"),
     path("api/sources",      views.api_sources,     name="api_sources"),
     path("api/source-meta",  views.api_source_meta, name="api_source_meta"),
     # Query console. Grouped under a prefix rather than four more *.json names;

@@ -141,6 +141,10 @@ HELP_DOCS = (
     HelpDoc("bitmap-indexes", "docs/bitmap-indexes.md", "Bitmap indexes",
             "Research note: could Postgres have one, and would a fact table gain",
             GROUP_CONCEPTS),
+    HelpDoc("stream-character", "docs/stream-character.md", "Stream character",
+            "Research note: is the stream online traffic or a batch load, and "
+            "does the gap detector's Poisson model hold",
+            GROUP_CONCEPTS),
 
     HelpDoc("sources-app", "docs/sources-app.md", "The sources GUI",
             "URL map, gotchas and the inline-CRUD behaviour",

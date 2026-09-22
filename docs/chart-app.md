@@ -1273,3 +1273,40 @@ by `localStorage` (keys `starcubes-legend` — width only —, `starcubes-drill-
 other panels from being squashed below usable sizes; the other ceilings stay in
 CSS so a programmatic `applyPersistedSize` and a browser drag honour the same
 limit.
+
+## Stream character — is the gap overlay's model even right here?
+
+The overlay above rests on one assumption: arrivals are Poisson at λ̂(h). A
+source fed by a batch job breaks it rather than merely straining it — the
+quiet between two bursts is normal, and every one of them scores μ far past
+the threshold. `#stream-toggle`, next to the gap toggle and under the same
+gate (`count(*)`, meta arrived), measures whether the assumption holds;
+`#stream-panel` reports it. The method is [`stream-character.md`](stream-character.md);
+what is specific to the chart is here.
+
+**It is a measurement, not a layer**, and that is the whole difference from
+the overlay. `runStreamCheck()` fires from the button and **never** from
+`onViewportChange` — a one-second scan over a day of data on every panned
+pixel is not something to do by accident. When the viewport's midpoint
+leaves the measured window `streamIsStale()` says so and offers a
+**re-measure**; the report is not silently recomputed. A change of the
+parameter signature is different and does drop it (`syncStreamStore()`,
+keyed on the same `gapParamSig()` the gap store uses): a verdict measured
+behind other filters is a verdict about another stream, where a verdict
+measured over another *window* is still a true statement about that window.
+
+**Its own `.fpanel`, not a section of `#gap-panel`.** That one is bound to
+the overlay state — `setGapOverlay(false)` closes brackets and list
+together — while this stands whether or not a bracket is drawn. Two states,
+two panels.
+
+**Sample and model have different clocks, on purpose.** `stream_check.json`
+hands the viewport up as a *proposal*; `core.stream_stats.stream_window`
+decides, widening anything under a day, moving a window back rather than
+cutting it at the watermark, and clamping to the retention floor. λ̂(h)
+meanwhile comes from `_load_gap_profile` exactly as `gaps.json` takes it —
+watermark-anchored, rollup-first, cached — because the check has to judge
+the model the detector actually runs on, not a second one keyed to the
+viewport. Whatever the window logic did comes back in `window.notes` and is
+printed above the table: without it, a reader who zooms and sees the same
+answer has no way to know why.

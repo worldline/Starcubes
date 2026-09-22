@@ -80,6 +80,13 @@ branch — **`master` is the only long-lived branch.**
   clustered data). Read before proposing an index-level change, and for §6,
   which is what the dim indexes were before they went full — the source of
   the partial-index defect, closed in the backlog's closed items 2026-09-14.
+- **[`docs/stream-character.md`](docs/stream-character.md)** — research note:
+  is a source's stream online traffic or a batch load, and does the gap
+  detector's Poisson model hold for it. Read when editing `core/stream_stats.py`,
+  `stream_check`, or anything that assumes arrivals are Poisson — which
+  includes `detect_gaps` and short-window `count(*) < 1` alarms. Its §2.3 is
+  the inhomogeneity trap that cost two rewrites; §2.5 is why the periodogram
+  is not the periodicity estimator.
 - **[`docs/backlog.md`](docs/backlog.md)** — known unfinished work. Read when
   planning new work or assessing scope.
 - **[`docs/releases.md`](docs/releases.md)** — the git tag *is* the version

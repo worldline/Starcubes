@@ -18,7 +18,7 @@ from django.views.decorators.http import require_GET, require_POST
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from core import adhoc
+from core import adhoc, stream_stats
 from core.cache import (get_cached_plot, is_cacheable, make_cache_key,
                         put_cached_plot)
 from core.query import (build_chart_legend_sql_rendered,
@@ -26,7 +26,8 @@ from core.query import (build_chart_legend_sql_rendered,
                         detect_gaps, drill_down, gap_day_profile,
                         gap_neighbor_rate, gap_profile_bounds,
                         gap_reference_drill,
-                        GAP_PROFILE_DAYS, GAP_PROFILE_TTL_S, grouped_label,
+                        GAP_PROFILE_DAYS, GAP_PROFILE_TTL_S,
+                        GAP_THRESHOLD_EVENTS, grouped_label,
                         grouped_token, _profile_integral, LADDER_STYLES,
                         list_transactions, parse_ladder_agg,
                         resolve_group_set, split_grouped_col,
@@ -718,6 +719,109 @@ def gaps_json(request):
         # value, a bad date): the chart surfaces "ok": false the same way it
         # does for _friendly_db_error's states — before, it was a 500 with
         # repr(exc), which made a typo'd filter look like a server fault.
+        return JsonResponse({"ok": False, "error": str(exc)})
+    except Exception as exc:
+        return JsonResponse({"error": repr(exc)}, status=500)
+
+
+def stream_check_json(request):
+    """Stream character: does the gap overlay's Poisson model hold here?
+
+    Runs `core.stream_stats.characterize_stream` behind the chart's exact
+    filters, `count(*)` only — the same restriction the overlay carries,
+    and for the same reason: the test is defined on "did a row fall into
+    this second", which no real measure answers.
+
+    Required: ?name=
+    Optional: ?from= &to= (the viewport) &filter= &hours=
+
+    **The window is decided server-side** by `stream_stats.stream_window`.
+    The viewport is a proposal: a request may ask for anything, and a span
+    below a day cannot be measured honestly — D(Δ) has to be spread across
+    hours-of-day or a beat that is obvious at three in the morning stays
+    invisible inside midday traffic. The returned `window.notes` says what
+    was done to the request, so the panel can explain why the answer does
+    not move when the chart is zoomed.
+
+    The **profile** does not follow the viewport at all: λ̂(h) comes from
+    `_load_gap_profile`, watermark-anchored and cached exactly as
+    `gaps_json` takes it, because this endpoint tests the model the
+    detector actually runs on. Sample and model are two different clocks
+    here on purpose.
+
+    Bounded twice over: `MAX_SAMPLE_HOURS_WEB` caps the scan and
+    `STARCUBES_STREAM_TIMEOUT_MS` caps the statement. uwsgi's
+    `harakiri = 120` kills the **whole worker** and the other requests it
+    is holding, so this endpoint must never come close to it.
+    """
+    try:
+        q = request.GET
+        name = q.get("name")
+        if not name:
+            return HttpResponseBadRequest("missing required params")
+        if q.get("measure"):
+            return HttpResponseBadRequest(
+                "stream check needs count(*) (no ?measure=)")
+
+        t_from = int(_parse_dt(q["from"]).timestamp()) if q.get("from") else None
+        t_to = int(_parse_dt(q["to"]).timestamp()) if q.get("to") else None
+
+        max_hours = stream_stats.MAX_SAMPLE_HOURS_WEB
+        if q.get("hours"):
+            try:
+                max_hours = int(q["hours"])
+            except ValueError:
+                pass
+        max_hours = max(1, min(stream_stats.MAX_SAMPLE_HOURS_WEB, max_hours))
+
+        filter_tree = _parse_filter_tree(q)
+
+        meta = _meta_engine()
+        source = Source.load(meta,
+                             dest_dsn=settings.STARCUBES_POSTGRES_DSN,
+                             name_or_id=name)
+        # Same order as gaps_json: the tree has to be valid before
+        # `_load_gap_profile` builds a cache key out of it and possibly
+        # answers from cache without any query function running.
+        validate_filter_tree(source, filter_tree)
+        hwm, cache_epoch = _read_hwm_and_epoch(meta, source.id)
+        if hwm is None:
+            return JsonResponse({"ok": False,
+                                 "error": "no data loaded for this source yet"})
+
+        win_from, win_to, win_notes = stream_stats.stream_window(
+            source, t_from, t_to, hwm)
+
+        profile = _load_gap_profile(
+            meta, source, filter_tree, hwm, hwm, GAP_PROFILE_DAYS, cache_epoch)
+        rate = profile["hours"]
+        if not any(rate.values()):
+            return JsonResponse({"ok": False, "error": (
+                "the day profile is empty for this source and filter — "
+                "nothing to measure the stream against")})
+
+        timeout_ms = min(30000, int(settings.STARCUBES_STREAM_TIMEOUT_MS))
+        result = stream_stats.characterize_stream(
+            source, rate_per_s=rate, t_from=win_from, t_to=win_to,
+            filter_tree=filter_tree or None, max_hours=max_hours,
+            statement_timeout_ms=timeout_ms,
+            dest_engine=source.request_engine())
+        result["ok"] = True
+        result["window"]["notes"] = win_notes
+        result["window"]["requested"] = {"from": t_from, "to": t_to}
+        result["profile"] = {"from": profile["prof_from"],
+                             "to": profile["prof_to"],
+                             "days": profile["days"],
+                             "source": profile.get("source")}
+        result["threshold_events"] = GAP_THRESHOLD_EVENTS
+        result["cache_epoch"] = cache_epoch
+        return JsonResponse(result, json_dumps_params={"default": str})
+    except (OperationalError, ProgrammingError, LookupError) as exc:
+        message = _friendly_db_error(exc, chart=True)[0]
+        if message is None:
+            return JsonResponse({"error": repr(exc)}, status=500)
+        return JsonResponse({"ok": False, "error": message})
+    except ValueError as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
     except Exception as exc:
         return JsonResponse({"error": repr(exc)}, status=500)

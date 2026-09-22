@@ -388,6 +388,7 @@ counts as set and locks the field on the Transports page.
 | Variable | Default | Image | Effect |
 |---|---|---|---|
 | `STARCUBES_QUERY_TIMEOUT_MS` | `30000` | = | Statement timeout of an ad-hoc query. Clamped to 90 000 whatever is set, because uwsgi's `harakiri` kills the whole worker at 120 s. |
+| `STARCUBES_STREAM_TIMEOUT_MS` | `20000` | = | Statement timeout of the chart's stream-character scan (`viz.views.stream_check_json`). Clamped to 30 000 in the view, for the same `harakiri` reason as the row above; the sample is capped in hours as well (`core.stream_stats.MAX_SAMPLE_HOURS_WEB`). `manage.py stream_check` is deliberately not bounded by it. |
 | `STARCUBES_QUERY_ROW_LIMIT` | `1000` | = | Rows a query result returns at most. |
 
 ### Logging

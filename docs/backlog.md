@@ -18,6 +18,28 @@ unwatched — are collected and evaluated in
 [`etl-automation.md`](etl-automation.md) rather than listed one by one here.
 Three of the closed items at the end are cross-referenced from it.
 
+- **The stream-character verdict feeds back into nothing.**
+  `manage.py stream_check` and the chart panel measure whether the gap
+  detector's Poisson model holds and print two recommendations — a
+  quasi-Poisson factor for `GAP_THRESHOLD_EVENTS` and, where the stream runs
+  on a schedule, a minimum gap length. Both are read by a human and typed
+  nowhere: `detect_gaps` is untouched. Deliberate for now (a bad measurement
+  must not be able to blind the detector), but it means a known batch source
+  keeps producing known-false outages until somebody acts. The shape of the
+  fix is probably a `datasource.gap_dispersion` column the report proposes
+  and an operator accepts — explicit, versioned, exportable in a profile —
+  rather than an automatic read. See
+  [`stream-character.md`](stream-character.md) §4.
+
+- **No alarm watches a source changing character.** A source that silently
+  turns from online traffic into a batch load invalidates both its gap marks
+  and any short-window `count(*) < 1` alarm, and nothing notices. A
+  `stream_dispersion` pipeline condition alongside `audit_gap` and
+  `needed_lag_p99` would fit the existing machinery exactly — it answers with
+  a number, which is all `cond_op`/`threshold` and `episode_step` need — but
+  the measurement is far more expensive than the other five conditions, so it
+  needs a cadence of its own rather than running on every evaluation.
+
 - **Test coverage.** No unit or integration tests for `core/etl.py`,
   `core/query.py`, or the three-stage multiprocessing pipeline. The
   `_resume_state` deduplication logic and `copy_from` path are especially
