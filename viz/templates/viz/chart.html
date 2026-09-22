@@ -751,6 +751,21 @@
   .sc-verdict.sc-ok { color: var(--sc-ok-color); }
   .sc-verdict.sc-warn { color: var(--sc-warn-color); }
   .sc-reason { font-size: 11px; color: var(--legend-total-color); padding-bottom: 8px; }
+  /* The headline: what share of the rows arrive as a batch. A bar as well
+     as a number, because the question is a proportion and the eye reads a
+     proportion faster than it reads "21.1%". */
+  .sc-share { display: flex; align-items: baseline; gap: 8px; padding: 2px 0 2px; }
+  .sc-share-pct {
+    font-size: 20px; font-weight: 600; line-height: 1.1;
+    font-variant-numeric: tabular-nums; color: var(--body-color);
+  }
+  .sc-share-label { font-size: 11px; color: var(--legend-total-color); line-height: 1.35; }
+  .sc-bar {
+    height: 6px; border-radius: 3px; background: var(--toggle-hover);
+    overflow: hidden; margin: 4px 0 8px;
+  }
+  .sc-bar > i { display: block; height: 100%; background: var(--sc-warn-color); }
+  .sc-bar.sc-ok > i { background: var(--sc-ok-color); }
   .sc-meta {
     font-size: 10px; color: var(--legend-total-color);
     padding-bottom: 6px; margin-bottom: 8px;
@@ -4407,6 +4422,47 @@ function scWhen(epoch) {
   return gapDate(epoch) + ' ' + fmtClock(epoch);
 }
 
+// mu is an expected row count, so it spans many orders of magnitude between
+// a busy source and a filtered one — 0.0096 on one transaction type of the
+// same stream that reads 3.45 unfiltered. Three significant digits keeps
+// both ends readable without an exponent in the common case.
+function scFmtMu(mu) {
+  if (mu === null || mu === undefined) return '–';
+  if (mu >= 100) return Math.round(mu).toLocaleString();
+  if (mu >= 1) return mu.toFixed(2);
+  return mu.toPrecision(2);
+}
+
+// What a scale is in wall clock, which is the only thing that makes mu
+// concrete: the same mu = 20.8 the detector decides at is 12 s here and
+// 72 min one filter later.
+function scWallSuffix(mu, r) {
+  const rate = (r.sampled || {}).rate_per_s;
+  if (!rate || !mu) return '';
+  return ' (' + scFmtPeriod(mu / rate) + ')';
+}
+
+// A null in this payload is a real value, not a missing key: a scale with
+// no model to compare against, or one the cluster estimate could not use,
+// stores null rather than omitting the field.
+function scNum(v, digits) {
+  if (v === null || v === undefined || !isFinite(v)) return '–';
+  return v.toFixed(digits === undefined ? 2 : digits);
+}
+
+function scPct(v) {
+  if (v === null || v === undefined || !isFinite(v)) return '–';
+  const pct = v * 100;
+  return (pct >= 10 ? Math.round(pct) : pct.toFixed(1)) + '%';
+}
+
+function scFmtRate(rate) {
+  if (!rate) return '–';
+  if (rate >= 0.1) return rate.toFixed(2) + ' rows/s';
+  if (rate * 3600 >= 1) return (rate * 3600).toFixed(1) + ' rows/h';
+  return (rate * 86400).toFixed(0) + ' rows/day';
+}
+
 const SC_VERDICT_LABEL = {
   online:        'Online traffic',
   batch_regular: 'Regular batch',
@@ -4439,7 +4495,7 @@ function renderStreamPanel() {
   const w0 = r.window || {};
   const ok = verdict === 'online';
   count.textContent = r.sampled
-    ? (r.sampled.hours_usable ?? r.sampled.hours) + ' h sampled' : '';
+    ? (r.sampled.rows || 0).toLocaleString() + ' rows' : '';
 
   let html = '';
   if (streamIsStale()) {
@@ -4456,6 +4512,43 @@ function renderStreamPanel() {
           _escHtml(SC_VERDICT_LABEL[verdict] || verdict) + '</div>';
   html += '<div class="sc-reason">' + _escHtml(r.verdict_reason || '') + '</div>';
 
+  // The answer, before any of the working: what share of the rows arrive as
+  // part of a batch. Everything below this is how that number was reached.
+  if (r.batch_share !== null && r.batch_share !== undefined) {
+    const read = r.reading || {};
+    if (r.batch_meaningful) {
+      // The share is the answer, and the bar is there because the question
+      // is a proportion.
+      const pct = r.batch_share * 100;
+      let label = 'of rows arrive as part of a batch';
+      if (r.batch_size) {
+        label += '<br>batches of <b>' + Math.round(r.batch_size) + '</b> rows';
+        if (r.period_s) label += ', every <b>' + scFmtPeriod(r.period_s) + '</b>';
+      }
+      html += '<div class="sc-share"><span class="sc-share-pct">' +
+              (pct < 10 ? pct.toFixed(1) : Math.round(pct)) + '%</span>' +
+              '<span class="sc-share-label">' + label + '</span></div>';
+      html += '<div class="sc-bar' + (ok ? ' sc-ok' : '') + '"><i style="width:' +
+              Math.max(0, Math.min(100, pct)).toFixed(1) + '%"></i></div>';
+    } else {
+      // The clusters are too small for the share to decompose into
+      // anything — see MIN_MEANINGFUL_BATCH. Showing a large "21%" next to
+      // "pairs, not batches" would argue with itself, so the headline
+      // becomes the one number that *is* solid here: the mean cluster size.
+      // The share stays in the table, where its scale is visible.
+      html += '<div class="sc-share"><span class="sc-share-pct">' +
+              (r.cluster_size === null || r.cluster_size === undefined
+                ? '–' : r.cluster_size.toFixed(2)) + '</span>' +
+              '<span class="sc-share-label">rows per cluster<br>' +
+              'too close to one to be a batch — the odd pair inside the ' +
+              'scan&rsquo;s own resolution</span></div>';
+    }
+    if (read.mu !== undefined) {
+      html += '<div class="sc-line"><span>read at</span><span>&mu; = ' +
+              scFmtMu(read.mu) + scWallSuffix(read.mu, r) + '</span></div>';
+    }
+  }
+
   // What this is a statement about. Same reasoning as gapScannedText(): a
   // verdict only means something together with the stretch it was measured
   // over — and here also with what the server did to the window that was
@@ -4463,9 +4556,10 @@ function renderStreamPanel() {
   const w = w0;
   const smp = r.sampled || {};
   html += '<div class="sc-meta">measured <b>' + scWhen(w.from) + '</b> → <b>' +
-          scWhen(w.to) + '</b><br>' +
-          (smp.hours_usable ?? smp.hours) + ' of ' + smp.hours +
-          ' sampled hours, ' + (smp.rows || 0).toLocaleString() + ' rows';
+          scWhen(w.to) + '</b><br>' + smp.hours + ' hours ' +
+          (smp.contiguous ? 'scanned whole' : 'sampled across the day') +
+          ', ' + (smp.rows || 0).toLocaleString() + ' rows' +
+          (smp.rate_per_s ? ' (' + scFmtRate(smp.rate_per_s) + ')' : '');
   if (w.notes && w.notes.length) {
     html += '<br>window ' + _escHtml(w.notes.join(', '));
   }
@@ -4475,45 +4569,53 @@ function renderStreamPanel() {
   }
   html += '</div>';
 
-  if (r.scales && r.scales.length) {
-    html += '<div class="sc-section-title">Dispersion — 1 is Poisson</div>';
-    html += '<table class="sc-table"><thead><tr><th>bin</th><th>E[n]</th>' +
-            '<th>D shape</th><th>D detrended</th><th>D model</th><th>p</th>' +
+  if (r.mu_scales && r.mu_scales.length) {
+    html += '<div class="sc-section-title">Scales — &mu; is expected rows ' +
+            'per bin; D = 1 is Poisson</div>';
+    html += '<table class="sc-table"><thead><tr><th>&mu;</th><th>wall</th>' +
+            '<th>D shape</th><th>D detr.</th><th>D model</th>' +
+            '<th>empty</th><th>batch</th>' +
             '</tr></thead><tbody>';
-    for (const sc of r.scales) {
+    const rate = (r.sampled || {}).rate_per_s;
+    for (const sc of r.mu_scales) {
       const det = sc.d_detrended;
       const clump = (det === null || det === undefined) ? sc.d_shape : det;
-      const hot = clump > 1.5 || clump < 0.7 ? ' class="sc-hot"' : '';
-      html += '<tr' + (sc.weak ? ' class="sc-weak"' : '') + '>' +
-              '<td>' + sc.bin_s + ' s</td>' +
-              '<td>' + sc.mean_expected.toFixed(2) + '</td>' +
-              '<td>' + sc.d_shape.toFixed(2) + '</td>' +
-              '<td' + hot + '>' + (det === null || det === undefined ? '–' : det.toFixed(2)) + '</td>' +
-              '<td>' + (sc.d_model === null || sc.d_model === undefined ? '–' : sc.d_model.toFixed(2)) + '</td>' +
-              '<td>' + scFmtP(sc.p_detrended) + '</td></tr>';
+      const hot = (clump > 1.5 || clump < 0.7) ? ' class="sc-hot"' : '';
+      const isRead = r.reading && sc.mu === r.reading.mu;
+      html += '<tr' + (sc.usable ? '' : ' class="sc-weak"') + '>' +
+              '<td>' + (isRead ? '<b>' : '') + scFmtMu(sc.mu) +
+                (isRead ? '</b>' : '') + '</td>' +
+              '<td>' + (rate ? scFmtPeriod(sc.mu / rate) : '–') + '</td>' +
+              '<td>' + scNum(sc.d_shape) + '</td>' +
+              '<td' + hot + '>' + scNum(det) + '</td>' +
+              '<td>' + scNum(sc.d_model) + '</td>' +
+              '<td>' + scPct(sc.p0_observed) + '/' + scPct(sc.p0_poisson) + '</td>' +
+              '<td>' + scPct(sc.batch_share) + '</td></tr>';
     }
     html += '</tbody></table>';
   }
 
   const z = r.zero_bins;
-  if (z) {
+  if (z && z.observed !== null && z.observed !== undefined) {
     html += '<div class="sc-section-title">Emptiness — what the detector reacts to</div>';
-    html += '<div class="sc-line"><span>empty ' + z.bin_s + ' s bins</span>' +
-            '<span>' + (z.observed * 100).toFixed(2) + '% vs ' +
-            (z.expected * 100).toFixed(2) + '% expected (z = ' +
-            (isFinite(z.z) ? z.z.toFixed(1) : '–') + ')</span></div>';
+    html += '<div class="sc-line"><span>empty bins at &mu; = ' +
+            scFmtMu(z.mu) + '</span><span>' +
+            (z.observed * 100).toFixed(2) + '% vs ' +
+            (z.expected * 100).toFixed(2) + '% expected</span></div>';
   }
   if (r.ks) {
     html += '<div class="sc-line"><span>uniformity (KS)</span><span>D = ' +
-            r.ks.d_median.toFixed(4) + ', p = ' + scFmtP(r.ks.p) + '</span></div>';
+            r.ks.d.toFixed(4) + ' over ' + r.ks.rows.toLocaleString() +
+            ' rows, p = ' + scFmtP(r.ks.p) + '</span></div>';
   }
   const per = r.periodicity;
-  if (per && per.hours_tested) {
+  if (per && per.blocks) {
+    const span = per.blocks + ' × ' + scFmtPeriod(per.block_s);
     html += '<div class="sc-line"><span>periodicity</span><span>' +
             (r.period_s
-              ? scFmtPeriod(r.period_s) + ' in ' + per.hours_significant + '/' +
-                per.hours_tested + ' hours'
-              : 'none consistent across ' + per.hours_tested + ' hours') +
+              ? scFmtPeriod(r.period_s) + ' in ' +
+                Math.round((per.block_share || 0) * 100) + '% of ' + span
+              : 'none significant (' + span + ')') +
             '</span></div>';
   }
 
@@ -4525,10 +4627,15 @@ function renderStreamPanel() {
     html += '<div class="sc-section-title">Recommendation</div>';
     const primaryThreshold = r.primary_recommendation === 'threshold';
     html += '<div class="sc-rec' + (primaryThreshold ? ' sc-primary' : '') + '">' +
-            'Threshold ×' + r.dispersion_factor.toFixed(1) + ' → <code>' +
+            'Threshold ×' + r.dispersion_factor.toFixed(2) + ' → <code>' +
             Math.round(r.recommended_threshold_events) +
-            '</code> expected events (read at ' + r.dispersion_factor_scale_s +
-            ' s)</div>';
+            '</code> expected events (read at &mu; = ' +
+            scFmtMu(r.dispersion_factor_mu) + ')</div>';
+    if (r.detector_scale_s) {
+      html += '<div class="sc-rec">The detector decides at &mu; = 20.8, ' +
+              'which is <code>' + scFmtPeriod(r.detector_scale_s) +
+              '</code> of silence here.</div>';
+    }
     if (r.recommended_min_gap_s) {
       html += '<div class="sc-rec sc-primary">Minimum gap <code>' +
               scFmtPeriod(r.recommended_min_gap_s) + '</code> — a silence of ' +

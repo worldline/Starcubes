@@ -178,14 +178,20 @@ this table as a manifest.
    Any hit is a leaking comment (rewrite it as `{% comment %}`). Rendering
    the page is the only other way to see it, since a leak neither raises
    nor breaks the layout — the prose simply appears on the page.
-3. **SQL** — `psql -f migrations/starcubes_meta.sql` must be idempotent.
+3. **Stream statistics** — after touching `core/stream_stats.py`, run
+   `manage.py check_stream_stats`. It measures six synthetic streams whose
+   batch share, batch size and beat are known, needs no database, and is
+   the only thing in the tree that can tell a plausible-looking inference
+   from a correct one — every number in that module was wrong once, and
+   none of the four failures raised anything.
+4. **SQL** — `psql -f migrations/starcubes_meta.sql` must be idempotent.
    Re-running is part of the contract; verify by running twice. The mirror
    contract itself — every per-step `migrations/000N_*.sql` has its marker
    block in the consolidated file — is machine-checked:
    `manage.py check_migration_mirror`.
-4. **Seed round-trip** — `manage.py seed_example --force --skip-initial-ddl`
+5. **Seed round-trip** — `manage.py seed_example --force --skip-initial-ddl`
    followed by `Source.load(meta, dsn, 'source')` must return a `Source`
    whose `fact_columns` / `dimensions` / `indices` match the seed tuples.
-5. **ETL parity** — when the first real ETL runs, compare row counts for
+6. **ETL parity** — when the first real ETL runs, compare row counts for
    the same `[last_end_time, end_time)` window. Throughput should be
    within 10% — the copy path is unchanged.

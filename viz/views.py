@@ -767,7 +767,11 @@ def stream_check_json(request):
     Bounded twice over: `MAX_SAMPLE_HOURS_WEB` caps the scan and
     `STARCUBES_STREAM_TIMEOUT_MS` caps the statement. uwsgi's
     `harakiri = 120` kills the **whole worker** and the other requests it
-    is holding, so this endpoint must never come close to it.
+    is holding, so this endpoint must never come close to it. The hour cap
+    does **not** apply to a stream below
+    `stream_stats.CONTIGUOUS_MAX_RATE_PER_S`: there the whole window is
+    read in one `GROUP BY`, which at those rates is a few thousand rows and
+    cheaper than the sampled form it replaces.
     """
     try:
         q = request.GET
@@ -804,9 +808,12 @@ def stream_check_json(request):
             return JsonResponse({"ok": False,
                                  "error": "no data loaded for this source yet"})
 
-        win_from, win_to, win_notes = stream_stats.stream_window(
-            source, t_from, t_to, hwm)
-
+        # The profile comes **first**, and the order matters: a thin stream
+        # needs a wider window than the viewport proposes (a day of 450
+        # rows/day is below what any of this can measure), and λ̂ is what
+        # says whether the stream is thin. The profile itself does not
+        # depend on the window — it is watermark-anchored — so nothing is
+        # circular about asking it first.
         profile = _load_gap_profile(
             meta, source, filter_tree, hwm, hwm, GAP_PROFILE_DAYS, cache_epoch)
         # An empty λ̂ is **not** a reason to refuse. The profile covers the
@@ -817,6 +824,9 @@ def stream_check_json(request):
         # verdict without the `model` column, which is the honest answer
         # rather than "nothing to measure" over data that is plainly there.
         rate = profile["hours"]
+
+        win_from, win_to, win_notes = stream_stats.stream_window(
+            source, t_from, t_to, hwm, rate_per_s=rate)
 
         timeout_ms = min(30000, int(settings.STARCUBES_STREAM_TIMEOUT_MS))
         result = stream_stats.characterize_stream(
