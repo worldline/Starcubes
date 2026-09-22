@@ -2523,6 +2523,29 @@ function utcWindowContaining(kind, epochSec) {
 // window's bounds so they never overlap historic blocks. For intervals
 // outside {1, 60, 3600, 86400} this falls back to a single interval-aligned
 // block spanning the viewport (legacy behaviour).
+// The filter operator → query-string separator mapping, in **one** place.
+// It used to be copied at four call sites, and the copy in appendGapFilters
+// was missing `not_contains` — so a "does not contain" filter reached
+// gaps.json, gap_estimate.json and stream_check.json as `=`, i.e. as `in`:
+// the exact opposite of what the chart was showing. It failed silently, the
+// way a wrong filter does — the overlay simply described a different subset
+// of the data than the bars above it.
+const FILTER_OP_SEP = {
+  not_in: '!=', starts_with: '~=', starts_not_with: '!~=',
+  contains: '*=', not_contains: '!*=',
+};
+function filterOpSep(op) { return FILTER_OP_SEP[op] || '='; }
+
+function appendFilterRows(p, rows) {
+  rows = rows || [];
+  for (const row of rows) {
+    p.append('filter', `${row.col}${filterOpSep(row.op)}${row.vals.join(',')}`);
+  }
+  // andor params: one per row starting from row 2 (row 1 has no connector)
+  for (let i = 1; i < rows.length; i++) p.append('andor', rows[i].andOr || 'and');
+  for (const row of rows) p.append('indent', row.indent || 0);
+}
+
 function enumerateNaturalBlocks(interval, vpFrom, vpTo, nowSec) {
   const kinds = NATURAL_WINDOWS[interval];
   if (!kinds) {
@@ -2597,24 +2620,7 @@ async function fetchRange(from, to, interval, signal) {
   p.set('series_label', 'source_id');
   if (starcubesParams.measure) p.set('measure', starcubesParams.measure);
   if (starcubesParams.measure_name) p.set('measure_name', starcubesParams.measure_name);
-  for (const row of starcubesParams.filterRows || []) {
-    let sep;
-    if (row.op === 'not_in') sep = '!=';
-    else if (row.op === 'starts_with') sep = '~=';
-    else if (row.op === 'starts_not_with') sep = '!~=';
-    else if (row.op === 'contains') sep = '*=';
-    else if (row.op === 'not_contains') sep = '!*=';
-    else sep = '=';
-    p.append('filter', `${row.col}${sep}${row.vals.join(',')}`);
-  }
-  // andor params: one per row starting from row 2 (row 1 has no connector)
-  for (let i = 1; i < (starcubesParams.filterRows || []).length; i++) {
-    p.append('andor', starcubesParams.filterRows[i].andOr || 'and');
-  }
-  // indent params: one per row (0 = top-level, 1+ = nested)
-  for (const row of starcubesParams.filterRows || []) {
-    p.append('indent', row.indent || 0);
-  }
+  appendFilterRows(p, starcubesParams.filterRows);
   const key = cacheKey(p);
   // Bypass cache for trailing-edge fetches: the server's data near "now" is
   // volatile (new bins arrive as ETL progresses), so each poll must hit the
@@ -4597,22 +4603,7 @@ function gapMarkColor() {
 // endpoints. profile_days rides along: both endpoints accept it and both
 // profiles must be the same λ̂.
 function appendGapFilters(p) {
-  // Same operator→separator mapping as fetchRange/buildHistoryParams.
-  for (const row of starcubesParams.filterRows || []) {
-    let sep;
-    if (row.op === 'not_in') sep = '!=';
-    else if (row.op === 'starts_with') sep = '~=';
-    else if (row.op === 'starts_not_with') sep = '!~=';
-    else if (row.op === 'contains') sep = '*=';
-    else sep = '=';
-    p.append('filter', `${row.col}${sep}${row.vals.join(',')}`);
-  }
-  for (let i = 1; i < (starcubesParams.filterRows || []).length; i++) {
-    p.append('andor', starcubesParams.filterRows[i].andOr || 'and');
-  }
-  for (const row of starcubesParams.filterRows || []) {
-    p.append('indent', row.indent || 0);
-  }
+  appendFilterRows(p, starcubesParams.filterRows);
   if (GAP_PROFILE_DAYS !== 7) p.set('profile_days', GAP_PROFILE_DAYS);
 }
 
@@ -5146,13 +5137,7 @@ function _drillUrlParams() {
   p.set('group_by_val', rawKey);
   p.set('from', new Date(slotSec * 1000).toISOString());
   p.set('to',   new Date((slotSec + interval) * 1000).toISOString());
-  for (const row of starcubesParams.filterRows || []) {
-    const sep = row.op === 'not_in' ? '!=' : row.op === 'starts_with' ? '~=' : row.op === 'starts_not_with' ? '!~=' : row.op === 'contains' ? '*=' : row.op === 'not_contains' ? '!*=' : '=';
-    p.append('filter', `${row.col}${sep}${row.vals.join(',')}`);
-  }
-  for (let i = 1; i < (starcubesParams.filterRows || []).length; i++) {
-    p.append('andor', starcubesParams.filterRows[i].andOr || 'and');
-  }
+  appendFilterRows(p, starcubesParams.filterRows);
   return p;
 }
 
@@ -6243,22 +6228,7 @@ function buildHistoryParams() {
   // Carried in the URL so a shared link reproduces the axis the sender saw.
   if (yAxisMode !== 'auto') p.set('yaxis', yAxisMode);
   if (!partialBins) p.set('partialbins', '0');
-  for (const row of starcubesParams.filterRows || []) {
-    let sep;
-    if (row.op === 'not_in') sep = '!=';
-    else if (row.op === 'starts_with') sep = '~=';
-    else if (row.op === 'starts_not_with') sep = '!~=';
-    else if (row.op === 'contains') sep = '*=';
-    else if (row.op === 'not_contains') sep = '!*=';
-    else sep = '=';
-    p.append('filter', `${row.col}${sep}${row.vals.join(',')}`);
-  }
-  for (let i = 1; i < (starcubesParams.filterRows || []).length; i++) {
-    p.append('andor', starcubesParams.filterRows[i].andOr || 'and');
-  }
-  for (const row of starcubesParams.filterRows || []) {
-    p.append('indent', row.indent || 0);
-  }
+  appendFilterRows(p, starcubesParams.filterRows);
   return p;
 }
 
