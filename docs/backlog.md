@@ -270,8 +270,6 @@ for writing it down now rather than the severity of the bug.
 
 ## Closed items
 
-## Closed items
-
 Kept for the measured lessons in them; the work is done.
 
 - **Multi-dialect WHERE construction** — closed. The load window is two
