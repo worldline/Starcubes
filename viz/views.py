@@ -794,11 +794,14 @@ def stream_check_json(request):
 
         profile = _load_gap_profile(
             meta, source, filter_tree, hwm, hwm, GAP_PROFILE_DAYS, cache_epoch)
+        # An empty λ̂ is **not** a reason to refuse. The profile covers the
+        # seven days before the watermark; the sample may sit anywhere the
+        # viewport points, and a filter matching nothing in that week says
+        # nothing about the window being measured. `characterize_stream`
+        # falls back to sampling the measured window itself and reports the
+        # verdict without the `model` column, which is the honest answer
+        # rather than "nothing to measure" over data that is plainly there.
         rate = profile["hours"]
-        if not any(rate.values()):
-            return JsonResponse({"ok": False, "error": (
-                "the day profile is empty for this source and filter — "
-                "nothing to measure the stream against")})
 
         timeout_ms = min(30000, int(settings.STARCUBES_STREAM_TIMEOUT_MS))
         result = stream_stats.characterize_stream(

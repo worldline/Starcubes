@@ -289,10 +289,20 @@ def sample_hours(
         return []
     first = ((t_from + 3599) // 3600) * 3600
     last = (t_to // 3600) * 3600            # exclusive end of the last full hour
+    # λ̂ is measured over the seven days before the watermark; the sample may
+    # be somewhere else entirely. A filter that matches nothing in *that*
+    # week — or a thin stream whose rows sit outside it — leaves λ̂ all zero
+    # while the sample window still holds rows to measure. Falling back to
+    # every hour is right there: `shape` and `detrended` normalise to each
+    # hour's own total and never read λ̂, so the whole verdict survives its
+    # absence. Hours that are genuinely empty drop out after the scan on
+    # `MIN_EVENTS_PER_HOUR` anyway — this only costs a wider scan, never a
+    # wrong answer.
+    blind = not any(v > 0 for v in rate_per_s.values())
     by_hod: dict[int, list[int]] = {}
     for start in range(first, last, 3600):
         hod = (start % 86400) // 3600
-        if rate_per_s.get(hod, 0.0) <= 0:
+        if not blind and rate_per_s.get(hod, 0.0) <= 0:
             continue
         by_hod.setdefault(hod, []).append(start)
     for starts in by_hod.values():
@@ -646,6 +656,15 @@ def characterize_stream(
         "profile_level_error": None,
         "notes": [],
     }
+    profile_blind = not any(v > 0 for v in rate_per_s.values())
+    if profile_blind:
+        report["profile_blind"] = True
+        report["notes"].append(
+            "The day profile is empty for this filter over the week before the "
+            "watermark, so the sampled hours were chosen from the measured "
+            "window itself. The verdict stands — it never reads λ̂ — but the "
+            "`D model` column and any statement about the detector's own "
+            "profile do not apply.")
     if not hours:
         report["notes"].append(
             "No full hour in the window carries traffic in the day profile.")
