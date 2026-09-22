@@ -606,7 +606,20 @@ def _filter_sql(
             pname = f"{param}_{j}"
             params[pname] = f"{v}%" if op in ("starts_with", "starts_not_with") else f"%{v}%"
             if flt_dim and flt_dim.dim_table:
-                like_parts.append(f"name LIKE :{pname}")
+                # **Both** the label and the id, matching what the chart's
+                # value dropdown searches (`label.includes(q) || sid.includes(q)`
+                # in `renderFilterDropdown`). Searching `name` alone made the
+                # text operators disagree with the picker sitting right above
+                # them: a dimension whose source_id is `14211` and whose name
+                # is `Spending` is found by typing "14211" into the dropdown,
+                # while `contains 14211` returned nothing at all — and `is in
+                # 14211` returned two million rows, because the set operators
+                # have always matched on `source_id`. Adding the id here costs
+                # a second LIKE and removes the contradiction; the negated
+                # forms stay correct, since NOT over the whole OR is still
+                # "no field of this row matches".
+                like_parts.append(
+                    f"(name LIKE :{pname} OR source_id LIKE :{pname})")
             else:
                 like_parts.append(f"f.{fact_col}::text LIKE :{pname}")
         or_expr = " OR ".join(like_parts)

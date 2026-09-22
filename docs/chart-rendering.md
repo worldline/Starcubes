@@ -29,8 +29,16 @@ copy-SQL variants inherit it. Shapes, for `so_peer` over
 - `not_in`: same OR wrapped in `NOT (…)` — AND of NOT IN, i.e. "none of the
   transaction's peers matches".
 - `starts_with`/`contains`/…: one `… IN (SELECT index … WHERE name LIKE
-  :fltN_j)` per member, same OR/NOT shape; the LIKE patterns are shared
-  per value across members.
+  :fltN_j OR source_id LIKE :fltN_j)` per member, same OR/NOT shape; the
+  LIKE patterns are shared per value across members. **Both fields**, because
+  the chart's own value dropdown searches both (`label.includes(q) ||
+  sid.includes(q)`) and matching only `name` put the text operators at odds
+  with the picker directly above them: on a dimension whose `source_id` is
+  `14211` and whose `name` is `POS Standard Authorization Request`, typing
+  "14211" into the dropdown finds the entry, `is in 14211` returns two
+  million rows — and `contains 14211` used to return none. The negated forms
+  are unaffected in shape: `NOT` over the whole OR still means "no field of
+  this row matches".
 - Single member / individual fact column (`src_peer`, `so_peer_2`):
   byte-identical to the pre-fan-out single-column fragment — cache keys
   (`core/cache.py` hashes the filter tree verbatim) and the SQL console

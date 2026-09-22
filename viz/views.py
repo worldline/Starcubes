@@ -105,22 +105,37 @@ def _group_index_map(gset) -> dict[int, tuple[str, str]]:
             for g in gset.groups for m in g.members}
 
 
+# The six filter separators, longest first so a tie at the same position
+# resolves to the more specific one.
+_FILTER_SEPS = (("!~=", "starts_not_with"), ("!*=", "not_contains"),
+                ("!=", "not_in"), ("~=", "starts_with"),
+                ("*=", "contains"), ("=", "in"))
+
+
 def _parse_filter_spec(spec: str) -> tuple[str, str, list[str]] | None:
-    """Parse one filter= query param into (col, op, vals) or None."""
-    if "!~=" in spec:
-        col, vals = spec.split("!~=", 1); op = "starts_not_with"
-    elif "!*=" in spec:
-        col, vals = spec.split("!*=", 1); op = "not_contains"
-    elif "!=" in spec:
-        col, vals = spec.split("!=", 1);  op = "not_in"
-    elif "~=" in spec:
-        col, vals = spec.split("~=", 1);  op = "starts_with"
-    elif "*=" in spec:
-        col, vals = spec.split("*=", 1);  op = "contains"
-    elif "=" in spec:
-        col, vals = spec.split("=", 1);   op = "in"
-    else:
+    """Parse one filter= query param into (col, op, vals) or None.
+
+    The split is at the **earliest** separator, not the most specific one
+    found anywhere in the string. Column names never contain any of these
+    characters, so the first occurrence is always the real separator —
+    whereas scanning by specificity let a *value* decide the split:
+    `name=a*=b` (an `is in` filter whose value happens to contain `*=`)
+    was read as column `name=a`, operator `contains`, value `b`. That
+    surfaced as "unknown filter column" rather than as wrong numbers, but
+    it made such a value unusable.
+    """
+    best: tuple[tuple[int, int], str, str] | None = None
+    for sep, op in _FILTER_SEPS:
+        i = spec.find(sep)
+        if i < 0:
+            continue
+        key = (i, -len(sep))          # earliest wins; then the longest
+        if best is None or key < best[0]:
+            best = (key, sep, op)
+    if best is None:
         return None
+    _, sep, op = best
+    col, vals = spec.split(sep, 1)
     vs = [v for v in vals.split(",") if v]
     if not vs:
         return None
