@@ -12,6 +12,22 @@ committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
 [`docs/releases.md`](docs/releases.md).
 
+### Added
+
+- **A release pipeline for GitLab**, alongside the existing GitHub one.
+  A `v*` tag pushed to the internal remote now builds the image, pushes it
+  to that project's container registry, publishes the source zip to the
+  generic package registry and cuts a release carrying this file's section
+  for that version — the same two guards as on GitHub (the version must
+  resolve *and* match the tag; the changelog section must exist before
+  anything is built). Two operator-facing differences: the zip is linked
+  from the release rather than attached to it, and GitLab has no
+  pre-release flag, so a pre-release says so in its name — `:latest` still
+  moves only for a final release. Where the image goes is the CI variable
+  `$STARCUBES_IMAGE`, so a different registry is a settings change, not a
+  commit. See [`docs/releases.md`](docs/releases.md), "Releasing from a
+  remote".
+
 ## [2.0.0-beta.3] — 2026-09-18
 
 ### Changed

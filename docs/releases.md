@@ -254,30 +254,39 @@ commit that is already there.
    single dialog exercises the whole chain: tag → `version.py` → build args →
    image → context processor.
 
-## Releasing from GitHub
+## Releasing from a remote
 
-The remote at `git@github.com:worldline/Starcubes.git` runs the release
-procedure automatically. Pushing a `v*` tag fires
-`.github/workflows/release.yml`, which does the tag-side work that the
-steps above do by hand:
+Two remotes run the procedure above automatically, and both do the same
+tag-side work: build the image through `docker/build.sh` — the one supported
+route, so all three build args the Dockerfile demands are set — push it,
+pack a source zip from the tag with `git archive`, and publish a release
+whose body is that version's `CHANGELOG.md` section.
 
-- builds the image through `docker/build.sh` — the one supported route, so
-  all three build args the Dockerfile demands are set — and pushes it to
-  `ghcr.io/worldline/starcubes`. `:latest` is pushed only when the version
-  is **not** a pre-release, so `:latest` never points at a beta; every tag
-  gets its own version tag either way.
-- packs a source zip from the tag with `git archive`, so the zip names its
-  version through the `export-subst` placeholders and needs no `.git`.
-- extracts the release's section from `CHANGELOG.md` and publishes the
-  release with it as the body, the zip as its asset, and a **pre-release**
-  marker on anything with a hyphen before the `+`.
+Both pipelines carry the same two guards, and both fail loudly rather than
+publish something half-named: a version that does not resolve, or resolves
+to something other than the pushed tag, and a `CHANGELOG.md` without a
+`## [<version>]` section for it — a release without its changelog entry is
+exactly what step 2 above exists to prevent. The changelog guard runs
+**before** the build, so a missing section costs a minute rather than a full
+image build.
 
-Two guards fail the job loudly rather than publish something half-named:
-a version that does not resolve, or resolves to something other than the
-pushed tag, and a `CHANGELOG.md` without a `## [<version>]` section for it —
-a release without its changelog entry is exactly what step 2 above exists to
-prevent. The changelog guard runs **before** the build, so a missing section
-costs a minute rather than a full image build.
+The steps a tag push cannot do stay human: deciding the number (step 1),
+writing the changelog (step 2), and the smoke test (step 6) — the pipeline
+builds and publishes, it does not judge.
+
+### GitHub — `.github/workflows/release.yml`
+
+The remote at `git@github.com:worldline/Starcubes.git`. Pushing a `v*` tag
+fires the workflow, which
+
+- pushes the image to `ghcr.io/worldline/starcubes`. `:latest` is pushed
+  only when the version is **not** a pre-release, so `:latest` never points
+  at a beta; every tag gets its own version tag either way.
+- packs a source zip from the tag, so the zip names its version through the
+  `export-subst` placeholders and needs no `.git`.
+- publishes the release with the changelog section as the body, the zip as
+  its **asset**, and a **pre-release** marker on anything with a hyphen
+  before the `+`.
 
 Pulling the image needs a login for a private package: `podman login
 ghcr.io` with a classic personal access token (`read:packages`), or the
@@ -285,10 +294,62 @@ workflow token from within this repository's own Actions. If the first push
 is refused, the organisation's package creation policy has to be enabled
 first (Organization → Settings → Packages).
 
-The steps a tag push cannot do stay human: deciding the number (step 1),
-writing the changelog (step 2), and the smoke test (step 6) — the pipeline
-builds and publishes, it does not judge.
+### GitLab — `.gitlab-ci.yml`
 
+The internal instance. A `v*` tag pushed there runs the same procedure in
+two jobs — `build` (version guard, changelog guard, image, zip) and
+`publish` (the release itself, which needs the `release-cli` image). Three
+things differ from GitHub, and none of them is an oversight:
+
+- **The zip is a link, not an attachment.** GitLab releases carry asset
+  *links*; they do not host uploads. The job publishes the zip to the
+  project's **generic package registry** under
+  `…/packages/generic/starcubes/<version>/starcubes-<version>.zip` and links
+  the release to it. Same file, same name, one hop further away.
+- **There is no pre-release flag.** GitLab releases have none, so a
+  pre-release says so in its **name** (`starcubes 2.0.0-rc.1 (pre-release)`).
+  The distinction that matters operationally is unaffected: `:latest` still
+  moves only for a final release, and the About dialog still draws its
+  pre-release pill, because that comes from `version.py`.
+- **`GIT_DEPTH: 0` is load-bearing.** GitLab clones shallow by default and
+  `version.py` describes from the tag history. Without it every release
+  stops at the version guard, reporting a version problem that is really a
+  checkout setting. The job also marks the checkout `safe.directory`, or git
+  refuses to read it from inside the build image — quietly, since every git
+  call in `version.py` is best-effort by design.
+
+**Where the image goes is one variable.** Nothing in the tree names a
+registry — the image's identity is its build args and OCI labels, not its
+name — so the pipeline pushes to `$STARCUBES_IMAGE`, defaulting to this
+project's own registry. Pointing it elsewhere is a change under *Settings →
+CI/CD → Variables*, not a commit; a registry other than the project's own
+needs its own credentials at the login step, since `$CI_REGISTRY_USER` and
+`$CI_REGISTRY_PASSWORD` are only good for this one.
+
+Pulling needs `docker login $CI_REGISTRY` with a deploy token or a personal
+access token carrying `read_registry`.
+
+The instance has to be able to build: a runner that can reach a container
+engine (docker-in-docker, or a shell runner with podman — set
+`CONTAINER_ENGINE=podman` and drop the dind service), reachable base images
+and package sources for the Dockerfile's `npm ci` and `pip install`, and a
+`release-cli` image the publish job can use.
+
+### Two remotes, two builds
+
+Both remotes are pushed by hand and both pipelines run:
+
+```
+git push origin --tags
+git push gitlab --tags
+```
+
+The two images are built separately, so they carry the same version, the
+same commit and different digests — `STARCUBES_BUILD_DATE` alone guarantees
+that. That is the price of publishing in two places, and it is worth knowing
+before someone compares digests and concludes something is wrong. The
+version and the commit are what identify a release; the digest identifies a
+build of it.
 ## Which version is that container running?
 
 Three answers, in order of how little access they need:

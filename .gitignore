@@ -56,3 +56,10 @@ starcubes.zip
 
 # Database backup binaries (kept locally, not in git)
 backups/
+
+# The release pipeline's handover directory (.gitlab-ci.yml): the notes and
+# the dotenv artifact the publish job reads. Ignored rather than merely
+# untracked on purpose — starcubes/version.py calls `git status --porcelain`
+# to decide whether a build is dirty, and an untracked file here would tag
+# a release image `…+dirty`.
+/.release/
