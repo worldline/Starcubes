@@ -60,6 +60,16 @@ stages:
 
 build:
   stage: build
+  # Empty on purpose — do not delete it as dead weight. It says "this job
+  # wants no tags", so any runner the project can see may take it, which is
+  # what we want when the runners come from the instance rather than from
+  # us. Leaving the key out entirely would mean the same thing *today*, but
+  # not necessarily tomorrow: a group-level compliance pipeline or pipeline
+  # execution policy merges its own configuration into every pipeline here,
+  # and tags inherited that way would ask for a runner nobody has. The
+  # empty list clears them. What a job really asks for is visible under
+  # Build → Pipeline editor → "Full configuration".
+  tags: []
   # Pinned on purpose, and on an instance with no reach to Docker Hub both
   # of these are the mirrored copies. A shell runner with podman needs
   # neither: set CONTAINER_ENGINE=podman, drop the service, and provide
@@ -178,6 +188,7 @@ build:
 
 publish:
   stage: release
+  tags: []          # same reason as in `build` above
   # release-cli is what the `release` keyword below needs; nothing else in
   # this job runs. On an instance without internet, mirror that image and
   # point this line at the mirror.

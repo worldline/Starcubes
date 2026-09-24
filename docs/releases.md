@@ -335,6 +335,52 @@ engine (docker-in-docker, or a shell runner with podman — set
 and package sources for the Dockerfile's `npm ci` and `pip install`, and a
 `release-cli` image the publish job can use.
 
+**Where a runner comes from.** A self-hosted instance has exactly the
+runners its operator has put there — GitLab ships none. There is no
+equivalent of GitHub's `runs-on: ubuntu-latest`, which quietly means "take
+one of the machines github.com runs for you"; that is a hosted-service
+convenience, not a property of either product. GitLab CI works the same way
+underneath, so if the instance offers no runner, nothing in this file can
+make a release happen.
+
+**"This job is stuck because the project doesn't have any runners online
+assigned to it."** The pipeline is fine — the jobs are queued and nothing
+will pick them up. Four causes, in the order worth checking:
+
+1. **No runner reaches the project at all.** *Settings → CI/CD → Runners*
+   lists what the project can see, in three tiers: instance, group and
+   project. Instance-wide runners often exist but have to be enabled for
+   the project. If all three are empty, the operator of the instance is the
+   only one who can change that.
+2. **The runner is tagged and does not take untagged jobs.** Both jobs here
+   carry `tags: []`, which asks for no tag at all, so a runner registered
+   *with* tags only picks them up if "Run untagged jobs" is on. Either turn
+   that on, or put the runner's tag into both jobs.
+3. **The tag is protected and the runner is not.** This is the one that
+   catches release pipelines specifically: `v*` is a natural thing to
+   protect, and a pipeline on a protected ref is only offered to runners
+   marked *protected*. The job then waits forever while the same runner
+   happily builds every branch. Either mark the runner protected, or stop
+   protecting the release tags.
+4. **Something merged tags in that nobody wrote here.** A group-level
+   compliance pipeline or pipeline execution policy injects its own
+   configuration into every pipeline of the group, and a tag inherited that
+   way asks for a runner that may not exist. What a job *really* demands is
+   under *Build → Pipeline editor → "Full configuration"* (older versions:
+   "View merged YAML"). A tag there that is not in `.gitlab-ci.yml` is the
+   proof — and the `tags: []` in both jobs is what clears it.
+
+Once a runner answers, a stuck job can be retried — **unless
+`.gitlab-ci.yml` itself changed**. A pipeline always runs the file as of the
+commit the tag points at, so a fix to the pipeline never reaches a job that
+is already queued. Delete the tag and set it again on the new commit.
+
+Which runner it is decides one thing in `.gitlab-ci.yml`: a docker executor
+needs `privileged = true` for the dind service and works as written; a shell
+runner with podman wants `CONTAINER_ENGINE=podman`, no `services:`, no
+`DOCKER_*` variables, and git/python3/curl on the host instead of the `apk`
+line.
+
 ### Two remotes, two builds
 
 Both remotes are pushed by hand and both pipelines run:
