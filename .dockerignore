@@ -3,6 +3,14 @@ __pycache__
 .git
 .gitignore
 .claude
+# The two release pipelines. They describe how the image is built; they are
+# no part of it — same reason `.git` above is excluded. Both were measured
+# to be in the context before these lines (a throwaway `COPY . /ctx` layer),
+# so this is a removal, not a precaution. `.github` needs no trailing slash:
+# a directory match excludes its whole subtree, which is exactly how `.git`
+# has always worked here.
+.github
+.gitlab-ci.yml
 # DB dumps and the collectstatic output (rebuilt by `manage.py bootstrap`
 # at container start — a host copy would ship stale assets).
 backups/
