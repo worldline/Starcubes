@@ -106,6 +106,58 @@ commit has. `build.sh` swaps it for `_` in the image tag only
 `:latest` simply means "the one I built last", which is what the README
 quickstart runs.
 
+## Two build branches
+
+There are two Dockerfiles, and which one gets built is one environment
+variable.
+
+`Dockerfile` at the repo root is the original and the default: Debian slim
+off Docker Hub, `apt-get` for nginx and the compiler, the Python packages
+copied out of `/usr/local`. It is what a checkout builds, what
+`.github/workflows/release.yml` builds, what the README quickstart runs —
+**and what `.gitlab-ci.yml` builds too.** Nothing about it changed when the
+second branch arrived.
+
+`docker/Dockerfile.ubi` builds the same image on **UBI 10** —
+`docker-reg/wl-u10-python312` by default, `dnf` instead of `apt-get`, and the
+Python environment in a venv at `/opt/venv` rather than copied out of
+`/usr/local`, because that path is a property of the official `python:*`
+images and not of an RPM python.
+
+**It is not in use anywhere today, and that is worth saying plainly.** It
+was written for the assumption that the internal GitLab instance cannot
+reach Docker Hub. Measured, that assumption was wrong in both directions: a
+job pod there reaches Docker Hub, npm and PyPI perfectly well, while
+`cdn.redhat.com` does not answer — so the UBI file could never run its own
+`dnf` on the very instance it was written for. It stays in the tree as the
+branch for an environment that really is cut off from Docker Hub but has a
+UBI mirror, and it has been built and smoke-tested against a public UBI 10
+base. Until such an environment turns up, it is a spare, not a road.
+
+The two share everything that is not distro-bound: `docker/entrypoint.sh`,
+`docker/nginx.conf`, `docker/uwsgi.ini`, the runtime `ENV` blocks, the
+build-identity guard, the OCI labels and every `STARCUBES_*` runtime
+variable. An operator cannot tell the resulting containers apart except by
+`podman inspect`. **That sharing is by copy, not by include** — a Dockerfile
+has no way to include another — so a change to any of the shared parts
+belongs in both files on the same commit. Nothing checks it.
+
+Four environment variables steer `build.sh`, and every one of them defaults
+to the original behaviour:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `STARCUBES_DOCKERFILE` | `Dockerfile` | Which Dockerfile to build. `.gitlab-ci.yml` sets it to `docker/Dockerfile.ubi`. |
+| `STARCUBES_BASE_IMAGE` | *(unset)* | Passed through as the `BASE_IMAGE` build arg, which only `docker/Dockerfile.ubi` declares. Unset, that file uses the internal `wl-u10-python312`; set it to `registry.access.redhat.com/ubi10/ubi:latest` to build the internal branch from outside the Worldline network — same dnf world, no login. |
+| `STARCUBES_NPM_REGISTRY` | *(unset)* | An npm mirror for the `jsbuilder` stage. Empty is the public registry. |
+| `STARCUBES_PIP_INDEX_URL` | *(unset)* | A PyPI mirror for the builder stage. Empty is the public index. |
+
+These are **build**-time variables, which is why they are not in the
+environment variable reference in
+[`deployment-config.md`](deployment-config.md): that table lists what a
+*running* container reads, with a checkout default and an image default, and
+neither exists for these. Nothing in a built image remembers them.
+
 ## How the version reaches a source archive
 
 `git archive --format=zip HEAD -o starcubes.zip` hands a test environment the
@@ -298,8 +350,50 @@ first (Organization → Settings → Packages).
 
 The internal instance. A `v*` tag pushed there runs the same procedure in
 two jobs — `build` (version guard, changelog guard, image, zip) and
-`publish` (the release itself, which needs the `release-cli` image). Three
-things differ from GitHub, and none of them is an oversight:
+`publish` (the release itself). Five things differ from GitHub, and none of
+them is an oversight:
+
+- **A different runner, and therefore a job image.** The instance answers
+  with a **Kubernetes shared runner** — `k8s-S Shared Runner on GI/DC*`, via
+  the `tags:` line. Every job runs in a pod, so there is no host to install
+  anything on: each job names `$STARCUBES_JOB_IMAGE`, Docker Hub's full
+  `python:3.12`, which already carries git and curl, and `apt`-installs
+  buildah and netavark into it. Full, not `-slim`, and not the internal
+  `wl-u10-python312`: **that image carries no package manager at all**, and
+  UBI's repositories are unreachable from a job pod anyway. If a job reports
+  a non-root uid, that is the runner's pod security context and not
+  something this file can set — it says so rather than failing on a
+  permission error three lines later.
+- **The image is built with buildah, unprivileged.** A shared runner does
+  not hand out `privileged = true`, so docker-in-docker is out — and the
+  dind image is not in the registry either. buildah with the **vfs** storage
+  driver (set in `/etc/containers/storage.conf` during setup, so `tag` and
+  `push` look into the same store) and `BUILDAH_ISOLATION=chroot` needs
+  neither privileges nor user namespaces. The dind arrangement had a second,
+  quieter defect on this executor: `DOCKER_HOST: tcp://docker:2376` cannot
+  resolve, because a Kubernetes executor puts services into the job's own
+  pod network, reachable as `localhost`, with no alias.
+- **The same Dockerfile as everywhere else.** `STARCUBES_DOCKERFILE` is
+  empty here on purpose, so `build.sh` builds the repo-root `Dockerfile` —
+  see [Two build branches](#two-build-branches). `docker/Dockerfile.ubi` was
+  written for the assumption that this instance cannot reach Docker Hub, and
+  measurement overturned that assumption in both directions (below).
+- **A push target that is not GitLab's.** This GitLab has **no container
+  registry**, so `$CI_REGISTRY_IMAGE` is empty and a push against it pings
+  `https:///v2/`. `STARCUBES_IMAGE` names the Harbor this environment
+  already pulls from, and `STARCUBES_REGISTRY_USER` /
+  `STARCUBES_REGISTRY_PASSWORD` are its credentials. The job's own
+  `$CI_REGISTRY_*` are **not** a fallback for it: GitLab defines them even
+  with no registry configured, so an unconditional fallback is never empty
+  and quietly throws a job token at a foreign registry.
+- **The release is created through the API.** The `release:` keyword is
+  implemented by the `release-cli` image, which this registry does not carry
+  and this executor could not run anyway. The `publish` job `POST`s to
+  `/projects/:id/releases` with the job token instead: same tag, same name,
+  same description, same asset link. The body is assembled with `python3`
+  and `json.dumps` rather than `printf` — a changelog section is full of
+  backticks, quotes and newlines, and hand-rolled JSON in `sh` breaks on the
+  first of them.
 
 - **The zip is a link, not an attachment.** GitLab releases carry asset
   *links*; they do not host uploads. The job publishes the zip to the
@@ -318,6 +412,31 @@ things differ from GitHub, and none of them is an oversight:
   refuses to read it from inside the build image — quietly, since every git
   call in `version.py` is best-effort by design.
 
+**Before you tag anything, run `doctor`.** *Build → Pipelines → Run
+pipeline*, on any ref. It is the only job a hand-started pipeline runs, it
+publishes nothing, and it answers — in one pass, continuing past each
+failure — the six questions this pipeline cannot answer for itself:
+
+1. can this pod build at all — buildah builds a throwaway image off the
+   real base, with **two** `-t`, because `docker/build.sh` passes two and an
+   engine that accepts only one would fail the release rather than this
+   check;
+2. does `$STARCUBES_BASE_IMAGE` pull — the registry lists repositories
+   without tags, so `:latest` is an assumption until something proves it;
+3. can `dnf` inside that image provide nodejs, npm, python3-devel, gcc,
+   nginx, libaio and pcre2-devel — a hardened image with no repositories
+   configured fails here rather than three minutes into a release;
+4. are npm and PyPI (or the mirrors in `STARCUBES_NPM_REGISTRY` /
+   `STARCUBES_PIP_INDEX_URL`) reachable;
+5. do the job credentials open the container registry, the package registry
+   and the Releases API;
+6. does `version.py` resolve in this clone.
+
+It exists because the alternative is to push a `v*` tag and read the
+failure — and a failed tag has to be deleted and set again on the fixed
+commit, since a queued job always runs the file as of the commit its tag
+points at. The job costs a click.
+
 **Where the image goes is one variable.** Nothing in the tree names a
 registry — the image's identity is its build args and OCI labels, not its
 name — so the pipeline pushes to `$STARCUBES_IMAGE`, defaulting to this
@@ -329,11 +448,36 @@ needs its own credentials at the login step, since `$CI_REGISTRY_USER` and
 Pulling needs `docker login $CI_REGISTRY` with a deploy token or a personal
 access token carrying `read_registry`.
 
-The instance has to be able to build: a runner that can reach a container
-engine (docker-in-docker, or a shell runner with podman — set
-`CONTAINER_ENGINE=podman` and drop the dind service), reachable base images
-and package sources for the Dockerfile's `npm ci` and `pip install`, and a
-`release-cli` image the publish job can use.
+**What this environment actually is**, measured on 2026-09-25 rather than
+assumed — the pipeline prints this map in every job, because three rounds
+were spent on beliefs that one measurement overturned:
+
+| From a job pod | |
+|---|---|
+| `deb.debian.org`, `registry-1.docker.io`, `registry.npmjs.org`, `pypi.org` | reachable |
+| `artifactory.core.emea.giservices.io`, the GitLab itself | reachable |
+| `cdn.redhat.com`, `dl-cdn.alpinelinux.org` | **unreachable** |
+
+So a job pod's egress is an **allowlist, not a block** — the first failure,
+`apk add` against Alpine's CDN, looked like the latter. Image pulls are a
+separate path again: the runner rewrites them to an Artifactory mirror, so
+`image:` resolves even for things a job could not fetch itself.
+
+Two consequences. The repo-root `Dockerfile` has every source it needs
+(`npm ci`, `pip install`, its Debian bases), so it is what gets built.
+And `docker/Dockerfile.ubi` could never work here at all: it installs with
+`dnf` from the one CDN that does not answer.
+
+The instance has to be able to build, and that means four things the
+pipeline cannot supply itself: a **runner** whose tags match the `tags:`
+line, **a pod that may run as root** (for `apt`) and **may build
+unprivileged** (buildah with vfs and chroot isolation), a **push target
+with credentials**, and those package sources staying reachable. No dind
+image and no `release-cli` image are needed; neither exists in that
+registry, which is why the file is shaped the way it is. `doctor` checks
+every one of these in a single run, and the guards check the cheap ones
+before the build rather than after it — a missing variable that costs a
+full image build before it speaks up is a guard in the wrong place.
 
 **Where a runner comes from.** A self-hosted instance has exactly the
 runners its operator has put there — GitLab ships none. There is no
@@ -345,41 +489,35 @@ make a release happen.
 
 **"This job is stuck because the project doesn't have any runners online
 assigned to it."** The pipeline is fine — the jobs are queued and nothing
-will pick them up. Four causes, in the order worth checking:
+will pick them up. Two causes, in the order worth checking:
 
 1. **No runner reaches the project at all.** *Settings → CI/CD → Runners*
    lists what the project can see, in three tiers: instance, group and
    project. Instance-wide runners often exist but have to be enabled for
    the project. If all three are empty, the operator of the instance is the
    only one who can change that.
-2. **The runner is tagged and does not take untagged jobs.** Both jobs here
-   carry `tags: []`, which asks for no tag at all, so a runner registered
-   *with* tags only picks them up if "Run untagged jobs" is on. Either turn
-   that on, or put the runner's tag into both jobs.
-3. **The tag is protected and the runner is not.** This is the one that
-   catches release pipelines specifically: `v*` is a natural thing to
+2. **The release tag is protected and the runner is not.** This is the one
+   that catches release pipelines specifically: `v*` is a natural thing to
    protect, and a pipeline on a protected ref is only offered to runners
    marked *protected*. The job then waits forever while the same runner
    happily builds every branch. Either mark the runner protected, or stop
    protecting the release tags.
-4. **Something merged tags in that nobody wrote here.** A group-level
-   compliance pipeline or pipeline execution policy injects its own
-   configuration into every pipeline of the group, and a tag inherited that
-   way asks for a runner that may not exist. What a job *really* demands is
-   under *Build → Pipeline editor → "Full configuration"* (older versions:
-   "View merged YAML"). A tag there that is not in `.gitlab-ci.yml` is the
-   proof — and the `tags: []` in both jobs is what clears it.
 
 Once a runner answers, a stuck job can be retried — **unless
 `.gitlab-ci.yml` itself changed**. A pipeline always runs the file as of the
 commit the tag points at, so a fix to the pipeline never reaches a job that
 is already queued. Delete the tag and set it again on the new commit.
 
-Which runner it is decides one thing in `.gitlab-ci.yml`: a docker executor
-needs `privileged = true` for the dind service and works as written; a shell
-runner with podman wants `CONTAINER_ENGINE=podman`, no `services:`, no
-`DOCKER_*` variables, and git/python3/curl on the host instead of the `apk`
-line.
+Which runner it is decides the shape of `.gitlab-ci.yml`. It is written for
+the **Kubernetes shared runner** this instance answers with: a `default:`
+`image:` from the internal registry, tooling from `dnf`, no `services:`, no
+`DOCKER_*` variables, and `CONTAINER_ENGINE=buildah` building unprivileged.
+A shell runner with podman would want the opposite — no `image:`, no `dnf`
+step, tools on the host — and a docker executor would want a `docker:dind`
+service plus `privileged = true`, which a shared runner does not give and
+whose image is not in the registry anyway. Switching is therefore a runner
+decision first and an edit second, and `doctor` is how you find out which
+one you have.
 
 ### Two remotes, two builds
 

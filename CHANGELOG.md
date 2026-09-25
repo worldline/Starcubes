@@ -28,6 +28,83 @@ runs through further pre-release tags — see
   commit. See [`docs/releases.md`](docs/releases.md), "Releasing from a
   remote".
 
+  The pipeline is built for what that instance actually has, which is not a
+  hosted runner: a **Kubernetes shared runner**, and a registry carrying
+  UBI-based images only — no `docker:cli`, no `docker:dind`, no
+  `release-cli`. So every job runs in a pod on a UBI 10 image out of that
+  registry and `dnf`-installs git, curl and buildah; the image is built
+  with **buildah, unprivileged** (vfs storage driver, `chroot` isolation),
+  because a shared runner grants no `privileged = true` and dind is
+  therefore out; and the release is created through the Releases API
+  instead of the `release:` keyword, which is implemented by an image that
+  is not there. Same tag, same name, same body, same asset link — and the
+  call is idempotent, so re-running a tag updates its release rather than
+  failing on the second attempt.
+
+- **A second Dockerfile, `docker/Dockerfile.ubi`**, for that same instance.
+  The repo-root `Dockerfile` is untouched and stays the default everywhere
+  else — Debian slim off Docker Hub, which is what a checkout and the GitHub
+  release build. The new one builds the identical image on **UBI 10** from
+  the internal registry: `dnf` instead of `apt-get`, and the Python
+  environment in a venv at `/opt/venv` instead of copied out of
+  `/usr/local`, a path that belongs to the official `python:*` images rather
+  than to any RPM python. Both share `entrypoint.sh`, `nginx.conf`,
+  `uwsgi.ini`, every runtime variable and the build-identity guard, so the
+  containers are indistinguishable in operation.
+
+  `docker/build.sh` picks between them with `STARCUBES_DOCKERFILE`, and
+  passes `STARCUBES_BASE_IMAGE`, `STARCUBES_NPM_REGISTRY` and
+  `STARCUBES_PIP_INDEX_URL` through as build args when they are set. With
+  none of them set it builds exactly what it built before. See
+  [`docs/releases.md`](docs/releases.md), "Two build branches".
+
+- **A `doctor` job in the GitLab pipeline.** Started by hand from the UI on
+  any ref, it publishes nothing and checks, in one pass and continuing past
+  each failure, everything the release depends on and the repository cannot
+  guarantee: rootless podman and its subuid range, that the base image
+  pulls, that `dnf` in it can provide the seven packages the build
+  installs, that npm and PyPI (or their mirrors) answer, that the job
+  credentials open the container registry, the package registry and the
+  Releases API, and that `version.py` resolves. It exists because the only
+  other way to learn any of this was to push a `v*` tag — and a failed tag
+  has to be deleted and set again, since a queued job always runs the
+  pipeline file as of the commit its tag points at.
+
+## [2.0.0-beta.3.1] — 2026-09-25
+
+**A tag for exercising the GitLab release pipeline, not a release to
+deploy.** The pipeline requires a `## [<version>]` section per version and
+checks for it *before* it builds, so a tag without one never reaches the
+build stage at all — this section exists so that the stage under test can be
+reached. The tag is moved forward and pushed again for each attempt; what it
+points at is whatever is under [Unreleased] at the time, and those changes
+will be listed under the next real release number rather than here.
+
+### Changed
+
+- **The GitLab pipeline is built for the environment the instance actually
+  has**, measured rather than assumed. It answers with a Kubernetes shared
+  runner, so every job runs in a pod: on Docker Hub's full `python:3.12`,
+  which already carries git and curl, with buildah and netavark from `apt`.
+  The image is built with **buildah unprivileged** — vfs storage driver,
+  `BUILDAH_ISOLATION=chroot` — because a shared runner grants no
+  `privileged = true` and the dind image is not in the internal registry.
+
+  A job pod's egress turned out to be an allowlist rather than a block:
+  `deb.debian.org`, `registry-1.docker.io`, npm and PyPI answer, while
+  `cdn.redhat.com` and Alpine's CDN do not. So the repo-root `Dockerfile`
+  is what gets built there, and `docker/Dockerfile.ubi` — written for the
+  opposite assumption — could never have run its own `dnf` on that
+  instance. Every job now prints that map, because three attempts were
+  spent on beliefs one measurement overturned.
+
+  The push goes to the Harbor this environment already pulls from: the
+  GitLab has no container registry of its own, so `$CI_REGISTRY_IMAGE` is
+  empty. Its credentials are their own variables, and the job's
+  `$CI_REGISTRY_*` are deliberately not a fallback for a foreign registry —
+  GitLab defines them even with no registry configured, so the fallback is
+  never empty and would quietly throw a job token at Harbor.
+
 ## [2.0.0-beta.3] — 2026-09-18
 
 ### Changed

@@ -1,17 +1,41 @@
 # The release pipeline, GitLab side. Its GitHub twin is
-# .github/workflows/release.yml, and the two are deliberately kept in step:
-# same guards, same order, same output — see docs/releases.md, "Releasing
-# from a remote". A `v*` tag pushed to this remote publishes the image, a
-# source zip packed from the tag, and a release whose body is the tag's own
-# CHANGELOG.md section.
+# .github/workflows/release.yml, and the two are deliberately kept in step
+# where it counts: same guards, same order, same output — see
+# docs/releases.md, "Releasing from a remote". A `v*` tag pushed to this
+# remote publishes the image, a source zip packed from the tag, and a release
+# whose body is the tag's own CHANGELOG.md section.
+#
+# What the two no longer share is how they get there, and that is not an
+# oversight. This instance answers with a **Kubernetes shared runner** (the
+# tags below reach `k8s-S Shared Runner on GI/DC3`), and its registry
+# (oci.registry.csms.worldline-solutions.com/docker-reg/) carries UBI-based
+# runtime images only — no `docker:cli`, no `docker:dind`, no `release-cli`.
+# Three consequences, each of them load-bearing:
+#
+#   * **Every job needs an `image:`**, and it is one from that registry.
+#     There is no host to fall back on: a Kubernetes executor runs each job
+#     in a pod, so "install it on the runner machine" is not a thing that
+#     exists here. git, curl and the build engine come from `dnf` instead.
+#
+#   * **The image is built with buildah, unprivileged.** A shared runner
+#     does not hand out `privileged = true`, so docker-in-docker is out —
+#     and the dind image is not in the registry anyway. buildah with the
+#     vfs storage driver and `BUILDAH_ISOLATION=chroot` needs neither
+#     privileges nor user namespaces. (The dind arrangement also had a
+#     second, quieter bug on this executor: `DOCKER_HOST: tcp://docker:2376`
+#     cannot resolve, because a Kubernetes executor puts services in the
+#     job's own pod network, reachable as localhost, with no alias.)
+#
+#   * **The release is created through the Releases API**, because the
+#     `release:` keyword is implemented by the release-cli image.
 #
 # starcubes/version.py stays the one definition of what a version is: the
 # job asks it — not the tag name — for the version, and stops unless the
 # two agree. The changelog guard runs before the build, so a missing
 # section costs a minute, not a full image build.
 #
-# Three things GitLab does differently, all of them handled below rather
-# than papered over:
+# Three further things GitLab does differently, all of them handled below
+# rather than papered over:
 #   * a release carries links, not file uploads — the zip goes into the
 #     generic package registry and is linked from the release;
 #   * there is no pre-release flag — the name says it, and `:latest` is
@@ -19,12 +43,15 @@
 #   * artifacts must live inside $CI_PROJECT_DIR, which is the checkout —
 #     see the note on .release/ in the build job.
 
-# Tag pipelines only. Nothing here belongs on a branch push: the whole file
+# Two ways in, and no branch pushes. A `v*` tag runs the release; a pipeline
+# started by hand from the UI (Build → Pipelines → Run pipeline) runs nothing
+# but `doctor`, which publishes nothing. Everything else stays out: the file
 # is one release procedure, and a job that cannot resolve a tag cannot run
 # any of it.
 workflow:
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]/
+    - if: $CI_PIPELINE_SOURCE == "web"
 
 variables:
   # version.py asks `git describe --abbrev=0 --match 'v[0-9]*'`, which needs
@@ -33,68 +60,370 @@ variables:
   # release for what is really a checkout setting. Full depth, always.
   GIT_DEPTH: "0"
 
-  # docker/build.sh takes the engine from here, so a shell runner with
-  # podman is a variable change rather than an edit: set CONTAINER_ENGINE
-  # to `podman` and drop the dind service from the build job.
-  CONTAINER_ENGINE: docker
+  # The image every job runs in. Docker Hub's full python image, which the
+  # runner pulls through its Artifactory mirror (image pulls are rewritten;
+  # `docker:28-dind` came through that way). Full, not -slim: the full image
+  # already carries git and curl, and installing them is the one thing this
+  # pod cannot reliably do.
+  #
+  # Not the internal `wl-u10-python312`: measured on 2026-09-25, that image
+  # has python3 and curl and **no package manager at all** — no dnf, no git —
+  # and UBI's repositories are unreachable from a job pod anyway
+  # (cdn.redhat.com does not answer, while npm and PyPI do).
+  STARCUBES_JOB_IMAGE: python:3.12
+
+  # docker/build.sh takes the engine from here. buildah, because it is the
+  # one that builds without privileges: `BUILDAH_ISOLATION=chroot` skips the
+  # user namespace a pod will not grant, and the vfs storage driver (set in
+  # storage.conf during setup, so `tag` and `push` see the same images) skips
+  # the overlay mount that needs /dev/fuse.
+  CONTAINER_ENGINE: buildah
+  BUILDAH_ISOLATION: chroot
+  # Debian's buildah, since the job image is Debian-based. apt is the one
+  # package manager this pod has a working mirror for.
+  #
+  # netavark is named explicitly because Debian's buildah does not depend on
+  # it: the package pulls in containernetworking-plugins (CNI), while
+  # buildah 1.39 itself asks for the netavark backend and stops at
+  # `could not find "netavark"` when it creates the very first build
+  # container. CNI is not the fallback it looks like — podman 5 dropped it.
+  REQUIRED_PKGS: buildah netavark
+
+  # Which Dockerfile to build. **Empty on purpose**: build.sh then builds the
+  # repo-root `Dockerfile`, the original one.
+  #
+  # `docker/Dockerfile.ubi` was written for the assumption that this instance
+  # cannot reach Docker Hub. Measured, that assumption is wrong in both
+  # directions: npm and PyPI — the two sources the original Dockerfile needs —
+  # answer from a job pod, while cdn.redhat.com does not, so the UBI file
+  # could never run its own `dnf`. It stays in the tree as the branch for an
+  # instance that really is cut off; here the original is the shorter road,
+  # and switching is this one variable.
+  STARCUBES_DOCKERFILE: ""
+  STARCUBES_BASE_IMAGE: ""
+
+  # If npm and PyPI are not reachable either, point these at the internal
+  # mirrors; empty means the public ones, exactly as in a checkout.
+  # docker/Dockerfile.ubi declares both as build args.
+  STARCUBES_NPM_REGISTRY: ""
+  STARCUBES_PIP_INDEX_URL: ""
 
   # Where the image goes. Nothing else in the tree names a registry — the
   # image's identity is its build args and OCI labels, not its name — so
-  # this one variable is the whole of "push somewhere else". Override it in
-  # Settings → CI/CD → Variables; a registry other than this project's own
-  # also needs its own credentials (see the login step).
-  STARCUBES_IMAGE: $CI_REGISTRY_IMAGE
+  # this one variable is the whole of "push somewhere else".
+  #
+  # Not $CI_REGISTRY_IMAGE, which is what a GitLab pipeline would normally
+  # use: **this instance has no container registry**, so that variable is
+  # empty and a push against it pings `https:///v2/`. The target is the
+  # Harbor this environment already pulls from.
+  STARCUBES_IMAGE: oci.registry.csms.worldline-solutions.com/docker-reg/starcubes
+
+  # Credentials for that registry. Set them in Settings → CI/CD → Variables,
+  # masked. Leave them empty only when STARCUBES_IMAGE points at a GitLab
+  # registry, in which case the job's own $CI_REGISTRY_* credentials are
+  # used instead — that is the fallback below, and it is what keeps this
+  # file correct on an instance that does have one.
+  #
+  # **Do not tick "Protected"** unless the release tags are protected refs:
+  # a protected variable is simply absent from a job on an unprotected ref,
+  # and the login then fails with empty credentials, which looks like a
+  # wrong password rather than a missing variable.
+  STARCUBES_REGISTRY_USER: ""
+  STARCUBES_REGISTRY_PASSWORD: ""
 
   # The generic package the source zip is published under.
   PKG_NAME: starcubes
 
-  # docker-in-docker over TLS, the stock arrangement.
-  DOCKER_HOST: tcp://docker:2376
-  DOCKER_TLS_CERTDIR: "/certs"
-  DOCKER_TLS_VERIFY: "1"
-  DOCKER_CERT_PATH: "/certs/client"
+default:
+  image: $STARCUBES_JOB_IMAGE
+  # These tags reach the k8s shared runner. A job that sits in "pending"
+  # forever is usually this line or a protected-tag mismatch;
+  # docs/releases.md, "This job is stuck", has both cases.
+  tags: [docker-S, kazan-S]
 
 stages:
+  - check
   - build
   - release
 
-build:
-  stage: build
-  # Empty on purpose — do not delete it as dead weight. It says "this job
-  # wants no tags", so any runner the project can see may take it, which is
-  # what we want when the runners come from the instance rather than from
-  # us. Leaving the key out entirely would mean the same thing *today*, but
-  # not necessarily tomorrow: a group-level compliance pipeline or pipeline
-  # execution policy merges its own configuration into every pipeline here,
-  # and tags inherited that way would ask for a runner nobody has. The
-  # empty list clears them. What a job really asks for is visible under
-  # Build → Pipeline editor → "Full configuration".
-  tags: []
-  # Pinned on purpose, and on an instance with no reach to Docker Hub both
-  # of these are the mirrored copies. A shell runner with podman needs
-  # neither: set CONTAINER_ENGINE=podman, drop the service, and provide
-  # git/python3/curl on the host instead of the apk line below.
-  image: docker:28-cli
-  services:
-    - docker:28-dind
-  before_script:
+# What the job image does not carry, plus a map of what this pod can reach.
+# The map is not decoration, and it is not conditional: two rounds of this
+# pipeline were spent on assumptions about the network that measurement
+# overturned in one job. What is known, as of 2026-09-25:
+#
+#   * image pulls are rewritten to an Artifactory mirror and work;
+#   * a job pod's own egress is an allowlist, not a blanket block —
+#     registry.npmjs.org, pypi.org, artifactory and GitLab answer;
+#     cdn.redhat.com and dl-cdn.alpinelinux.org do not;
+#   * the internal wl-u10-python312 image carries no package manager at all.
+#
+# A round of bringing a pipeline up costs minutes, so every job prints the
+# whole picture rather than only the line it died on.
+#
+# Included as `- *setup`, which nests a list inside the script list. GitLab
+# flattens that — it is the anchor-for-scripts pattern out of its own
+# documentation — but a YAML parser shows it as a list in a list, which is
+# worth knowing before anyone "fixes" it.
+.setup: &setup
+  - |
     # Every before_script and script line of a job runs in ONE shell, so a
     # variable set in one line is still there in the next — which is why
     # nothing here needs the $GITHUB_ENV dance its GitHub twin does between
     # steps. `set -e` therefore also holds for the whole job, and it has to
     # be asked for: a failing line inside a multi-line block would otherwise
     # be stepped over and the release published on top of it.
-    - set -e
-    # python3 for version.py (3.6+ is enough — that module is held to it),
-    # git for describe and archive, curl for the package upload.
-    - apk add --no-cache git python3 curl
-    # The runner's checkout is not owned by the user inside this image, and
-    # git refuses to read a repository it considers someone else's. It
-    # refuses quietly as far as version.py is concerned — every git call in
-    # that module is best-effort — so without this the version resolves to
+    set -e
+
+    echo "── this pod ──────────────────────────────────────────────────"
+    echo "  image     $STARCUBES_JOB_IMAGE"
+    echo "  user      $(id -un 2>/dev/null || echo '?') (uid $(id -u))"
+    for t in python3 git curl buildah podman docker apt-get dnf apk; do
+      printf '  %-9s %s\n' "$t" "$(command -v "$t" 2>/dev/null || echo '-')"
+    done
+    env | grep -i -E '^(http|https|no)_proxy=' | sed 's/^/  /' || true
+
+    echo "── what this pod can reach ───────────────────────────────────"
+    for url in \
+        "https://deb.debian.org/debian/" \
+        "https://registry-1.docker.io/v2/" \
+        "https://registry.npmjs.org/" \
+        "https://pypi.org/simple/" \
+        "https://artifactory.core.emea.giservices.io/" \
+        "https://cdn.redhat.com/" \
+        "$CI_SERVER_URL/"; do
+      # Connectivity, not status: Docker Hub answers 401 to an anonymous
+      # /v2/, and that 401 is a yes. So no --fail — the question is whether
+      # anything answers at all.
+      if curl --silent --max-time 8 --output /dev/null "$url" 2>/dev/null; then
+        printf '  reachable    %s\n' "$url"
+      else
+        printf '  UNREACHABLE  %s\n' "$url"
+      fi
+    done
+
+    # Whether the image already knows an internal npm / PyPI. Printed either
+    # way, because "unset" is itself the answer that explains a later
+    # `npm ci` failure.
+    echo "── package client configuration ──────────────────────────────"
+    printf '  npm registry   %s\n' "$(npm config get registry 2>/dev/null || echo '(no npm here)')"
+    printf '  pip index      %s\n' "$(python3 -m pip config get global.index-url 2>/dev/null || echo '(unset)')"
+
+    echo "── tooling ───────────────────────────────────────────────────"
+    missing=
+    for t in python3 git curl; do
+      command -v "$t" >/dev/null 2>&1 || missing="$missing $t"
+    done
+    if [ -n "$missing" ]; then
+      echo "the job image is missing:$missing" >&2
+      echo "  These are not installable here with any confidence — pick an" >&2
+      echo "  image that carries them. Docker Hub's full python:3.x does," >&2
+      echo "  and the runner pulls Docker Hub through its mirror." >&2
+      exit 1
+    fi
+    echo "  python3, git and curl come with the image"
+
+    if [ -n "${REQUIRED_PKGS:-}" ]; then
+      # apt, because the job image is Debian-based and deb.debian.org is on
+      # the allowlist (the map above says so for this very run). dnf and apk
+      # are not fallbacks that would work here — their mirrors do not answer
+      # from a job pod — so this is apt or nothing, and it says so.
+      command -v apt-get >/dev/null 2>&1 || {
+        echo "need to install '$REQUIRED_PKGS' but this image has no apt" >&2
+        exit 1
+      }
+      echo "  installing: $REQUIRED_PKGS"
+      apt-get update -qq
+      DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $REQUIRED_PKGS || {
+        echo "apt could not install: $REQUIRED_PKGS" >&2
+        echo "  See the reachability map above — if deb.debian.org is" >&2
+        echo "  UNREACHABLE, this pod's allowlist is the thing to change," >&2
+        echo "  not this file." >&2
+        exit 1
+      }
+    fi
+
+    # vfs for every buildah call, not just the build one: `tag` and `push`
+    # have to look into the same store the build wrote to, and a flag on one
+    # command would leave the others on the default driver, which needs
+    # /dev/fuse and is not available in an unprivileged pod.
+    #
+    # runroot and graphroot are not optional padding. Writing a [storage]
+    # section at all replaces the defaults rather than amending them, and
+    # Debian's buildah then refuses every command with
+    # `runroot must be set` — which reads like a flag is missing, not like
+    # this file is incomplete.
+    mkdir -p /etc/containers
+    cat > /etc/containers/storage.conf <<'STORAGE'
+    [storage]
+    driver = "vfs"
+    runroot = "/var/run/containers/storage"
+    graphroot = "/var/lib/containers/storage"
+    STORAGE
+
+    # The checkout is not owned by the user inside this image, and git
+    # refuses to read a repository it considers someone else's. It refuses
+    # quietly as far as version.py is concerned — every git call in that
+    # module is best-effort — so without this the version resolves to
     # `unknown` and the guard below reports a version problem for what is
     # really a permission one.
-    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    git config --global --add safe.directory "$CI_PROJECT_DIR"
+
+# Everything this pipeline needs from the world around it, checked one by
+# one and without publishing anything. Start it by hand: Build → Pipelines →
+# Run pipeline, on any ref.
+#
+# It exists because the alternative way to find out whether a release will
+# work is to push a `v*` tag — and a tag that fails has to be deleted and set
+# again on the fixed commit, because a queued job always runs the file as of
+# the commit the tag points at. This job answers the same questions for the
+# price of a click.
+#
+# It runs every check even after one fails, and reports at the end. Finding
+# out that the base image is missing AND that npm is unreachable in one run
+# beats finding out one per attempt.
+doctor:
+  stage: check
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+  variables:
+    REQUIRED_PKGS: buildah netavark
+  before_script:
+    - *setup
+  script:
+    - |
+      failed=0
+      # A shared runner may run two of these at once; fixed /tmp names
+      # would have them read each other's output.
+      d=$(mktemp -d)
+      ok()   { printf '  ok    %s\n' "$1"; }
+      bad()  { printf '  FAIL  %s\n' "$1"; failed=$((failed + 1)); }
+      note() { printf '        %s\n' "$1"; }
+
+      echo "── 1. the pod ────────────────────────────────────────────────"
+      note "image     $STARCUBES_JOB_IMAGE"
+      note "user      $(id -un) (uid $(id -u))"
+      note "buildah   $(buildah --version 2>&1)"
+      note "python3   $(python3 --version 2>&1)"
+      note "git       $(git --version 2>&1)"
+
+      echo "── 2. can this pod build at all ──────────────────────────────"
+      # The whole question, asked as cheaply as possible: a throwaway image
+      # off the real base, with TWO -t, because docker/build.sh passes two
+      # and an engine that takes only one would fail the release and not
+      # this check.
+      # Whatever the selected branch actually builds on. With
+      # STARCUBES_BASE_IMAGE empty (the repo-root Dockerfile, which names its
+      # own bases) the job image stands in — the question here is whether the
+      # engine runs, not which base is right.
+      probe_base="${STARCUBES_BASE_IMAGE:-$STARCUBES_JOB_IMAGE}"
+      printf 'FROM %s\nRUN true\n' "$probe_base" > "$d/Containerfile"
+      if buildah build -f "$d/Containerfile" -t probe:1 -t probe:latest "$d" > "$d/build.log" 2>&1; then
+        ok "buildah builds unprivileged (vfs + $BUILDAH_ISOLATION), two -t accepted"
+        buildah rmi probe:1 probe:latest >/dev/null 2>&1 || true
+      else
+        bad "buildah cannot build in this pod"
+        note "$(tail -3 "$d/build.log" | tr '\n' ' ')"
+        note "if it asks for privileges, the runner would need them — or a"
+        note "mirrored kaniko image, or the image built outside CI"
+      fi
+
+      echo "── 3. dnf inside the base image ──────────────────────────────"
+      if [ "$STARCUBES_DOCKERFILE" != docker/Dockerfile.ubi ]; then
+        note "skipped — the UBI branch is not selected"
+      else
+      # Everything the three Dockerfile stages install. Asked as
+      # --whatprovides, not by package name: `dnf install npm` resolves
+      # through a Provides, and on UBI 10 no package is called npm —
+      # nodejs-npm provides it. Querying names would report a missing
+      # package for a build that works.
+      pkgs="nodejs npm python3-devel gcc nginx libaio pcre2-devel"
+      if buildah run "$(buildah from --quiet "$probe_base")" -- sh -c '
+             for p in '"$pkgs"'; do
+               prov=$(dnf -q repoquery --qf "%{name}" --whatprovides "$p" 2>/dev/null | head -1)
+               echo "$p ${prov:-MISSING}"
+             done
+           ' > "$d/pkgs" 2>"$d/err" && test -s "$d/pkgs"; then
+        while read -r pkg prov; do
+          if [ "$prov" = MISSING ]; then
+            bad "dnf cannot provide $pkg"
+          elif [ "$prov" = "$pkg" ]; then
+            ok "dnf has $pkg"
+          else
+            ok "dnf has $pkg (from $prov)"
+          fi
+        done < "$d/pkgs"
+      else
+        bad "dnf cannot query at all in that image"
+        note "$(head -3 "$d/err" | tr '\n' ' ')"
+        note "no repositories configured, or no route to the mirror"
+      fi
+      fi
+
+      echo "── 4. package sources, from inside a job ─────────────────────"
+      # This is what decides which Dockerfile to build. If Docker Hub answers
+      # here, the repo-root Dockerfile is the shorter road and
+      # STARCUBES_DOCKERFILE can be cleared.
+      npm_url="${STARCUBES_NPM_REGISTRY:-https://registry.npmjs.org}"
+      pip_url="${STARCUBES_PIP_INDEX_URL:-https://pypi.org/simple}"
+      for pair in "npm|$npm_url" "pip|$pip_url" "dockerhub|https://registry-1.docker.io/v2/"; do
+        what=${pair%%|*}; url=${pair#*|}
+        # Connectivity, not status: Docker Hub's /v2/ answers 401 to an
+        # anonymous request, and that 401 is a yes. So no --fail here — the
+        # question is whether anything answers at all.
+        if curl --silent --show-error --max-time 20 --output /dev/null "$url" 2>"$d/curl.err"; then
+          ok "$what answers ($url)"
+        else
+          bad "$what unreachable ($url)"
+          note "$(head -1 "$d/curl.err")"
+        fi
+      done
+
+      echo "── 5. the GitLab side ────────────────────────────────────────"
+      if buildah login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY" >/dev/null 2>&1; then
+        ok "container registry accepts the job credentials"
+      else
+        bad "buildah login $CI_REGISTRY refused"
+        note "is the container registry enabled for this project?"
+      fi
+      api="$CI_API_V4_URL/projects/$CI_PROJECT_ID"
+      for path in "/packages" "/releases"; do
+        if curl --silent --show-error --fail --max-time 20 --output /dev/null \
+             --header "JOB-TOKEN: $CI_JOB_TOKEN" "$api$path"; then
+          ok "API reachable: $path"
+        else
+          bad "API refused: $path"
+          note "that feature may be disabled, or the job token is too narrow"
+        fi
+      done
+
+      echo "── 6. this repository ────────────────────────────────────────"
+      # The two guards the release runs, asked here without a tag in play.
+      v=$(python3 -c 'from starcubes.version import __version__; print(__version__)' 2>/dev/null || echo unknown)
+      if [ "$v" = unknown ]; then
+        bad "version.py resolves to 'unknown' — no tag history in this clone"
+        note "GIT_DEPTH must be 0; it is set, so this would be a clone problem"
+      else
+        ok "version.py resolves: $v"
+      fi
+      test -f "$STARCUBES_DOCKERFILE" && ok "$STARCUBES_DOCKERFILE is here" \
+                                      || bad "$STARCUBES_DOCKERFILE is missing"
+
+      echo
+      if [ "$failed" -eq 0 ]; then
+        echo "all checks passed — a v* tag has everything it needs"
+      else
+        echo "$failed check(s) failed — fix these before tagging a release" >&2
+        exit 1
+      fi
+
+build:
+  stage: build
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v[0-9]/
+  variables:
+    REQUIRED_PKGS: buildah netavark
+  before_script:
+    - *setup
   script:
     - |
       # ---- the version, from version.py rather than from the tag ---------
@@ -118,6 +447,51 @@ build:
       esac
       echo "releasing starcubes $version (pre-release: $prerelease)"
     - |
+      # ---- the push target, before anything expensive --------------------
+      # $CI_REGISTRY_IMAGE is empty on an instance whose GitLab has no
+      # container registry configured — which this one does not, whatever
+      # the project's own `container_registry_enabled` flag says. Left
+      # unchecked, that surfaces three minutes later as buildah pinging
+      # `https:///v2/`: "no Host in request URL", after the whole image has
+      # been built for nothing.
+      test -n "$STARCUBES_IMAGE" || {
+        echo "STARCUBES_IMAGE is empty — there is nowhere to push the image." >&2
+        echo "  Set it under Settings → CI/CD → Variables to the registry" >&2
+        echo "  this image belongs in." >&2
+        exit 1
+      }
+      # The host is the first path element of the image name. Derived rather
+      # than configured twice, so the two can never disagree.
+      registry=${STARCUBES_IMAGE%%/*}
+      # Dedicated credentials — and the job's own ONLY when the target is
+      # this GitLab's own registry.
+      #
+      # The host comparison is the whole point. GitLab sets
+      # $CI_REGISTRY_USER and $CI_REGISTRY_PASSWORD (gitlab-ci-token and the
+      # job token) even on an instance with no registry at all, so an
+      # unconditional fallback does not fail the guard — it sails past it
+      # and throws a GitLab job token at a foreign registry, which answers
+      # `invalid username/password` three minutes later, after a full image
+      # build. Those credentials are good for $CI_REGISTRY and nothing else.
+      reg_user=$STARCUBES_REGISTRY_USER
+      reg_pass=$STARCUBES_REGISTRY_PASSWORD
+      if [ -z "$reg_user" ] && [ -n "$CI_REGISTRY" ] && [ "$registry" = "$CI_REGISTRY" ]; then
+        reg_user=$CI_REGISTRY_USER
+        reg_pass=$CI_REGISTRY_PASSWORD
+      fi
+      if [ -z "$reg_user" ] || [ -z "$reg_pass" ]; then
+        echo "no credentials for $registry." >&2
+        echo "  (The job's own \$CI_REGISTRY_* are not used here: they are" >&2
+        echo "   good for \$CI_REGISTRY only, which is '${CI_REGISTRY:-unset}'.)" >&2
+        echo "  Set STARCUBES_REGISTRY_USER and STARCUBES_REGISTRY_PASSWORD" >&2
+        echo "  (Settings → CI/CD → Variables, masked). Do NOT tick" >&2
+        echo "  'Protected' unless the release tags are protected refs —" >&2
+        echo "  a protected variable is absent from a job on an unprotected" >&2
+        echo "  ref, and the login then fails as if the password were wrong." >&2
+        exit 1
+      fi
+      echo "push target: $STARCUBES_IMAGE (registry $registry, user $reg_user)"
+    - |
       # ---- the changelog, before anything expensive ----------------------
       # A temp dir outside the checkout: version.py reads `git status` when
       # build.sh runs, and an untracked file in the workspace would silently
@@ -136,19 +510,22 @@ build:
       }
     - |
       # ---- build ---------------------------------------------------------
+      # CONTAINER_ENGINE, STARCUBES_DOCKERFILE and STARCUBES_BASE_IMAGE from
+      # the variables block are what make this the internal branch on an
+      # unprivileged pod; build.sh reads all three.
       ./docker/build.sh
     - |
       # ---- push ----------------------------------------------------------
-      # These credentials are the project's own registry. Pointing
-      # STARCUBES_IMAGE at a different one means supplying that registry's
-      # login here (a masked, protected variable, or DOCKER_AUTH_CONFIG).
-      docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
-      docker tag "starcubes:$version" "$STARCUBES_IMAGE:$version"
-      docker push "$STARCUBES_IMAGE:$version"
+      # $registry, $reg_user and $reg_pass come from the push-target guard
+      # above — checked before the build, so a credentials problem does not
+      # cost a full image first.
+      buildah login -u "$reg_user" -p "$reg_pass" "$registry"
+      buildah tag "starcubes:$version" "$STARCUBES_IMAGE:$version"
+      buildah push "$STARCUBES_IMAGE:$version"
       # :latest says "the newest final release" — a beta must not move it
       if [ "$prerelease" = false ]; then
-        docker tag "starcubes:$version" "$STARCUBES_IMAGE:latest"
-        docker push "$STARCUBES_IMAGE:latest"
+        buildah tag "starcubes:$version" "$STARCUBES_IMAGE:latest"
+        buildah push "$STARCUBES_IMAGE:latest"
       fi
     - |
       # ---- the source zip ------------------------------------------------
@@ -188,25 +565,76 @@ build:
 
 publish:
   stage: release
-  tags: []          # same reason as in `build` above
-  # release-cli is what the `release` keyword below needs; nothing else in
-  # this job runs. On an instance without internet, mirror that image and
-  # point this line at the mirror.
-  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v[0-9]/
+  variables:
+    REQUIRED_PKGS: ""
   needs:
     - job: build
       artifacts: true
+  before_script:
+    - *setup
   script:
-    - echo "publishing $RELEASE_NAME"
-  release:
-    tag_name: $CI_COMMIT_TAG
-    name: $RELEASE_NAME
-    # release-cli reads a path here as a file. There is no pre-release flag
-    # to set: the name carries it, and the image's :latest tag is what
-    # actually keeps a beta out of an operator's way.
-    description: .release/notes.md
-    assets:
-      links:
-        - name: $ZIP_NAME
-          url: $ZIP_URL
-          link_type: package
+    - |
+      # The `release:` keyword would be the obvious way to do this, but it is
+      # implemented by the release-cli image, and this instance has no such
+      # image. The Releases API is the same thing one layer down: same tag,
+      # same name, same description, same asset link — and there is still no
+      # pre-release flag to set, because GitLab releases have none. The name
+      # carries it, and the image's :latest tag is what actually keeps a beta
+      # out of an operator's way.
+      echo "publishing $RELEASE_NAME"
+      tmp=$(mktemp -d)
+      # Two bodies, built with python3 rather than printf: a changelog
+      # section is full of backticks, quotes and newlines, and hand-rolled
+      # JSON in sh breaks on the first of them. json.dumps is stdlib.
+      #
+      # Two, because creating and updating a release do not take the same
+      # thing: POST accepts assets.links, PUT does not — links are their own
+      # sub-resource once a release exists.
+      python3 - "$tmp/create.json" "$tmp/update.json" <<'PY'
+      import json, os, sys
+
+      with open(".release/notes.md", encoding="utf-8") as fh:
+          notes = fh.read()
+
+      common = {
+          "tag_name":    os.environ["CI_COMMIT_TAG"],
+          "name":        os.environ["RELEASE_NAME"],
+          "description": notes,
+      }
+      create = dict(common, assets={"links": [{
+          "name":      os.environ["ZIP_NAME"],
+          "url":       os.environ["ZIP_URL"],
+          "link_type": "package",
+      }]})
+
+      for path, payload in ((sys.argv[1], create), (sys.argv[2], common)):
+          with open(path, "w", encoding="utf-8") as fh:
+              json.dump(payload, fh)
+      PY
+      api="$CI_API_V4_URL/projects/$CI_PROJECT_ID/releases"
+      code=$(curl --silent --show-error --output "$tmp/resp" --write-out '%{http_code}' \
+                  --request POST \
+                  --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+                  --header "Content-Type: application/json" \
+                  --data-binary "@$tmp/create.json" "$api")
+      case "$code" in
+        20*)
+          echo "release created" ;;
+        409)
+          # The tag already carries a release. That is the normal state when
+          # a tag is moved and pushed again to re-run this pipeline, so it is
+          # an update, not an error.
+          echo "release exists — updating it"
+          curl --fail-with-body --silent --show-error \
+               --request PUT \
+               --header "JOB-TOKEN: $CI_JOB_TOKEN" \
+               --header "Content-Type: application/json" \
+               --data-binary "@$tmp/update.json" "$api/$CI_COMMIT_TAG" > /dev/null
+          echo "release updated" ;;
+        *)
+          echo "the Releases API answered $code:" >&2
+          cat "$tmp/resp" >&2
+          exit 1 ;;
+      esac

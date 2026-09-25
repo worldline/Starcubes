@@ -1,0 +1,276 @@
+# ── The internal build ────────────────────────────────────────────────────────
+# The second of two build branches. `../Dockerfile` is the original and stays
+# the one the public world uses: Debian slim off Docker Hub, built by
+# .github/workflows/release.yml and by `./docker/build.sh` with nothing set.
+# This file is what .gitlab-ci.yml builds, on an instance where Docker Hub
+# cannot be reached and the only images available are the UBI-based ones in
+# oci.registry.csms.worldline-solutions.com/docker-reg/.
+#
+# **Keep the two in step.** Everything below that is not distro-bound is a
+# verbatim copy of ../Dockerfile and has to stay that way — the runtime `ENV`
+# blocks, the build-identity guard, `LABEL`, `EXPOSE`, `ENTRYPOINT`, and the
+# order of the `COPY` lines. A change to any of those in one file belongs in
+# the other on the same commit; nothing checks it, and a drift here shows up
+# as two images that claim the same version and behave differently.
+#
+# Exactly three things differ, all of them forced:
+#   1. the base is one image for all three stages, taken from $BASE_IMAGE,
+#      and packages come from `dnf` rather than `apt-get`;
+#   2. the Python environment lives in a venv at /opt/venv instead of being
+#      copied out of /usr/local (see stage 2);
+#   3. the JS stage installs nodejs from the base rather than starting from
+#      a node image — the newest one in the internal registry is
+#      awl-u8-nodejs16, while UBI 10's AppStream carries Node 22.
+#
+# See docs/releases.md, "GitLab — .gitlab-ci.yml".
+
+# The base, for every stage. The default is the internal image; a build from
+# outside that network can point this at the public UBI 10 base, which is the
+# same dnf world and needs no login:
+#     STARCUBES_BASE_IMAGE=registry.access.redhat.com/ubi10/ubi:latest \
+#         STARCUBES_DOCKERFILE=docker/Dockerfile.ubi ./docker/build.sh
+ARG BASE_IMAGE=oci.registry.csms.worldline-solutions.com/docker-reg/wl-u10-python312:latest
+
+# ── Stage 1: JS vendor (npm install the published package) ────────────────────
+# Pulls the pre-built dist/timeseries.js from the published npm tarball and
+# copies it into a stable path that Django's collectstatic will pick up via
+# STATICFILES_DIRS. The published @hgruber/timeseries.js tarball ships a
+# pre-built IIFE bundle in dist/, so no esbuild / bundling step is needed.
+FROM ${BASE_IMAGE} AS jsbuilder
+
+# The Worldline images may set a non-root USER; the package steps need root.
+# The original's python:*-slim stages run as root throughout, and so does the
+# image this file produces.
+USER root
+
+# An internal npm mirror, if there is one. Empty means the public registry,
+# which is what the original does — the same shape as $STARCUBES_IMAGE in the
+# pipeline: "pull from somewhere else" is a variable, not an edit.
+ARG NPM_REGISTRY=""
+
+RUN dnf -y install nodejs npm && dnf clean all
+
+WORKDIR /js
+COPY package.json package-lock.json ./
+RUN set -eu; \
+    if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi; \
+    npm ci --omit=dev --no-audit --no-fund
+# The bundle and its licence together: timeseries.js is MIT, which requires
+# its copyright notice to ship with the code, and the published bundle is
+# minified with no banner of its own. Both land in viz/static/timeseries/
+# via the single COPY --from=jsbuilder below. See THIRD-PARTY-NOTICES.
+RUN mkdir -p /js/vendor/timeseries && \
+    cp node_modules/@hgruber/timeseries.js/dist/timeseries.min.js \
+       /js/vendor/timeseries/timeseries.js && \
+    cp node_modules/@hgruber/timeseries.js/LICENSE \
+       /js/vendor/timeseries/LICENSE
+
+# ── Stage 2: Python build ─────────────────────────────────────────────────────
+# Every requirements.txt wheel is manylinux (nothing compiled from source)
+# except uwsgi, which ships as sdist only and needs a C compiler.
+#
+# pcre2-devel is not optional padding: uwsgi silently compiles WITHOUT its
+# regex features when it cannot find PCRE, which takes `route` rules and a
+# regex `static-map` with it — no error, they just stop matching. The runtime
+# stage carries the pcre2 runtime library anyway (nginx depends on it), so
+# this costs nothing in the final image.
+FROM ${BASE_IMAGE} AS builder
+
+USER root
+ARG PIP_INDEX_URL=""
+
+# python3/python3-pip are already there on a python base image and this is a
+# no-op; naming them is what keeps a bare ubi10/ubi base working too.
+#
+# python3-devel is where this differs from the original in a way that is easy
+# to miss: the official python:* images carry Python.h themselves, an RPM
+# python does not, and without it uwsgi's build stops at
+# `fatal error: Python.h: No such file or directory`. A python base image may
+# or may not have it — name it and neither case matters.
+RUN dnf -y install python3 python3-pip python3-devel gcc glibc-devel pcre2-devel \
+    && dnf clean all
+
+# A venv at a fixed path, and the whole of it copied into the runtime stage.
+# This is where the file departs from ../Dockerfile, which copies
+# /usr/local/lib/python3.12/site-packages/ and /usr/local/bin/uwsgi by
+# absolute path — those paths are a property of the official python:* images.
+# An RPM python puts its packages under /usr/lib/python3.12/site-packages and
+# a Red Hat s2i image under /opt/app-root, so a copy by absolute path would
+# depend on which flavour $BASE_IMAGE happens to be. /opt/venv is ours.
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+COPY requirements.txt /tmp/
+
+RUN set -eu; \
+    if [ -n "$PIP_INDEX_URL" ]; then set -- --index-url "$PIP_INDEX_URL"; else set --; fi; \
+    pip install --no-cache-dir "$@" -r /tmp/requirements.txt uwsgi
+
+# Runtime image doesn't need pip / setuptools / wheel — strip them after the
+# install, before the venv is copied into the runtime stage. The glob on the
+# python version is deliberate: the interpreter comes from $BASE_IMAGE and a
+# hard-coded python3.12 would turn a base image bump into a silent no-op that
+# ships pip and 36 MB of pandas tests.
+#
+# No package ships code under tests/ that is needed at runtime. Plural only —
+# a singular `test` dir matches exactly one thing here, and it is
+# django/test/, Django's own test framework package (520 KB). Not worth
+# deleting, and deleting it breaks any import of django.test.
+RUN set -eu; \
+    site=$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])'); \
+    rm -rf "$site"/pip* "$site"/setuptools* "$site"/wheel*; \
+    find "$site" -name 'tests' -type d -exec rm -rf {} +; \
+    true
+
+# ── Stage 3: runtime ─────────────────────────────────────────────────────────
+FROM ${BASE_IMAGE}
+
+USER root
+
+# libaio is the Oracle instantclient dependency the original installs as
+# Debian's libaio1.
+RUN dnf -y install python3 nginx libaio && dnf clean all
+
+# Python packages and uwsgi from builder — one path, and it carries the
+# uwsgi binary in /opt/venv/bin. docker/entrypoint.sh calls python3, nginx and
+# uwsgi through PATH only, so nothing there has to know about this.
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# App
+WORKDIR /app
+COPY . /app/
+
+# Drop the .gitkeep placeholder that `COPY .` brought in for
+# `viz/static/timeseries/`; the bundle below replaces it. Without this,
+# `collectstatic` would see two paths for `timeseries.js` (the `.gitkeep`
+# parent and the jsbuilder drop-in) and emit `Found another file`
+# warnings.
+RUN rm -rf /app/viz/static/timeseries
+
+# Vendored timeseries.js from JS vendor stage — lands in viz/static/timeseries/
+# and is picked up by Django's collectstatic via the `viz` app's
+# staticfiles finder (INSTALLED_APPS + AppDirectoriesFinder).
+COPY --from=jsbuilder /js/vendor/timeseries/ /app/viz/static/timeseries/
+
+# Writable dirs for rootless podman (no chown needed — rootless maps to your UID)
+# /app/logs is only a spool: each ETL/rollup process ships its output into
+# starcubes_meta.log_line and removes the file (core/log_ship.py). No volume
+# needed — see docs/etl-engine.md "ETL logging".
+RUN mkdir -p /app/staticfiles /app/logs /run/nginx /var/log/nginx
+
+# ── Config files ──────────────────────────────────────────────────────────────
+COPY docker/nginx.conf /etc/nginx/nginx.conf
+# Placeholder so `nginx -t` works on the bare image; entrypoint.sh rewrites it
+# on every start according to STARCUBES_TRUST_PROXY_SSL.
+RUN printf 'uwsgi_param HTTP_X_FORWARDED_PROTO $scheme;\nuwsgi_param HTTP_X_FORWARDED_SSL   "";\n' \
+      > /etc/nginx/starcubes-scheme.conf
+COPY docker/uwsgi.ini  /etc/uwsgi.ini
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# ── Runtime env ────────────────────────────────────────────────────────────────
+# All config via env vars. Defaults shown; override at podman run/create.
+# LD_LIBRARY_PATH includes /app/oracle so the dynamic linker and
+# oracledb thick mode find Oracle instantclient in all processes
+# (including podman exec).  init_oracle_client() scans LD_LIBRARY_PATH
+# for libclntsh.so and enables thick mode automatically, with Oracle Net
+# compression requested on every connection; the log names the mode.
+# STARCUBES_ALLOWED_HOSTS is a security setting, not a convenience one:
+# docker/nginx.conf forwards the raw client Host header (uwsgi_param HTTP_HOST
+# $http_host) so Django sees the port it needs for the CSRF origin and the OIDC
+# redirect_uri, and Django's ALLOWED_HOSTS check is what makes trusting that
+# header safe. `*` would switch that check off, so the default is the loopback
+# names only. Reaching the container under any other name — the machine
+# hostname, a LAN address, a proxied domain — requires overriding this, or
+# Django answers 400 "Invalid HTTP_HOST header".
+# STARCUBES_TRUST_PROXY_SSL=1 makes Django trust `X-Forwarded-Proto: https`,
+# which it needs to build https:// URLs (CSRF origin, OIDC redirect_uri) when
+# TLS is terminated by a proxy in front of this container. Only enable it when
+# such a proxy exists and sets that header itself — see HOWTO.md "SSO login".
+ENV STARCUBES_POSTGRES_DSN="" \
+    STARCUBES_SECRET_KEY="change-me-in-production" \
+    STARCUBES_ALLOWED_HOSTS="127.0.0.1,localhost,[::1]" \
+    STARCUBES_DEBUG="0" \
+    STARCUBES_TRUST_PROXY_SSL="0" \
+    LD_LIBRARY_PATH="/app/oracle" \
+    STARCUBES_LOG_DIR="/app/logs" \
+    STARCUBES_ETL_LOG_STDOUT="1"
+
+# Keycloak/OIDC SSO — off by default (empty ISSUER/CLIENT_ID/CLIENT_SECRET
+# means the login page shows password-only). See HOWTO.md "SSO login".
+ENV STARCUBES_OIDC_ISSUER="" \
+    STARCUBES_OIDC_CLIENT_ID="" \
+    STARCUBES_OIDC_CLIENT_SECRET=""
+
+# Alarm notification transports — off by default (presence-as-switch, see
+# starcubes/settings.py). SMTP needs HOST+FROM; XMPP needs the bot JID and
+# its password; PagerDuty is enabled per datasource by its routing key, so
+# only the endpoint/severity knobs are global. Full table in
+# docs/deployment-config.md.
+#
+# Only empty values here, never a default. These keys are also editable on the
+# Transports page, where a non-empty environment value counts as "set via
+# environment" and locks the field — a default spelled out here would lock
+# SMTP port/TLS/subject prefix, XMPP port, the PagerDuty knobs and the SSO
+# display name in every container. The defaults live in the code (settings.py
+# and the resolvers), which is where a checkout gets them too.
+ENV STARCUBES_SMTP_HOST="" \
+    STARCUBES_SMTP_USER="" \
+    STARCUBES_SMTP_PASSWORD="" \
+    STARCUBES_SMTP_FROM="" \
+    STARCUBES_XMPP_JID="" \
+    STARCUBES_XMPP_PASSWORD="" \
+    STARCUBES_XMPP_HOST=""
+
+# ── Build identity ────────────────────────────────────────────────────────────
+# The version comes from the git tag, and the tag cannot travel in the COPY
+# above: `.dockerignore` keeps `.git` out of the build context on purpose, so
+# nothing inside the image can run `git describe`. docker/build.sh resolves
+# the version, the commit and the build time outside and passes all three in;
+# starcubes/version.py reads them back out of the environment, where they
+# take precedence over the git lookup it would do in a checkout.
+#
+# A build that bypasses build.sh and passes nothing is refused below rather
+# than quietly producing an image that has lost its identity — that is how a
+# container ended up reporting its version as "unknown". Empty means "you
+# forgot"; an explicit --build-arg STARCUBES_VERSION=unknown means "I know,
+# I am building without git" and is let through. Only the version is
+# required: the commit and the build time are additions to it.
+#
+# Last in the file for two reasons. A new commit changes only these three
+# values, so nothing above them is invalidated — and the guard's RUN takes
+# the version into its cache key, which past `npm ci` and `pip install`
+# would rebuild the world on every commit. Here it sits in front of nothing
+# but LABEL, EXPOSE and ENTRYPOINT, so it costs nothing.
+ARG STARCUBES_VERSION=""
+ARG STARCUBES_BUILD_REF=""
+ARG STARCUBES_BUILD_DATE=""
+
+RUN test -n "$STARCUBES_VERSION" || { \
+      echo "" >&2; \
+      echo "STARCUBES_VERSION is empty — this image could not name its own version." >&2; \
+      echo "" >&2; \
+      echo "  Build with ./docker/build.sh, which resolves it from the git tag." >&2; \
+      echo "  To build without a version on purpose, say so:" >&2; \
+      echo "      podman build --build-arg STARCUBES_VERSION=unknown ..." >&2; \
+      echo "" >&2; \
+      echo "  See docs/releases.md." >&2; \
+      echo "" >&2; \
+      exit 1; \
+    }
+
+ENV STARCUBES_VERSION=$STARCUBES_VERSION \
+    STARCUBES_BUILD_REF=$STARCUBES_BUILD_REF \
+    STARCUBES_BUILD_DATE=$STARCUBES_BUILD_DATE
+
+LABEL org.opencontainers.image.title="starcubes" \
+      org.opencontainers.image.description="Timeseries analytics over a SQL source: ETL, star schema and chart in one container" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.version="$STARCUBES_VERSION" \
+      org.opencontainers.image.revision="$STARCUBES_BUILD_REF" \
+      org.opencontainers.image.created="$STARCUBES_BUILD_DATE"
+
+EXPOSE 8080
+
+ENTRYPOINT ["/entrypoint.sh"]

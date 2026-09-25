@@ -4,6 +4,14 @@
 # package-lock.json pair via `npm ci` inside the Dockerfile's jsbuilder
 # stage — no submodule dance is needed.
 #
+# There are two Dockerfiles. `Dockerfile` is the original and the default
+# here: Debian slim off Docker Hub, which is what the public build and every
+# checkout use. `docker/Dockerfile.ubi` is the internal branch — UBI 10 off
+# the Worldline registry, for an instance that cannot reach Docker Hub — and
+# is selected by STARCUBES_DOCKERFILE, which .gitlab-ci.yml sets. With none
+# of the STARCUBES_* variables below set, this script builds exactly what it
+# always built.
+#
 # This is also where a release gets its identity. The version comes from the
 # git tag, resolved by starcubes/version.py: this script *asks* that module
 # rather than reimplementing `git describe` in shell, so there is exactly one
@@ -37,7 +45,20 @@ build_ref=$(git rev-parse --short HEAD 2>/dev/null || true)
 build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
 engine="${CONTAINER_ENGINE:-podman}"
+
+# Which Dockerfile to build, and what it builds on. Resolved against the repo
+# root, which this script has already cd'd into.
+dockerfile="${STARCUBES_DOCKERFILE:-Dockerfile}"
+test -f "$dockerfile" || {
+    echo "build.sh: no such Dockerfile: $dockerfile" >&2
+    echo "  (STARCUBES_DOCKERFILE is resolved against the repo root)" >&2
+    exit 1
+}
+
 echo "building starcubes:$image_tag (${build_ref:-no commit}) with $engine" >&2
+if [ "$dockerfile" != Dockerfile ]; then
+    echo "  from $dockerfile" >&2
+fi
 case "$version" in
     unknown)
         echo "  note: no release tag found — this image cannot name its version" >&2 ;;
@@ -49,7 +70,22 @@ esac
 # registry in play, :latest simply means "the one I built last", which is what
 # the README quickstart runs. Extra "$@" args are appended, so an explicit -t
 # still works.
-exec "$engine" build -f Dockerfile \
+# Build args that only the internal Dockerfile declares: the base image and
+# the two package mirrors. Passed on only when set, so the default build keeps
+# the base its own Dockerfile names and reaches the public npm/PyPI exactly as
+# before. Prepended rather than appended, so an explicit argument of the
+# caller's still wins. See docs/releases.md, "Two build branches".
+if [ -n "${STARCUBES_BASE_IMAGE:-}" ]; then
+    set -- --build-arg "BASE_IMAGE=$STARCUBES_BASE_IMAGE" "$@"
+fi
+if [ -n "${STARCUBES_NPM_REGISTRY:-}" ]; then
+    set -- --build-arg "NPM_REGISTRY=$STARCUBES_NPM_REGISTRY" "$@"
+fi
+if [ -n "${STARCUBES_PIP_INDEX_URL:-}" ]; then
+    set -- --build-arg "PIP_INDEX_URL=$STARCUBES_PIP_INDEX_URL" "$@"
+fi
+
+exec "$engine" build -f "$dockerfile" \
     --build-arg "STARCUBES_VERSION=$version" \
     --build-arg "STARCUBES_BUILD_REF=$build_ref" \
     --build-arg "STARCUBES_BUILD_DATE=$build_date" \

@@ -338,6 +338,12 @@ A process reads its environment once, so a change takes a restart. The one
 live path is the GUI, and only for the
 [alarm transports and SSO](#alarm-transports-and-sso).
 
+This table is runtime only. The handful of variables that steer the *build*
+— `STARCUBES_DOCKERFILE`, `STARCUBES_BASE_IMAGE`, `STARCUBES_NPM_REGISTRY`,
+`STARCUBES_PIP_INDEX_URL` — have neither a checkout default nor an image
+default, and nothing in a built image remembers them. They are listed in
+[`releases.md`, "Two build branches"](releases.md#two-build-branches).
+
 ### Database, HTTP and Django
 
 | Variable | Default | Image | Effect |
@@ -506,6 +512,17 @@ working for a datasource whose source database is down, which is one of the
 states it exists to report.
 
 ## Build / dependencies
+
+- **There are two Dockerfiles.** `Dockerfile` at the repo root is the
+  original and the default — Debian slim off Docker Hub.
+  `docker/Dockerfile.ubi` builds the same image on UBI 10 out of the internal
+  Worldline registry, for the GitLab instance that cannot reach Docker Hub;
+  `.gitlab-ci.yml` selects it with `STARCUBES_DOCKERFILE`. They share
+  `entrypoint.sh`, `nginx.conf`, `uwsgi.ini`, every runtime `ENV` below and
+  the build-identity guard — by copy, since a Dockerfile cannot include
+  another, so a change to a shared part belongs in both files. The full
+  comparison and the four build-time variables that steer it are in
+  [`releases.md`, "Two build branches"](releases.md#two-build-branches).
 
 - **Always build the container image via `docker/build.sh`, never
   `podman build`/`docker build` directly.** The wrapper exists for two
