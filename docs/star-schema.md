@@ -52,8 +52,11 @@ behaviour of the ETL that *populates* it lives in
   initial value set is unknown. The ETL parent process discovers new
   source values per chunk and INSERTs dim rows on the fly with
   `name = source_id` and `description = 'auto-discovered <UTC ts>'`. The
-  32 767 ceiling still applies — use the GUI's cardinality estimate
-  before promoting a column.
+  32 767 ceiling still applies — use the GUI's cardinality estimate before
+  promoting a column (on a log source, the probe reports the distinct count
+  for every group at once, before a row is loaded). Since migration 0047 the
+  ceiling is guarded rather than merely documented; see "A ceiling is not a
+  cliff" below.
 - **High watermark (HWM)** — `max(watermark_column)` in the source. The
   ETL loads `[last_successful_hwm - late_arrival_overlap_s, current_hwm)`
   on each run; only `kind='incremental'` runs advance it.
@@ -197,6 +200,28 @@ in the warehouse. They are stable unless this document changes.
 - **`smallint` dimension keys** — the point of the whole compact-star model.
   2 bytes per fact row instead of the source's 4–20 byte key. The 32 767
   ceiling is a deliberate tradeoff. High-cardinality dims do not belong here.
+
+**A ceiling is not a cliff, since migration 0047.**
+`core/etl.py:AUTO_DIM_MAX` (`STARCUBES_AUTO_DIM_MAX`, default 30000) stops
+`_resolve_auto_dim_chunk` inserting *below* the wall, because hitting the wall
+is not a graceful failure: the INSERT raises mid-chunk inside a load that has
+already `COPY`ed rows, and the run dies with a sequence error naming nothing
+an operator can act on. Above the cap values map to **`__unknown__`**, one
+WARNING is logged per run and `stats.extract.auto_dim_capped` carries the
+per-table counts — a chart with one visibly wrong bucket instead of a
+datasource that cannot load at all.
+
+They go to `__unknown__` and never to the `-1` sentinel, and the distinction
+is the point: `-1` says the source had no value, `__unknown__` says it had one
+we could not map. Conflating them is the kind of wrong that looks right —
+measured on the first run of the cap, 623 requests that all carried a path
+were filed under "no path". `__unknown__` is also what regular dimensions
+already use for the same situation in `_transform_worker`.
+
+The net is not specific to log sources; a SQL auto-dimension pointed at
+something unbounded has always been able to do this. Log sources merely make
+it likely, which is why the column generator flags a high-cardinality group
+and leaves it unticked — see [`logfile-source.md`](logfile-source.md).
 
 - **`cncy_code` has role `dimension` with an inline CSV dimension.** It's a
   currency code stored raw as smallint; no source lookup table. The ETL

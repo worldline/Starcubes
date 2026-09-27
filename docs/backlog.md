@@ -190,6 +190,15 @@ Three of the closed items at the end are cross-referenced from it.
   still grates afterwards, C is a mechanical follow-up because every read
   site already goes through the registry by then.
 
+  **First concrete customer, added since:** migration 0047 put six columns on
+  the table at once (`log_line_regex`, `log_record_start`, `log_time_format`,
+  `log_time_zone`, `log_encoding`, `log_min_match_pct`), taking it to 48. A
+  `log_config jsonb` was considered and rejected for the reason recorded under
+  A — the existing machinery (`_SOURCE_TEXT_FIELDS`, the `UPDATE SET`,
+  `{{ ds.log_line_regex }}` in the template) works with columns unchanged. But
+  six at once is the clearest price this entry has been paid, and they are
+  cohesive enough to be a good first registry group if B is ever built.
+
 ## Grouped-dimension merge sums averages and extremes
 
 `core/query.py`'s `group_by_grouped` branch merges per-index rows into group

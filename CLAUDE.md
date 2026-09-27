@@ -44,6 +44,16 @@ branch — **`master` is the only long-lived branch.**
 - **[`docs/etl-engine.md`](docs/etl-engine.md)** — read when editing
   `core/etl.py`, `sources/etl_logging.py`, `sources/etl_spawn.py`, or
   `sources/management/commands/etl_run.py`.
+- **[`docs/logfile-source.md`](docs/logfile-source.md)** — log files as the
+  second kind of source. Read when editing `core/logsource.py`,
+  `check_logsource`, the `is_logfile` branches in `core/etl.py` /
+  `core/source.py` / `core/preflight.py`, or the Log Source card in
+  `sources/templates/sources/_logfile_card.html` / `_logfile_js.html`. Its
+  load-bearing points: the watermark is a timestamp and not an offset (which
+  is what keeps backfill, retention, rollups and alarms working), there is
+  deliberately **no primary key**, `_ceil_second` is skipped there, and every
+  failure mode in the reader is silent — which is why
+  `manage.py check_logsource` exists and why its numbers are literals.
 - **[`docs/etl-audit.md`](docs/etl-audit.md)** — read when editing
   `core/audit.py` or the ETL tab's Audit sub-tab in
   `sources/templates/sources/source.html`.

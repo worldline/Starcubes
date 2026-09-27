@@ -132,6 +132,10 @@ HELP_DOCS = (
     HelpDoc("etl-engine", "docs/etl-engine.md", "ETL engine",
             "The three-stage pipeline in detail",
             GROUP_CONCEPTS),
+    HelpDoc("logfile-source", "docs/logfile-source.md", "Log file sources",
+            "Reading a log instead of a database: transports, the pattern, "
+            "and what a log cannot give",
+            GROUP_CONCEPTS),
     HelpDoc("etl-audit", "docs/etl-audit.md", "Audit modes",
             "The three audit modes, and why each exists",
             GROUP_CONCEPTS),

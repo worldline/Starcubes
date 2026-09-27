@@ -14,6 +14,56 @@ runs through further pre-release tags — see
 
 ### Added
 
+- **Log files as a second kind of datasource.** `source_dialect` gains
+  `logfile`, and such a datasource takes its measures and dimensions from the
+  **named groups of a regular expression** instead of from a query. Every
+  dimension is an auto-dimension, because a log's value set is not knowable up
+  front. Four transports, all in the one `source_dsn` field so DSN masking,
+  the connection test and the profiles keep working: `file://` (a path or
+  glob, rotated generations read oldest-first with `.gz`/`.bz2`/`.xz` unpacked
+  on the fly), `sftp://` (the same glob on the machine that wrote the log;
+  host keys verified), `https://` (one resource, using `Last-Modified` and a
+  suffix `Range` where the server offers them) and `exec://` (a command's
+  stdout, **off unless the deployer allows the program**, with `{from}` /
+  `{until}` so the source does the windowing).
+
+  Configuring one is meant to be *easier* than a SQL source, not merely
+  possible — a SQL datasource has no schema introspection at all, while a log
+  can be read. **Probe** reads the newest lines and reports the match rate and
+  every named group with example values, a distinct count, a guessed type and
+  a proposed role; one button writes the ticked groups as fact columns and
+  their dimensions. A group whose distinct count approaches the line count
+  arrives unticked with the 32 767 ceiling named, and a group whose values are
+  not all numbers is reported as needing a transform. Four profiles ship for
+  the standard formats: `nginx_combined`, `apache_combined`,
+  `syslog_rfc3164` and `haproxy_httplog`.
+
+  `fact_column` gains a **value transform** (`transform_pattern` /
+  `transform_replace`), applied before the type cast, which is what lets one
+  mechanism both collapse an unbounded value into a usable dimension and map a
+  format's "no value" token onto a number — nginx's `-` and HAProxy's `-1` are
+  the everyday cases. Lines that do not parse land in a new
+  `starcubes_meta.etl_unparsed` and an **Unparsed** tab beside the ETL
+  history, with an optional `log_min_match_pct` that fails a run outright when
+  the format changes.
+
+  Two things work differently and deliberately so. There is **no primary
+  key**: `last_end_time` is the window's upper, half-open bound and a log is
+  kept in timestamp order, so the arithmetic alone is exact. And the **audit
+  is switched off**, because both of its questions need something a log file
+  cannot give; the Unparsed tab, the match threshold and the pipeline alarms
+  are what watch a log source instead. See
+  [`docs/logfile-source.md`](docs/logfile-source.md).
+
+- **A cardinality net on auto-dimensions, for every kind of source.**
+  `STARCUBES_AUTO_DIM_MAX` (default 30000) stops new dimension values being
+  inserted below the hard 32 767 `smallserial` wall. Hitting that wall is not
+  a graceful failure — the INSERT raises mid-chunk inside a load that has
+  already written rows — so values above the cap map to `__unknown__` with one
+  warning per run and a count in `etl_run.stats`. Not specific to log sources;
+  a SQL auto-dimension pointed at something unbounded has always been able to
+  do this.
+
 - **A release pipeline for GitLab**, alongside the existing GitHub one.
   A `v*` tag pushed to the internal remote now builds the image, pushes it
   to that project's container registry, publishes the source zip to the

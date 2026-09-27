@@ -44,6 +44,21 @@ production incidents.
   backfill) deliberately keeps the buffered read: its batches are ≤ 1000
   rows and are materialised whole, where a named cursor is pure overhead.
 
+  **There is a third producer of `chunks`, and it is not a cursor at all.** A
+  datasource with `source_dialect = 'logfile'` reads files instead of rows —
+  `core/logsource.py:LogReader.iter_chunks`, taking the window as two
+  arguments and filtering on a timestamp parsed out of each line. It yields
+  DataFrames of exactly the same shape, so everything from the transform
+  queue onwards is unchanged and never learns what read the rows.
+  `_targeted_chunks` is what proved that seam was real before anything used
+  it. See [`logfile-source.md`](logfile-source.md); the differences that do
+  reach this file are that `source_engine` is None throughout, the `WHERE`
+  clause and the small-window hint are skipped, `Source.ceil_watermark`
+  replaces every direct `_ceil_second` call (it passes through for a log
+  source, which has no second-granularity index to spare), and
+  `_resume_state` returns a fourth value, `skip_at_start`, for the
+  crash-resume de-duplication that stands in for a primary key.
+
   Three consequences on Postgres, none of them prevented: `statement_timeout`
   now bounds each `FETCH` rather than the read as a whole (the wall clock in
   `_RunBudget` is what bounds the run); the planner works under

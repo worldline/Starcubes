@@ -701,7 +701,7 @@ Click **+ New Datasource** on the list page. The form has four cards:
 |-------|----------|-------------|
 | Name | yes | Short identifier used in URLs and schema names (e.g. `mydb`) |
 | Schema Name | yes | Postgres schema for warehouse tables (e.g. `starcubes_mydb`) |
-| Dialect | yes | Source database dialect: `oracle`, `postgresql`, `mysql`, or `mssql` |
+| Dialect | yes | `oracle`, `postgresql`, `mysql`, `mssql` — or **`logfile`**, which swaps the SQL cards below for a Log Source card and is described in its own section further down |
 
 #### Source Connection
 
@@ -730,6 +730,56 @@ Click **+ New Datasource** on the list page. The form has four cards:
 | Bar Pixel Target | no | Minimum bar width in pixels for auto-interval selection (default 5) |
 
 Click **Create Datasource** to save. You are redirected to the detail page.
+
+#### Creating a log-file datasource
+
+Pick **`logfile`** as the dialect and the form changes: Import Query, Base
+Table, Small Window Hint and Watermark Max Query disappear — a log has none of
+them — and a **Log Source** card appears.
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| Source DSN | yes | Where the log is. `file:///var/log/nginx/access.log*` (a path or glob in the container), `sftp://user@host/var/log/app.log*`, `https://host/logs/app.log` (one resource, no glob), or `exec:///usr/bin/journalctl -u app --since {from} --until {until} -o short-iso` |
+| Line Regex | yes | The pattern whose **named groups** the fact columns are read from — `(?P<name>…)`. A fact column's Source Expression holds a group's name instead of SQL |
+| Time Format | no | `strptime` for the time group. Blank auto-detects ISO-8601; `@epoch` / `@epoch_ms` for numeric stamps |
+| Time Zone | no | IANA name, applied only when the timestamp carries no offset. Blank means UTC. **Nothing can detect a wrong value here** — set it to the zone the logging host runs in |
+| Record Start | no | Optional second regex marking the first line of a record, so a multi-line stack trace stays one row. Blank means one line is one record |
+| Encoding | no | Blank means utf-8 |
+| Minimum Match % | no | 0 disables it. Otherwise the share of lines that must match, below which a run fails with the rate named |
+| Time Group | yes | The **Watermark Column** field, relabelled: for a log source it holds the name of the group carrying the timestamp |
+
+Rotated generations are read oldest-first and `.gz` / `.bz2` / `.xz` are
+unpacked on the fly, so the history reaches as far back as the rotation does.
+Late Arrival Overlap is fixed at 0 and disabled: it de-duplicates by primary
+key, and log lines have none — nor do they need one.
+
+**Then press Probe.** It reads the newest lines, applies the pattern, and
+shows the match rate, every named group with example values, its distinct
+count, a guessed type and a proposed role. On the datasource page a button
+below it writes the ticked groups as fact columns and their dimensions; on the
+create form the probe is a regex check only, since the columns need a
+datasource to be written to — so the order there is Probe, Create, then adopt
+on the datasource page.
+
+Two things the probe tells you that are worth acting on. A group flagged
+**high cardinality** arrives unticked: a dimension holds at most 32 767
+values, and an unreduced URL path fills that in minutes. A group reported with
+**values that are not numbers** needs a Transform — nginx writes `-` for the
+response size when there was no body, and without a transform every such line
+fails its cast. Both are fixed the same way, on the fact column: a Transform
+pattern and its replacement, applied before the type cast. `^(/[^/?]*).*$` →
+`\1` keeps a path's first segment; `^-$` → `0` rescues the cast.
+
+The shipped profiles do all of this for you — `nginx_combined`,
+`apache_combined`, `syslog_rfc3164` and `haproxy_httplog` — so for a standard
+format the fastest route is to pick one, set the Source DSN and press Create.
+
+Two things work differently afterwards. The **Audit** sub-tab is switched off
+and says why: both of its questions need something a log file cannot give.
+What watches a log source instead is the **Unparsed** sub-tab beside it,
+listing the lines the pattern stopped matching, together with Minimum Match %
+and the pipeline alarms. See
+[`docs/logfile-source.md`](docs/logfile-source.md) for the whole picture.
 
 #### Profile
 

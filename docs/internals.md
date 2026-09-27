@@ -7,8 +7,11 @@ covers the architecture, the repo layout, the command-line quick start and
 the anatomy of a datasource definition.
 
 A single-app datawarehouse. Pulls rows from arbitrary SQL sources (Oracle,
-Postgres, MySQL, MSSQL) into a compact star schema on Postgres and serves them
-as stacked-bar timeseries with arbitrary dimension filters.
+Postgres, MySQL, MSSQL) **or from log files** into a compact star schema on
+Postgres and serves them as stacked-bar timeseries with arbitrary dimension
+filters. A log datasource takes its measures and dimensions from the named
+groups of a regular expression instead of from a query — see
+[`logfile-source.md`](logfile-source.md).
 
 Successor to the earlier hard-coded ETL in `star.py`. Optimised for
 **minimal storage** (smallint-keyed dimensions, BRIN index, unlogged monthly
@@ -21,6 +24,10 @@ datasource lives as metadata rows in `starcubes_meta`, editable from a GUI).
   - `source.py` — `Source` / `FactColumn` / `Dimension` / `FactIndex`
     dataclasses, `Source.load`, the shared SQLAlchemy engine cache
     (`_get_cached_engine`), and the per-dialect watermark/clock expressions.
+  - `logsource.py` — a log file as a source: the four transports, the
+    line parser, the value transform and the GUI's probe. Produces the same
+    DataFrame chunks the SQL extract does, so nothing downstream changes.
+    See [`logfile-source.md`](logfile-source.md).
   - `schema.py` — DDL (`create_fact`, `create_dim_tables`, `create_indices`,
     `drop_indices`, `sync_schema`, `drop_schema`), dimension import/read, the
     partition lifecycle, and `ensure_starcubes_meta`.
@@ -96,8 +103,10 @@ Two non-answers are worth naming, because both come up:
   | Oracle / PG / MySQL /  |  |  extract  ----> |  |  starcubes_meta         |
   | MSSQL (SQLAlchemy URL) |->|  transform ---> |->|  starcubes_<name>       |
   +------------------------+  |  load (COPY)    |  |    fact (part.)     |
-                              +-----------------+  |    dim_*            |
-                                                   +---------------------+
+  +--- or a log file ------+  |                 |  |    dim_*            |
+  | file:// sftp:// https://|->|  (core/         |  +---------------------+
+  | exec://  + a regex     |  |   logsource.py) |
+  +------------------------+  +-----------------+
                                                              ^
                                                              |
                                                       viz / filter UI
@@ -119,6 +128,7 @@ Two non-answers are worth naming, because both come up:
 ```
 core/                       framework-agnostic ETL core (no Django imports)
   source.py                 Source / Dimension / FactColumn / FactIndex dataclasses
+  logsource.py              log files as a source: transports, parser, transform, probe
   schema.py                 DDL + dim import/read + sync_schema + ensure_starcubes_meta
   etl.py                    three-stage extract/transform/load engine + maintenance ops
   query.py                  timeseries_multibar JSON producer
@@ -262,6 +272,12 @@ The output matches the shape documented in `examples.sql:43–62` and consumed
 by `timeseries.js`.
 
 ## Adding a new datasource
+
+For a **log file** the shape is different and shorter — pick `logfile` as the
+dialect, give it a location and a regex, press **Probe**, and tick the groups
+you want as columns. [`logfile-source.md`](logfile-source.md) is the whole
+story; the rest of this section is the SQL case.
+
 Use the GUI at `/sources/new/` or write a seed script modelled on
 `manage.py seed_example`. You need
 

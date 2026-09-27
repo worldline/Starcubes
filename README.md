@@ -127,6 +127,9 @@ And see what it costs you on disk, per table and per partition.
 | | |
 |---|---|
 | **Ingest** | Oracle, Postgres, MySQL, SQL Server via SQLAlchemy URLs |
+| | **Log files** — measures and dimensions are named groups of a regex, over `file://`, `sftp://`, `https://` or a command |
+| | Rotated generations read in order, `.gz`/`.bz2`/`.xz` unpacked on the fly |
+| | The columns offer themselves: probe the log, tick the groups, done |
 | | Incremental loads on a high watermark, resumable, killable |
 | | Late-arrival overlap for sources that publish out of order |
 | | Auto-dimensions — new values discovered and keyed during the load |
@@ -192,6 +195,7 @@ lifecycle, schema decisions — is in [`docs/internals.md`](docs/internals.md).
 | [`docs/internals.md`](docs/internals.md) | Architecture, repo layout, CLI quick start |
 | [`docs/star-schema.md`](docs/star-schema.md) | Domain vocabulary and schema decisions |
 | [`docs/etl-engine.md`](docs/etl-engine.md) | The three-stage pipeline in detail |
+| [`docs/logfile-source.md`](docs/logfile-source.md) | Log files as a source: transports, the pattern, and what a log cannot give |
 | [`docs/etl-audit.md`](docs/etl-audit.md) | The three audit modes |
 | [`docs/alarm.md`](docs/alarm.md) | Alarm evaluation and firing episodes |
 | [`docs/chart-app.md`](docs/chart-app.md) | The chart UI |

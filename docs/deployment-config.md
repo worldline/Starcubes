@@ -425,6 +425,20 @@ sane defaults and none is normally set.
 | `STARCUBES_DIM_FULL_WARN_PCT` | `80` | = | Dimension fill level that becomes a warning. |
 | `STARCUBES_MAX_RETENTION_DROPS` | `2` | = | Partitions retention may drop per housekeeping run. |
 | `STARCUBES_MAX_OVERLAP_PKS` | `5000000` | = | Ceiling on a de-duplicated reload. |
+| `STARCUBES_AUTO_DIM_MAX` | `30000` | = | Where `_resolve_auto_dim_chunk` stops inserting, below the 32767 `smallserial` wall. Above it values map to `__unknown__` with one WARNING per run and a count in `stats`, instead of the INSERT raising mid-chunk inside a load that has already `COPY`ed rows. **Applies to every source kind**, not just log ones. |
+| `STARCUBES_LOG_ROOTS` | `""` | `""` | **Log sources, a guard.** Colon-separated allowed path prefixes for `file://`; empty means any path the container can read. Symlinks are resolved before the check. |
+| `STARCUBES_LOG_EXEC` | `""` | `""` | **Log sources, a guard.** Comma-separated allowed programs for `exec://`, matched on `argv[0]` exactly. **Empty means `exec://` is refused**, which is what the shipped image does. Read from the environment and deliberately *not* through `core/config.py`: that resolver falls back to the GUI-editable `app_config`, and this decides whether configuring a datasource can run commands. |
+| `STARCUBES_LOG_SFTP_AUTOADD` | unset | unset | **Log sources.** `1` relaxes `sftp://` host-key verification to trust-on-*first*-use — paramiko persists the accepted key, so a later changed key is still refused. Unset means an unknown host is rejected until it is in `known_hosts`. |
+| `STARCUBES_LOG_MTIME_SKEW_S` | `3600` | = | How far before the window a file's mtime may sit and still be read. Slack against clock skew between a remote log writer and the host holding the file; skipping wrongly is silent loss, reading one file too many only costs time. |
+| `STARCUBES_LOG_TAIL_BYTES` | `65536` | = | Bytes read off the end of the newest generation to find the data tip. |
+| `STARCUBES_LOG_PROBE_LINES` | `500` | = | Lines the GUI's log probe reads. Bounded with the two below because it runs in a request, where uwsgi's `harakiri` kills the worker rather than the request. |
+| `STARCUBES_LOG_PROBE_BYTES` | `1000000` | = | Byte ceiling on the same probe. |
+| `STARCUBES_LOG_PROBE_SECONDS` | `10` | = | Wall-clock ceiling on the same probe. |
+| `STARCUBES_LOG_PROBE_WINDOW_S` | `86400` | = | How far back the probe's window reaches on a transport that takes one (`exec://`), so the command returns inside a request. |
+| `STARCUBES_LOG_NUMERIC_DIM_DISTINCT` | `50` | = | Distinct-value cap below which the column generator proposes a numeric group as a dimension rather than a measure. Paired with a share test, so both have to hold. |
+| `STARCUBES_LOG_SFTP_TIMEOUT_S` | `20` | = | Connect, banner and auth timeout for `sftp://`. |
+| `STARCUBES_LOG_HTTP_TIMEOUT_S` | `20` | = | Request timeout for `https://` / `http://`. |
+| `STARCUBES_UNPARSED_MAX` | `50` | = | Unparsed lines kept per run in `starcubes_meta.etl_unparsed`. The point is to show which line shape stopped matching, not to mirror the log into the warehouse. |
 | `STARCUBES_MAX_AUDIT_IDS` | `2000000` | = | Per-side ceiling on an audit's id comparison (about 46 bytes per id per side, measured). Above it the comparison refuses rather than exhaust a web worker. |
 | `STARCUBES_BACKFILL_IDS_MAX` | `100000` | = | Missing ids an audit will store for a targeted backfill. Past it the run is marked `ids_truncated` and only a window backfill is offered. |
 | `STARCUBES_ALARM_TIMEOUT_MS` | `30000` | = | Statement timeout on the alarm evaluator's fact queries. |

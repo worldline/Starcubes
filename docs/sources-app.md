@@ -122,7 +122,7 @@ The `/sources/` UI splits along three axes:
 | Any user          | `/sources/alarms/firings/`    | Global firing-episode overview (`?show=open` for the live breaches) |
 | Any user          | `/sources/alarms/export/`     | Every datasource's alarm rules as one backup file (`.yaml` attachment) |
 | Any user          | `/sources/<pk>/?tab=firings`  | The same overview scoped to one datasource (`&show=open` likewise) |
-| Superuser         | `/sources/<pk>/manage/`       | The same page forced to Expert: 12 tabs, adding Fact Columns, Dimensions, Dim Data, Indices, Storage, ETL (sub-tabbed into Run / Maintenance / Schema / Audit / History / Log) and Rollup (sub-tabbed into Status / Advise / Config / Build / Verify) |
+| Superuser         | `/sources/<pk>/manage/`       | The same page forced to Expert: 12 tabs, adding Fact Columns, Dimensions, Dim Data, Indices, Storage, ETL (sub-tabbed into Run / Maintenance / Schema / Audit / History / Log, plus **Unparsed** on a log source) and Rollup (sub-tabbed into Status / Advise / Config / Build / Verify) |
 | Superuser         | `/sources/new/`, `…/edit/`    | Datasource creation / scalar edit              |
 | Superuser         | `/sources/profiles/`          | Profile catalogue + upload (replaces the modal that used to live on `list.html`) |
 | Logged-in user    | `/sources/me/`                | Own profile, password change, alarm-channel opt-in (email/XMPP), query history    |
@@ -203,15 +203,39 @@ Notes:
   Group Dims, Measures and Alarms are editable by any signed-in user — that is
   the point of the page, and their endpoints are login-only.
 - `GET /sources/<pk>/manage/` — the same page forced to Expert (12 tabs; ETL
-  run / audit / history / log are sub-tabs of ETL, and the pre-aggregation's
-  five commands are sub-tabs of Rollup) (superuser only)
+  run / audit / history / log are sub-tabs of ETL — plus Unparsed on a log
+  source, listing the lines the pattern stopped matching — and the
+  pre-aggregation's five commands are sub-tabs of Rollup) (superuser only)
 - `GET/POST /sources/<pk>/edit/` — edit scalar fields (superuser only)
 - `POST /sources/<pk>/delete/` — delete (CASCADE in DB) (superuser only)
 
 ### JSON: connection / preview
-- `POST .../test-connection/` — temporary engine, `SELECT 1`, dispose
-- `POST .../connection-status/` — current connectivity badge
-- `POST .../preview-import/` — first 5 rows via `Source.load()`
+- `POST .../test-connection/` — temporary engine, `SELECT 1`, dispose. For a
+  log source it lists the files instead, and its *successful* answer carries
+  the count, total size and newest write time in `detail` — which is the part
+  an operator reads.
+- `POST .../connection-status/` — current connectivity badge (same split)
+- `POST .../preview-import/` — first 5 rows via `Source.load()`. A log source
+  has no import query; this answers with a sentence naming Probe.
+
+### JSON: log sources
+- `POST /sources/logfile/probe/` — **no pk**, which is the point: the create
+  form has no datasource yet, and offering the columns before anything is
+  stored is what makes a log source easier to configure than a SQL one. Takes
+  the form's fields, answers `{ok, files, lines_read, matched, match_pct,
+  time_group, groups, unmatched}`. A literal path, so it precedes the
+  `<str:slug>` routes for the same reason `profiles/` does.
+- `POST .../logfile/probe/` — the same view with a pk, which adds the stored
+  fields as a fallback and the configured fact columns, so the transform
+  preview has something to compare against. The datasource page sends no
+  fields at all and gets the stored configuration measured.
+- `POST .../logfile/adopt-columns/` — writes the ticked groups as fact columns
+  and their dimension rows in one transaction. Takes repeated `group` plus
+  `role_<group>` / `type_<group>`, a `time_group`, and `replace=true` to
+  discard an existing column set. Derives each column name through
+  `core.logsource.safe_column_name`, so a group called `user` becomes a
+  column `user_` with the group untouched. See
+  [`logfile-source.md`](logfile-source.md).
 
 ### JSON: ETL run / forever / status
 - `POST .../etl/run/` — spawn ETL subprocess. Accepts optional `start`, `end`, `limit` JSON fields.

@@ -11,6 +11,15 @@ datasource that has no DSN yet.
 
 ## Where profiles live
 
+> **Log profiles.** A profile for a log datasource carries the same blocks,
+> with two differences. The required keys under `source:` are
+> kind-dependent — `dialect`, `log_line_regex` and `watermark_column`, where a
+> SQL profile needs `base_table` — and each `fact_columns` entry may carry
+> `transform_pattern` / `transform_replace`, emitted only when set so a SQL
+> profile's export gains nothing and round-trips byte-identical. Four are
+> shipped: `nginx_combined`, `apache_combined`, `syslog_rfc3164` and
+> `haproxy_httplog`. See [`logfile-source.md`](logfile-source.md).
+
 | Where | Role |
 |---|---|
 | `profiles/examples/` | Shipped with the repo, tracked in git, read-only from the GUI |

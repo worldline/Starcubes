@@ -136,7 +136,7 @@ never started a worker.
 GUI's **Preflight** button runs with `repair=False`, reports the same
 findings and changes nothing.
 
-Nine checks, in cost order:
+Eleven checks, in cost order:
 
 | Check | Asks | Levels |
 |---|---|---|
@@ -145,7 +145,9 @@ Nine checks, in cost order:
 | `indices` | Are the indices and foreign keys `create_indices` would build present? | Warns, never blocks, **never builds** |
 | `warehouse_drift` | Does `fact` match the configured columns? (`sync_schema` dry run) | Blocks on a missing column or an unsafe type; warns on a safe widening or an orphan column |
 | `source_projection` | Does the source still project every fact column? (`WHERE 1=0`) | Blocks on a rejected query; warns on an unreachable source |
-| `watermark_tz` | Is the watermark column naive, the shape the load window binds against? (one indexed `max()`, handed forward to the load) | Blocks an aware column on a dialect whose session cannot be pinned to UTC; otherwise OK |
+| `watermark_tz` | Is the watermark column naive, the shape the load window binds against? (one indexed `max()`, handed forward to the load) | Blocks an aware column on a dialect whose session cannot be pinned to UTC; warns on a sub-second watermark with `late_arrival_overlap_s = 0`; otherwise OK |
+| `log_source` | *Log sources only.* Is the transport usable, are the guards satisfied, does the glob match anything? | Blocks a rejected configuration (bad URI, unknown scheme, a guard's refusal, a missing program, an **empty glob**); warns an unreachable source (DNS, TCP, SSH auth, HTTP, a missing host key) and a streaming transport with no lag set |
+| `log_pattern` | *Log sources only.* Does the regex compile, and does it capture a group for every fact column? | Blocks a missing group; warns a low match rate |
 | `watermark_tip` | Is the stored watermark standing above a fact tip that moved down? | Warns past `STARCUBES_HWM_GAP_WARN_S` |
 | `data_staleness` | `src_now − max_wm` against `max_data_lag_s` | Warns; a *negative* value is reported as a non-UTC watermark column |
 | `alarm_windows` | Do any alarm windows reach below the retention floor? | Warns, naming them |
@@ -214,6 +216,19 @@ that is already below the high watermark when it appears, and no load will
 ever look there again. Nothing notices: the run says `status='ok'`, the
 watermark keeps moving, and the gap is permanent until somebody compares the
 two sides by hand.
+
+**A log source has no audit**, and it is switched off rather than left
+half-working. Both of the audit's questions need something a log file cannot
+give: the bucket sweep asks the source to *count* rows per time bucket, which
+there means a second full scan of every file the window touches — the same
+work as the load itself, for a comparison against the load that just ran — and
+the exact half asks which primary keys are missing, where there are none by
+design. So `audit_interval_s` is ignored, the Audit sub-tab explains itself
+instead of offering buttons, and the `audit_gap` alarm answers `None` rather
+than zero, which keeps it quiet instead of asserting health. What watches a
+log source instead is the Unparsed tab, `log_min_match_pct`, and the pipeline
+alarms on `data_stale` and `run_failed`. See
+[`logfile-source.md`](logfile-source.md).
 
 `core/audit.py:run_audit` is that comparison, on `audit_interval_s`, in the
 forever loop beside housekeeping — **the only scheduler this system has**.
