@@ -1,0 +1,49 @@
+# Example profile: Apache httpd access log, "combined" format.
+#
+# Nearly the same regex as nginx_combined — nginx took the format from Apache
+# — and a separate catalogue entry because that is what an operator looks for.
+# Two real differences are worth the duplication: Apache writes the response
+# size as "-" for a 304 far more often than nginx does, and the `%b` variant
+# some installations use omits the referer and agent entirely, so the two
+# trailing quoted fields are optional here.
+
+profile: apache_combined
+description: |
+  Apache httpd access log, "combined" (and the shorter "common" variant —
+  the referer and agent fields are optional). Path reduced to its first
+  segment, "-" byte counts become 0.
+
+source:
+  dialect: logfile
+  log_line_regex: '^(?P<host>\S+) \S+ (?P<user>\S+) \[(?P<ts>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+)(?: (?P<proto>[^"]*))?" (?P<status>\d{3}) (?P<bytes>\S+)(?: "(?P<referer>[^"]*)" "(?P<agent>[^"]*)")?'
+  log_time_format: '%d/%b/%Y:%H:%M:%S %z'
+  watermark_column: ts
+  late_arrival_overlap_s: 0
+
+partition: {column: ts, period: month}
+runtime_defaults: {chunksize: 10000, transform_procs: 1,
+                   interval_ladder: [1, 60, 3600, 86400], bar_pixel_target: 5}
+
+fact_columns:
+  - {name: ts,     pg_type: timestamptz, role: time,           ordinal: 1, source_expr: ts}
+  - {name: host,   pg_type: smallint,    role: auto-dimension, ordinal: 2, source_expr: host}
+  - {name: method, pg_type: smallint,    role: auto-dimension, ordinal: 3, source_expr: method}
+  - {name: path,   pg_type: smallint,    role: auto-dimension, ordinal: 4, source_expr: path,
+     transform_pattern: '^(/[^/?]*).*$', transform_replace: '\1'}
+  - {name: status, pg_type: smallint,    role: auto-dimension, ordinal: 5, source_expr: status}
+  - {name: bytes,  pg_type: bigint,      role: measure,        ordinal: 6, source_expr: bytes,
+     transform_pattern: '^-$', transform_replace: '0'}
+
+dimensions:
+  - {fact_column: host,   dim_table: host,   source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: method, dim_table: method, source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: path,   dim_table: path,   source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: status, dim_table: status, source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+
+fact_indices:
+  - {column_name: ts, method: brin}
+
+measures:
+  - {name: "Requests",          agg: "count(*)",   graph_style: multibar, is_default: true,  ordinal: 1, percentiles: null}
+  - {name: "Bytes sent",        agg: "sum(bytes)", graph_style: multibar, is_default: false, ordinal: 2, percentiles: null}
+  - {name: "Avg response size", agg: "avg(bytes)", graph_style: multibar, is_default: false, ordinal: 3, percentiles: null}

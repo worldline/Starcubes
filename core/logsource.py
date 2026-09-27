@@ -909,6 +909,18 @@ class ProbeReport:
 # values; a group that is nearly unique per line reaches that in minutes.
 HIGH_CARDINALITY_SHARE = 0.5
 
+# When a *numeric* group is proposed as a dimension rather than a measure.
+# The useful signal is not the absolute count but the **share**: a code
+# repeats, a quantity does not. An HTTP status takes a handful of values over
+# any number of lines; a byte count is close to unique per line. Both tests
+# have to hold — the share alone would call a 400-distinct field over 10 000
+# lines a dimension, and the absolute cap alone misreads a small sample (a
+# 20-line probe where every byte count differs has 20 distinct values, which
+# any fixed cap of 20 would accept).
+NUMERIC_DIMENSION_DISTINCT = int(
+    os.environ.get("STARCUBES_LOG_NUMERIC_DIM_DISTINCT") or 50)
+NUMERIC_DIMENSION_SHARE = 0.25
+
 PROBE_LINES = int(os.environ.get("STARCUBES_LOG_PROBE_LINES") or 500)
 PROBE_BYTES = int(os.environ.get("STARCUBES_LOG_PROBE_BYTES") or 1_000_000)
 PROBE_SECONDS = float(os.environ.get("STARCUBES_LOG_PROBE_SECONDS") or 10.0)
@@ -1061,9 +1073,20 @@ def sample(config: LogConfig, n_lines: int = PROBE_LINES) -> ProbeReport:
         if is_time and time_group is None:
             time_group = g
         value_type = "timestamptz" if is_time else _guess_type(vals)
+        effective_distinct = (distinct_after if distinct_after is not None
+                              else distinct)
         if is_time:
             role = "time"
         elif value_type == "text":
+            role = "auto-dimension"
+        elif (effective_distinct <= NUMERIC_DIMENSION_DISTINCT
+              and effective_distinct
+                  <= NUMERIC_DIMENSION_SHARE * max(lines_read, 1)):
+            # Numeric, but repeating: a code, not a quantity. "Numeric
+            # therefore a measure" gets an HTTP status wrong in a way that
+            # matters — nobody sums status codes, they group by them, and a
+            # measure cannot be grouped by. The distinctness is already
+            # counted, so this costs nothing.
             role = "auto-dimension"
         else:
             role = "measure"

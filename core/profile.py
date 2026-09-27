@@ -107,9 +107,17 @@ _VALID_PARTITION_PERIODS = {"day", "week", "month"}
 _SOURCE_TEXT_FIELDS = (
     "base_table", "small_window_hint", "watermark_column",
     "watermark_max_query", "watermark_fact_expr", "import_query", "pk_format",
+    # Log sources (0047). Absent from a SQL profile and harmless there: a key
+    # the YAML does not carry is absent from `datasource_scalars()` too, so the
+    # caller keeps whatever it had.
+    "log_line_regex", "log_record_start", "log_time_format",
+    "log_time_zone", "log_encoding",
 )
 _SOURCE_INT_FIELDS = (
     "late_arrival_overlap_s", "watermark_lag_s", "wallclock_lag_s",
+)
+_SOURCE_FLOAT_FIELDS = (
+    "log_min_match_pct",
 )
 
 
@@ -126,6 +134,10 @@ class FactColumn:
     role: str
     ordinal: int
     source_expr: str
+    # Log sources only: the re.sub applied before the cast. Optional, so every
+    # existing profile parses unchanged.
+    transform_pattern: str | None = None
+    transform_replace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -223,10 +235,17 @@ class ExampleProfile:
     measures: list[Measure] = field(default_factory=list)
     group_dims: list[ProfileGroupSet] = field(default_factory=list)
 
-    def fact_columns_as_tuples(self) -> list[tuple[str, str, str, int, str]]:
-        """Match the historical ``(name, pg_type, role, ordinal, source_expr)``
-        shape consumed by ``_upsert_datasource`` in seed_example.py."""
-        return [(fc.name, fc.pg_type, fc.role, fc.ordinal, fc.source_expr)
+    def fact_columns_as_tuples(
+            self) -> list[tuple[str, str, str, int, str,
+                                str | None, str | None]]:
+        """``(name, pg_type, role, ordinal, source_expr, transform_pattern,
+        transform_replace)`` — the shape ``insert_profile_children`` inserts.
+
+        The two transform fields were appended rather than inserted, so the
+        positional unpacking in the one caller is the only place that changed.
+        """
+        return [(fc.name, fc.pg_type, fc.role, fc.ordinal, fc.source_expr,
+                 fc.transform_pattern, fc.transform_replace)
                 for fc in self.fact_columns]
 
     def dimensions_as_tuples(self) -> list[tuple]:
@@ -264,6 +283,9 @@ class ExampleProfile:
         for key in _SOURCE_INT_FIELDS:
             if self.source.get(key) is not None:
                 out[key] = int(self.source[key])
+        for key in _SOURCE_FLOAT_FIELDS:
+            if self.source.get(key) is not None:
+                out[key] = float(self.source[key])
         if self.partition.get("column") is not None:
             out["partition_column"] = self.partition["column"]
         if self.partition.get("period") is not None:
@@ -532,7 +554,14 @@ def _parse_profile(name: str, raw: dict[str, Any]) -> ExampleProfile:
     src = raw.get("source") or {}
     if not isinstance(src, dict):
         raise ProfileError(f"profile {name!r}: 'source' must be a mapping")
-    for required in ("dialect", "base_table", "watermark_column"):
+    # Required keys depend on the kind of source. A log profile has no table
+    # to select from; what it cannot do without is the regex whose named
+    # groups the fact columns are read from.
+    if src.get("dialect") == "logfile":
+        required_keys = ("dialect", "log_line_regex", "watermark_column")
+    else:
+        required_keys = ("dialect", "base_table", "watermark_column")
+    for required in required_keys:
         if required not in src:
             raise ProfileError(
                 f"profile {name!r}: 'source.{required}' is required")
@@ -659,6 +688,11 @@ def _parse_fact_column(profile: str, idx: int, raw: Any) -> FactColumn:
             role=role,
             ordinal=int(raw["ordinal"]),
             source_expr=str(raw["source_expr"]),
+            transform_pattern=(str(raw["transform_pattern"])
+                               if raw.get("transform_pattern") else None),
+            transform_replace=(str(raw["transform_replace"])
+                               if raw.get("transform_replace") is not None
+                               else None),
         )
     except KeyError as exc:
         raise ProfileError(
@@ -846,6 +880,26 @@ def _prune(mapping: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in mapping.items() if v is not None and v != ""}
 
 
+def _dump_fact_column(fc: Mapping[str, Any]) -> dict[str, Any]:
+    """One fact_column row as its YAML mapping.
+
+    The transform pair is emitted **only when set**, so exporting a SQL
+    profile does not grow two empty keys it has no use for — and a round trip
+    of an existing profile stays byte-identical.
+    """
+    out: dict[str, Any] = {
+        "name": fc["name"],
+        "pg_type": fc["pg_type"],
+        "role": fc["role"],
+        "ordinal": int(fc["ordinal"]),
+        "source_expr": fc.get("source_expr"),
+    }
+    if fc.get("transform_pattern"):
+        out["transform_pattern"] = fc["transform_pattern"]
+        out["transform_replace"] = fc.get("transform_replace") or ""
+    return out
+
+
 def dump_profile(ds: Mapping[str, Any],
                  fact_columns: Iterable[Mapping[str, Any]] = (),
                  dimensions: Iterable[Mapping[str, Any]] = (),
@@ -929,13 +983,10 @@ def dump_profile(ds: Mapping[str, Any],
     if inline_dimensions:
         doc["inline_dimensions"] = inline_dimensions
 
-    doc["fact_columns"] = [{
-        "name": fc["name"],
-        "pg_type": fc["pg_type"],
-        "role": fc["role"],
-        "ordinal": int(fc["ordinal"]),
-        "source_expr": fc.get("source_expr"),
-    } for fc in sorted(fact_columns, key=lambda r: (int(r["ordinal"]), r["name"]))]
+    doc["fact_columns"] = [
+        _dump_fact_column(fc)
+        for fc in sorted(fact_columns,
+                         key=lambda r: (int(r["ordinal"]), r["name"]))]
     doc["dimensions"] = sorted(dim_entries, key=lambda r: r["fact_column"])
     doc["fact_indices"] = [{
         "column_name": fi["column_name"], "method": fi["method"],

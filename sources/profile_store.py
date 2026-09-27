@@ -58,10 +58,12 @@ def insert_profile_children(conn, ds_id: int, profile) -> None:
     """
     _executemany(conn,
         "INSERT INTO starcubes_meta.fact_column "
-        "  (datasource_id, name, pg_type, role, ordinal, source_expr) "
-        "VALUES (:ds, :n, :t, :r, :o, :e)",
-        [{"ds": ds_id, "n": n, "t": t, "r": r, "o": o, "e": e}
-         for (n, t, r, o, e) in profile.fact_columns_as_tuples()])
+        "  (datasource_id, name, pg_type, role, ordinal, source_expr, "
+        "   transform_pattern, transform_replace) "
+        "VALUES (:ds, :n, :t, :r, :o, :e, :tp, :tr)",
+        [{"ds": ds_id, "n": n, "t": t, "r": r, "o": o, "e": e,
+          "tp": tp, "tr": tr}
+         for (n, t, r, o, e, tp, tr) in profile.fact_columns_as_tuples()])
     _executemany(conn,
         "INSERT INTO starcubes_meta.dimension "
         "  (datasource_id, fact_column, dim_table, source_table, "

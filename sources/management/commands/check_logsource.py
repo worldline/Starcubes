@@ -564,9 +564,11 @@ def s_probe(tmp: Path):
              f"{rep.match_pct}"),
             ("the unmatched line is reported", len(rep.unmatched) == 1,
              f"{rep.unmatched}"),
-            ("status guessed smallint/measure",
-             g["status"].pg_type == "smallint" and g["status"].role == "measure",
-             f"{g['status'].pg_type}/{g['status'].role}"),
+            ("status: numeric but few distinct -> dimension, not measure",
+             g["status"].role == "auto-dimension"
+             and g["status"].pg_type == "smallint",
+             f"{g['status'].distinct} distinct -> {g['status'].role}"
+             f"/{g['status'].pg_type}"),
             ("bytes widened to bigint by one large value",
              g["bytes"].pg_type == "bigint" and g["bytes"].role == "measure",
              f"{g['bytes'].pg_type}/{g['bytes'].role}"),

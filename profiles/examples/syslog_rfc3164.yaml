@@ -1,0 +1,48 @@
+# Example profile: syslog, RFC 3164 ("BSD syslog") format.
+#
+# The format with no year in its timestamp, which makes this profile the proof
+# that the year-from-mtime logic works: a line reading "Dec 31 23:59:00" in a
+# file last written in January belongs to the *previous* year, and taking the
+# file's year would date it eleven months into the future.
+#
+# It is also the profile that needs log_time_zone. RFC 3164 carries no offset
+# at all, so without a zone the timestamps are read as UTC — which for a host
+# writing local time is silently wrong by the offset. Set it to the zone the
+# *logging host* runs in.
+#
+# `msg` is deliberately **not** a dimension. A free-text message is close to
+# unique per line, so it would fill the 32767 dim ceiling and tell nobody
+# anything; what is worth grouping by is the tag and the host.
+
+profile: syslog_rfc3164
+description: |
+  BSD syslog (RFC 3164). Groups for host, tag and pid; the year comes from
+  the file mtime and log_time_zone must name the logging host's zone.
+  Counting only — a syslog line carries no quantity.
+
+source:
+  dialect: logfile
+  log_line_regex: '^(?P<ts>\w{3}\s+\d{1,2} \d\d:\d\d:\d\d) (?P<host>\S+) (?P<tag>[^\[\s:]+)(?:\[(?P<pid>\d+)\])?:'
+  log_time_format: '%b %d %H:%M:%S'
+  log_time_zone: UTC              # change to the logging host's zone
+  watermark_column: ts
+  late_arrival_overlap_s: 0
+
+partition: {column: ts, period: month}
+runtime_defaults: {chunksize: 10000, transform_procs: 1,
+                   interval_ladder: [1, 60, 3600, 86400], bar_pixel_target: 5}
+
+fact_columns:
+  - {name: ts,   pg_type: timestamptz, role: time,           ordinal: 1, source_expr: ts}
+  - {name: host, pg_type: smallint,    role: auto-dimension, ordinal: 2, source_expr: host}
+  - {name: tag,  pg_type: smallint,    role: auto-dimension, ordinal: 3, source_expr: tag}
+
+dimensions:
+  - {fact_column: host, dim_table: host, source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: tag,  dim_table: tag,  source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+
+fact_indices:
+  - {column_name: ts, method: brin}
+
+measures:
+  - {name: "Messages", agg: "count(*)", graph_style: multibar, is_default: true, ordinal: 1, percentiles: null}

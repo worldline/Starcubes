@@ -1,0 +1,66 @@
+# Example profile: nginx access log, "combined" format.
+#
+# The smoke test for log sources as much as a useful configuration: nearly
+# every machine has one of these files, so this is the profile to point at
+# /var/log/nginx/access.log* and see the chart fill.
+#
+# Two transforms are configured on purpose rather than left as an exercise.
+# `path` is collapsed to its first segment because an unreduced URL path is
+# unbounded — a proxy in front of map tiles reaches the dim table's 32767
+# ceiling in minutes — and `bytes` maps nginx's "-" onto 0, without which
+# every request that sent no body fails the cast and lands in etl_unparsed.
+# Neither is exotic; both are what this format does every day.
+#
+# `status` is a dimension, not a measure. Nobody sums status codes, they group
+# by them, and only a dimension can be grouped by.
+
+profile: nginx_combined
+description: |
+  nginx access log in the stock "combined" format. Named groups for host,
+  method, path, protocol, status, bytes and user agent; the path is reduced
+  to its first segment and "-" byte counts become 0.
+
+source:
+  dialect: logfile
+  # source_dsn is never stored in a profile — set it when creating the
+  # datasource, e.g. file:///var/log/nginx/access.log*
+  log_line_regex: '^(?P<host>\S+) \S+ (?P<user>\S+) \[(?P<ts>[^\]]+)\] "(?P<method>\S+) (?P<path>\S+) (?P<proto>[^"]*)" (?P<status>\d{3}) (?P<bytes>\S+) "(?P<referer>[^"]*)" "(?P<agent>[^"]*)"'
+  log_time_format: '%d/%b/%Y:%H:%M:%S %z'
+  # The format carries an offset, so log_time_zone is not consulted.
+  watermark_column: ts
+  late_arrival_overlap_s: 0       # a log source has no primary key to de-dupe with
+
+partition: {column: ts, period: month}
+runtime_defaults: {chunksize: 10000, transform_procs: 1,
+                   interval_ladder: [1, 60, 3600, 86400], bar_pixel_target: 5}
+
+fact_columns:
+  - {name: ts,     pg_type: timestamptz, role: time,           ordinal: 1, source_expr: ts}
+  - {name: host,   pg_type: smallint,    role: auto-dimension, ordinal: 2, source_expr: host}
+  - {name: method, pg_type: smallint,    role: auto-dimension, ordinal: 3, source_expr: method}
+  - {name: path,   pg_type: smallint,    role: auto-dimension, ordinal: 4, source_expr: path,
+     transform_pattern: '^(/[^/?]*).*$', transform_replace: '\1'}
+  - {name: proto,  pg_type: smallint,    role: auto-dimension, ordinal: 5, source_expr: proto}
+  - {name: status, pg_type: smallint,    role: auto-dimension, ordinal: 6, source_expr: status}
+  - {name: agent,  pg_type: smallint,    role: auto-dimension, ordinal: 7, source_expr: agent,
+     transform_pattern: '^(\S+).*$', transform_replace: '\1'}
+  - {name: bytes,  pg_type: bigint,      role: measure,        ordinal: 8, source_expr: bytes,
+     transform_pattern: '^-$', transform_replace: '0'}
+
+dimensions:
+  - {fact_column: host,   dim_table: host,   source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: method, dim_table: method, source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: path,   dim_table: path,   source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: proto,  dim_table: proto,  source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: status, dim_table: status, source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: agent,  dim_table: agent,  source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+
+fact_indices:
+  - {column_name: ts, method: brin}
+
+measures:
+  - {name: "Requests",            agg: "count(*)",        graph_style: multibar,       is_default: true,  ordinal: 1, percentiles: null}
+  - {name: "Bytes sent",          agg: "sum(bytes)",      graph_style: multibar,       is_default: false, ordinal: 2, percentiles: null}
+  - {name: "Avg response size",   agg: "avg(bytes)",      graph_style: multibar,       is_default: false, ordinal: 3, percentiles: null}
+  - {name: "Response size (p95)", agg: "quantile(bytes)", graph_style: quantile-bands, is_default: false, ordinal: 4, percentiles: "5,25,50,75,95"}
+  - {name: "Response size range", agg: "extent(bytes)",   graph_style: quantile-steps-open, is_default: false, ordinal: 5, percentiles: null}

@@ -1,0 +1,94 @@
+# Example profile: HAProxy HTTP log (`option httplog`).
+#
+# The richest of the four, and the one worth pointing a new installation at.
+# HAProxy writes five timings per request — Tq/Tw/Tc/Tr/Tt — which is exactly
+# the shape the ladder and candlestick renderers were built for, and the
+# accept date carries milliseconds, so it is also the profile that exercises
+# sub-second watermarks end to end.
+#
+# Three things in here are not decoration:
+#
+#   * Every timing gets `^-1$` -> 0. HAProxy writes -1 when the phase was
+#     never reached (no complete request received, no connection to a server),
+#     and a -1 left in place drags every avg and min with it. Mapping it to 0
+#     is the lesser distortion and the one an operator expects; where the
+#     distinction matters, `termination_state` carries it.
+#   * `path` is reduced to its first segment. An unreduced path is unbounded
+#     and fills the dim table's 32767 ceiling; the query string is dropped
+#     with it, which is usually what was wanted anyway.
+#   * The syslog prefix is optional in the pattern, because HAProxy is run
+#     both ways — through syslog and straight into a file.
+#
+# The accept date carries **no offset**, so log_time_zone has to name the zone
+# the HAProxy host runs in. Leaving it at UTC on a host writing local time is
+# wrong by the offset, silently, and nothing downstream can detect it.
+#
+# Not captured on purpose: the two cookie fields (almost always "-"), the
+# per-connection counters other than retries, and the client port (unique per
+# request, so it would be an unbounded dimension and tell nobody anything).
+
+profile: haproxy_httplog
+description: |
+  HAProxy HTTP log (option httplog). Five timing measures with the -1
+  "phase never reached" sentinel mapped to 0, frontend/backend/server,
+  status and termination state as dimensions, millisecond accept dates.
+
+source:
+  dialect: logfile
+  log_line_regex: '^(?:\w{3}\s+\d{1,2} \d\d:\d\d:\d\d \S+ \S+?: )?(?P<client>[0-9a-fA-F:.]+):(?P<cport>\d+) \[(?P<ts>[^\]]+)\] (?P<frontend>\S+) (?P<backend>[^/\s]+)/(?P<server>\S+) (?P<tq>-?\d+)/(?P<tw>-?\d+)/(?P<tc>-?\d+)/(?P<tr>-?\d+)/(?P<tt>-?\d+) (?P<status>-?\d+) (?P<bytes>\d+) \S+ \S+ (?P<term>\S{4}) (?P<actconn>\d+)/(?P<feconn>\d+)/(?P<beconn>\d+)/(?P<srvconn>\d+)/(?P<retries>\d+) (?P<srvq>\d+)/(?P<bckq>\d+) "(?P<method>\S+)(?: (?P<path>\S+))?(?: (?P<proto>[^"]*))?"'
+  log_time_format: '%d/%b/%Y:%H:%M:%S.%f'
+  log_time_zone: UTC              # change to the HAProxy host's zone
+  watermark_column: ts
+  late_arrival_overlap_s: 0
+
+partition: {column: ts, period: month}
+runtime_defaults: {chunksize: 10000, transform_procs: 1,
+                   interval_ladder: [1, 60, 3600, 86400], bar_pixel_target: 5}
+
+fact_columns:
+  - {name: ts,       pg_type: timestamptz, role: time,           ordinal: 1,  source_expr: ts}
+  - {name: frontend, pg_type: smallint,    role: auto-dimension, ordinal: 2,  source_expr: frontend}
+  - {name: backend,  pg_type: smallint,    role: auto-dimension, ordinal: 3,  source_expr: backend}
+  - {name: server,   pg_type: smallint,    role: auto-dimension, ordinal: 4,  source_expr: server}
+  - {name: status,   pg_type: smallint,    role: auto-dimension, ordinal: 5,  source_expr: status}
+  - {name: term,     pg_type: smallint,    role: auto-dimension, ordinal: 6,  source_expr: term}
+  - {name: method,   pg_type: smallint,    role: auto-dimension, ordinal: 7,  source_expr: method}
+  - {name: path,     pg_type: smallint,    role: auto-dimension, ordinal: 8,  source_expr: path,
+     transform_pattern: '^(/[^/?]*).*$', transform_replace: '\1'}
+  - {name: tq,       pg_type: integer,     role: measure,        ordinal: 9,  source_expr: tq,
+     transform_pattern: '^-1$', transform_replace: '0'}
+  - {name: tw,       pg_type: integer,     role: measure,        ordinal: 10, source_expr: tw,
+     transform_pattern: '^-1$', transform_replace: '0'}
+  - {name: tc,       pg_type: integer,     role: measure,        ordinal: 11, source_expr: tc,
+     transform_pattern: '^-1$', transform_replace: '0'}
+  - {name: tr,       pg_type: integer,     role: measure,        ordinal: 12, source_expr: tr,
+     transform_pattern: '^-1$', transform_replace: '0'}
+  - {name: tt,       pg_type: integer,     role: measure,        ordinal: 13, source_expr: tt,
+     transform_pattern: '^-1$', transform_replace: '0'}
+  - {name: bytes,    pg_type: bigint,      role: measure,        ordinal: 14, source_expr: bytes}
+  - {name: retries,  pg_type: smallint,    role: measure,        ordinal: 15, source_expr: retries}
+
+dimensions:
+  - {fact_column: frontend, dim_table: frontend, source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: backend,  dim_table: backend,  source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: server,   dim_table: server,   source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: status,   dim_table: status,   source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: term,     dim_table: term,     source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: method,   dim_table: method,   source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+  - {fact_column: path,     dim_table: path,     source_table: null, source_key: null, source_name: null, source_description: null, is_primary: true, inline_values: null}
+
+fact_indices:
+  - {column_name: ts, method: brin}
+
+measures:
+  - {name: "Requests",                agg: "count(*)",     graph_style: multibar,            is_default: true,  ordinal: 1,  percentiles: null}
+  - {name: "Bytes sent",              agg: "sum(bytes)",   graph_style: multibar,            is_default: false, ordinal: 2,  percentiles: null}
+  - {name: "Avg total time (ms)",     agg: "avg(tt)",      graph_style: multibar,            is_default: false, ordinal: 3,  percentiles: null}
+  - {name: "Avg server time (ms)",    agg: "avg(tr)",      graph_style: multibar,            is_default: false, ordinal: 4,  percentiles: null}
+  - {name: "Avg queue time (ms)",     agg: "avg(tw)",      graph_style: multibar,            is_default: false, ordinal: 5,  percentiles: null}
+  - {name: "Total time (bands)",      agg: "quantile(tt)", graph_style: quantile-bands,      is_default: false, ordinal: 6,  percentiles: "50,75,90,95,99"}
+  - {name: "Total time (steps)",      agg: "quantile(tt)", graph_style: quantile-steps,      is_default: false, ordinal: 7,  percentiles: "50,75,90,95,99"}
+  - {name: "Server time (bands)",     agg: "quantile(tr)", graph_style: quantile-bands,      is_default: false, ordinal: 8,  percentiles: "50,75,90,95,99"}
+  - {name: "Server time (candles)",   agg: "quantile(tr)", graph_style: candlestick,         is_default: false, ordinal: 9,  percentiles: "5,25,50,75,95"}
+  - {name: "Total time range",        agg: "extent(tt)",   graph_style: quantile-steps-open, is_default: false, ordinal: 10, percentiles: null}
+  - {name: "Retries",                 agg: "sum(retries)", graph_style: multibar,            is_default: false, ordinal: 11, percentiles: null}
