@@ -186,14 +186,27 @@ this table as a manifest.
    the only thing in the tree that can tell a plausible-looking inference
    from a correct one — every number in that module was wrong once, and
    none of the four failures raised anything.
-4. **SQL** — `psql -f migrations/starcubes_meta.sql` must be idempotent.
+4. **Log sources** — after touching `core/logsource.py`, run
+   `manage.py check_logsource`. Thirteen fixture scenarios, 55 checks, no
+   database needed. It exists for the same reason as the check above: every
+   failure mode in that module is **silent**. A zone applied in the wrong
+   direction, a year taken from the wrong end of a December/January
+   boundary, a sub-second watermark rounded up, a transform that never
+   fires — none of them raises, and all of them produce a chart that looks
+   entirely plausible and is wrong. Two of its scenarios have already earned
+   their keep: `re.MULTILINE` on `log_line_regex` (without it a joined
+   multi-line record cannot match its own pattern, because `$` anchors at
+   the end of the whole text and `.*` does not cross a newline) and the
+   sub-second boundary case, which only bites on a *growing* file — on a
+   static fixture both the ceiled and the unceiled watermark are green.
+5. **SQL** — `psql -f migrations/starcubes_meta.sql` must be idempotent.
    Re-running is part of the contract; verify by running twice. The mirror
    contract itself — every per-step `migrations/000N_*.sql` has its marker
    block in the consolidated file — is machine-checked:
    `manage.py check_migration_mirror`.
-5. **Seed round-trip** — `manage.py seed_example --force --skip-initial-ddl`
+6. **Seed round-trip** — `manage.py seed_example --force --skip-initial-ddl`
    followed by `Source.load(meta, dsn, 'source')` must return a `Source`
    whose `fact_columns` / `dimensions` / `indices` match the seed tuples.
-6. **ETL parity** — when the first real ETL runs, compare row counts for
+7. **ETL parity** — when the first real ETL runs, compare row counts for
    the same `[last_end_time, end_time)` window. Throughput should be
    within 10% — the copy path is unchanged.
