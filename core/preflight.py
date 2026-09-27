@@ -312,6 +312,15 @@ def _check_source_projection(source: Source, source_engine) -> dict:
     the middle of the extract loop — after the run row is written and the
     workers are up — into a refusal with a column name in it.
     """
+    if source.is_logfile:
+        # Not the same thing as "no connection": there is no projection to
+        # probe at all, and the equivalent question — does the regex capture a
+        # group for every fact column — is answered by `log_pattern` and, at
+        # load time, by `Source.load`. Saying so keeps the report honest; a
+        # bare "skipped, no source connection" reads like a failure.
+        return _check("source_projection", CHECK_OK,
+                      "not applicable — a log source has no SQL projection; "
+                      "see the log_pattern check")
     if source_engine is None:
         # Either the caller did not want a source round trip, or it could
         # not even build the engine (a missing driver, an unparseable DSN).
@@ -402,6 +411,15 @@ def _check_watermark_tz(source: Source,
     def _iso(v):
         return v.isoformat() if hasattr(v, "isoformat") else None
 
+    if source.is_logfile:
+        # A log timestamp's zone is configuration (`log_time_zone`), applied
+        # in one place by the reader, and the value it produces is always
+        # tz-aware UTC. There is nothing here to probe, and asking would
+        # raise: `watermark_probe_sql()` refuses a log source by design.
+        return _check("watermark_tz", CHECK_OK,
+                      "not applicable — a log source's timestamps are "
+                      "normalised to UTC by the reader "
+                      "(core/logsource.py:_parse_time)"), None
     if source_engine is None:
         return _check("watermark_tz", CHECK_OK,
                       "skipped — no source connection available"), None
@@ -435,6 +453,30 @@ def _check_watermark_tz(source: Source,
         return _check("watermark_tz", CHECK_OK,
                       f"not checked — the source has no rows yet, so "
                       f"max({wm}) says nothing about its type"), probe
+    # Costs nothing extra: max(watermark) has just been read, so the
+    # microseconds are already in hand. What they say is that `_ceil_second`
+    # rounds this watermark up past the tip it measured, and that the sliver
+    # it claims is *not* empty here — a row written into it after this probe
+    # falls below the stored watermark and is never loaded.
+    # `late_arrival_overlap_s` is exactly the cover for that, and on a
+    # sub-second watermark it stops being optional. Warn, never block: the
+    # loss needs a write landing inside one particular second, so it is a
+    # real exposure but not a reason to refuse a load.
+    subsecond = bool(getattr(value, "microsecond", 0))
+    if subsecond and int(source.late_arrival_overlap_s or 0) <= 0:
+        return _check("watermark_tz", CHECK_WARN,
+                      f"{wm} carries sub-second precision "
+                      f"({value.microsecond:06d} µs) and "
+                      f"late_arrival_overlap_s is 0. The load window is "
+                      f"rounded up to the whole second, so it claims up to a "
+                      f"second past the newest row it actually saw; anything "
+                      f"written into that sliver afterwards stays below the "
+                      f"high watermark and is never loaded. Set "
+                      f"late_arrival_overlap_s to 1 or more.",
+                      watermark=wm,
+                      aware=getattr(value, "tzinfo", None) is not None,
+                      subsecond=True), probe
+
     if getattr(value, "tzinfo", None) is None:
         return _check("watermark_tz", CHECK_OK,
                       f"{wm} reads as a naive timestamp — the shape the load "

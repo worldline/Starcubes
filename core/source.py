@@ -206,6 +206,13 @@ def _pin_session_utc(engine: sqlalchemy.Engine, dialect: str) -> None:
     dangerous -- which is what `preflight._check_watermark_tz` blocks on.
     Logged once per engine, the same courtesy the statement timeout extends.
     """
+    if dialect == "logfile":
+        # Unreachable through Source.source_engine(), which refuses a log
+        # source outright. Guarded anyway so the warning below cannot start
+        # claiming that a *file* is being read on an unknown session clock --
+        # it has no session, and core/logsource.py normalises its timestamps
+        # itself.
+        return
     stmt = _SESSION_UTC_SQL.get(dialect)
     if stmt is None:
         logger.warning(
@@ -365,6 +372,16 @@ class FactColumn:
                                        # Source.load when datasource has a
                                        # base_table set (instead of a full
                                        # import_query string).
+                                       # For a log source it is instead the
+                                       # name of a named group in
+                                       # datasource.log_line_regex — same
+                                       # column, same role, a different
+                                       # extraction vocabulary.
+    # Log sources only: a re.sub applied to the captured value *before* the
+    # cast. Read by core/logsource.py and by nothing else — a SQL source does
+    # the same thing inside source_expr. See docs/logfile-source.md.
+    transform_pattern: Optional[str] = None
+    transform_replace: Optional[str] = None
 
 
 @dataclass
@@ -495,6 +512,17 @@ class Source:
     rollup_columns: list[str] = field(default_factory=list)    # core column set
     rollup_marginals: list[str] = field(default_factory=list)  # one-column rollups
     rollup_measures: list[str] = field(default_factory=list)   # agg forms beside count(*)
+    # --- log sources (source_dialect = 'logfile'), migration 0047 ---------
+    # All unused and NULL for a SQL source. `source_dsn` carries the transport
+    # rather than a column of its own, and `watermark_column` holds the name of
+    # the *time group* rather than a column name. See core/logsource.py and
+    # docs/logfile-source.md.
+    log_line_regex: Optional[str] = None
+    log_record_start: Optional[str] = None
+    log_time_format: Optional[str] = None
+    log_time_zone: Optional[str] = None
+    log_encoding: Optional[str] = None
+    log_min_match_pct: float = 0.0
 
     @classmethod
     def load(cls, meta_engine, dest_dsn: str, name_or_id) -> "Source":
@@ -514,6 +542,8 @@ class Source:
                 f"       retention_floor, "
                 f"       rollup_interval_s, rollup_columns, "
                 f"       rollup_marginals, rollup_measures, "
+                f"       log_line_regex, log_record_start, log_time_format, "
+                f"       log_time_zone, log_encoding, log_min_match_pct, "
                 f"       is_default "
                 f"  FROM starcubes_meta.datasource WHERE {key_sql}"
             ), {"k": name_or_id}).mappings().first()
@@ -522,7 +552,8 @@ class Source:
             ds = dict(row)
 
             fact_columns = [FactColumn(**r) for r in conn.execute(text(
-                "SELECT name, pg_type, role, ordinal, source_expr "
+                "SELECT name, pg_type, role, ordinal, source_expr, "
+                "       transform_pattern, transform_replace "
                 "  FROM starcubes_meta.fact_column "
                 " WHERE datasource_id = :ds "
                 " ORDER BY ordinal"
@@ -628,7 +659,48 @@ class Source:
                     f"spans dim tables {sorted(tables)}; all members must "
                     f"share one dim_table")
 
-        if not ds["import_query"]:
+        if ds["source_dialect"] == "logfile":
+            # A log source has no query to compose. What it needs instead is
+            # that the regex exists and that every fact column names a group
+            # it captures -- checked here rather than at the first line,
+            # because the alternative failure mode is zero rows and no error,
+            # which is the least debuggable outcome available. The regex
+            # itself is compiled (and the groups read) by
+            # core/logsource.py:LineParser, which this deliberately does not
+            # import: `core.source` is imported by the chart request path,
+            # and a log source must not make that path depend on the reader.
+            if not (ds["log_line_regex"] or "").strip():
+                raise ValueError(
+                    f"datasource {ds['name']!r}: source_dialect is 'logfile' "
+                    f"but log_line_regex is empty -- the fact columns are read "
+                    f"from its named groups.")
+            if ds["base_table"] or ds["import_query"]:
+                logger.warning(
+                    "%s: base_table/import_query are set on a log source and "
+                    "are ignored; the log is read from source_dsn (%s)",
+                    ds["name"], ds["source_dsn"])
+            missing = [c.name for c in fact_columns if not c.source_expr]
+            if missing:
+                raise ValueError(
+                    f"datasource {ds['name']!r}: source_expr missing on: "
+                    f"{missing}. On a log source it holds the name of a named "
+                    f"group in log_line_regex.")
+            if any(c.role == "pk" for c in fact_columns):
+                # Not a limitation being worked around: the window arithmetic
+                # alone is exact because a log is kept in timestamp order, and
+                # a fact column claiming to be a key would arm the overlap
+                # de-duplication against values that are not keys.
+                raise ValueError(
+                    f"datasource {ds['name']!r}: a log source must not have a "
+                    f"fact column with role='pk'. Log lines carry no stable "
+                    f"key, and none is needed -- last_end_time is the upper, "
+                    f"half-open bound of each window.")
+            if int(ds["late_arrival_overlap_s"] or 0) != 0:
+                raise ValueError(
+                    f"datasource {ds['name']!r}: late_arrival_overlap_s must "
+                    f"be 0 on a log source. The overlap re-fetch de-duplicates "
+                    f"by primary key, and a log source has none.")
+        elif not ds["import_query"]:
             if not ds["base_table"]:
                 raise ValueError(
                     f"datasource {ds['name']!r}: neither import_query nor "
@@ -667,6 +739,13 @@ class Source:
         cache with `dest_engine()`. See that function's docstring for why
         that mattered.
         """
+        if self.is_logfile:
+            raise ValueError(
+                f"{self.name}: a log source has no database engine. Its "
+                f"source_dsn is a transport URI (file://, sftp://, https://, "
+                f"exec://) read by core/logsource.py. Callers branch on "
+                f"Source.is_logfile before asking for an engine; reaching here "
+                f"means one does not.")
         return _bounded_source_engine(
             self.source_dsn, self.source_dialect,
             int(statement_timeout_ms) if statement_timeout_ms else None)
@@ -782,6 +861,39 @@ class Source:
         return [c.name for c in self.fact_columns
                 if c.pg_type == "bigint" and c.role == "measure"]
 
+    @property
+    def is_logfile(self) -> bool:
+        """This source is a log file, not a SQL database.
+
+        The one predicate every log-aware branch goes through, so the string
+        `'logfile'` appears in a comparison in exactly one place.
+        """
+        return self.source_dialect == "logfile"
+
+    def ceil_watermark(self, dt):
+        """Round a watermark up to the whole second -- except for a log source.
+
+        `core/etl.py:_ceil_second` rounds up because a source whose time index
+        has second granularity cannot match a sub-second bound: between
+        `.000` and `.999` there is nothing to lose, so the next window may
+        safely start at the following second. That argument is sound, and for
+        a SQL source this method changes nothing at all.
+
+        It does not hold for a log file. The reader filters in Python at full
+        precision, so there is no second-granularity index to spare -- and
+        rounding up would make the window *claim* up to a second past the tip
+        it measured. Whatever is appended into that sliver while the run is
+        working then falls below the stored watermark and is never read. At a
+        thousand lines a second that is up to ~345 lines per run, silently.
+
+        So: one method, one branch, named in the code rather than repeated at
+        the seven call sites that used to spell `_ceil_second` directly.
+        """
+        if self.is_logfile:
+            return dt
+        from .etl import _ceil_second       # local: core.etl imports this module
+        return _ceil_second(dt)
+
     def watermark_fact_sql(self) -> str:
         """Fact-side SQL expression that reproduces ``watermark_column``.
 
@@ -830,6 +942,12 @@ class Source:
         clause (see `core/etl.py`, the watermark_max_query branch) must add
         Oracle's `FROM dual` themselves.
         """
+        if self.is_logfile:
+            raise ValueError(
+                f"{self.name}: source_now_sql() has no meaning for a log "
+                f"source -- its clock is the reader's own "
+                f"(core/logsource.py:probe_tip). Reaching here means a SQL "
+                f"path was taken for a log datasource.")
         return {
             "oracle": "SYS_EXTRACT_UTC(SYSTIMESTAMP)",
             "postgresql": "CURRENT_TIMESTAMP AT TIME ZONE 'UTC'",
@@ -859,6 +977,12 @@ class Source:
         read once per run rather than twice — but only if both ask the source
         the same question, which is what this method guarantees.
         """
+        if self.is_logfile:
+            raise ValueError(
+                f"{self.name}: watermark_probe_sql() has no meaning for a log "
+                f"source -- the tip comes from core/logsource.py:probe_tip, "
+                f"which reads the newest file's tail. Reaching here means a "
+                f"SQL path was taken for a log datasource.")
         wm = self.watermark_column
         now_expr = self.source_now_sql()
         if self.watermark_max_query:

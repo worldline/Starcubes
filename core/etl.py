@@ -247,6 +247,31 @@ def _ceil_second(dt: datetime) -> datetime:
     have no room for a fractional second.  They are bind parameters now
     (see ``import_fact``), so that constraint is gone — the one above is
     not, and is why this still rounds.
+
+    **Two things about the rounding that are easy to get wrong when reading
+    this, one of them measured while adding log sources.**
+
+    It does not open a gap. ``max_wm = end_time`` is assigned *after* this
+    call (``import_fact``, the watermark probe), so the clamp
+    ``if end_time > max_wm`` compares against the already-rounded value and
+    cannot pull it back down. The stored high watermark *is* the rounded
+    bound and the next window starts exactly there, so windows chain
+    seamlessly whether or not the source keeps sub-second times.
+
+    What it does do is let the window **claim up to a second past the tip it
+    measured**. On a source whose time index has second granularity that
+    sliver is empty by construction — which is the argument above, and it
+    holds. On a source with a sub-second watermark (``timestamp(3)``) it is
+    not empty: a row written into it after the probe read the tip falls below
+    the stored watermark and is never loaded. That is precisely what
+    ``late_arrival_overlap_s`` covers, so a sub-second watermark wants it at
+    1 or more rather than treated as optional —
+    ``preflight._check_watermark_tz`` warns when it is not.
+
+    A log source skips this entirely; see ``Source.ceil_watermark``. Its
+    reader filters in Python at full precision, so there is no second-
+    granularity index to spare and nothing to be gained by claiming the
+    remainder of a second it has not read.
     """
     if dt.microsecond:
         return dt.replace(microsecond=0) + timedelta(seconds=1)
