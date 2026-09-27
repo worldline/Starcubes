@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS starcubes_meta.datasource (
     name                 text UNIQUE NOT NULL,
     schema_name          text UNIQUE NOT NULL,
     source_dialect       text NOT NULL
-        CHECK (source_dialect IN ('oracle', 'postgresql', 'mysql', 'mssql')),
+        CHECK (source_dialect IN ('oracle', 'postgresql', 'mysql', 'mssql',
+                                  'logfile')),
     source_dsn           text NOT NULL,
     import_query         text,
     base_table           text,
@@ -1629,3 +1630,86 @@ SELECT 'housekeeping',
 
 COMMENT ON VIEW starcubes_meta.run IS
   'Every run of every kind in one list: etl, backfill, forever, rollup_advise/build/verify, audit, housekeeping. (kind, id) is unique. alive: true/false where a lease exists, NULL where there is no process (audit, housekeeping) or a legacy row without a lease. run_ref points at the run''s log. control: a pending or recorded stop request.';
+
+-- 0047_logfile_source.sql -- a log file as a second kind of source.
+-- source_dialect gains 'logfile'; then the measures and dimensions are named
+-- groups of log_line_regex and every dimension is an auto-dimension, because
+-- a log file's value set is not knowable up front. source_dsn carries the
+-- transport (file:// glob, sftp://, https://, exec://) so DSN masking, the
+-- connection test and the profiles keep working. The watermark stays a
+-- timestamp -- that is what keeps backfill, --start/--end, retention, rewind,
+-- the rollups, the alarms and the gap overlay unchanged -- and a log source
+-- has deliberately **no role='pk' column**: last_end_time is the upper,
+-- half-open bound, so [last_end, until) joins on seamlessly because a log is
+-- kept in timestamp order. watermark_column holds the time group's name,
+-- partition_column the fact column, so both NOT NULLs hold unchanged.
+-- fact_column.transform_pattern/_replace run before the cast: they collapse an
+-- unbounded value into a usable dimension (an OSM tile path against a 32767
+-- smallserial ceiling) and map a format's non-value onto a number (nginx '-',
+-- HAProxy -1). etl_unparsed is etl_unmapped's counterpart for lines.
+DO $$
+DECLARE
+    cdef text;
+BEGIN
+    SELECT pg_get_constraintdef(c.oid) INTO cdef
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid = c.conrelid
+      JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE n.nspname = 'starcubes_meta'
+       AND t.relname = 'datasource'
+       AND c.conname = 'datasource_source_dialect_check';
+    IF cdef IS NOT NULL AND position('logfile' in cdef) = 0 THEN
+        ALTER TABLE starcubes_meta.datasource
+            DROP CONSTRAINT datasource_source_dialect_check;
+        ALTER TABLE starcubes_meta.datasource
+            ADD CONSTRAINT datasource_source_dialect_check
+            CHECK (source_dialect IN ('oracle', 'postgresql', 'mysql',
+                                      'mssql', 'logfile'));
+    END IF;
+END $$;
+
+ALTER TABLE starcubes_meta.datasource
+    ADD COLUMN IF NOT EXISTS log_line_regex    text,
+    ADD COLUMN IF NOT EXISTS log_record_start  text,
+    ADD COLUMN IF NOT EXISTS log_time_format   text,
+    ADD COLUMN IF NOT EXISTS log_time_zone     text,
+    ADD COLUMN IF NOT EXISTS log_encoding      text,
+    ADD COLUMN IF NOT EXISTS log_min_match_pct real NOT NULL DEFAULT 0;
+
+COMMENT ON COLUMN starcubes_meta.datasource.log_line_regex IS
+  'source_dialect=logfile: the regex whose named groups every fact_column.source_expr refers to. One named group per fact column, including the time one. Source.load refuses a log datasource whose fact columns name a group the regex does not have.';
+COMMENT ON COLUMN starcubes_meta.datasource.log_record_start IS
+  'source_dialect=logfile: optional regex recognising the first line of a record. A line matching neither this nor log_line_regex is appended to the previous record and it is re-parsed, which is how multi-line stack traces stay one row. Empty (the default) = one line is one record, and a non-matching line goes to etl_unparsed.';
+COMMENT ON COLUMN starcubes_meta.datasource.log_time_format IS
+  'source_dialect=logfile: strptime format for the time group. Empty = ISO-8601 is auto-detected. @epoch / @epoch_ms for numeric stamps. A format without a year (syslog RFC3164) takes the year from the file mtime.';
+COMMENT ON COLUMN starcubes_meta.datasource.log_time_zone IS
+  'source_dialect=logfile: IANA zone name applied when the parsed timestamp carries no offset; an offset in the line (%z) always wins. Empty = UTC. This is configuration because a file has no session to pin, unlike a SQL source (core/source.py:_pin_session_utc) -- and a naive value carries no evidence about its zone, so nothing can detect a wrong setting here.';
+COMMENT ON COLUMN starcubes_meta.datasource.log_encoding IS
+  'source_dialect=logfile: text encoding of the log, empty = utf-8. Always read with errors=replace: one bad byte in a gigabyte must not end a load.';
+COMMENT ON COLUMN starcubes_meta.datasource.log_min_match_pct IS
+  'source_dialect=logfile: the share of lines that must match log_line_regex, in percent. 0 = off (the default), lines are only counted into etl_unparsed and stats. Set it and a changed log line format ends the run failed with the rate in the error text, instead of silently dropping the row count.';
+
+ALTER TABLE starcubes_meta.fact_column
+    ADD COLUMN IF NOT EXISTS transform_pattern text,
+    ADD COLUMN IF NOT EXISTS transform_replace text;
+
+COMMENT ON COLUMN starcubes_meta.fact_column.transform_pattern IS
+  'Log sources only: regex applied to this column''s raw value with re.sub after the line matched and *before* the type cast. Empty = no transform. Two uses, both routine rather than exotic: collapsing an unbounded value into a usable dimension (an OSM tile path is millions of distinct values against a 32767 smallserial ceiling), and mapping a format''s non-value onto a number (nginx writes - for bytes, HAProxy -1 for a phase never reached).';
+COMMENT ON COLUMN starcubes_meta.fact_column.transform_replace IS
+  'The replacement for transform_pattern; backreferences (\1) allowed. NULL with a pattern set means the empty string. Two columns rather than one s/…/…/ expression because paths contain slashes and every delimiter choice eventually collides with the data.';
+
+CREATE TABLE IF NOT EXISTS starcubes_meta.etl_unparsed (
+    id          serial PRIMARY KEY,
+    etl_run_id  int  NOT NULL REFERENCES starcubes_meta.etl_run(id)
+                    ON DELETE CASCADE,
+    file_name   text NOT NULL,
+    line_no     bigint NOT NULL,
+    raw_line    text NOT NULL,
+    seen_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS ix_etl_unparsed_run
+    ON starcubes_meta.etl_unparsed (etl_run_id);
+
+COMMENT ON TABLE starcubes_meta.etl_unparsed IS
+  'Log lines a run could not parse, the counterpart of etl_unmapped for dimension values. Capped per run by STARCUBES_UNPARSED_MAX and the raw line truncated on write: the purpose is to show which line shape stopped matching, not to mirror the log into the warehouse. Shown in the ETL tab; the aggregate figures live in etl_run.stats (parsed_rows, unparsed_rows, match_pct).';
