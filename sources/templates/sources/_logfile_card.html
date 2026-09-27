@@ -1,0 +1,105 @@
+{% comment %}
+The "Log Source" card, shared by new.html and edit.html.
+
+One partial rather than two copies because the two forms carry identical
+field names — the only difference is whether `ds` is in the context, and
+`|default:''` renders empty for a missing variable, which is exactly what the
+create form wants.
+
+Every element that belongs to one kind of source carries data-src-kind, and
+_logfile_js.html shows or hides them from the dialect dropdown. The SQL-only
+groups in the surrounding forms are marked the same way.
+
+The fields stay in the DOM when hidden rather than being removed, and that is
+deliberate: `source_new` reads `p["watermark_column"]` and
+`p["partition_column"]` as required index accesses, so a field missing from
+the POST is a MultiValueDictKeyError — a 500, not a 400. Hidden-but-present
+also means switching the dialect back and forth loses nothing typed.
+{% endcomment %}
+<div class="card" data-src-kind="logfile">
+  <div class="card-header">
+    <span class="card-title">Log Source</span>
+    <div class="card-actions">
+      <button type="button" class="btn btn-secondary btn-sm" id="btnLogProbe">Probe</button>
+    </div>
+  </div>
+  <div class="card-body">
+    <div class="form-group">
+      <label class="form-label">Line Regex <span style="color:var(--danger)">*</span></label>
+      <textarea class="form-control mono" name="log_line_regex" rows="3"
+                placeholder="^(?P&lt;host&gt;\S+) \S+ \S+ \[(?P&lt;ts&gt;[^\]]+)\] &quot;(?P&lt;method&gt;\S+) (?P&lt;path&gt;\S+)[^&quot;]*&quot; (?P&lt;status&gt;\d{3}) (?P&lt;bytes&gt;\S+)">{{ ds.log_line_regex|default:'' }}</textarea>
+      <div class="form-hint">
+        Every fact column is read from a <strong>named group</strong> of this
+        pattern — <code>(?P&lt;name&gt;…)</code> — and a fact column's Source
+        Expression holds the group's name instead of SQL. Anchors mean line
+        boundaries (the pattern is compiled with <code>re.MULTILINE</code>).
+        Press <strong>Probe</strong> to run it against the newest lines and
+        have the columns proposed for you.
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Time Format</label>
+        <input class="form-control mono" name="log_time_format"
+               placeholder="%d/%b/%Y:%H:%M:%S %z"
+               value="{{ ds.log_time_format|default:'' }}">
+        <div class="form-hint">
+          <code>strptime</code> format for the time group. Leave blank to
+          auto-detect ISO-8601; <code>@epoch</code> / <code>@epoch_ms</code>
+          for numeric stamps. A format without a year (syslog) takes the year
+          from the file's modification time.
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Time Zone</label>
+        <input class="form-control" name="log_time_zone" placeholder="UTC"
+               value="{{ ds.log_time_zone|default:'' }}">
+        <div class="form-hint">
+          IANA name, applied only when the timestamp carries no offset — a
+          <code>%z</code> in the line always wins. Blank means UTC.
+          <strong>Nothing can detect a wrong value here</strong>: a naive
+          timestamp carries no evidence about its zone, so a log written in
+          local time and read as UTC is silently off by the offset. Set it to
+          the zone the <em>logging host</em> runs in.
+        </div>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Record Start</label>
+        <input class="form-control mono" name="log_record_start"
+               placeholder="^\d{4}-\d\d-\d\d "
+               value="{{ ds.log_record_start|default:'' }}">
+        <div class="form-hint">
+          Optional. A line matching this begins a new record; one that matches
+          neither this nor the Line Regex is appended to the record before it,
+          which is how a multi-line stack trace stays a single row. Blank means
+          one line is one record — which is every access-log format.
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Encoding</label>
+        <input class="form-control" name="log_encoding" placeholder="utf-8"
+               value="{{ ds.log_encoding|default:'' }}">
+        <div class="form-hint">Blank means utf-8. Always read with
+          <code>errors=replace</code> — one bad byte must not end a load.</div>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Minimum Match %</label>
+      <input class="form-control" name="log_min_match_pct" type="number"
+             min="0" max="100" step="0.1"
+             value="{{ ds.log_min_match_pct|default:0 }}">
+      <div class="form-hint">
+        Share of lines that must match the Line Regex. <strong>0 disables
+        it</strong> and lines that do not match are only counted. Set it and a
+        changed log format ends the run <code>failed</code> with the rate in
+        the error, instead of quietly dropping the row count. The refusal only
+        applies while nothing has been loaded yet — failing later would leave
+        the watermark behind and the next run would re-read the window, which
+        without a primary key means duplicates.
+      </div>
+    </div>
+    <div id="logProbeResult" class="action-result" style="display:none"></div>
+  </div>
+</div>

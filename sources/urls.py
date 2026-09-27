@@ -22,6 +22,11 @@ urlpatterns = [
     # Profiles admin page — must precede the <str:slug> routes so the
     # "profiles" literal does not collide with the slug converter.
     path("profiles/",                                  views.profiles_page,     name="profiles"),
+    # The log-source probe, twice. The pk-less route is what the **create**
+    # form calls — there is no datasource yet, and offering the columns before
+    # anything is stored is the whole point. Literal, so it precedes the
+    # <str:slug> routes for the same reason "profiles" does.
+    path("logfile/probe/",                             views.logfile_probe,     name="logfile_probe"),
     # Global notification-config page (global tab "PagerDuty") and its
     # per-datasource test-send endpoint. Literal paths, like
     # alarms/firings/ and recipients/, so the <int:pk>/ routes stay clear.
@@ -41,6 +46,11 @@ urlpatterns = [
     path("<int:pk>/test-connection/",                  views.test_connection,  name="test_connection"),
     path("<int:pk>/connection-status/",                 views.connection_status, name="connection_status"),
     path("<int:pk>/preview-import/",                   views.preview_import,   name="preview_import"),
+    # Same view as logfile/probe/ above; with a pk it also reads the stored
+    # fields as a fallback and the configured fact columns, so the transform
+    # preview has something to compare against.
+    path("<int:pk>/logfile/probe/",                    views.logfile_probe,    name="logfile_probe_source"),
+    path("<int:pk>/logfile/adopt-columns/",            views.logfile_adopt_columns, name="logfile_adopt_columns"),
     path("<int:pk>/etl/run/",                          views.etl_run,          name="etl_run"),
     path("<int:pk>/etl/status/",                       views.etl_status,       name="etl_status"),
     path("<int:pk>/etl/kill/",                          views.etl_kill,         name="etl_kill"),

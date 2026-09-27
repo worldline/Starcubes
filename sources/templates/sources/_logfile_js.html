@@ -1,0 +1,306 @@
+{% comment %}
+Behaviour for the Log Source card: the kind switch, the probe, and the column
+generator. Shared by new.html and edit.html.
+
+A template rather than a static .js because it resolves {% templatetag openblock %}% url %{% templatetag closeblock %} tags, the same
+reason _alarms_js.html is one. Include it inside {% templatetag openblock %}% block extra_js %{% templatetag closeblock %}, after
+base.html's block.super so postJSON/csrfToken exist.
+
+`LOGFILE_PK` must be defined by the including template: a datasource id on the
+edit page, null on the create form. The generator needs a datasource to write
+into, so on the create form the probe is a regex check only and the Adopt
+button stays hidden — the flow there is probe, Create, then adopt on the
+datasource page.
+{% endcomment %}
+<script>
+(function () {
+  var dialect = document.querySelector('[name="source_dialect"]');
+  // The datasource page has no dialect dropdown — its Basics card is
+  // read-only and editing goes through edit.html — but it does want the
+  // probe. LOGFILE_FIXED says what kind of source it is when there is
+  // nothing to read it from.
+  var fixed = (typeof LOGFILE_FIXED === 'undefined') ? null : LOGFILE_FIXED;
+  if (!dialect && fixed === null) return;
+  var pk = (typeof LOGFILE_PK === 'undefined') ? null : LOGFILE_PK;
+  var pane = document.getElementById('logProbeResult');
+  var btn  = document.getElementById('btnLogProbe');
+  // Null on the datasource page: the probe then sends no fields and the
+  // server falls back to the stored configuration, which is exactly right
+  // there.
+  var form = dialect ? dialect.form : null;
+
+  // Local, because base.html does not define one and source.html's lives on
+  // that page only. Null-safe: a group's sample value can be absent.
+  function h(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // ---- the kind switch -----------------------------------------------
+  //
+  // Elements are hidden, never removed. `source_new` reads
+  // p["watermark_column"] and p["partition_column"] as required index
+  // accesses, so a field absent from the POST is a 500 rather than a 400 —
+  // and keeping them means switching the dialect back and forth loses
+  // nothing the user typed.
+  function applyKind() {
+    var isLog = dialect ? (dialect.value === 'logfile') : fixed;
+    document.querySelectorAll('[data-src-kind]').forEach(function (el) {
+      var kind = el.getAttribute('data-src-kind');
+      el.style.display = ((kind === 'logfile') === isLog) ? '' : 'none';
+    });
+    // Same field, different thing: for a log source the watermark is the
+    // *name of the time group* in the regex, not a column in a table.
+    relabel('watermark_column',
+            isLog ? 'Time Group' : 'Watermark Column',
+            isLog ? 'The named group holding the timestamp, e.g. ts. This is '
+                  + 'the watermark: the load window is half-open on it.'
+                  : null);
+    relabel('partition_column',
+            isLog ? 'Partition Column (the time fact column)' : 'Partition Column',
+            null);
+    // The overlap re-fetch de-duplicates by primary key and a log source has
+    // none, so the server refuses a non-zero value. Zero it and lock it here
+    // rather than letting the form come back with a 400.
+    var ov = document.querySelector('[name="late_arrival_overlap_s"]');
+    if (ov) {
+      ov.disabled = isLog;
+      if (isLog) ov.value = '0';
+      var grp = ov.closest('.form-group');
+      var note = grp && grp.querySelector('.logfile-note');
+      if (isLog && grp && !note) {
+        note = document.createElement('div');
+        note.className = 'form-hint logfile-note';
+        note.innerHTML = '<strong>Not available on a log source.</strong> '
+          + 'The overlap re-fetch filters duplicates by primary key, and log '
+          + 'lines have none — nor do they need one: the stored watermark is '
+          + 'the window\'s upper, half-open bound, so the next window joins '
+          + 'on with nothing read twice.';
+        grp.appendChild(note);
+      } else if (!isLog && note) {
+        note.remove();
+      }
+    }
+    if (btn) btn.style.display = isLog ? '' : 'none';
+  }
+
+  function relabel(name, text, hint) {
+    var el = document.querySelector('[name="' + name + '"]');
+    if (!el) return;
+    var grp = el.closest('.form-group');
+    var label = grp && grp.querySelector('.form-label');
+    if (label) {
+      var star = label.querySelector('span');
+      label.textContent = text + ' ';
+      if (star) label.appendChild(star);
+    }
+    if (hint === null) return;
+    var extra = grp && grp.querySelector('.logfile-hint');
+    if (!extra && grp) {
+      extra = document.createElement('div');
+      extra.className = 'form-hint logfile-hint';
+      grp.appendChild(extra);
+    }
+    if (extra) extra.textContent = hint;
+  }
+
+  // ---- the probe -----------------------------------------------------
+  function probeUrl() {
+    return pk
+      ? '{% url "sources:logfile_probe_source" 987654321 %}'.replace('987654321', pk)
+      : '{% url "sources:logfile_probe" %}';
+  }
+
+  function probe() {
+    if (!pane) return;
+    pane.className = 'action-result';
+    pane.style.display = 'block';
+    pane.textContent = 'Reading the newest lines…';
+    var fd = new FormData();
+    ['source_dsn', 'log_line_regex', 'log_record_start', 'log_time_format',
+     'log_time_zone', 'log_encoding', 'watermark_column',
+     'log_min_match_pct'].forEach(function (n) {
+      var el = form && form.querySelector('[name="' + n + '"]');
+      if (el) fd.append(n, el.value);
+    });
+    postJSON(probeUrl(), fd).then(render).catch(function (e) {
+      pane.className = 'action-result err';
+      pane.textContent = String(e);
+    });
+  }
+
+  function render(d) {
+    if (!d.ok) {
+      pane.className = 'action-result err';
+      pane.textContent = d.error || 'The probe failed.';
+      return;
+    }
+    pane.className = 'action-result ' + (d.matched ? 'ok' : 'err');
+    var files = (d.files || []).map(function (f) {
+      return h(f.name) + (f.size ? ' (' + Math.round(f.size / 1024) + ' kB)' : '');
+    }).join(', ');
+    var rate = d.match_pct === null ? 'nothing to measure'
+             : d.match_pct.toFixed(2) + '% matched';
+    var html = '<div style="margin-bottom:8px">'
+      + '<strong>' + d.lines_read + ' line(s) read, ' + h(rate) + '</strong>'
+      + (files ? '<div class="text-muted" style="font-size:12px">' + files
+                 + '</div>' : '')
+      + '</div>';
+
+    if (d.groups && d.groups.length) {
+      html += '<table class="data-table" style="margin-bottom:8px">'
+        + '<thead><tr><th style="width:2em"></th><th>Group</th>'
+        + '<th>Examples</th><th>Distinct</th><th>Type</th><th>Role</th>'
+        + '</tr></thead><tbody>';
+      d.groups.forEach(function (g) {
+        // Everything is pre-checked except a group whose distinct count is
+        // close to the line count — that one would fill a dim table's 32767
+        // ceiling. A recommendation, not a lock: the operator can tick it.
+        var checked = g.high_cardinality ? '' : ' checked';
+        var dist = g.distinct
+          + (g.distinct_after !== null && g.distinct_after !== undefined
+             ? ' → ' + g.distinct_after + ' after transform' : '');
+        html += '<tr>'
+          + '<td><input type="checkbox" class="lp-pick" value="' + h(g.group)
+          + '"' + checked + '></td>'
+          + '<td class="mono"' + (g.high_cardinality
+              ? ' style="color:var(--danger)"' : '') + '>' + h(g.group)
+          + (g.column_name && g.column_name !== g.group
+             ? ' <span class="text-muted">&rarr; ' + h(g.column_name)
+               + '</span>' : '')
+          + (g.group === d.time_group
+             ? ' <span class="badge">time</span>' : '') + '</td>'
+          + '<td class="text-muted" style="font-size:12px">'
+          + h((g.samples || []).slice(0, 3).join(' | ')).slice(0, 90) + '</td>'
+          + '<td>' + h(dist) + '</td>'
+          + '<td class="mono">' + h(g.pg_type)
+          + (g.value_type && g.value_type !== g.pg_type
+             ? ' <span class="text-muted">(' + h(g.value_type) + ')</span>'
+             : '') + '</td>'
+          + '<td class="mono">' + h(g.role) + '</td>'
+          + '</tr>';
+        if (g.name_note) {
+          // The group keeps its name; only the column is renamed, because a
+          // named group may legitimately be spelled in a way an unquoted
+          // Postgres column cannot (`user` is reserved, and nginx's combined
+          // format has one).
+          html += '<tr><td></td><td colspan="5" class="text-muted" '
+            + 'style="font-size:12px">' + h(g.name_note) + '.</td></tr>';
+        }
+        if (g.non_numeric) {
+          // The case a transform was invented for, named at the moment the
+          // operator can act on it: nginx writes '-' for bytes, HAProxy -1
+          // for a phase never reached. Without a transform each such line
+          // fails its cast and goes to etl_unparsed.
+          html += '<tr><td></td><td colspan="5" '
+            + 'style="font-size:12px;color:var(--danger)">' + g.non_numeric
+            + ' of the sampled values are not numbers (a format\'s "no value" '
+            + 'token). Set a Transform on the fact column to map them — e.g. '
+            + 'pattern <code>^-$</code>, replacement <code>0</code> — or every '
+            + 'such line fails its cast and lands in etl_unparsed.</td></tr>';
+        }
+        if (g.high_cardinality) {
+          html += '<tr><td></td><td colspan="5" '
+            + 'style="font-size:12px;color:var(--danger)">High cardinality — '
+            + g.distinct
+            + ' distinct values in ' + d.lines_read + ' lines. A dimension '
+            + 'holds at most 32767, so this one fills up. Set a Transform on '
+            + 'the fact column to reduce it (e.g. a path to its first '
+            + 'segment), or leave it out.</td></tr>';
+        }
+      });
+      html += '</tbody></table>';
+      html += '<div class="text-muted" style="font-size:12px;margin-bottom:8px">'
+        + 'Type shows the <em>fact column</em> type; a dimension is smallint '
+        + 'because it stores the dimension table\'s index, and the value\'s '
+        + 'own shape is in brackets. A numeric group that repeats is proposed '
+        + 'as a dimension (you group by a status code), one that does not as a '
+        + 'measure (you sum a byte count).</div>';
+    }
+
+    if (d.unmatched && d.unmatched.length) {
+      html += '<details style="margin-bottom:8px"><summary>'
+        + (d.lines_read - d.matched) + ' line(s) did not match</summary>'
+        + '<pre class="mono" style="font-size:11px;white-space:pre-wrap">'
+        + d.unmatched.map(function (u) {
+            return h(u.file) + ': ' + h(u.line);
+          }).join('\n')
+        + '</pre></details>';
+    }
+
+    if (pk && d.groups && d.groups.length) {
+      html += '<button type="button" class="btn btn-primary btn-sm" '
+        + 'id="btnLogAdopt">Create the ticked fact columns</button>'
+        + ' <span class="text-muted" style="font-size:12px">'
+        + 'Replaces whatever fact columns and dimensions this datasource '
+        + 'has.</span>'
+        + '<div id="logAdoptResult" class="action-result" '
+        + 'style="display:none;margin-top:8px"></div>';
+    } else if (d.groups && d.groups.length) {
+      html += '<div class="text-muted" style="font-size:12px">'
+        + 'Click <strong>Create Datasource</strong> first — the fact columns '
+        + 'are written to a datasource, so the generator needs one. The '
+        + 'button appears on the datasource page.</div>';
+    }
+    pane.innerHTML = html;
+
+    var adopt = document.getElementById('btnLogAdopt');
+    if (adopt) {
+      adopt.addEventListener('click', function () {
+        doAdopt(d);
+      });
+    }
+  }
+
+  function doAdopt(report) {
+    var out = document.getElementById('logAdoptResult');
+    var picked = Array.prototype.slice.call(
+      document.querySelectorAll('.lp-pick:checked')).map(function (c) {
+        return c.value;
+      });
+    out.style.display = 'block';
+    out.className = 'action-result';
+    if (!picked.length) {
+      out.className = 'action-result err';
+      out.textContent = 'Nothing ticked.';
+      return;
+    }
+    out.textContent = 'Creating…';
+    var fd = new FormData();
+    fd.append('replace', 'true');
+    if (report.time_group) fd.append('time_group', report.time_group);
+    var byGroup = {};
+    (report.groups || []).forEach(function (g) { byGroup[g.group] = g; });
+    picked.forEach(function (name) {
+      fd.append('group', name);
+      var g = byGroup[name] || {};
+      fd.append('role_' + name, g.role || 'auto-dimension');
+      fd.append('type_' + name, g.pg_type || 'text');
+    });
+    postJSON('{% url "sources:logfile_adopt_columns" 987654321 %}'
+             .replace('987654321', pk), fd)
+      .then(function (d) {
+        if (!d.ok) {
+          out.className = 'action-result err';
+          out.textContent = d.error || 'Could not create the columns.';
+          return;
+        }
+        out.className = 'action-result ok';
+        out.textContent = 'Created ' + d.created + ' fact column(s) and '
+          + d.dimensions + ' dimension(s). Reloading…';
+        setTimeout(function () { window.location.reload(); }, 900);
+      })
+      .catch(function (e) {
+        out.className = 'action-result err';
+        out.textContent = String(e);
+      });
+  }
+
+  if (btn) btn.addEventListener('click', probe);
+  if (dialect) {
+    dialect.addEventListener('change', applyKind);
+    applyKind();
+  }
+})();
+</script>

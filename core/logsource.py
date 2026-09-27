@@ -891,6 +891,14 @@ class GroupReport:
     value_type: str                   # what the raw values look like
     role: str
     high_cardinality: bool
+    # Sampled values that are not numbers although the group is numeric —
+    # a format's "no value" token. Each one needs a transform or its line
+    # fails the cast. 0 for a text group.
+    non_numeric: int = 0
+    # The fact column this group would become. Differs from `group` when the
+    # group name is not usable as an unquoted Postgres column name.
+    column_name: str = ""
+    name_note: Optional[str] = None
 
 
 @dataclass
@@ -926,39 +934,120 @@ PROBE_BYTES = int(os.environ.get("STARCUBES_LOG_PROBE_BYTES") or 1_000_000)
 PROBE_SECONDS = float(os.environ.get("STARCUBES_LOG_PROBE_SECONDS") or 10.0)
 
 
-def _guess_type(values: list[str]) -> str:
-    """A pg_type for a group, from what its values look like.
+# Values a log format writes where it has no value. A group is still numeric
+# with these in it — that is the whole reason `transform_pattern` exists, and
+# a guesser that gives up on the first one calls nginx's `bytes` a
+# high-cardinality *dimension*, which is the opposite of useful.
+_NULL_TOKENS = {"", "-", "--", "n/a", "na", "null", "none", "nil", "?"}
+
+# How much of a sample must parse as a number before the group is called
+# numeric. Below it the field really is text with digits in it.
+NUMERIC_SHARE = 0.9
+
+
+# PostgreSQL reserved words that cannot be an unquoted column name. Not the
+# full keyword list — only what a log field plausibly collides with, plus
+# everything `pg_get_keywords()` marks reserved that is a single common word.
+# `user` is the one that matters and the one that found this: nginx's combined
+# format has a `user` field, and `core/schema.py:create_fact` interpolates
+# column names unquoted, so the CREATE TABLE fails with "syntax error at or
+# near user" *after* the datasource was configured.
+_RESERVED_COLUMN_NAMES = {
+    "all", "analyse", "analyze", "and", "any", "array", "as", "asc",
+    "asymmetric", "both", "case", "cast", "check", "collate", "column",
+    "constraint", "create", "current_catalog", "current_date", "current_role",
+    "current_time", "current_timestamp", "current_user", "default",
+    "deferrable", "desc", "distinct", "do", "else", "end", "except", "false",
+    "fetch", "for", "foreign", "from", "grant", "group", "having", "in",
+    "initially", "intersect", "into", "lateral", "leading", "limit",
+    "localtime", "localtimestamp", "not", "null", "offset", "on", "only",
+    "or", "order", "placing", "primary", "references", "returning", "select",
+    "session_user", "some", "symmetric", "table", "then", "to", "trailing",
+    "true", "union", "unique", "user", "using", "variadic", "when", "where",
+    "window", "with",
+}
+
+# The shape a fact column name must have. Same restriction and the same reason
+# as `core/schema.py:validate_schema_name`: the name goes unquoted into the
+# warehouse DDL and every query built around it, so it has to survive
+# Postgres case-folding unchanged. Quoting ~70 f-string sites instead was
+# evaluated and rejected — see docs/backlog.md.
+_SAFE_COLUMN = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+
+
+def safe_column_name(group: str) -> tuple[str, Optional[str]]:
+    """``(column_name, note)`` — a fact column name derived from a group name.
+
+    A named group may legitimately be spelled in a way a Postgres column
+    cannot: upper case (folded), reserved (`user`), or carrying a character an
+    unquoted identifier does not allow. The fact column's *name* and its
+    *source expression* are separate fields, so the fix is to adjust the name
+    and leave the group untouched — nothing has to be renamed in the regex.
+
+    `note` is None when the group name was already usable, and otherwise says
+    what changed, so the probe can show it rather than silently substituting.
+    """
+    name = re.sub(r"[^a-z0-9_]", "_", group.lower())
+    if not name or name[0].isdigit():
+        name = "c_" + name
+    name = name[:63]
+    reason = None
+    if name in _RESERVED_COLUMN_NAMES:
+        name += "_"
+        reason = (f"{group!r} is a reserved word in PostgreSQL and cannot be "
+                  f"an unquoted column name")
+    elif name != group:
+        reason = (f"{group!r} is not usable as a column name unchanged "
+                  f"(lower case, letters, digits and underscore only)")
+    if reason:
+        reason += f" — the column is called {name!r}, the group stays {group!r}"
+    return name, reason
+
+
+def _guess_type(values: list[str]) -> tuple[str, int]:
+    """``(pg_type, non_numeric_count)`` for a group, from its values.
 
     Integers get the narrowest type that holds the sample, which is what
     makes `status` a smallint and `bytes` a bigint without anyone saying so.
+
+    The second element is what makes the guess useful rather than merely
+    right: a group that is numeric *except* for a handful of `-` placeholders
+    is still a measure, and the count is how the probe tells the operator to
+    set a transform — without one, every such line fails its cast and lands
+    in `etl_unparsed`. Measured on a real nginx log, where one request in
+    fifty sends no body.
     """
     if not values:
-        return "text"
-    ints, floats = True, True
+        return "text", 0
     lo, hi = 0, 0
+    n_int = n_float = n_bad = 0
     for v in values:
-        s = v.strip()
-        if not s:
+        t = v.strip()
+        if t.lower() in _NULL_TOKENS:
+            n_bad += 1
             continue
         try:
-            n = int(s)
+            n = int(t)
             lo, hi = min(lo, n), max(hi, n)
+            n_int += 1
+            continue
         except ValueError:
-            ints = False
-            try:
-                float(s)
-            except ValueError:
-                floats = False
-                break
-    if ints:
-        if -32768 <= lo and hi <= 32767:
-            return "smallint"
-        if -2147483648 <= lo and hi <= 2147483647:
-            return "integer"
-        return "bigint"
-    if floats:
-        return "double precision"
-    return "text"
+            pass
+        try:
+            float(t)
+            n_float += 1
+        except ValueError:
+            n_bad += 1
+    numeric = n_int + n_float
+    if not numeric or numeric < NUMERIC_SHARE * len(values):
+        return "text", 0
+    if n_float:
+        return "double precision", n_bad
+    if -32768 <= lo and hi <= 32767:
+        return "smallint", n_bad
+    if -2147483648 <= lo and hi <= 2147483647:
+        return "integer", n_bad
+    return "bigint", n_bad
 
 
 def _looks_like_time(values: list[str], fmt: Optional[str],
@@ -1067,12 +1156,20 @@ def sample(config: LogConfig, n_lines: int = PROBE_LINES) -> ProbeReport:
         tf = None
         if spec is not None and (spec.transform_pattern or "").strip():
             tf = _Transform(spec.transform_pattern, spec.transform_replace)
-        distinct_after = (len({tf.apply(v) for v in vals}) if tf else None)
+        # Over `seen[g]`, the full distinct set — **not** over `vals`, which
+        # is capped at 50 examples. Computing it from the samples made the two
+        # numbers incomparable and the pane reported nonsense ("295 → 50 after
+        # transform" on a transform that collapses nothing).
+        distinct_after = (len({tf.apply(v) for v in seen[g]})
+                          if tf else None)
         is_time = (g == time_group) if time_group else _looks_like_time(
             vals, config.time_format, tz)
         if is_time and time_group is None:
             time_group = g
-        value_type = "timestamptz" if is_time else _guess_type(vals)
+        if is_time:
+            value_type, non_numeric = "timestamptz", 0
+        else:
+            value_type, non_numeric = _guess_type(vals)
         effective_distinct = (distinct_after if distinct_after is not None
                               else distinct)
         if is_time:
@@ -1090,18 +1187,37 @@ def sample(config: LogConfig, n_lines: int = PROBE_LINES) -> ProbeReport:
             role = "auto-dimension"
         else:
             role = "measure"
-        # The fact column's type is not the value's type for a dimension: it
-        # holds the dim table's `smallserial` index, so it is smallint
-        # whatever the source value looks like. Getting this wrong produces a
-        # text dimension column, which then fails the dim count UPDATE with
-        # `operator does not exist: smallint = text` after a load has already
-        # succeeded — measured, on the first real end-to-end run.
-        pg_type = "smallint" if role == "auto-dimension" else value_type
+        # The fact column's type is not the value's type, and it differs in
+        # two opposite directions.
+        #
+        # A **dimension** holds the dim table's `smallserial` index, so it is
+        # smallint whatever the source value looks like. Getting that wrong
+        # produces a text dimension column, which then fails the dim count
+        # UPDATE with `operator does not exist: smallint = text` after a load
+        # has already succeeded — measured, on the first real end-to-end run.
+        #
+        # A **measure** is never proposed as smallint, even when the sample
+        # fits one. The sample's maximum is only a lower bound on the real
+        # maximum, and `core/etl.py:_transform_worker` *clips* an
+        # out-of-range measure instead of failing — so an underestimate here
+        # is silent corruption rather than a loud error. A 1 kB response body
+        # in a 300-line sample says nothing about the 100 kB one next week.
+        # Two bytes of storage against that is not a trade worth making; the
+        # operator can narrow it deliberately, and the value's own shape is
+        # still reported as `value_type`.
+        if role == "auto-dimension":
+            pg_type = "smallint"
+        elif role == "measure" and value_type == "smallint":
+            pg_type = "integer"
+        else:
+            pg_type = value_type
+        col_name, name_note = safe_column_name(g)
         effective = distinct_after if distinct_after is not None else distinct
         groups.append(GroupReport(
             group=g, samples=vals[:5], distinct=distinct,
             distinct_after=distinct_after, pg_type=pg_type,
-            value_type=value_type, role=role,
+            value_type=value_type, role=role, non_numeric=non_numeric,
+            column_name=col_name, name_note=name_note,
             high_cardinality=(role == "auto-dimension" and lines_read > 0
                               and effective >= HIGH_CARDINALITY_SHARE * lines_read),
         ))

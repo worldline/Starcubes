@@ -40,6 +40,9 @@ from core.housekeeping import run_housekeeping
 from core.lease import (is_local as lease_is_local, lease_state,
                         reap_dead_runs, request_stop, verify_local_pid)
 from core.pipeline_alarm import CONDITIONS as _PIPELINE_CONDS
+from core.logsource import (LogConfig, LogSourceError, ColumnSpec,
+                            open_transport, safe_column_name,
+                            sample as logfile_sample)
 from core.preflight import run_preflight
 from core.utils import _parse_dt, _pid_alive
 from core.adhoc import history_delete_user, history_list_user
@@ -89,7 +92,14 @@ def _add_inline_display(dim: dict) -> dict:
         dim["inline_values_display"] = first_line + (" …" if "\n" in iv else "")
     return dim
 
-DIALECTS = ["oracle", "postgresql", "mysql", "mssql"]
+# `source_dialect` carries the source *kind* as well as the SQL dialect, so
+# 'logfile' lives in the same list and the same dropdown (migration 0047).
+# SQL_DIALECTS stays separate for the handful of places that genuinely mean
+# "which SQL do we speak" — the dialect-mismatch warning on the profile
+# picker is the one that would otherwise nag on every log profile.
+SQL_DIALECTS = ["oracle", "postgresql", "mysql", "mssql"]
+LOGFILE_DIALECT = "logfile"
+DIALECTS = SQL_DIALECTS + [LOGFILE_DIALECT]
 PG_TYPES = ["smallint", "bigint", "integer", "timestamptz", "text", "real", "double precision", "boolean"]
 ROLES = ["time", "measure", "dimension", "auto-dimension", "pk"]
 INDEX_METHODS = ["brin", "btree", "hash"]
@@ -225,6 +235,77 @@ def _lag_pair(p):
     return lag_wm, lag_now
 
 
+def _logfile_form_guard(p) -> dict:
+    """Validate and normalise the log fields of a submitted form.
+
+    Returns the values to store. Raises ValueError with a sentence the form
+    shows. Two rules, both of which `Source.load` also enforces — this is the
+    earlier and friendlier of the two refusals:
+
+      * a log source needs `log_line_regex`, because the fact columns are read
+        from its named groups;
+      * `late_arrival_overlap_s` must be 0, because the overlap re-fetch
+        de-duplicates by primary key and a log source has none.
+
+    The regex is compiled here rather than only checked for emptiness: a typo
+    in it is the single most likely mistake on this form, and catching it at
+    save time beats catching it on the first load.
+    """
+    import re as _re
+    regex = (p.get("log_line_regex") or "").strip()
+    if not regex:
+        raise ValueError(
+            "A log source needs a Line Regex — the fact columns are read "
+            "from its named groups.")
+    try:
+        compiled = _re.compile(regex, _re.MULTILINE)
+    except _re.error as exc:
+        raise ValueError(f"Line Regex does not compile: {exc}")
+    if not compiled.groupindex:
+        raise ValueError(
+            "The Line Regex has no named groups. Every fact column is read "
+            r"from one, so the pattern needs at least a time group, e.g. "
+            r"(?P<ts>\S+).")
+    record_start = (p.get("log_record_start") or "").strip()
+    if record_start:
+        try:
+            _re.compile(record_start, _re.MULTILINE)
+        except _re.error as exc:
+            raise ValueError(f"Record Start does not compile: {exc}")
+    tz = (p.get("log_time_zone") or "").strip()
+    if tz:
+        from zoneinfo import ZoneInfo
+        try:
+            ZoneInfo(tz)
+        except Exception:
+            raise ValueError(
+                f"{tz!r} is not a known IANA time zone name "
+                f"(e.g. Europe/Berlin, UTC).")
+    if int(p.get("late_arrival_overlap_s") or 0) != 0:
+        raise ValueError(
+            "Late Arrival Overlap must be 0 on a log source: the overlap "
+            "re-fetch de-duplicates by primary key, and log lines have none.")
+    try:
+        pct = float(p.get("log_min_match_pct") or 0)
+    except ValueError:
+        raise ValueError("Minimum Match % must be a number.")
+    if not 0 <= pct <= 100:
+        raise ValueError("Minimum Match % must be between 0 and 100.")
+    return {
+        "log_line_regex": regex,
+        "log_record_start": record_start,
+        "log_time_format": (p.get("log_time_format") or "").strip(),
+        "log_time_zone": tz,
+        "log_encoding": (p.get("log_encoding") or "").strip(),
+        "log_min_match_pct": pct,
+    }
+
+
+_LOG_BLANK = {"log_line_regex": "", "log_record_start": "",
+              "log_time_format": "", "log_time_zone": "",
+              "log_encoding": "", "log_min_match_pct": 0.0}
+
+
 @_admin_required_page
 def source_new(request):
     if request.method == "POST":
@@ -239,6 +320,8 @@ def source_new(request):
             # DDL, so it has to survive Postgres case-folding unchanged.
             validate_schema_name(p.get("schema_name", ""))
             lag_wm, lag_now = _lag_pair(p)
+            is_log = p.get("source_dialect") == LOGFILE_DIALECT
+            log = _logfile_form_guard(p) if is_log else dict(_LOG_BLANK)
         except (SchemaNameError, ValueError) as exc:
             return HttpResponseBadRequest(str(exc))
         profile = None
@@ -257,7 +340,9 @@ def source_new(request):
                      chunksize, transform_procs,
                      small_window_hint, interval_ladder, bar_pixel_target, pk_format,
                      late_arrival_overlap_s, watermark_fact_expr,
-                     watermark_lag_s, wallclock_lag_s)
+                     watermark_lag_s, wallclock_lag_s,
+                     log_line_regex, log_record_start, log_time_format,
+                     log_time_zone, log_encoding, log_min_match_pct)
                 VALUES
                     (:name, :schema_name, :dialect, :dsn,
                      NULLIF(:import_query, ''), NULLIF(:base_table, ''),
@@ -267,7 +352,10 @@ def source_new(request):
                      NULLIF(:small_window_hint, ''),
                      CAST(:ladder AS int[]), :bar_pixel_target, NULLIF(:pk_format, ''),
                      :late_arrival_overlap_s, NULLIF(:watermark_fact_expr, ''),
-                     :watermark_lag_s, :wallclock_lag_s)
+                     :watermark_lag_s, :wallclock_lag_s,
+                     NULLIF(:log_line_regex, ''), NULLIF(:log_record_start, ''),
+                     NULLIF(:log_time_format, ''), NULLIF(:log_time_zone, ''),
+                     NULLIF(:log_encoding, ''), :log_min_match_pct)
                 RETURNING id
             """), {
                 "name":               p["name"],
@@ -290,6 +378,7 @@ def source_new(request):
                 "watermark_fact_expr": p.get("watermark_fact_expr", ""),
                 "watermark_lag_s":    lag_wm,
                 "wallclock_lag_s":    lag_now,
+                **log,
             }).mappings().one()
             if profile is not None:
                 # Only the child rows: the form fields above were already
@@ -416,6 +505,24 @@ def _build_source_context(pk: int) -> dict:
 
     ds["interval_ladder_str"] = _ladder_to_str(ds.get("interval_ladder"))
     ds["source_dsn_masked"] = _mask_dsn(ds.get("source_dsn", ""))
+    # One flag rather than `{% if ds.source_dialect == 'logfile' %}` at a
+    # dozen places in source.html — and one place to change if the vocabulary
+    # ever moves out of source_dialect.
+    ds["is_logfile"] = ds.get("source_dialect") == LOGFILE_DIALECT
+
+    unparsed_lines: list = []
+    if ds["is_logfile"]:
+        # Bounded even though etl_unparsed is already capped per run: a
+        # datasource with a long history of failing runs would still make this
+        # page heavy, and the newest runs are the ones worth reading.
+        with _meta_engine().begin() as conn:
+            unparsed_lines = [dict(r) for r in conn.execute(text(
+                "SELECT etl_run_id, file_name, line_no, raw_line, seen_at "
+                "  FROM starcubes_meta.etl_unparsed "
+                " WHERE etl_run_id IN (SELECT id FROM starcubes_meta.etl_run "
+                "                       WHERE datasource_id = :ds) "
+                " ORDER BY etl_run_id DESC, line_no LIMIT 200"
+            ), {"ds": pk}).mappings().all()]
 
     dim_fc_names = {d["fact_column"] for d in dimensions if d.get("dim_table")}
 
@@ -454,6 +561,7 @@ def _build_source_context(pk: int) -> dict:
 
     return {
         "ds":               ds,
+        "unparsed_lines":   unparsed_lines,
         "group_set_tokens": group_set_tokens,
         "fact_cols":        [dict(r) for r in fact_cols],
         "dimensions":       [_add_inline_display(dict(r)) for r in dimensions],
@@ -579,6 +687,8 @@ def source_edit(request, pk: int):
             if submitted_schema != _load_datasource(pk)["schema_name"]:
                 validate_schema_name(submitted_schema)
             lag_wm, lag_now = _lag_pair(p)
+            is_log = p.get("source_dialect") == LOGFILE_DIALECT
+            log = _logfile_form_guard(p) if is_log else dict(_LOG_BLANK)
         except (SchemaNameError, ValueError) as exc:
             return HttpResponseBadRequest(str(exc))
         with _meta_engine().begin() as conn:
@@ -631,6 +741,12 @@ def source_edit(request, pk: int):
                     audit_interval_s   = :audit_interval_s,
                     audit_window_s     = :audit_window_s,
                     audit_autofill_max = :audit_autofill_max,
+                    log_line_regex     = NULLIF(:log_line_regex, ''),
+                    log_record_start   = NULLIF(:log_record_start, ''),
+                    log_time_format    = NULLIF(:log_time_format, ''),
+                    log_time_zone      = NULLIF(:log_time_zone, ''),
+                    log_encoding       = NULLIF(:log_encoding, ''),
+                    log_min_match_pct  = :log_min_match_pct,
                     updated_at         = now()
                 WHERE id = :id
             """), {
@@ -671,6 +787,7 @@ def source_edit(request, pk: int):
                     p.get("retention_periods") or 0)),
                 "initial_window_s":   max(0, int(
                     p.get("initial_window_s") or 0)),
+                **log,
                 "dim_refresh_interval_s": max(0, int(
                     p.get("dim_refresh_interval_s") or 0)),
             })
@@ -722,13 +839,43 @@ def source_delete(request, pk: int):
 # Async JSON views
 # ---------------------------------------------------------------------------
 
-def _test_source_connection(source_dsn: str) -> tuple[bool, str]:
+def _test_log_source(source_dsn: str) -> tuple[bool, str]:
+    """"Can the log be read?" — the log-source answer to a connection test.
+
+    There is no connection and no `SELECT 1`; what an operator wants to know
+    is whether the glob finds anything and how far back it reaches. The
+    message is the badge's tooltip, so it carries the file count, the total
+    size and the newest write time rather than just a yes.
+    """
+    try:
+        files = open_transport(source_dsn).list_files()
+    except LogSourceError as exc:
+        return False, str(exc)
+    except Exception as exc:
+        return False, str(exc)
+    if not files:
+        return False, ("no file matches — a load would read nothing and "
+                       "report success, so preflight blocks this")
+    total = sum(f.size or 0 for f in files)
+    newest = max((f.mtime for f in files if f.mtime), default=None)
+    return True, (f"{len(files)} file(s), {total / 1048576.0:.1f} MB"
+                  + (f", newest {newest:%Y-%m-%d %H:%M} UTC" if newest else ""))
+
+
+def _test_source_connection(source_dsn: str,
+                            dialect: str | None = None) -> tuple[bool, str]:
     """Try connecting to the source DB with a short timeout.
 
     Returns (ok, error_message).  Uses ``connect_timeout=10`` via
     ``connect_args`` so unreachable hosts fail fast instead of hanging
     for the full TCP timeout.
+
+    ``dialect`` routes a log source to `_test_log_source` instead: its DSN is
+    a transport URI, and handing `file:///var/log/...` to `create_engine`
+    produces an error about an unknown driver rather than about the log.
     """
+    if dialect == LOGFILE_DIALECT:
+        return _test_log_source(source_dsn)
     try:
         # connect_timeout is a libpq/psycopg2 parameter; oracledb doesn't accept it.
         dialect = sqlalchemy.engine.make_url(source_dsn).drivername.split("+")[0]
@@ -750,42 +897,53 @@ def _test_source_connection(source_dsn: str) -> tuple[bool, str]:
         return False, str(exc)
 
 
-def _resolve_source_dsn(pk: int) -> tuple[str | None, str]:
-    """Return (dsn, error). dsn is None if the datasource is missing or has no DSN."""
+def _resolve_source_dsn(pk: int) -> tuple[str | None, str, str | None]:
+    """Return (dsn, error, dialect). dsn is None if missing or unset.
+
+    The dialect rides along because the connection test branches on it — a
+    log source has a transport URI where a SQL one has a driver URL.
+    """
     try:
         ds = _load_datasource(pk)
     except ValueError as exc:
-        return None, str(exc)
+        return None, str(exc), None
     dsn = ds.get("source_dsn")
+    dialect = ds.get("source_dialect")
     if not dsn:
         # A datasource may be configured from a profile long before anyone
         # has credentials for its source, so this is an expected state, not
         # a failure — say what to do about it.
-        return None, "No source DSN configured — add one on the Edit page."
-    return dsn, ""
+        if dialect == LOGFILE_DIALECT:
+            return None, ("No log location configured — set the Log URI on "
+                          "the Edit page."), dialect
+        return None, "No source DSN configured — add one on the Edit page.", dialect
+    return dsn, "", dialect
 
 
 @_admin_required_json
 def test_connection(request, pk: int):
-    dsn, error = _resolve_source_dsn(pk)
+    dsn, error, dialect = _resolve_source_dsn(pk)
     if dsn is None:
         return JsonResponse({"ok": False, "error": error})
-    ok, error = _test_source_connection(dsn)
+    ok, message = _test_source_connection(dsn, dialect)
     if ok:
-        return JsonResponse({"ok": True})
-    return JsonResponse({"ok": False, "error": error})
+        # `detail` rather than `error`: on a log source the successful answer
+        # carries the file count and the newest write time, which is the part
+        # an operator actually reads.
+        return JsonResponse({"ok": True, "detail": message})
+    return JsonResponse({"ok": False, "error": message})
 
 
 @_admin_required_json
 def connection_status(request, pk: int):
-    """GET endpoint: test source DB connection and return {ok, error}."""
-    dsn, error = _resolve_source_dsn(pk)
+    """GET endpoint: test the source and return {ok, error|detail}."""
+    dsn, error, dialect = _resolve_source_dsn(pk)
     if dsn is None:
         return JsonResponse({"ok": False, "error": error})
-    ok, error = _test_source_connection(dsn)
+    ok, message = _test_source_connection(dsn, dialect)
     if ok:
-        return JsonResponse({"ok": True})
-    return JsonResponse({"ok": False, "error": error})
+        return JsonResponse({"ok": True, "detail": message})
+    return JsonResponse({"ok": False, "error": message})
 
 
 @require_POST
@@ -795,6 +953,12 @@ def estimate_cardinality(request, pk: int, fc_id: int):
         source = Source.load(_meta_engine(),
                              dest_dsn=settings.STARCUBES_POSTGRES_DSN,
                              name_or_id=pk)
+        if source.is_logfile:
+            return JsonResponse({"ok": False, "error":
+                                 "Cardinality is measured by Probe on a log "
+                                 "source — it reports the distinct count for "
+                                 "every group at once, before and after any "
+                                 "transform."})
         fc = next((c for c in source.fact_columns if c.id == fc_id), None)
         if fc is None:
             return JsonResponse({"ok": False, "error": f"fact_column {fc_id} not found"})
@@ -845,6 +1009,16 @@ def preview_import(request, pk: int):
         source = Source.load(_meta_engine(),
                              dest_dsn=settings.STARCUBES_POSTGRES_DSN,
                              name_or_id=pk)
+        if source.is_logfile:
+            # The log-source equivalent is the probe, which answers a richer
+            # question (groups, types, roles, match rate) in a different
+            # shape — so the template calls that endpoint directly rather
+            # than this one. Saying so beats a stack trace about a missing
+            # import_query.
+            return JsonResponse({"ok": False, "error":
+                                 "A log source has no import query. Use Probe "
+                                 "— it reads the log and shows the named "
+                                 "groups with example values."})
         if source.import_query:
             q = source.import_query
         elif source.base_table:
@@ -871,6 +1045,259 @@ def preview_import(request, pk: int):
                             json_dumps_params={"default": str})
     except Exception as exc:
         return JsonResponse({"ok": False, "error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# Log sources: the probe and the column generator
+# ---------------------------------------------------------------------------
+#
+# This is what stands in for the schema introspection a SQL source never got.
+# A SQL datasource's fact columns come from a profile or are typed in one by
+# one; a log datasource can be *read*, so the app offers the columns instead
+# of asking for them.
+
+
+def _logfile_config_from_request(p, stored: dict | None = None) -> LogConfig:
+    """A LogConfig from submitted form fields, falling back to stored ones.
+
+    Built from the POST rather than from a `Source` for one reason that
+    decides the shape of the whole feature: the probe has to work on the
+    **create** form, before any datasource exists. `stored` is the datasource
+    row when there is one, so the detail page can probe an edit in progress
+    while still picking up the fields the form did not send.
+    """
+    stored = stored or {}
+
+    def field(name):
+        v = p.get(name)
+        if v is None:
+            v = stored.get(name)
+        return (v or "").strip() or None
+
+    cols: list[ColumnSpec] = []
+    if stored.get("_fact_columns"):
+        cols = [ColumnSpec(name=c["name"], group=(c["source_expr"] or "").strip(),
+                           pg_type=c["pg_type"], role=c["role"],
+                           transform_pattern=c.get("transform_pattern"),
+                           transform_replace=c.get("transform_replace"))
+                for c in stored["_fact_columns"]
+                if (c["source_expr"] or "").strip()]
+    return LogConfig(
+        uri=field("source_dsn") or "",
+        line_regex=field("log_line_regex") or "",
+        time_group=field("watermark_column") or "",
+        record_start=field("log_record_start"),
+        time_format=field("log_time_format"),
+        time_zone=field("log_time_zone"),
+        encoding=field("log_encoding"),
+        columns=cols,
+        min_match_pct=float(p.get("log_min_match_pct")
+                            or stored.get("log_min_match_pct") or 0),
+    )
+
+
+def _probe_payload(report) -> dict:
+    return {
+        "ok": True,
+        "files": report.files,
+        "lines_read": report.lines_read,
+        "matched": report.matched,
+        "match_pct": (round(report.match_pct, 2)
+                      if report.match_pct is not None else None),
+        "time_group": report.time_group,
+        "unmatched": report.unmatched,
+        "groups": [{
+            "group": g.group,
+            "samples": g.samples,
+            "distinct": g.distinct,
+            "distinct_after": g.distinct_after,
+            "pg_type": g.pg_type,
+            "value_type": g.value_type,
+            "role": g.role,
+            "high_cardinality": g.high_cardinality,
+            "non_numeric": g.non_numeric,
+            "column_name": g.column_name,
+            "name_note": g.name_note,
+        } for g in report.groups],
+    }
+
+
+@require_POST
+@_admin_required_json
+def logfile_probe(request, pk: int | None = None):
+    """Read a little of the log, match the regex, and say what the columns are.
+
+    Two routes reach this: one without a pk for the create form, one with for
+    the datasource page. The pk only adds the stored fields as a fallback and
+    the configured fact columns, so the transform preview has something to
+    show.
+
+    Bounded by `core.logsource.sample` — lines, bytes *and* wall clock —
+    because this runs in a request and uwsgi's harakiri kills the worker
+    rather than the request.
+    """
+    stored = None
+    if pk is not None:
+        try:
+            stored = dict(_load_datasource(pk))
+        except ValueError as exc:
+            return JsonResponse({"ok": False, "error": str(exc)})
+        with _meta_engine().begin() as conn:
+            stored["_fact_columns"] = [dict(r) for r in conn.execute(text(
+                "SELECT name, pg_type, role, ordinal, source_expr, "
+                "       transform_pattern, transform_replace "
+                "  FROM starcubes_meta.fact_column "
+                " WHERE datasource_id = :ds ORDER BY ordinal"
+            ), {"ds": pk}).mappings().all()]
+    try:
+        cfg = _logfile_config_from_request(request.POST, stored)
+        if not cfg.uri:
+            return JsonResponse({"ok": False, "error":
+                                 "No log location yet — fill in the Log URI "
+                                 "first, e.g. file:///var/log/nginx/access.log*"})
+        if not cfg.line_regex:
+            return JsonResponse({"ok": False, "error":
+                                 "No pattern yet — the fact columns are read "
+                                 "from the named groups of the Line Regex."})
+        report = logfile_sample(cfg)
+        if not report.files:
+            # `sample` answers an empty report rather than raising, so the
+            # view is where this becomes a sentence. Preflight blocks the same
+            # condition at load time; saying it here saves the round trip.
+            return JsonResponse({"ok": False, "error":
+                                 "No file matches that location. A load would "
+                                 "read nothing and report success, so this is "
+                                 "worth fixing before creating the datasource."})
+        return JsonResponse(_probe_payload(report))
+    except LogSourceError as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+    except Exception as exc:                      # a bad regex, a bad zone…
+        return JsonResponse({"ok": False, "error": str(exc)})
+
+
+@require_POST
+@_admin_required_json
+def logfile_adopt_columns(request, pk: int):
+    """Create the fact columns (and their dim rows) the probe proposed.
+
+    The pane sends one `group` per checked row plus its role and type, so an
+    operator can overrule the proposal before it is written — the guesses are
+    a starting point, not a verdict.
+
+    Refuses when fact columns already exist unless `replace=true`, because
+    silently discarding a hand-tuned column set would be unrecoverable. The
+    whole thing is one transaction: a half-generated schema is worse than
+    none.
+    """
+    groups = request.POST.getlist("group")
+    if not groups:
+        return JsonResponse({"ok": False, "error": "No groups selected."})
+    time_group = (request.POST.get("time_group") or "").strip()
+    if time_group and time_group not in groups:
+        return JsonResponse({"ok": False, "error":
+                             f"the time group {time_group!r} is not among the "
+                             f"selected groups"})
+    replace = (request.POST.get("replace") or "").lower() in ("1", "true", "on")
+
+    roles, types = {}, {}
+    for g in groups:
+        roles[g] = (request.POST.get(f"role_{g}") or "auto-dimension").strip()
+        types[g] = (request.POST.get(f"type_{g}") or "text").strip()
+        if roles[g] not in ROLES:
+            return JsonResponse({"ok": False, "error":
+                                 f"role {roles[g]!r} for {g!r} is not one of "
+                                 f"{ROLES}"})
+        if types[g] not in PG_TYPES:
+            return JsonResponse({"ok": False, "error":
+                                 f"type {types[g]!r} for {g!r} is not one of "
+                                 f"{PG_TYPES}"})
+    if "pk" in roles.values():
+        # Source.load refuses it anyway; saying so here names the reason.
+        return JsonResponse({"ok": False, "error":
+                             "A log source must not have a pk column. Log "
+                             "lines carry no stable key, and the window "
+                             "arithmetic needs none."})
+
+    # The time column goes first so its ordinal is 1, which is what every
+    # existing profile does and what makes the Fact Columns table readable.
+    ordered = ([time_group] if time_group else []) + \
+              [g for g in groups if g != time_group]
+    try:
+        with _meta_engine().begin() as conn:
+            existing = conn.execute(text(
+                "SELECT count(*) FROM starcubes_meta.fact_column "
+                " WHERE datasource_id = :ds"), {"ds": pk}).scalar()
+            if existing and not replace:
+                return JsonResponse({"ok": False, "error":
+                                     f"this datasource already has {existing} "
+                                     f"fact column(s); pass replace=true to "
+                                     f"discard them"})
+            if existing:
+                # Dimensions reference fact_column by *name*, not by id, so
+                # they have to go with them or they point at nothing.
+                conn.execute(text(
+                    "DELETE FROM starcubes_meta.dimension "
+                    " WHERE datasource_id = :ds"), {"ds": pk})
+                conn.execute(text(
+                    "DELETE FROM starcubes_meta.fact_column "
+                    " WHERE datasource_id = :ds"), {"ds": pk})
+            for i, g in enumerate(ordered, start=1):
+                role = "time" if g == time_group else roles[g]
+                pg_type = "timestamptz" if g == time_group else types[g]
+                # The column name is *derived* from the group, not equal to
+                # it. A group may be spelled in a way a Postgres column
+                # cannot — upper case, reserved (`user`, which nginx's
+                # combined format has), or with a character an unquoted
+                # identifier disallows — and column names go unquoted into
+                # the warehouse DDL. `name` and `source_expr` are separate
+                # fields precisely so the regex needs no editing.
+                col, _note = safe_column_name(g)
+                conn.execute(text(
+                    "INSERT INTO starcubes_meta.fact_column "
+                    "  (datasource_id, name, pg_type, role, ordinal, "
+                    "   source_expr) "
+                    "VALUES (:ds, :n, :t, :r, :o, :e)"),
+                    {"ds": pk, "n": col, "t": pg_type, "r": role, "o": i,
+                     "e": g})
+                if role in ("dimension", "auto-dimension"):
+                    conn.execute(text(
+                        "INSERT INTO starcubes_meta.dimension "
+                        "  (datasource_id, fact_column, dim_table, "
+                        "   is_primary) "
+                        "VALUES (:ds, :fc, :dt, true)"),
+                        {"ds": pk, "fc": col, "dt": col})
+            if time_group:
+                # The watermark is the *group* name (the reader matches on
+                # it) while the partition column is the *fact column* name
+                # (the warehouse partitions on it). Usually identical, and
+                # not when the group needed renaming — so they are set from
+                # their own sides rather than from one value.
+                conn.execute(text(
+                    "UPDATE starcubes_meta.datasource "
+                    "   SET watermark_column = :g, partition_column = :c "
+                    " WHERE id = :ds AND source_dialect = 'logfile'"),
+                    {"g": time_group,
+                     "c": safe_column_name(time_group)[0], "ds": pk})
+            if not any(conn.execute(text(
+                    "SELECT 1 FROM starcubes_meta.fact_index "
+                    " WHERE datasource_id = :ds"), {"ds": pk}).all()):
+                # Without a BRIN on the time column every chart query scans
+                # whole partitions; the generator is the one place that knows
+                # which column it is.
+                conn.execute(text(
+                    "INSERT INTO starcubes_meta.fact_index "
+                    "  (datasource_id, column_name, method) "
+                    "VALUES (:ds, :c, 'brin')"),
+                    {"ds": pk,
+                     "c": safe_column_name(time_group or ordered[0])[0]})
+        bump_cache_epoch(_meta_engine(), pk)
+    except Exception as exc:
+        return JsonResponse({"ok": False, "error": str(exc)})
+    return JsonResponse({"ok": True, "created": len(ordered),
+                         "dimensions": sum(
+                             1 for g in ordered
+                             if g != time_group
+                             and roles[g] in ("dimension", "auto-dimension"))})
 
 
 def _signal_target(conn, row) -> str:
@@ -1645,16 +2072,71 @@ def cache_clear(request, pk: int):
 
 # ---------------------------------------------------------------------------
 
+def _transform_fields(p) -> dict:
+    """The fact column's transform pair, validated.
+
+    Compiled here rather than trusted: the pattern is `re.sub`'d against every
+    value of its column on every load, so a typo is a run that fails at the
+    first line — and refusing it at save time costs nothing. An empty
+    replacement with a pattern set is legitimate (deleting a prefix), which is
+    why the replacement is stored as given rather than NULLIF'd.
+    """
+    import re as _re
+    pattern = (p.get("transform_pattern") or "").strip()
+    replace = p.get("transform_replace") or ""
+    if pattern:
+        try:
+            _re.compile(pattern)
+        except _re.error as exc:
+            raise ValueError(f"transform_pattern does not compile: {exc}")
+    elif replace:
+        raise ValueError(
+            "a transform replacement without a pattern does nothing — set the "
+            "pattern too, or clear both")
+    return {"transform_pattern": pattern,
+            "transform_replace": replace if pattern else None}
+
+
+def _check_fact_column_name(name: str) -> None:
+    """Refuse a fact column name the warehouse DDL cannot carry unquoted.
+
+    Column names are interpolated into `CREATE TABLE`, every `COPY` target
+    list and every query built around them — the same unquoted treatment
+    `datasource.schema_name` gets, and rejected as a quoting problem for the
+    same reason (docs/backlog.md: ~70 f-string sites, all consistently
+    unquoted, so quoting them would break every installation already folded
+    on disk).
+
+    Until now nothing checked it, and the failure is late and confusing: a
+    column called `user` — which nginx's combined log format hands you —
+    stores fine and then makes `create_fact` fail with "syntax error at or
+    near user", long after the datasource looked configured. Found by
+    generating columns from a real nginx log.
+
+    Not log-specific: a hand-typed `user` or `End` breaks a SQL datasource
+    exactly the same way.
+    """
+    safe, note = safe_column_name(name)
+    if safe != name:
+        raise ValueError(
+            f"{note}. Rename the column — the Source Expression can stay as "
+            f"it is, so nothing in the query or the regex has to change.")
+
+
 @require_POST
 @_admin_required_json
 def fc_add(request, pk: int):
     try:
         p = request.POST
+        _check_fact_column_name(p["name"])
         with _meta_engine().begin() as conn:
             row = conn.execute(text("""
                 INSERT INTO starcubes_meta.fact_column
-                    (datasource_id, name, pg_type, role, ordinal, source_expr)
-                VALUES (:ds, :name, :pg_type, :role, :ordinal, NULLIF(:source_expr, ''))
+                    (datasource_id, name, pg_type, role, ordinal, source_expr,
+                     transform_pattern, transform_replace)
+                VALUES (:ds, :name, :pg_type, :role, :ordinal,
+                        NULLIF(:source_expr, ''),
+                        NULLIF(:transform_pattern, ''), :transform_replace)
                 RETURNING *
             """), {
                 "ds":          pk,
@@ -1663,6 +2145,7 @@ def fc_add(request, pk: int):
                 "role":        p["role"],
                 "ordinal":     int(p["ordinal"]),
                 "source_expr": p.get("source_expr", ""),
+                **_transform_fields(p),
             }).mappings().one()
         return JsonResponse({"ok": True, "row": dict(row)}, json_dumps_params={"default": str})
     except Exception as exc:
@@ -1675,13 +2158,25 @@ def fc_edit(request, pk: int, fc_id: int):
     try:
         p = request.POST
         with _meta_engine().begin() as conn:
+            # Only a *changed* name is checked, the same courtesy
+            # `source_edit` extends to a schema name predating its own
+            # validation: a datasource already carrying an awkward column
+            # must stay editable in every other field.
+            current = conn.execute(text(
+                "SELECT name FROM starcubes_meta.fact_column "
+                " WHERE id = :id AND datasource_id = :ds"),
+                {"id": fc_id, "ds": pk}).scalar()
+            if p["name"] != current:
+                _check_fact_column_name(p["name"])
             row = conn.execute(text("""
                 UPDATE starcubes_meta.fact_column SET
                     name        = :name,
                     pg_type     = :pg_type,
                     role        = :role,
                     ordinal     = :ordinal,
-                    source_expr = NULLIF(:source_expr, '')
+                    source_expr = NULLIF(:source_expr, ''),
+                    transform_pattern = NULLIF(:transform_pattern, ''),
+                    transform_replace = :transform_replace
                 WHERE id = :id AND datasource_id = :ds
                 RETURNING *
             """), {
@@ -1692,6 +2187,7 @@ def fc_edit(request, pk: int, fc_id: int):
                 "role":        p["role"],
                 "ordinal":     int(p["ordinal"]),
                 "source_expr": p.get("source_expr", ""),
+                **_transform_fields(p),
             }).mappings().one_or_none()
         if row is None:
             return JsonResponse({"ok": False, "error": "not found"}, status=404)

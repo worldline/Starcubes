@@ -58,7 +58,8 @@
       {% if expert_allowed %}
       <span class="expert-only card-actions">
         <a class="btn btn-secondary btn-sm" href="{% url 'sources:edit' ds.id %}">Edit</a>
-        <button class="btn btn-secondary btn-sm" id="btnPreview">Preview Import</button>
+        {% if ds.is_logfile %}<button class="btn btn-secondary btn-sm" id="btnLogProbe">Probe</button>
+        {% else %}<button class="btn btn-secondary btn-sm" id="btnPreview">Preview Import</button>{% endif %}
         <button class="btn btn-secondary btn-sm" id="btnSaveProfile">Save as Profile…</button>
         <button class="btn btn-secondary btn-sm" id="btnApplyProfile">Apply Profile…</button>
         <form method="post" action="{% url 'sources:delete' ds.id %}" id="delete-form" style="display:inline">
@@ -71,6 +72,7 @@
     </div>
     {% if expert_allowed %}
     <div id="previewResult" class="preview-table" style="margin:0 16px 12px;display:none"></div>
+    {% if ds.is_logfile %}<div id="logProbeResult" class="action-result" style="margin:0 16px 12px;display:none"></div>{% endif %}
     <div id="profileResult" class="action-result" style="margin:0 16px 12px;display:none"></div>
     {% endif %}
     <div class="card-body">
@@ -78,20 +80,42 @@
         <dt>Name</dt><dd>{{ ds.name }}</dd>
         <dt>Schema</dt><dd class="mono">{{ ds.schema_name }}</dd>
         <dt>Dialect</dt><dd><span class="badge badge-dialect" id="conn-badge-dl">{{ ds.source_dialect }}</span></dd>
+{% if ds.is_logfile %}
+        {% comment %} A log source: the four SQL rows above have no meaning, and
+        the six log ones do. `watermark_column` is shown as the time group
+        because that is what it holds here. {% endcomment %}
+        <dt>Log URI</dt><dd class="mono" style="word-break:break-all">{{ ds.source_dsn_masked }}</dd>
+        <dt>Line Regex</dt><dd class="mono" style="word-break:break-all">{{ ds.log_line_regex|default:'—' }}</dd>
+        <dt>Record Start</dt><dd class="mono">{{ ds.log_record_start|default:'(one line per record)' }}</dd>
+        <dt>Time Format</dt><dd class="mono">{{ ds.log_time_format|default:'(ISO-8601, auto-detected)' }}</dd>
+        <dt>Time Zone</dt><dd class="mono">{{ ds.log_time_zone|default:'UTC' }}</dd>
+        <dt>Encoding</dt><dd class="mono">{{ ds.log_encoding|default:'utf-8' }}</dd>
+        <dt>Minimum Match</dt><dd>{% if ds.log_min_match_pct %}{{ ds.log_min_match_pct }} % &mdash; below this a run fails{% else %}off (unmatched lines are only counted){% endif %}</dd>
+        <dt>Time Group</dt><dd class="mono">{{ ds.watermark_column }}</dd>
+{% else %}
         <dt>Source DSN</dt><dd class="mono" style="word-break:break-all">{{ ds.source_dsn_masked }}</dd>
         <dt>Import Query</dt><dd class="mono">{{ ds.import_query|default:'(composed from base_table)' }}</dd>
         <dt>Base Table</dt><dd class="mono">{{ ds.base_table|default:'—' }}</dd>
         <dt>Watermark Column</dt><dd class="mono">{{ ds.watermark_column }}</dd>
         {% if expert_allowed %}<dt class="expert-only">Watermark Max Query</dt><dd class="expert-only mono">{{ ds.watermark_max_query|default:'—' }}</dd>{% endif %}
+{% endif %}
         <dt>Partition Column</dt><dd class="mono">{{ ds.partition_column }}</dd>
         <dt>Partition Period</dt><dd class="mono">{{ ds.partition_period }}</dd>
         {% if expert_allowed %}<dt class="expert-only">Chunk Size</dt><dd class="expert-only">{{ ds.chunksize }}</dd>{% endif %}
         {% if expert_allowed %}<dt class="expert-only">Transform Procs</dt><dd class="expert-only">{{ ds.transform_procs }}</dd>{% endif %}
-        {% if expert_allowed %}<dt class="expert-only">Small Window Hint</dt><dd class="expert-only mono">{{ ds.small_window_hint|default:'—' }}</dd>{% endif %}
+        {% if expert_allowed and not ds.is_logfile %}<dt class="expert-only">Small Window Hint</dt><dd class="expert-only mono">{{ ds.small_window_hint|default:'—' }}</dd>{% endif %}
         <dt>Interval Ladder</dt><dd class="mono">{{ ds.interval_ladder_str }}</dd>
         {% if expert_allowed %}<dt class="expert-only">Bar Pixel Target</dt><dd class="expert-only">{{ ds.bar_pixel_target }}</dd>{% endif %}
+{% if not ds.is_logfile %}
         <dt>PK Format</dt><dd class="mono">{{ ds.pk_format|default:'—' }}</dd>
         <dt>Late Arrival Overlap</dt><dd>{% if ds.late_arrival_overlap_s %}{{ ds.late_arrival_overlap_s }} s{% else %}off{% endif %}</dd>
+{% else %}
+        {% comment %} Neither applies: a log source has no primary key to
+        format or to de-duplicate an overlap by. Said rather than hidden,
+        because their absence is a design decision and not an omission.
+        {% endcomment %}
+        <dt>Primary Key</dt><dd class="text-muted">none &mdash; log lines carry no stable key, and the half-open window needs none</dd>
+{% endif %}
         {% if expert_allowed %}<dt class="expert-only">Data Lag Limit</dt><dd class="expert-only">{% if ds.max_data_lag_s %}{{ ds.max_data_lag_s }} s{% else %}unset{% endif %}</dd>{% endif %}
         {% if expert_allowed %}<dt class="expert-only">Max Run Time</dt><dd class="expert-only">{% if ds.max_run_s %}{{ ds.max_run_s }} s{% else %}unset{% endif %}</dd>{% endif %}
         {% if expert_allowed %}<dt class="expert-only">Retention</dt><dd class="expert-only">{% if ds.retention_periods %}keep {{ ds.retention_periods }} {{ ds.partition_period }}(s){% if ds.retention_floor %} &mdash; floor {{ ds.retention_floor }}{% endif %}{% else %}keep everything{% endif %}</dd>{% endif %}
@@ -119,7 +143,9 @@
           <th>Name</th>
           <th>PG Type</th>
           <th>Role</th>
-          <th>Source Expr</th>
+          <th>{% if ds.is_logfile %}Named Group{% else %}Source Expr{% endif %}</th>
+          {% if ds.is_logfile %}<th title="re.sub applied to the captured value before the cast">Transform</th>
+          <th>Replacement</th>{% endif %}
           <th style="text-align:right">Actions</th>
         </tr>
       </thead>
@@ -150,6 +176,16 @@
             <span class="row-display text-mono">{{ fc.source_expr|default:'—' }}</span>
             <input class="row-edit cell-input" name="source_expr" value="{{ fc.source_expr|default:'' }}">
           </td>
+          {% if ds.is_logfile %}
+          <td>
+            <span class="row-display text-mono">{{ fc.transform_pattern|default:'—' }}</span>
+            <input class="row-edit cell-input" name="transform_pattern" value="{{ fc.transform_pattern|default:'' }}" placeholder="^-$">
+          </td>
+          <td>
+            <span class="row-display text-mono">{{ fc.transform_replace|default:'—' }}</span>
+            <input class="row-edit cell-input" name="transform_replace" value="{{ fc.transform_replace|default:'' }}" placeholder="0">
+          </td>
+          {% endif %}
           <td class="actions">
             <span class="row-display">
               <button class="btn-icon btn-est-card" data-role="{{ fc.role }}" data-name="{{ fc.name }}" data-fc-id="{{ fc.id }}" onclick="estimateCardinality(this)" title="Estimate Cardinality" style="display:none"> cardinality</button>
@@ -163,13 +199,13 @@
           </td>
         </tr>
         {% empty %}
-        <tr id="fc-empty"><td colspan="6" class="empty-state">No fact columns yet</td></tr>
+        <tr id="fc-empty"><td colspan="{% if ds.is_logfile %}8{% else %}6{% endif %}" class="empty-state">No fact columns yet</td></tr>
         {% endfor %}
       </tbody>
     </table>
     <!-- Add row form -->
     <div class="card-body" style="border-top:1px solid var(--border);padding-top:12px">
-      <form id="fcAddForm" style="display:grid;grid-template-columns:60px 1fr 140px 100px 1fr auto;gap:8px;align-items:end">
+      <form id="fcAddForm" style="display:grid;grid-template-columns:60px 1fr 140px 100px 1fr{% if ds.is_logfile %} 1fr 1fr{% endif %} auto;gap:8px;align-items:end">
         {% csrf_token %}
         <div>
           <label class="form-label">Ordinal</label>
@@ -192,13 +228,36 @@
           </select>
         </div>
         <div>
-          <label class="form-label">Source Expr</label>
+          <label class="form-label">{% if ds.is_logfile %}Named Group{% else %}Source Expr{% endif %}</label>
           <input class="form-control" name="source_expr">
         </div>
+        {% if ds.is_logfile %}
+        <div>
+          <label class="form-label">Transform</label>
+          <input class="form-control mono" name="transform_pattern" placeholder="^-$">
+        </div>
+        <div>
+          <label class="form-label">Replacement</label>
+          <input class="form-control mono" name="transform_replace" placeholder="0">
+        </div>
+        {% endif %}
         <div style="padding-top:18px">
           <button type="submit" class="btn btn-primary">Add</button>
         </div>
       </form>
+      {% if ds.is_logfile %}
+      <div class="form-hint" style="margin-top:8px">
+        The <strong>Named Group</strong> is the name inside
+        <code>(?P&lt;…&gt;)</code> in the Line Regex, not SQL. The
+        <strong>Transform</strong> is a <code>re.sub</code> applied to the
+        captured value <em>before</em> the cast, which is what lets it do both
+        of its jobs: collapsing an unbounded value so it can be a dimension at
+        all (a URL path to its first segment, <code>^(/[^/?]*).*$</code> →
+        <code>\1</code>), and mapping a format's &ldquo;no value&rdquo; token
+        onto a number (<code>^-$</code> → <code>0</code>) — without which every
+        such line fails its cast and goes to <code>etl_unparsed</code>.
+      </div>
+      {% endif %}
       <div id="fcAddErr" class="action-result err" style="margin-top:8px;display:none"></div>
     </div>
   </div>
@@ -496,6 +555,7 @@
       <button class="tab-btn" data-sub="maint">Maintenance</button>
       <button class="tab-btn" data-sub="schema">Schema</button>
       <button class="tab-btn" data-sub="audit">Audit</button>
+      {% if ds.is_logfile %}<button class="tab-btn" data-sub="unparsed">Unparsed ({{ unparsed_lines|length }})</button>{% endif %}
       <button class="tab-btn" data-sub="history">History ({{ runs|length }})</button>
       <button class="tab-btn" data-sub="log">Log</button>
     </div>
@@ -686,6 +746,38 @@
          out-of-order arrival; this finds what exceeded it, and is how the
          overlap value gets measured in the first place. -->
     <div class="etl-subpanel" id="etlsub-audit">
+      {% if ds.is_logfile %}
+      <div class="card">
+        <div class="card-header"><span class="card-title">&#128269; Gap Audit</span></div>
+        <div class="card-body">
+          <p style="margin:0 0 12px;font-size:13px">
+            <strong>Not available on a log source</strong>, and switched off
+            rather than half-working.
+          </p>
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            The audit's two questions both need something a log file cannot
+            give. The bucket sweep asks the source to <em>count</em> rows per
+            time bucket, which here means a second full scan of every file the
+            window touches — the same work as the load itself, for a
+            comparison against the load that just ran. And the exact half asks
+            which primary keys are missing, where a log source has no primary
+            key at all: <code>last_end_time</code> is the window's upper,
+            half-open bound, so the arithmetic alone is exact and no key is
+            needed.
+          </p>
+          <p style="margin:0;color:var(--muted);font-size:13px">
+            <code>audit_interval_s</code> is ignored here and the
+            <code>audit_gap</code> alarm answers &ldquo;not measured&rdquo;
+            rather than zero, so it stays quiet instead of asserting health.
+            What <em>does</em> watch this datasource: the
+            <strong>Unparsed</strong> tab beside this one (lines the pattern
+            stopped matching), <code>Minimum Match&nbsp;%</code> on the Edit
+            page (which fails a run outright), and the pipeline alarms on
+            <code>data_stale</code> and <code>run_failed</code>.
+          </p>
+        </div>
+      </div>
+      {% else %}
       <div class="card">
         <div class="card-header"><span class="card-title">&#128269; Gap Audit</span></div>
         <div class="card-body">
@@ -765,6 +857,54 @@
         </div>
       </div>
     </div>
+
+    {% endif %}
+
+    {% if ds.is_logfile %}
+    <div class="etl-subpanel" id="etlsub-unparsed">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Unparsed lines</span>
+        </div>
+        <div class="card-body">
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            Lines the pattern did not match, or whose value failed its cast —
+            the counterpart of <span class="text-mono">etl_unmapped</span> for
+            dimension values. Capped per run, and the raw line is truncated:
+            the point is to show <em>which shape</em> stopped matching, not to
+            mirror the log into the warehouse. The aggregate figures live on
+            each run in the History tab
+            (<span class="text-mono">match_pct</span>).
+          </p>
+          <p style="margin:0 0 12px;color:var(--muted);font-size:13px">
+            A line is attributed to the run whose window it fell in, so a pass
+            with nothing to do does not report the same lines again. A reason
+            in brackets names the column when a cast failed — that is usually a
+            missing <strong>Transform</strong> on the fact column rather than a
+            changed format.
+          </p>
+        </div>
+        {% if unparsed_lines %}
+        <table class="data-table">
+          <thead><tr><th>Run</th><th>File</th><th style="text-align:right">Line</th><th>Raw line</th><th>Seen</th></tr></thead>
+          <tbody>
+            {% for u in unparsed_lines %}
+            <tr>
+              <td>{{ u.etl_run_id }}</td>
+              <td class="text-mono">{{ u.file_name }}</td>
+              <td style="text-align:right">{{ u.line_no }}</td>
+              <td class="text-mono" style="font-size:11px;word-break:break-all">{{ u.raw_line }}</td>
+              <td class="text-muted" style="font-size:12px">{{ u.seen_at }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="card-body"><div class="empty-state">Nothing unparsed &mdash; every line the window covered matched the pattern.</div></div>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
 
     <div class="etl-subpanel" id="etlsub-history">
       <div class="card">
@@ -868,6 +1008,24 @@
 {{ block.super }}
 {# Must load AFTER the panel markup, never deferred. #}
 <script src="{% static 'sources/inline_edit.js' %}"></script>
+{% if ds.is_logfile %}
+<script>
+var LOGFILE_PK = {{ ds.id }};
+// There is no dialect dropdown on this page; this is what tells the shared
+// handler which kind of source it is looking at.
+var LOGFILE_FIXED = true;
+</script>
+{% include "sources/_logfile_js.html" %}
+<script>
+// The Fact Columns table carries two more display columns on a log source, so
+// ROW_SPECS.fc has to grow with it — `saveRow` finds each display span by its
+// index in this list, and a mismatch writes a value into the wrong cell.
+// Appended rather than redefined so the static file stays the one description
+// of the shared columns.
+ROW_SPECS.fc.push({f: 'transform_pattern', mono: 1, dash: 1},
+                  {f: 'transform_replace', mono: 1, dash: 1});
+</script>
+{% endif %}
 <script src="{% static 'sources/group_dims.js' %}"></script>
 <script src="{% static 'sources/log_viewer.js' %}"></script>
 <script>
@@ -1607,12 +1765,18 @@ function esc(s) {
     .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
+// On a log source the per-column cardinality estimate is replaced by Probe,
+// which answers the same question for every group at once and does it before
+// a single row is loaded — the SQL estimate needs a populated fact table.
+var IS_LOGFILE = {% if ds.is_logfile %}true{% else %}false{% endif %};
+
 function refreshCardButtons() {
   document.querySelectorAll('.btn-est-card').forEach(function(btn) {
     var role = btn.dataset.role;
     var name = btn.dataset.name;
     var isDim = (role === 'dimension' || role === 'auto-dimension');
-    btn.style.display = (isDim && !DIM_FC_NAMES.has(name)) ? '' : 'none';
+    btn.style.display = (!IS_LOGFILE && isDim && !DIM_FC_NAMES.has(name))
+      ? '' : 'none';
   });
 }
 refreshCardButtons();

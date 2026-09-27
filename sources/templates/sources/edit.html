@@ -46,13 +46,18 @@
       <div class="form-group">
         <label class="form-label">Source DSN <span style="color:var(--danger)">*</span></label>
         <input class="form-control" name="source_dsn" type="password" required value="{{ ds.source_dsn }}">
-        <div class="form-hint">SQLAlchemy connection URL. Current value shown as-is (contains credentials).</div>
+        <div class="form-hint" data-src-kind="sql">SQLAlchemy connection URL. Current value shown as-is (contains credentials).</div>
+        <div class="form-hint" data-src-kind="logfile">Where the log is; the
+          scheme picks the transport. A <code>file://</code> path may be a
+          glob, and rotated generations are read oldest-first with
+          <code>.gz</code>/<code>.bz2</code>/<code>.xz</code> unpacked on the
+          fly. Example: <code>file:///var/log/nginx/access.log*</code></div>
       </div>
-      <div class="form-group">
+      <div class="form-group" data-src-kind="sql">
         <label class="form-label">Import Query</label>
         <textarea class="form-control" name="import_query">{{ ds.import_query|default:'' }}</textarea>
       </div>
-      <div class="form-row">
+      <div class="form-row" data-src-kind="sql">
         <div class="form-group">
           <label class="form-label">Base Table</label>
           <input class="form-control" name="base_table" value="{{ ds.base_table|default:'' }}">
@@ -64,6 +69,8 @@
       </div>
     </div>
   </div>
+
+  {% include "sources/_logfile_card.html" %}
 
   <div class="card">
     <div class="card-header"><span class="card-title">Watermark &amp; Partitioning</span></div>
@@ -94,7 +101,7 @@
           {% endif %}
         </div>
       </div>
-      <div class="form-group">
+      <div class="form-group" data-src-kind="sql">
         <label class="form-label">Watermark Max Query</label>
         <textarea class="form-control" name="watermark_max_query">{{ ds.watermark_max_query|default:'' }}</textarea>
       </div>
@@ -131,7 +138,7 @@
           <input class="form-control" name="bar_pixel_target" type="number" step="0.1" value="{{ ds.bar_pixel_target }}">
         </div>
       </div>
-      <div class="form-group">
+      <div class="form-group" data-src-kind="sql">
         <label class="form-label">PK Format</label>
         <input class="form-control" name="pk_format" value="{{ ds.pk_format|default:'' }}">
         <div class="form-hint">Python format string for PK display in chart drill-down. Use {0} as placeholder. Example: &lt;a href="https://portal.example.com/txn/{0:012d}"&gt;{0:012d}&lt;/a&gt;</div>
@@ -196,7 +203,7 @@
         <input class="form-control" name="audit_autofill_max" type="number" min="0" step="1" value="{{ ds.audit_autofill_max|default:0 }}">
         <div class="form-hint">Up to this many missing rows, a forever-mode audit repairs the gap itself with a targeted backfill instead of only raising the alarm. The point is that keeping <code>watermark_lag_s</code> low means accepting a few stragglers, and accepting them should not mean somebody presses a button for 37 rows. Capped rather than unlimited: past a point a gap is a symptom rather than a straggler, and a large out-of-order insert also costs BRIN correlation. <strong>0 = off</strong>; a truncated id list is never auto-repaired.</div>
       </div>
-      <div class="form-group">
+      <div class="form-group" data-src-kind="sql">
         <label class="form-label">Watermark Fact Expression</label>
         <input class="form-control mono" name="watermark_fact_expr" value="{{ ds.watermark_fact_expr|default:'' }}">
         <div class="form-hint">Fact-side SQL reproducing the watermark column, used to find already-loaded rows in the overlap window and by the Audit tab. Leave blank to use the partition column. Example: <code>create_time + total * interval &#39;1 millisecond&#39;</code></div>
@@ -209,4 +216,10 @@
     <a class="btn btn-secondary" href="{% url 'sources:manage' ds.id %}">Cancel</a>
   </div>
 </form>
+{% endblock %}
+
+{% block extra_js %}
+{{ block.super }}
+<script>var LOGFILE_PK = {{ ds.id }};</script>
+{% include "sources/_logfile_js.html" %}
 {% endblock %}

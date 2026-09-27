@@ -538,6 +538,30 @@ def s_dimension_stays_raw(tmp: Path):
              f"{ {type(x['status']).__name__ for x in rows} }")]
 
 
+def _measure_never_smallint(tmp: Path) -> bool:
+    """A measure whose whole sample fits a smallint is still widened.
+
+    The sample's maximum is a lower bound on the real one, and
+    `_transform_worker` clips an out-of-range measure rather than failing —
+    so guessing narrow here is silent corruption, not a tight fit. Checked
+    separately because the main probe fixture deliberately contains a value
+    that forces bigint anyway.
+    """
+    d = tmp / "narrow"
+    if not d.exists():
+        d.mkdir()
+        _write(d / "access.log",
+               [_nginx_line(f"27/Sep/2026:08:00:{i:02d} +0000",
+                            path=f"/p{i % 3}", nbytes=str(100 + i))
+                for i in range(30)],
+               mtime=_utc("2026-09-27 09:00:00"))
+    rep = sample(LogConfig(uri=f"file://{d}/access.log", line_regex=NGINX_RE,
+                           time_group="ts", time_format=NGINX_TS))
+    b = {x.group: x for x in rep.groups}["bytes"]
+    return (b.role == "measure" and b.value_type == "smallint"
+            and b.pg_type == "integer")
+
+
 def s_probe(tmp: Path):
     """The GUI probe: match rate, types, roles and the cardinality flag."""
     d = tmp / "probe"
@@ -550,8 +574,12 @@ def s_probe(tmp: Path):
                          # smallint, one needs an integer and one a bigint,
                          # so the guess has to widen rather than take the
                          # first value it sees
-                         nbytes=str({7: 5_000_000,
-                                     13: 3_000_000_000}.get(i, 1000 + i)))
+                         # One "-" among them: nginx writes it when the
+                         # response had no body, and a guesser that gives up
+                         # on the first non-number calls this whole group a
+                         # high-cardinality *dimension* instead of a measure.
+                         nbytes={7: "5000000", 13: "3000000000",
+                                 4: "-"}.get(i, str(1000 + i)))
              for i in range(20)]
     _write(d / "access.log", lines + ["junk"],
            mtime=_utc("2026-09-27 09:00:00"))
@@ -572,6 +600,15 @@ def s_probe(tmp: Path):
             ("bytes widened to bigint by one large value",
              g["bytes"].pg_type == "bigint" and g["bytes"].role == "measure",
              f"{g['bytes'].pg_type}/{g['bytes'].role}"),
+            ("a single '-' does not demote bytes to a text dimension",
+             g["bytes"].role == "measure" and g["bytes"].value_type == "bigint",
+             f"{g['bytes'].role}/{g['bytes'].value_type}"),
+            ("a measure is never proposed as smallint, even when it fits",
+             _measure_never_smallint(tmp), "see the helper"),
+            ("and the probe counts it, so a transform can be advised",
+             g["bytes"].non_numeric == 1, f"{g['bytes'].non_numeric}"),
+            ("a genuinely textual group keeps non_numeric at 0",
+             g["host"].non_numeric == 0, f"{g['host'].non_numeric}"),
             ("ts recognised as the time column",
              g["ts"].role == "time" and rep.time_group == "ts",
              f"{g['ts'].role}/{rep.time_group}"),
