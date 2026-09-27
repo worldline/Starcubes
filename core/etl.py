@@ -62,21 +62,35 @@ def _register_mapping(mapping: dict, sid: str, idx: int) -> None:
 
 
 def _load_auto_dim_maps(source: Source, dest_engine
-                        ) -> tuple[dict[str, dict], dict[str, int]]:
+                        ) -> tuple[dict[str, dict], dict[str, int],
+                                   dict[str, int]]:
     """Build {dim_table: mapping} for every auto-dimension table.
 
     The mapping has the same str/int/float key shape as read_dimensions so
     the substitution path matches regardless of whether the chunk column
-    came back textual or numeric. Also returns {dim_table: -1_index} so
-    source NULLs route to the same sentinel row regular dims use. Called
-    once before the chunk loop; both dicts are mutated in place as new
-    values are discovered and inserted.
+    came back textual or numeric. Called once before the chunk loop; the
+    dicts are mutated in place as new values are discovered and inserted.
+
+    Returns three dicts, and the last two are **not** interchangeable:
+
+      - {dim_table: mapping}      source value -> dim index
+      - {dim_table: -1_index}     where a source NULL goes, the same sentinel
+                                  row regular dimensions use
+      - {dim_table: unknown_idx}  where a value we hold but cannot map goes.
+                                  Only the cardinality cap (`AUTO_DIM_MAX`)
+                                  uses it, and it must not be the `-1` row:
+                                  "the source had nothing here" and "the
+                                  source had something we could not map" are
+                                  different answers, and reporting the second
+                                  as the first is a chart that is green and
+                                  wrong.
     """
     schema = source.schema_name
     fact_to_table = source.auto_dim_fact_to_table()
     if not fact_to_table:
-        return {}, {}
+        return {}, {}, {}
     maps: dict[str, dict] = {}
+    unknown_idx: dict[str, int] = {}
     null_idx: dict[str, int] = {}
     seen_tables: set[str] = set()
     with dest_engine.begin() as conn:
@@ -89,10 +103,15 @@ def _load_auto_dim_maps(source: Source, dest_engine
             )).all()
             mapping: dict = {}
             minus_one_idx: int | None = None
+            unknown_idx_local: int | None = None
             for sid, idx in rows:
-                if sid == UNKNOWN_SOURCE_ID:
-                    continue
                 idx_int = int(idx)
+                if sid == UNKNOWN_SOURCE_ID:
+                    # Not registered in `mapping` — no source value may ever
+                    # resolve to it by name — but its index is needed, because
+                    # the cardinality cap sends values there deliberately.
+                    unknown_idx_local = idx_int
+                    continue
                 _register_mapping(mapping, sid, idx_int)
                 if sid == "-1":
                     minus_one_idx = idx_int
@@ -102,19 +121,34 @@ def _load_auto_dim_maps(source: Source, dest_engine
                     f"— re-run core.schema.import_dimensions to add it.")
             maps[dim_table] = mapping
             null_idx[dim_table] = minus_one_idx
-    return maps, null_idx
+            if unknown_idx_local is not None:
+                unknown_idx[dim_table] = unknown_idx_local
+    return maps, null_idx, unknown_idx
 
 
 def _resolve_auto_dim_chunk(chunk, fact_to_table: dict[str, str],
                             auto_dim_maps: dict[str, dict],
                             auto_dim_null_idx: dict[str, int],
                             schema: str, dest_engine,
-                            run_started: datetime) -> int:
+                            run_started: datetime,
+                            capped: Optional[dict] = None,
+                            auto_dim_unknown_idx: Optional[dict] = None
+                            ) -> int:
     """For each auto-dim column in `chunk`, insert any new source values
     into its dim table and rewrite the chunk column with the dim indices.
 
     Returns the number of new dim rows inserted across all auto-dim
     columns. Mutates `chunk[col]` and `auto_dim_maps[dim_table]` in place.
+
+    `capped`, when given, collects per-dim-table counts of values that were
+    *not* inserted because the table had reached `AUTO_DIM_MAX`, and those
+    values map to **`__unknown__`** — not to the `-1` sentinel. The two mean
+    different things and conflating them is the kind of wrong that looks
+    right: `-1` says the source had no value, `__unknown__` says it had one we
+    could not map. Sending 623 requests that all carried a path to "no path"
+    is a chart that is green and lying, and `__unknown__` is what regular
+    dimensions already use for exactly this situation
+    (`_transform_worker`). Measured on the first run of the cap.
 
     Concurrency note: assumes a single ETL process per datasource for this
     auto-dim table. The etl_forever active-session uniqueness covers the
@@ -129,18 +163,33 @@ def _resolve_auto_dim_chunk(chunk, fact_to_table: dict[str, str],
     for fact_col, dim_table in fact_to_table.items():
         mapping = auto_dim_maps[dim_table]
         null_idx = auto_dim_null_idx[dim_table]
+        unknown_idx = (auto_dim_unknown_idx or {}).get(dim_table)
         col = chunk[fact_col]
         unique_vals = [v for v in col.dropna().unique() if v not in mapping]
+        # `max(index)`, not `len(mapping)`: the mapping holds several forms of
+        # the same key (str/int/float), and the ceiling is on the *sequence*.
+        # Same measure `core/housekeeping.py` reports N13 from.
+        highest = max((i for i in mapping.values()
+                       if isinstance(i, int)), default=0)
         if unique_vals:
             with dest_engine.begin() as conn:
                 for v in unique_vals:
                     # Pandas stores integers as float64 in any column with
                     # NaN; strip a trailing ".0" so the dim row's source_id
-                    # matches what the user sees in the source DB.
+                    # matches what the user sees in the source.
                     if isinstance(v, float) and v.is_integer():
                         sid = str(int(v))
                     else:
                         sid = str(v)
+                    if highest >= AUTO_DIM_MAX:
+                        if capped is not None:
+                            capped[dim_table] = capped.get(dim_table, 0) + 1
+                        if unknown_idx is not None:
+                            # Registered on the local mapping so the `.map()`
+                            # below resolves it, and so the same value is not
+                            # re-counted for every chunk it appears in.
+                            _register_mapping(mapping, sid, unknown_idx)
+                        continue
                     if sid in mapping:
                         # str form already registered this run; just record
                         # the numeric/etc. form on the local mapping.
@@ -153,6 +202,7 @@ def _resolve_auto_dim_chunk(chunk, fact_to_table: dict[str, str],
                     ), {"sid": sid, "name": sid,
                         "desc": desc_default}).scalar()
                     _register_mapping(mapping, sid, int(idx))
+                    highest = max(highest, int(idx))
                     inserted_total += 1
         chunk[fact_col] = col.map(mapping).fillna(null_idx)
     return inserted_total
@@ -199,6 +249,25 @@ def _increment_dim_counts(source: Source, dest_engine,
 _MAX_OVERLAP_PKS = int(os.environ.get("STARCUBES_MAX_OVERLAP_PKS", 5_000_000))
 
 SMALLINT_MAX = 32767  # signed int16 upper bound
+
+# The ceiling `_resolve_auto_dim_chunk` stops inserting at. A dim table's key
+# is `smallserial`, so 32767 is the hard wall — and hitting it is not a
+# graceful failure: the INSERT raises mid-chunk, inside a load that has
+# already COPYed rows, and the run dies with a sequence error naming nothing
+# an operator can act on.
+#
+# So stop short of it and say so. Everything above the cap maps to
+# `__unknown__`, one WARNING is logged per run and `stats` carries the count,
+# which is a chart with a visibly wrong bucket instead of a datasource that
+# cannot load at all. The `dim_full_pct` pipeline alarm and the housekeeping's
+# N13 warning still do their job; this is the thing that keeps the load
+# running until somebody acts on them.
+#
+# Not log-specific. A SQL auto-dimension pointed at something unbounded has
+# always been able to do this; log sources merely make it likely, because an
+# HTTP path with coordinates in it (proxied map tiles being the obvious case)
+# reaches 32767 in minutes.
+AUTO_DIM_MAX = int(os.environ.get("STARCUBES_AUTO_DIM_MAX") or 30000)
 BIGINT_MAX = 9223372036854775807  # signed int64 upper bound
 # Integer measures are clamped to [0, type max]: a `measure` column is a
 # count/sum/duration and is never legitimately negative, so out-of-range
@@ -392,7 +461,8 @@ def _build_stats_payload(stats_arr, load_base: int, transform_bases: list[int],
                          extract_auto_dim_s: float,
                          duplicates: int, auto_dim_inserted: int,
                          runtime_ms: int, rows_total: int,
-                         *, live: bool, log_reader=None) -> dict:
+                         *, live: bool, log_reader=None,
+                         auto_dim_capped: Optional[dict] = None) -> dict:
     """Compose the final (or live) jsonb shape.
 
     `live=False` mixes parent-side extract timings (which the workers
@@ -410,6 +480,8 @@ def _build_stats_payload(stats_arr, load_base: int, transform_bases: list[int],
         snap["extract"]["auto_dim_s"] = round(extract_auto_dim_s, 3)
         snap["extract"]["dedupe_rows"] = duplicates
         snap["extract"]["auto_dim_inserted"] = auto_dim_inserted
+        if auto_dim_capped:
+            snap["extract"]["auto_dim_capped"] = dict(auto_dim_capped)
         if log_reader is not None:
             # A log source's own accounting. `match_pct` is None rather than
             # 0 when nothing was read at all, for the same reason the
@@ -1361,6 +1433,7 @@ def import_fact(source: Source, meta_engine, *,
     rows_total = 0
     duplicates = 0
     auto_dim_inserted = 0
+    auto_dim_capped: dict[str, int] = {}
     current = ""
     current_pc_max = None  # running max of pc seen so far, for the live
                             # "processed through" progress indicator
@@ -1426,7 +1499,8 @@ def import_fact(source: Source, meta_engine, *,
 
         dim_fact_to_table = source.dim_fact_to_table()
         auto_dim_fact_to_table = source.auto_dim_fact_to_table()
-        auto_dim_maps, auto_dim_null_idx = _load_auto_dim_maps(
+        (auto_dim_maps, auto_dim_null_idx,
+         auto_dim_unknown_idx) = _load_auto_dim_maps(
             source, dest_engine)
         fact_column_order = source.fact_column_order()
         smallint_measure_cols = source.smallint_measure_columns()
@@ -2114,7 +2188,7 @@ def import_fact(source: Source, meta_engine, *,
                 auto_dim_inserted += _resolve_auto_dim_chunk(
                     chunk, auto_dim_fact_to_table, auto_dim_maps,
                     auto_dim_null_idx, source.schema_name, dest_engine,
-                    started)
+                    started, auto_dim_capped, auto_dim_unknown_idx)
                 extract_auto_dim_s += time.monotonic() - t_auto_start
                 t_put_start = time.monotonic()
                 _put_with_abort(transform_q, chunk, abort_evt, error_q,
@@ -2133,7 +2207,7 @@ def import_fact(source: Source, meta_engine, *,
             auto_dim_inserted += _resolve_auto_dim_chunk(
                 chunk, auto_dim_fact_to_table, auto_dim_maps,
                 auto_dim_null_idx, source.schema_name, dest_engine,
-                started)
+                started, auto_dim_capped, auto_dim_unknown_idx)
             extract_auto_dim_s += time.monotonic() - t_auto_start
             t_put_start = time.monotonic()
             _put_with_abort(transform_q, chunk, abort_evt, error_q,
@@ -2281,7 +2355,8 @@ def import_fact(source: Source, meta_engine, *,
                 extract_slot_base, n_transform,
                 extract_busy, extract_wait, extract_auto_dim_s,
                 duplicates, auto_dim_inserted, runtime_ms,
-                rows_total, live=False, log_reader=log_reader)
+                rows_total, live=False, log_reader=log_reader,
+                auto_dim_capped=auto_dim_capped)
         if preflight_report is not None:
             # stats is already jsonb and already surfaced by the GUI, so the
             # report needs no table of its own. Merged here rather than in
@@ -2373,6 +2448,19 @@ def import_fact(source: Source, meta_engine, *,
              f"  L={_fmt_rate(load_rps)}")
     logger.log(summary_level, "%s: loaded %d rows in %d ms%s%s; last watermark %s",
               source.name, rows_total, runtime_ms, extra, rates, current)
+    if auto_dim_capped:
+        # One line per run, not per value: a dimension that has run away
+        # produces thousands, and a log flooded with them hides everything
+        # else that happened. The numbers are in stats.auto_dim_capped.
+        logger.warning(
+            "%s: %s reached the %d auto-dimension ceiling; %s value(s) were "
+            "mapped to __unknown__ instead of inserted. Below the 32767 "
+            "smallserial wall on purpose — the load keeps running, but the "
+            "affected series is wrong until the dimension is reduced (a "
+            "fact_column.transform_pattern is the usual fix) or dropped.",
+            source.name,
+            ", ".join(sorted(auto_dim_capped)), AUTO_DIM_MAX,
+            sum(auto_dim_capped.values()))
     if auto_dim_inserted:
         logger.log(summary_level, "%s: auto-discovered %d new dim row(s)",
                   source.name, auto_dim_inserted)
