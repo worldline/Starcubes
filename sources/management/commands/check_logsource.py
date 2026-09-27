@@ -562,6 +562,189 @@ def _measure_never_smallint(tmp: Path) -> bool:
             and b.pg_type == "integer")
 
 
+def s_exec_transport(tmp: Path):
+    """``exec://`` — the allowlist, the placeholders, and a failing command.
+
+    Uses ``cat``, which every host has, so the scenario needs no service. The
+    three things worth protecting: the allowlist refuses by default (the
+    shipped image must not run commands because somebody edited a
+    datasource), ``{from}``/``{until}`` are substituted, and a command that
+    exits non-zero **raises** rather than looking like an empty log — that last
+    one is the whole reason `_ProcStream` exists.
+    """
+    import shutil
+    from core.logsource import LogSourceError, open_transport
+    cat = shutil.which("cat")
+    if not cat:
+        return [("cat is available", False, "no cat on this host")]
+    d = tmp / "execsrc"
+    d.mkdir()
+    _write(d / "access.log",
+           [_nginx_line(f"27/Sep/2026:08:00:{i:02d} +0000") for i in range(12)],
+           mtime=_utc("2026-09-27 09:00:00"))
+    uri = f"exec://{cat} {d}/access.log"
+    cfg = LogConfig(uri=uri, line_regex=NGINX_RE, time_group="ts",
+                    time_format=NGINX_TS, columns=_nginx_cols())
+
+    prev = os.environ.get("STARCUBES_LOG_EXEC")
+    out = []
+    try:
+        os.environ.pop("STARCUBES_LOG_EXEC", None)
+        refused = ""
+        try:
+            open_transport(uri)
+        except LogSourceError as exc:
+            refused = str(exc)
+        out.append(("disabled unless STARCUBES_LOG_EXEC is set",
+                    "disabled in this deployment" in refused, refused[:60]))
+
+        os.environ["STARCUBES_LOG_EXEC"] = cat
+        wrong = ""
+        try:
+            open_transport("exec:///usr/bin/definitely-not-allowed x")
+        except LogSourceError as exc:
+            wrong = str(exc)
+        out.append(("a program outside the allowlist is refused",
+                    "not in STARCUBES_LOG_EXEC" in wrong, wrong[:60]))
+
+        r = LogReader(cfg)
+        rows = _drain(r)
+        tip, now = r.probe_tip()
+        r.close()
+        out += [("the stream loads", len(rows) == 12 and r.unparsed_rows == 0,
+                 f"{len(rows)} rows / {r.unparsed_rows} unparsed"),
+                ("it is a stream, so the tip is the clock, not a data tip",
+                 tip is not None and tip == now, f"tip={tip} now={now}"),
+                ("min_watermark declines rather than reading it all",
+                 LogReader(cfg).min_watermark() is None, "None expected")]
+
+        # {from}/{until} reach the command. `cat` ignores extra arguments'
+        # meaning but the substitution is observable: a path built from the
+        # placeholder cannot exist, so the command fails and that must raise.
+        bad = LogConfig(uri=f"exec://{cat} {d}/{{from}}.log",
+                        line_regex=NGINX_RE, time_group="ts",
+                        time_format=NGINX_TS, columns=_nginx_cols())
+        raised = ""
+        try:
+            _drain(LogReader(bad))
+        except LogSourceError as exc:
+            raised = str(exc)
+        out.append(("a non-zero exit raises instead of reading as empty",
+                    "exited" in raised, raised[:70]))
+        out.append(("and the placeholder was substituted (1970 in the path)",
+                    "1970-01-01" in raised, raised[:90]))
+    finally:
+        if prev is None:
+            os.environ.pop("STARCUBES_LOG_EXEC", None)
+        else:
+            os.environ["STARCUBES_LOG_EXEC"] = prev
+    return out
+
+
+def s_http_transport(tmp: Path):
+    """``https://`` — Last-Modified as the mtime, and a suffix Range as the tail.
+
+    Served from an in-process handler on an ephemeral port, twice: once
+    advertising ``Accept-Ranges`` and once not. Both must yield identical rows;
+    the difference is only that the second reads the whole resource to find the
+    tip, which is the honest cost of a server that cannot range.
+    """
+    import email.utils
+    import http.server
+    import threading
+    from core.logsource import LogSourceError, open_transport
+
+    d = tmp / "httpsrc"
+    d.mkdir()
+    lines = [_nginx_line(f"27/Sep/2026:08:{i // 60:02d}:{i % 60:02d} +0000")
+             for i in range(40)]
+    path = _write(d / "access.log", lines, mtime=_utc("2026-09-27 09:00:00"))
+    body = path.read_bytes()
+    mtime = path.stat().st_mtime
+
+    def make(ranges: bool):
+        class H(http.server.BaseHTTPRequestHandler):
+            def _hdrs(self):
+                self.send_header("Content-Type", "text/plain")
+                self.send_header("Last-Modified",
+                                 email.utils.formatdate(mtime, usegmt=True))
+                if ranges:
+                    self.send_header("Accept-Ranges", "bytes")
+
+            def do_HEAD(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self._hdrs()
+                self.end_headers()
+
+            def do_GET(self):
+                rng = self.headers.get("Range")
+                if ranges and rng and rng.startswith("bytes=-"):
+                    part = body[-int(rng.split("-")[1]):]
+                    self.send_response(206)
+                    self.send_header("Content-Length", str(len(part)))
+                    self._hdrs()
+                    self.end_headers()
+                    self.wfile.write(part)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self._hdrs()
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv
+
+    out = []
+    results = {}
+    servers = []
+    try:
+        for label, ranges in (("with ranges", True), ("without", False)):
+            srv = make(ranges)
+            servers.append(srv)
+            uri = f"http://127.0.0.1:{srv.server_address[1]}/access.log"
+            cfg = LogConfig(uri=uri, line_regex=NGINX_RE, time_group="ts",
+                            time_format=NGINX_TS, columns=_nginx_cols())
+            r = LogReader(cfg)
+            rows = _drain(r)
+            tip, _ = r.probe_tip()
+            r.close()
+            tr = open_transport(uri)
+            fref = tr.list_files()[0]
+            tail = fref.seekable_tail(None, 600)
+            tr.close()
+            results[label] = (len(rows), tip, fref.mtime, fref.size,
+                              None if tail is None else len(tail))
+        n_r, tip_r, mt_r, size_r, tail_r = results["with ranges"]
+        n_n, tip_n, _, _, tail_n = results["without"]
+        out = [("40 rows over http", n_r == 40, f"{n_r}"),
+               ("Last-Modified became the mtime",
+                mt_r == _utc("2026-09-27 09:00:00"), f"{mt_r}"),
+               ("Content-Length became the size", size_r == len(body),
+                f"{size_r} vs {len(body)}"),
+               ("a suffix Range gives a short tail, not the file",
+                tail_r is not None and 0 < tail_r < 40, f"{tail_r} lines"),
+               ("without Accept-Ranges the tail declines", tail_n is None,
+                f"{tail_n}"),
+               ("and both read the same rows and the same tip",
+                n_r == n_n and tip_r == tip_n, f"{n_r}/{n_n} {tip_r}/{tip_n}")]
+        refused = ""
+        try:
+            open_transport("https://h/logs/*.log")
+        except LogSourceError as exc:
+            refused = str(exc)
+        out.append(("a glob over http is refused, not silently ignored",
+                    "cannot be expanded" in refused, refused[:60]))
+    finally:
+        for srv in servers:
+            srv.shutdown()
+    return out
+
+
 def s_probe(tmp: Path):
     """The GUI probe: match rate, types, roles and the cardinality flag."""
     d = tmp / "probe"
@@ -691,6 +874,8 @@ SCENARIOS = [
     ("unparsed lines are not re-counted", s_unparsed_not_recounted),
     ("crash-resume count de-duplication", s_skip_at_start),
     ("a dimension column stays raw", s_dimension_stays_raw),
+    ("the exec:// transport", s_exec_transport),
+    ("the http(s):// transport", s_http_transport),
     ("the GUI probe", s_probe),
     ("the probe's transform preview", s_probe_transform),
     ("STARCUBES_LOG_ROOTS", s_roots_guard),

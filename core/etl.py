@@ -2302,6 +2302,13 @@ def import_fact(source: Source, meta_engine, *,
         if progress_thread is not None:
             progress_thread.join(timeout=2)
 
+        if log_reader is not None:
+            # `sftp://` holds an SSH connection for the whole run and
+            # `exec://` may have a process still draining. Here rather than
+            # after the loop, for the same reason the source connection is
+            # closed here: the worker reaping below can take ten seconds each.
+            log_reader.close()
+
         # Close the extract's source connection. Usually already done on the
         # happy path; this covers every abort -- the budget raising, a dead
         # worker, a source that stopped answering mid-cursor. Here rather

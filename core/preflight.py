@@ -707,7 +707,8 @@ def _check_log_source(source: Source) -> dict:
     reads nothing and reports success is how a datasource sits "healthy" for a
     week with no data in it.
     """
-    from .logsource import LogSourceError, open_transport
+    from .logsource import (LogSourceError, LogTransportUnreachable,
+                            open_transport)
     try:
         transport = open_transport(source.source_dsn)
     except LogSourceError as exc:
@@ -715,9 +716,18 @@ def _check_log_source(source: Source) -> dict:
                       uri=source.source_dsn)
     try:
         files = transport.list_files()
+    except LogTransportUnreachable as exc:
+        # Caught *before* LogSourceError, which it subclasses. This is the
+        # other half of U5b's asymmetry: a source that cannot be reached right
+        # now is the extract's own problem and it reports it better, so
+        # blocking every run over a refused TCP connection or a rotated
+        # password would be harsher than the SQL side is.
+        return _check("log_source", CHECK_WARN,
+                      f"the log could not be reached: {exc}",
+                      uri=source.source_dsn, error=str(exc))
     except LogSourceError as exc:
-        # Raised by the root/exec guards as well as by an unreadable path.
-        # A guard's refusal is a configuration finding, so it blocks.
+        # A guard's refusal, a missing program, an unreadable path — decidable
+        # without the network, so it blocks.
         return _check("log_source", CHECK_BLOCK, str(exc),
                       uri=source.source_dsn)
     except Exception as exc:
@@ -730,6 +740,26 @@ def _check_log_source(source: Source) -> dict:
                       f"reads nothing reports success, so this blocks rather "
                       f"than leaving the datasource looking healthy and "
                       f"empty.", uri=source.source_dsn, files=0)
+    if getattr(transport, "streaming", False):
+        # A stream cannot be asked for its newest timestamp without reading
+        # it, so `probe_tip` uses the reader's clock — which means the window
+        # claims up to now, and a line written into it while the run works is
+        # never loaded. The existing lag knobs are exactly the cover for that,
+        # and with both at 0 there is none.
+        if not (source.watermark_lag_s or source.wallclock_lag_s):
+            return _check("log_source", CHECK_WARN,
+                          f"{transport.describe()} is a stream, so the window's "
+                          f"upper bound is this host's clock rather than a "
+                          f"measured data tip — anything written into the "
+                          f"window while the run works falls below the "
+                          f"watermark and is never loaded. Set "
+                          f"watermark_lag_s (or wallclock_lag_s) to at least "
+                          f"the delay this source needs to make a line "
+                          f"visible.", uri=source.source_dsn, streaming=True)
+        return _check("log_source", CHECK_OK,
+                      f"{transport.describe()} — a stream, windowed by the "
+                      f"command itself where it takes {{from}}/{{until}}",
+                      uri=source.source_dsn, streaming=True)
     newest = max((f.mtime for f in files if f.mtime), default=None)
     total = sum(f.size or 0 for f in files)
     return _check("log_source", CHECK_OK,

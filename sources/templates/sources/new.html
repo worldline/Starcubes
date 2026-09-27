@@ -70,12 +70,20 @@
         <div class="form-hint" data-src-kind="sql">SQLAlchemy connection URL for the source database.
           Leave blank to configure the datasource now and add credentials later —
           everything except connecting to the source works without it.</div>
-        <div class="form-hint" data-src-kind="logfile">Where the log is. The
-          scheme picks the transport; a <code>file://</code> path may be a glob,
-          and rotated generations are read in order with
+        <div class="form-hint" data-src-kind="logfile">Where the log is, and the
+          scheme picks how it is read:
+          <code>file:///var/log/nginx/access.log*</code> (a path or a glob in
+          this container — a bind mount, an NFS share, a shared volume),
+          <code>sftp://user@host/var/log/app.log*</code> (the same glob on the
+          machine that wrote it; host keys are verified),
+          <code>https://host/logs/app.log</code> (one resource, no glob) or
+          <code>exec:///usr/bin/journalctl -u app --since {from} --until {until}
+          -o short-iso</code> (a command's stdout — off unless the deployer
+          sets <code>STARCUBES_LOG_EXEC</code>; the
+          <code>{from}</code>/<code>{until}</code> placeholders let the source
+          do the windowing). Rotated generations are read oldest-first with
           <code>.gz</code>/<code>.bz2</code>/<code>.xz</code> unpacked on the
-          fly. Example:
-          <code>file:///var/log/nginx/access.log*</code></div>
+          fly.</div>
       </div>
       <div class="form-group" data-src-kind="sql">
         <label class="form-label">Import Query</label>

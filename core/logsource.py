@@ -127,11 +127,30 @@ _DECOMPRESSORS: dict[str, Callable] = {
 
 
 class LogSourceError(Exception):
-    """A log source is misconfigured or unreachable.
+    """A log source's **configuration** is wrong.
 
-    Raised for conditions an operator has to fix -- an unreadable path, a
-    regex that does not compile, a transport a guard refuses. Never raised
-    for a line that does not match: that is counted, not fatal.
+    Raised for what an operator has to fix and what can be decided without
+    touching the network -- an unparseable URI, an unknown scheme, a regex
+    that does not compile, a transport a guard refuses, a glob that matches
+    nothing. Never raised for a line that does not match: that is counted,
+    not fatal.
+    """
+
+
+class LogTransportUnreachable(LogSourceError):
+    """The log could not be reached *right now*.
+
+    A subclass so every existing `except LogSourceError` still catches it,
+    and separate so `preflight._check_log_source` can keep the asymmetry U5b
+    established on the SQL side: a **rejected configuration blocks**, an
+    **unreachable source only warns**. A DNS failure, a refused TCP
+    connection, an SSH authentication failure or an HTTP error all belong
+    here — the extract reports them better than a preflight can, and blocking
+    every run on a transient hiccup is worse than letting it try and fail.
+
+    A missing host key is deliberately in here too, although its fix is
+    local: the run fails either way, and the message already names the
+    remedy, so there is nothing a block adds beyond refusing to try.
     """
 
 
@@ -489,6 +508,10 @@ class FileRef:
     size: Optional[int]
     opener: Callable[[], object]   # -> binary file object
     compressed: bool = False
+    # For a transport that cannot seek but can ask for a byte range —
+    # `https://` with `Accept-Ranges`. Takes a byte count, returns the tail
+    # or None. Without it `seekable_tail` falls back to seek().
+    tail_reader: Optional[Callable[[int], Optional[bytes]]] = None
 
     def open_text(self, encoding: Optional[str]):
         enc = (encoding or "utf-8").strip() or "utf-8"
@@ -507,13 +530,18 @@ class FileRef:
         """
         if self.compressed or not self.size:
             return None
-        fh = self.opener()
-        try:
-            start = max(0, self.size - nbytes)
-            fh.seek(start)
-            data = fh.read()
-        finally:
-            fh.close()
+        start = max(0, self.size - nbytes)
+        if self.tail_reader is not None:
+            data = self.tail_reader(nbytes)
+            if data is None:
+                return None
+        else:
+            fh = self.opener()
+            try:
+                fh.seek(start)
+                data = fh.read()
+            finally:
+                fh.close()
         if start > 0:
             # Drop the partial first line rather than mis-parse it.
             nl = data.find(b"\n")
@@ -551,6 +579,25 @@ def _check_root(path: Path) -> None:
         f"deployment's environment and only the deployer can widen it.")
 
 
+def _decompressor_for_name(name: str):
+    """The decompressor for a file *name*, or None. Suffix only."""
+    for suffix, dec in _DECOMPRESSORS.items():
+        if name.lower().endswith(suffix):
+            return dec
+    return None
+
+
+def _wrap_decompress(fileobj, name: str):
+    """Decompress a stream by its name's suffix.
+
+    The local transport hands `gzip.open` a path; a remote one has only a
+    file object, and all three stdlib decompressors take one as their first
+    positional argument. Same suffix table either way.
+    """
+    dec = _decompressor_for_name(name)
+    return fileobj if dec is None else dec(fileobj)
+
+
 def _opener_for(path: Path) -> tuple[Callable[[], object], bool]:
     """A binary opener for `path`, decompressing by suffix.
 
@@ -574,6 +621,10 @@ class LocalGlobTransport:
     """
 
     scheme = "file"
+    # Not a stream: the glob lists generations, each has an mtime the window
+    # prefilter can use, and the newest one's tail can be read without
+    # reading the file. `probe_tip` relies on all three.
+    streaming = False
 
     def __init__(self, uri: str):
         parts = urlsplit(uri)
@@ -585,7 +636,14 @@ class LocalGlobTransport:
         if not self.pattern:
             raise LogSourceError("file:// URI has no path")
 
-    def list_files(self) -> list[FileRef]:
+    def close(self) -> None:
+        """Nothing to release; present so every transport has the method."""
+
+    def list_files(self, from_: Optional[datetime] = None,
+                   until: Optional[datetime] = None) -> list[FileRef]:
+        # The window is accepted and ignored here: a glob does not narrow by
+        # time. `exec://` is the transport that uses it, by handing the bounds
+        # to the command.
         matches = sorted(_glob.glob(self.pattern))
         if not matches:
             # Check the root guard even with nothing matched, so a refused
@@ -614,7 +672,486 @@ class LocalGlobTransport:
         return f"file glob {self.pattern}"
 
 
-_TRANSPORTS = {"file": LocalGlobTransport}
+# ---------------------------------------------------------------------------
+# sftp://
+# ---------------------------------------------------------------------------
+
+
+SFTP_TIMEOUT_S = float(os.environ.get("STARCUBES_LOG_SFTP_TIMEOUT_S") or 20.0)
+
+
+class SftpGlobTransport:
+    """``sftp://user@host/var/log/nginx/access.log*`` — the same glob, remote.
+
+    The case this exists for is the ordinary one: the log is on the machine
+    that wrote it. Behaves like the local transport in every way the reader
+    cares about — generations, mtimes, and a seekable tail (paramiko's file
+    objects support ``seek``) — so the window prefilter and the tip probe work
+    unchanged and nothing above this class knows the file is remote.
+
+    **Host keys are verified**, and that is a deliberate default rather than a
+    convenience gap: paramiko's ``RejectPolicy`` means an unknown host is
+    refused until somebody puts it in ``known_hosts``.
+    ``STARCUBES_LOG_SFTP_AUTOADD=1`` relaxes it to trust-on-first-use, and it
+    is an *environment* variable for the same reason
+    ``STARCUBES_LOG_EXEC`` is — the deployer decides, not whoever can edit a
+    datasource. Note that it is genuinely trust-on-*first*-use rather than
+    trust-always: paramiko writes the accepted key into
+    ``~/.ssh/known_hosts``, so a later connection is verified against it and a
+    changed key is refused even with the variable still set. Verified by
+    connecting with a fresh HOME.
+
+    Authentication, in paramiko's order: a password in the URI, then the keys
+    under ``~/.ssh``, then an agent. A password in a URI is stored in
+    ``source_dsn`` like any other DSN and masked the same way in the GUI; a
+    key is better and needs nothing in the datasource at all.
+
+    One connection per transport instance, reused across files and closed by
+    `close()`. A fresh handshake per file would cost ~100 ms each, which a
+    60-second forever loop notices.
+    """
+
+    scheme = "sftp"
+    streaming = False
+
+    def __init__(self, uri: str):
+        parts = urlsplit(uri)
+        if not parts.hostname:
+            raise LogSourceError(
+                "sftp:// URI has no host — the shape is "
+                "sftp://user@host/var/log/app.log*")
+        path = unquote(parts.path or "")
+        if not path:
+            raise LogSourceError("sftp:// URI has no path")
+        self.host = parts.hostname
+        self.port = parts.port or 22
+        self.user = unquote(parts.username) if parts.username else None
+        self.password = unquote(parts.password) if parts.password else None
+        self.pattern = path
+        self._client = None
+        self._sftp = None
+
+    def _connect(self):
+        if self._sftp is not None:
+            return self._sftp
+        try:
+            import paramiko
+        except ImportError as exc:
+            raise LogSourceError(
+                "sftp:// needs the paramiko package, which this build does "
+                "not have. Install it (it is in requirements.txt) or use "
+                "file:// against a mount, or exec:// with ssh.") from exc
+        client = paramiko.SSHClient()
+        client.load_system_host_keys()
+        # The file has to *exist* before `load_host_keys`, not merely be
+        # loadable. paramiko sets `_host_keys_filename` and then reads it, so
+        # swallowing the read error still leaves the filename set — and
+        # `AutoAddPolicy` then calls `save_host_keys`, which re-reads it and
+        # raises `FileNotFoundError`. A container has no ~/.ssh/known_hosts,
+        # so the very first sftp:// connection in the shipped image failed
+        # with that rather than connecting. Creating it empty is what `ssh`
+        # effectively does; a read-only HOME falls back to the system keys.
+        known = Path(os.path.expanduser("~/.ssh/known_hosts"))
+        try:
+            known.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            known.touch(mode=0o600, exist_ok=True)
+        except OSError:
+            logger.debug("cannot create %s; system host keys only", known)
+        try:
+            client.load_host_keys(str(known))
+        except OSError:
+            pass
+        if (os.environ.get("STARCUBES_LOG_SFTP_AUTOADD") or "") == "1":
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        else:
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        try:
+            client.connect(self.host, port=self.port, username=self.user,
+                           password=self.password,
+                           timeout=SFTP_TIMEOUT_S,
+                           banner_timeout=SFTP_TIMEOUT_S,
+                           auth_timeout=SFTP_TIMEOUT_S,
+                           allow_agent=True, look_for_keys=True)
+        except Exception as exc:
+            name = type(exc).__name__
+            msg = str(exc).lower()
+            # Matched on the *message*, and on both spellings. paramiko says
+            # "not found in known_hosts" where the class name says only
+            # SSHException — so testing for "host key" alone missed it, and
+            # the operator got the bare exception instead of the sentence
+            # naming the way out. (The condition also needed its parentheses:
+            # `A or B and C` binds as `A or (B and C)`.)
+            if ("HostKey" in name or "known_hosts" in msg
+                    or "host key" in msg):
+                raise LogTransportUnreachable(
+                    f"{self.host}: {exc}. The host key is not in known_hosts. "
+                    f"Add it there, or set STARCUBES_LOG_SFTP_AUTOADD=1 in "
+                    f"this deployment's environment to trust it on first use "
+                    f"— that is an environment variable and not a setting, "
+                    f"because trusting an unverified host is the deployer's "
+                    f"call."
+                ) from exc
+            raise LogTransportUnreachable(
+                f"{self.host}: {name}: {exc}") from exc
+        self._client = client
+        self._sftp = client.open_sftp()
+        return self._sftp
+
+    def close(self) -> None:
+        for obj in (self._sftp, self._client):
+            try:
+                if obj is not None:
+                    obj.close()
+            except Exception:
+                logger.debug("closing the sftp connection failed",
+                             exc_info=True)
+        self._sftp = self._client = None
+
+    def list_files(self, from_: Optional[datetime] = None,
+                   until: Optional[datetime] = None) -> list[FileRef]:
+        import posixpath
+        from fnmatch import fnmatch
+        sftp = self._connect()
+        directory = posixpath.dirname(self.pattern) or "/"
+        pattern = posixpath.basename(self.pattern)
+        try:
+            entries = sftp.listdir_attr(directory)
+        except Exception as exc:
+            # A missing directory is configuration, an I/O error is not — but
+            # both look the same from here and both make the run fail, so the
+            # gentler verdict is the right default.
+            raise LogTransportUnreachable(
+                f"{self.host}:{directory}: {exc}") from exc
+        out: list[FileRef] = []
+        for attr in entries:
+            if not fnmatch(attr.filename, pattern):
+                continue
+            import stat as _stat
+            if attr.st_mode is not None and not _stat.S_ISREG(attr.st_mode):
+                continue
+            remote = posixpath.join(directory, attr.filename)
+            name = attr.filename
+            compressed = _decompressor_for_name(name) is not None
+
+            def opener(remote=remote, name=name):
+                fh = self._connect().open(remote, "rb")
+                # Without this paramiko reads in small requests and a
+                # multi-megabyte generation crawls; it is the documented knob
+                # for exactly this.
+                try:
+                    fh.prefetch()
+                except Exception:
+                    pass
+                return _wrap_decompress(fh, name)
+
+            out.append(FileRef(
+                key=name,
+                mtime=(datetime.fromtimestamp(attr.st_mtime, timezone.utc)
+                       if attr.st_mtime else None),
+                size=attr.st_size, opener=opener, compressed=compressed))
+        return out
+
+    def describe(self) -> str:
+        who = f"{self.user}@" if self.user else ""
+        return f"sftp glob {who}{self.host}:{self.pattern}"
+
+
+# ---------------------------------------------------------------------------
+# https:// and http://
+# ---------------------------------------------------------------------------
+
+
+HTTP_TIMEOUT_S = float(os.environ.get("STARCUBES_LOG_HTTP_TIMEOUT_S") or 20.0)
+
+
+class HttpTransport:
+    """``https://host/logs/app.log`` — one resource, no glob.
+
+    A URL names one thing, so there are no generations and the history reaches
+    exactly as far as that resource does. What it does get is the two things
+    the reader wants from a file: ``Last-Modified`` stands in for the mtime, so
+    the window prefilter can skip a resource untouched since before the
+    window, and a suffix ``Range`` request stands in for seeking, so the tip
+    probe reads a few kilobytes instead of the whole log. Where the server
+    offers neither the resource is re-read per run, which is worth knowing
+    before pointing this at a gigabyte.
+
+    Only stdlib. Credentials in the URI become Basic auth; anything else
+    (bearer tokens, presigned URLs) belongs in the URL itself.
+    """
+
+    scheme = "https"
+    streaming = False
+
+    def __init__(self, uri: str):
+        parts = urlsplit(uri)
+        if not parts.hostname:
+            raise LogSourceError(f"{parts.scheme}:// URI has no host")
+        if any(ch in (parts.path or "") for ch in "*?["):
+            raise LogSourceError(
+                "an http(s) URL names one resource — a glob cannot be "
+                "expanded over HTTP. Point it at a single log, or use "
+                "file:// / sftp:// for rotated generations.")
+        self._auth = None
+        if parts.username:
+            import base64
+            raw = f"{unquote(parts.username)}:{unquote(parts.password or '')}"
+            self._auth = "Basic " + base64.b64encode(
+                raw.encode()).decode("ascii")
+        # Strip the credentials back out of the URL that goes on the wire.
+        netloc = parts.hostname + (f":{parts.port}" if parts.port else "")
+        self.url = f"{parts.scheme}://{netloc}{parts.path}" + (
+            f"?{parts.query}" if parts.query else "")
+        self.name = (parts.path or "/").rsplit("/", 1)[-1] or "log"
+
+    def close(self) -> None:
+        """Nothing to release: urllib opens per request."""
+
+    def _request(self, method: str, extra: Optional[dict] = None):
+        import urllib.request
+        req = urllib.request.Request(self.url, method=method)
+        if self._auth:
+            req.add_header("Authorization", self._auth)
+        for k, v in (extra or {}).items():
+            req.add_header(k, v)
+        return urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S)
+
+    def _head(self) -> tuple[Optional[datetime], Optional[int], bool]:
+        import email.utils
+        try:
+            with self._request("HEAD") as resp:
+                headers = resp.headers
+        except Exception as exc:
+            raise LogTransportUnreachable(f"{self.url}: {exc}") from exc
+        lm = headers.get("Last-Modified")
+        mtime = None
+        if lm:
+            try:
+                mtime = email.utils.parsedate_to_datetime(lm)
+                if mtime.tzinfo is None:
+                    mtime = mtime.replace(tzinfo=timezone.utc)
+                mtime = mtime.astimezone(timezone.utc)
+            except Exception:
+                mtime = None
+        try:
+            size = int(headers.get("Content-Length") or 0) or None
+        except ValueError:
+            size = None
+        ranges = "bytes" in (headers.get("Accept-Ranges") or "").lower()
+        return mtime, size, ranges
+
+    def list_files(self, from_: Optional[datetime] = None,
+                   until: Optional[datetime] = None) -> list[FileRef]:
+        mtime, size, ranges = self._head()
+        compressed = _decompressor_for_name(self.name) is not None
+
+        def opener():
+            try:
+                resp = self._request("GET")
+            except Exception as exc:
+                raise LogTransportUnreachable(
+                    f"{self.url}: {exc}") from exc
+            return _wrap_decompress(resp, self.name)
+
+        def tail(nbytes: int) -> Optional[bytes]:
+            if not ranges or not size:
+                return None
+            try:
+                with self._request(
+                        "GET", {"Range": f"bytes=-{int(nbytes)}"}) as resp:
+                    # 200 means the server ignored the range and sent
+                    # everything; treating that as a tail would mis-parse the
+                    # first line, so decline and let the caller read normally.
+                    if resp.status != 206:
+                        return None
+                    return resp.read()
+            except Exception:
+                logger.debug("range request failed", exc_info=True)
+                return None
+
+        return [FileRef(key=self.name, mtime=mtime, size=size, opener=opener,
+                        compressed=compressed,
+                        tail_reader=None if compressed else tail)]
+
+    def describe(self) -> str:
+        return f"http resource {self.url}"
+
+
+class HttpPlainTransport(HttpTransport):
+    """``http://`` — the same, unencrypted. Separate only so the scheme maps."""
+    scheme = "http"
+
+
+# ---------------------------------------------------------------------------
+# exec://
+# ---------------------------------------------------------------------------
+
+
+class _ProcStream(io.RawIOBase):
+    """A subprocess's stdout as a binary stream, with its exit code enforced.
+
+    The point of the class rather than handing over ``proc.stdout``: a command
+    that fails must not look like an empty log. ``close`` waits and raises with
+    the tail of stderr, so a wrong ``journalctl`` unit name is an error the
+    operator sees instead of a run that loaded nothing and reported success.
+    """
+
+    def __init__(self, argv: list[str]):
+        import subprocess
+        self._argv = argv
+        try:
+            self._p = subprocess.Popen(
+                argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                shell=False)
+        except OSError as exc:
+            # The program is not there or not executable: a configuration
+            # fault the allowlist could not catch, and no retry fixes it.
+            raise LogSourceError(f"{argv[0]}: {exc}") from exc
+        self._err: bytes = b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b):
+        return self._p.stdout.readinto(b)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            if self._p.poll() is None:
+                try:
+                    self._p.stdout.close()
+                except Exception:
+                    pass
+            self._err = (self._p.stderr.read() or b"")[-2000:]
+            self._p.stderr.close()
+            rc = self._p.wait(timeout=30)
+        except Exception:
+            rc = None
+            try:
+                self._p.kill()
+            except Exception:
+                pass
+        finally:
+            super().close()
+        if rc not in (0, None):
+            raise LogTransportUnreachable(
+                f"{self._argv[0]} exited {rc}: "
+                f"{self._err.decode('utf-8', 'replace').strip()[:400]}")
+
+
+class ExecTransport:
+    """``exec:///usr/bin/journalctl -u app --since {from} -o short-iso``
+
+    The transport for everything the other three do not reach: journald,
+    ``kubectl logs``, ``ssh host cat``, a vendor's own extraction tool. One
+    command, its stdout is the log.
+
+    **Off unless the deployer turns it on.** ``STARCUBES_LOG_EXEC`` is a
+    comma-separated allowlist of permitted programs and empty by default, so
+    the shipped image refuses ``exec://`` outright. That is the whole reason
+    it is an environment variable: an administrator can edit a datasource, and
+    a datasource field that runs arbitrary commands would make "can configure
+    a datasource" mean "can run anything in the container". The command is
+    always an argv list (``shlex.split``), never a shell string — no globbing,
+    no pipes, no ``;``.
+
+    ``{from}`` and ``{until}`` are substituted with ISO-8601 UTC, which is what
+    makes this transport efficient rather than merely possible: the *source*
+    does the windowing, so an incremental run asks journald for two minutes
+    instead of reading a week. Without the placeholders the whole stream is
+    read every run and filtered here. An absent lower bound (the initial load)
+    becomes ``1970-01-01T00:00:00Z``, which every tool that takes a ``--since``
+    reads as "everything".
+
+    A stream has no mtime and no tail, so the tip cannot be measured from it —
+    see `LogReader.probe_tip` for what stands in and why the lag knobs matter
+    here.
+    """
+
+    scheme = "exec"
+    streaming = True
+
+    def __init__(self, uri: str):
+        import shlex
+        parts = urlsplit(uri)
+        command = unquote(parts.path or "").strip()
+        if parts.netloc:
+            raise LogSourceError(
+                "exec:// takes no host — the shape is exec:///usr/bin/prog "
+                "--flag, with three slashes before an absolute path")
+        if not command:
+            raise LogSourceError("exec:// URI has no command")
+        try:
+            self.argv = shlex.split(command)
+        except ValueError as exc:
+            raise LogSourceError(f"could not parse the command: {exc}") from exc
+        if not self.argv:
+            raise LogSourceError("exec:// URI has no command")
+        self._check_allowed()
+
+    def _check_allowed(self) -> None:
+        raw = (os.environ.get("STARCUBES_LOG_EXEC") or "").strip()
+        if not raw:
+            raise LogSourceError(
+                "exec:// is disabled in this deployment. Set "
+                "STARCUBES_LOG_EXEC to a comma-separated list of permitted "
+                "programs in the environment to enable it — it is an "
+                "environment variable, not a setting, because it decides "
+                "whether configuring a datasource can run commands.")
+        allowed = {a.strip() for a in raw.split(",") if a.strip()}
+        if self.argv[0] not in allowed:
+            raise LogSourceError(
+                f"{self.argv[0]} is not in STARCUBES_LOG_EXEC "
+                f"({', '.join(sorted(allowed))}). The allowlist matches the "
+                f"program exactly, so give the full path as it is written "
+                f"here.")
+        # Checked here, at construction, rather than left to the first read.
+        # It is decidable without running anything, and discovering it later
+        # puts the finding on the wrong preflight check: `log_source` cannot
+        # see it (listing a stream touches nothing) so it reported the
+        # streaming warning while `log_pattern` blocked, which reads as two
+        # unrelated problems instead of one missing program.
+        if not os.access(self.argv[0], os.X_OK):
+            raise LogSourceError(
+                f"{self.argv[0]} is not an executable file in this container. "
+                f"It is on the STARCUBES_LOG_EXEC allowlist, so the path is "
+                f"permitted — it just is not there.")
+
+    def close(self) -> None:
+        """Nothing held between reads: each read starts its own process."""
+
+    def _substitute(self, from_, until) -> list[str]:
+        def iso(dt, fallback):
+            if dt is None:
+                return fallback
+            return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lo = iso(from_, "1970-01-01T00:00:00Z")
+        hi = iso(until, datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"))
+        return [a.replace("{from}", lo).replace("{until}", hi)
+                for a in self.argv]
+
+    def list_files(self, from_: Optional[datetime] = None,
+                   until: Optional[datetime] = None) -> list[FileRef]:
+        argv = self._substitute(from_, until)
+        # mtime and size stay None: the prefilter then always keeps this
+        # "file" and `seekable_tail` declines, which is what a stream needs.
+        return [FileRef(key=Path(argv[0]).name, mtime=None, size=None,
+                        opener=lambda: _ProcStream(argv), compressed=False)]
+
+    def describe(self) -> str:
+        return "exec " + " ".join(self.argv)
+
+
+_TRANSPORTS = {
+    "file": LocalGlobTransport,
+    "sftp": SftpGlobTransport,
+    "https": HttpTransport,
+    "http": HttpPlainTransport,
+    "exec": ExecTransport,
+}
 
 
 def open_transport(uri: str):
@@ -677,16 +1214,29 @@ class LogReader:
             return None
         return 100.0 * self.parsed_rows / total
 
-    def list_files(self) -> list[FileRef]:
+    def list_files(self, from_: Optional[datetime] = None,
+                   until: Optional[datetime] = None) -> list[FileRef]:
         """Every generation, oldest first.
 
         Sorted by mtime and then by name: mtime alone leaves ties, and the
         order has to be deterministic for the crash-resume skip count to mean
         anything. A transport that cannot report mtime sorts first by name.
+
+        The window is handed down because `exec://` uses it — its `{from}` and
+        `{until}` placeholders let the *command* do the narrowing, which is the
+        difference between asking journald for two minutes and reading a week.
+        The globbing transports ignore it.
         """
-        files = self.transport.list_files()
+        files = self.transport.list_files(from_, until)
         return sorted(files, key=lambda f: (f.mtime or datetime.min.replace(
             tzinfo=timezone.utc), f.key))
+
+    def close(self) -> None:
+        """Release whatever the transport holds. Idempotent, never raises."""
+        try:
+            self.transport.close()
+        except Exception:
+            logger.debug("closing the log transport failed", exc_info=True)
 
     # -- the tip and the floor --------------------------------------------
 
@@ -700,16 +1250,32 @@ class LogReader:
         ``import_fact``.
         """
         src_now = datetime.now(timezone.utc)
+        if self.transport.streaming:
+            # A stream has no tail to read and no mtime to ask, so the tip
+            # cannot be *measured* — and reading the whole stream to find it
+            # would double the cost of every run. The reader's clock stands in,
+            # which means the window claims up to now and anything written into
+            # it after the run started is missed.
+            #
+            # That is exactly what `watermark_lag_s` / `wallclock_lag_s` exist
+            # for, so the answer is to use them rather than to invent a second
+            # mechanism here; `preflight._check_log_source` warns when a
+            # streaming transport has both at 0.
+            return src_now, src_now
         files = self.list_files()
         if not files:
             return None, src_now
-        newest = files[-1]
-        tip = self._tip_of(newest)
-        if tip is None and len(files) > 1:
-            # An empty or unparsable newest generation is normal right after
-            # a rotation: the new file exists and holds nothing yet.
-            tip = self._tip_of(files[-2])
-        return tip, src_now
+        # The **max over the last two generations**, not the tip of the
+        # newest one. Right after a rotation the newest mtime belongs to the
+        # file logrotate just *compressed*, whose last line is older than the
+        # freshly-opened current file — so reading only `files[-1]` reports a
+        # tip behind the watermark, the monotonicity clamp empties the window,
+        # and one run does nothing. Self-correcting on the next pass, but two
+        # tails cost a few kilobytes and remove the stall. Measured on a
+        # fixture where the .gz was written second.
+        tips = [t for t in (self._tip_of(f) for f in files[-2:])
+                if t is not None]
+        return (max(tips) if tips else None), src_now
 
     def _tip_of(self, fref: FileRef) -> Optional[datetime]:
         lines = fref.seekable_tail(self.config.encoding, TAIL_BYTES)
@@ -735,6 +1301,16 @@ class LogReader:
         Read from the head of the oldest generation, so this costs one file's
         first lines rather than the whole history.
         """
+        if self.transport.streaming:
+            # Reading a whole stream to find its oldest line is the one thing
+            # `initial_window_s` was meant to avoid, so it is declined rather
+            # than paid for. Returning None leaves the first window unbounded
+            # below, which is the behaviour without `initial_window_s` set.
+            logger.info(
+                "log source: %s is a stream, so min(watermark) is not read — "
+                "initial_window_s cannot narrow the first load here",
+                self.transport.describe())
+            return None
         for fref in self.list_files():
             with fref.open_text(self.config.encoding) as fh:
                 for raw in fh:
@@ -763,7 +1339,7 @@ class LogReader:
         names = [c.name for c in self.config.columns]
         rows: list[dict] = []
         skipped = 0
-        for fref in self.list_files():
+        for fref in self.list_files(from_, until):
             if not self._touches_window(fref, from_):
                 logger.debug("log source: skipping %s (mtime %s before window)",
                              fref.key, fref.mtime)
@@ -930,6 +1506,10 @@ NUMERIC_DIMENSION_DISTINCT = int(
 NUMERIC_DIMENSION_SHARE = 0.25
 
 PROBE_LINES = int(os.environ.get("STARCUBES_LOG_PROBE_LINES") or 500)
+# How far back the probe's window reaches on a transport that takes one
+# (`exec://`). Wide enough that a quiet log still has lines in it, narrow
+# enough that the command returns inside a request.
+PROBE_WINDOW_S = int(os.environ.get("STARCUBES_LOG_PROBE_WINDOW_S") or 86400)
 PROBE_BYTES = int(os.environ.get("STARCUBES_LOG_PROBE_BYTES") or 1_000_000)
 PROBE_SECONDS = float(os.environ.get("STARCUBES_LOG_PROBE_SECONDS") or 10.0)
 
@@ -1077,6 +1657,7 @@ def sample(config: LogConfig, n_lines: int = PROBE_LINES) -> ProbeReport:
     import time as _time
     deadline = _time.monotonic() + PROBE_SECONDS
     line_re = compile_line_regex(config.line_regex)
+
     if not line_re.groupindex:
         raise LogSourceError(
             "log_line_regex has no named groups. The fact columns are read "
@@ -1084,7 +1665,27 @@ def sample(config: LogConfig, n_lines: int = PROBE_LINES) -> ProbeReport:
             r"(?P<ts>\d{4}-\d\d-\d\dT\S+)")
 
     transport = open_transport(config.uri)
-    files = sorted(transport.list_files(),
+    try:
+        return _sample_with(config, transport, line_re, n_lines, deadline)
+    finally:
+        # One exit rather than three: the two early returns below used to slip
+        # past the close, which on `sftp://` leaks an SSH connection per probe.
+        try:
+            transport.close()
+        except Exception:
+            logger.debug("closing the probe transport failed", exc_info=True)
+
+
+def _sample_with(config, transport, line_re, n_lines, deadline) -> ProbeReport:
+    """The body of `sample`, so the transport has exactly one close."""
+    import time as _time
+    # A recent window, not an unbounded one: on `exec://` the placeholders are
+    # what keep the probe from reading a week of journald inside a web request.
+    # The globbing transports ignore it and the tail sampling below bounds
+    # them instead.
+    now = datetime.now(timezone.utc)
+    files = sorted(transport.list_files(now - timedelta(seconds=PROBE_WINDOW_S),
+                                        now),
                    key=lambda f: (f.mtime or datetime.min.replace(
                        tzinfo=timezone.utc), f.key))
     file_rows = [{"name": f.key, "size": f.size,
