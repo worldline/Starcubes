@@ -35,6 +35,7 @@ from tqdm import tqdm
 
 from .cache import bump_cache_epoch
 from .lease import acquire_process_lease
+from .logsource import LogConfig, LogReader
 from .preflight import (acquire_datasource_lock, blocking_message,
                         datasource_lock, relation_exists,
                         release_datasource_lock, run_preflight)
@@ -235,6 +236,38 @@ class EtlStageFailed(RuntimeError):
         super().__init__(f"{stage}: {message}")
 
 
+def _log_match_refusal(source: Source, reader) -> Optional[str]:
+    """Why `log_min_match_pct` refuses this run, or None.
+
+    The threshold exists so a changed log line format is **loud** instead of
+    showing up as a quiet drop in row count. Note where it is applied, and
+    why: only while nothing has been loaded yet.
+
+    Failing a run *after* rows have reached `fact` would be worse than the
+    condition it reports. The terminal UPDATE writes `last_end_time` only for
+    a run that ended `ok`, so a failed run leaves the watermark where it was
+    and the next one re-reads the same window — and a log source has no
+    primary key to de-duplicate that with. So a rate measured before the
+    first chunk is put refuses the run; a rate that only falls later is a
+    WARNING plus `stats.match_pct` plus the samples in `etl_unparsed`, and
+    the run completes. A visibly recorded low rate beats silent duplicates.
+    """
+    threshold = float(source.log_min_match_pct or 0.0)
+    if threshold <= 0:
+        return None
+    pct = reader.match_pct
+    if pct is None or pct >= threshold:
+        return None
+    sample = reader.unparsed[0] if reader.unparsed else None
+    shown = (f" First unmatched line, {sample.file_name}:{sample.line_no} "
+             f"({sample.reason}): {sample.raw_line[:200]!r}."
+             if sample is not None else "")
+    return (f"only {pct:.2f}% of {reader.parsed_rows + reader.unparsed_rows} "
+            f"lines matched log_line_regex, below the configured "
+            f"log_min_match_pct of {threshold:g}. The log's line format has "
+            f"most likely changed.{shown}")
+
+
 def _ceil_second(dt: datetime) -> datetime:
     """Round a datetime up to the next whole second if it has sub-second precision.
 
@@ -359,7 +392,7 @@ def _build_stats_payload(stats_arr, load_base: int, transform_bases: list[int],
                          extract_auto_dim_s: float,
                          duplicates: int, auto_dim_inserted: int,
                          runtime_ms: int, rows_total: int,
-                         *, live: bool) -> dict:
+                         *, live: bool, log_reader=None) -> dict:
     """Compose the final (or live) jsonb shape.
 
     `live=False` mixes parent-side extract timings (which the workers
@@ -377,6 +410,17 @@ def _build_stats_payload(stats_arr, load_base: int, transform_bases: list[int],
         snap["extract"]["auto_dim_s"] = round(extract_auto_dim_s, 3)
         snap["extract"]["dedupe_rows"] = duplicates
         snap["extract"]["auto_dim_inserted"] = auto_dim_inserted
+        if log_reader is not None:
+            # A log source's own accounting. `match_pct` is None rather than
+            # 0 when nothing was read at all, for the same reason the
+            # pipeline alarms answer None: "no measurement" and "measured
+            # zero" must not look alike.
+            snap["extract"]["parsed_rows"] = log_reader.parsed_rows
+            snap["extract"]["unparsed_rows"] = log_reader.unparsed_rows
+            snap["extract"]["match_pct"] = (
+                round(log_reader.match_pct, 3)
+                if log_reader.match_pct is not None else None)
+            snap["extract"]["files_read"] = log_reader.files_read
         snap["total"] = {"rows": rows_total,
                          "wall_s": round(runtime_ms / 1000.0, 3),
                          "rows_s": _rate(rows_total, runtime_ms / 1000.0)}
@@ -1037,7 +1081,7 @@ class _RunBudget:
 
 def _resume_state(source: Source, dest_engine, meta_engine,
                   dedupe_from: Optional[datetime] = None) -> tuple[
-        Optional[datetime], Optional[datetime], set]:
+        Optional[datetime], Optional[datetime], set, int]:
     """Figure out where to resume from.
 
     `dedupe_from` is a pending high-watermark rewind (see
@@ -1058,6 +1102,9 @@ def _resume_state(source: Source, dest_engine, meta_engine,
         `>= last_end_time` window loses every row that shows up late.
       - existing_pks: PKs already in fact whose watermark falls inside the
         re-fetched span. Empty when there is nothing to de-duplicate.
+      - skip_at_start: how many source records carrying exactly
+        `extract_from` are already in fact. Zero on every path but the log
+        source's crash resume, and the reason that path needs it is below.
     """
     schema = source.schema_name
     pc = source.partition_column
@@ -1065,7 +1112,7 @@ def _resume_state(source: Source, dest_engine, meta_engine,
     overlap = max(0, int(source.late_arrival_overlap_s or 0))
 
     if not _fact_has_rows(source, dest_engine):
-        return None, None, set()
+        return None, None, set(), 0
 
     with meta_engine.begin() as meta:
         last_end = meta.execute(text(
@@ -1076,20 +1123,56 @@ def _resume_state(source: Source, dest_engine, meta_engine,
         ), {"ds": source.id}).scalar()
 
     if last_end is not None:
-        last_end = _ceil_second(_as_utc(last_end))
+        # `ceil_watermark`, not `_ceil_second`: for a log source the stored
+        # watermark carries full precision, and rounding it up here would
+        # start the next window past rows that were never read — the one
+        # place where this seam is not merely cosmetic.
+        last_end = source.ceil_watermark(_as_utc(last_end))
         if overlap <= 0 and dedupe_from is None:
-            return last_end, last_end, set()
+            return last_end, last_end, set(), 0
         extract_from = (last_end - timedelta(seconds=overlap)
                         if overlap > 0 else last_end)
         if dedupe_from is not None:
             extract_from = min(extract_from, _as_utc(dedupe_from))
         return last_end, extract_from, _overlap_pks(
-            source, dest_engine, extract_from)
+            source, dest_engine, extract_from), 0
 
     # Prior run interrupted: reconstruct a conservative watermark from
     # fact. The reconstruction window is the last minute of partition_column
     # -- widened to the configured overlap when that is larger -- and every
     # PK inside it is pre-loaded so the first chunks can be de-duped.
+    if source.is_logfile:
+        # A log source resumes *exactly*, and it is the one path where the
+        # timestamp alone is not quite enough on its own.
+        #
+        # Full precision, no `date_trunc`: rounding down here would re-read
+        # the whole truncated second, and with no primary key there would be
+        # nothing to drop the re-read rows with.
+        #
+        # The remaining wrinkle is that `max(ts)` names a row that *was*
+        # loaded, unlike a stored `last_end_time`, which is the upper and
+        # therefore unloaded bound. So a `[max(ts), until)` window hands back
+        # every record sharing that timestamp. Counting them in fact and
+        # having the reader skip that many is an exact de-duplication without
+        # a key: the read order is deterministic (generations by mtime, lines
+        # in file order) and a log is kept in timestamp order.
+        with dest_engine.begin() as dst:
+            last_end = dst.execute(text(
+                f"SELECT max({wm_expr}) FROM {schema}.fact "
+                f" WHERE {pc} > (SELECT max({pc}) - interval '1 minute' "
+                f"                FROM {schema}.fact)")).scalar()
+            if last_end is None:
+                return None, None, set(), 0
+            last_end = _as_utc(last_end)
+            skip = int(dst.execute(text(
+                f"SELECT count(*) FROM {schema}.fact "
+                f" WHERE {wm_expr} = :at"), {"at": last_end}).scalar() or 0)
+        logger.warning(
+            "%s: resuming an interrupted log load at %s; %d fact row(s) carry "
+            "that timestamp and will be skipped in the re-read",
+            source.name, last_end, skip)
+        return last_end, last_end, set(), skip
+
     with dest_engine.begin() as dst:
         last_end = dst.execute(text(
             f"SELECT date_trunc('second', max({wm_expr})) "
@@ -1098,11 +1181,11 @@ def _resume_state(source: Source, dest_engine, meta_engine,
             f"                FROM {schema}.fact)"
         )).scalar()
     if last_end is None:
-        return None, None, set()
-    last_end = _ceil_second(_as_utc(last_end))
+        return None, None, set(), 0
+    last_end = source.ceil_watermark(_as_utc(last_end))
     extract_from = last_end - timedelta(seconds=max(60, overlap))
     return last_end, extract_from, _overlap_pks(
-        source, dest_engine, extract_from)
+        source, dest_engine, extract_from), 0
 
 
 def import_fact(source: Source, meta_engine, *,
@@ -1206,7 +1289,12 @@ def import_fact(source: Source, meta_engine, *,
     # checkout, not the execution. One knob rather than two: a statement may
     # not outlive the run it belongs to, and a second timeout column nobody
     # could size independently would only be a second thing to get wrong.
-    source_engine = source.source_engine(
+    # A log source has no engine at all; `source.source_engine()` refuses
+    # outright. Every use below is guarded, and preflight's two SQL checks
+    # answer "not applicable" rather than "skipped" for it.
+    log_reader = LogReader(LogConfig.from_source(source)) \
+        if source.is_logfile else None
+    source_engine = None if source.is_logfile else source.source_engine(
         statement_timeout_ms=max_run_s * 1000 if capped else None)
 
     # Say which of the two regimes this run is under, and why. The cap
@@ -1356,7 +1444,7 @@ def import_fact(source: Source, meta_engine, *,
             end_time = end_time_override
             if end_time.tzinfo is None:
                 end_time = end_time.replace(tzinfo=timezone.utc)
-            end_time = _ceil_second(end_time)
+            end_time = source.ceil_watermark(end_time)
         else:
             # The wall-clock term of the upper bound (below) reads the
             # source DB's own clock, not this host's -- watermarks are
@@ -1387,18 +1475,31 @@ def import_fact(source: Source, meta_engine, *,
             # supply one: an import_query-only datasource (preflight will
             # not pay for a full subquery scan), an unreachable source, a
             # rejected probe.
-            probed = _preflight_watermark(preflight_report)
-            if probed is not None:
-                end_time, src_now = probed
+            if source.is_logfile:
+                # A log source answers both from the files: the tip is the
+                # newest parsable timestamp in the newest generation, read
+                # off its tail, and the clock is the reader's own. Under-
+                # reading the tip is the harmless direction — the remainder
+                # loads next run — whereas over-reading would skip rows
+                # against the `end_time <= max_wm` clamp below. Note this
+                # branch must not fall through to the SQL one: preflight has
+                # no watermark reading for a log source, and
+                # `watermark_probe_sql()` refuses one outright.
+                end_time, src_now = log_reader.probe_tip()
             else:
-                max_query, standalone_now = source.watermark_probe_sql()
-                with source_engine.begin() as src:
-                    _row = src.execute(text(max_query)).first()
-                    end_time = _row[0] if _row is not None else None
-                    if standalone_now is None:
-                        src_now = _row[1] if _row is not None else None
-                    else:
-                        src_now = src.execute(text(standalone_now)).scalar()
+                probed = _preflight_watermark(preflight_report)
+                if probed is not None:
+                    end_time, src_now = probed
+                else:
+                    max_query, standalone_now = source.watermark_probe_sql()
+                    with source_engine.begin() as src:
+                        _row = src.execute(text(max_query)).first()
+                        end_time = _row[0] if _row is not None else None
+                        if standalone_now is None:
+                            src_now = _row[1] if _row is not None else None
+                        else:
+                            src_now = src.execute(
+                                text(standalone_now)).scalar()
             if end_time is None:
                 logger.log(logging.DEBUG if quiet else logging.INFO,
                           "%s: source has no data for watermark %s",
@@ -1406,7 +1507,7 @@ def import_fact(source: Source, meta_engine, *,
                 return 0
             if end_time.tzinfo is None:
                 end_time = end_time.replace(tzinfo=timezone.utc)
-            end_time = _ceil_second(end_time)
+            end_time = source.ceil_watermark(end_time)
             max_wm = end_time
             if src_now is not None:
                 if src_now.tzinfo is None:
@@ -1414,7 +1515,7 @@ def import_fact(source: Source, meta_engine, *,
                 # _resume_state and the WHERE clause assume second-
                 # granularity bounds; a raw clock reading would carry
                 # sub-second parts straight into the HWM.
-                src_now = _ceil_second(src_now)
+                src_now = source.ceil_watermark(src_now)
 
             # Upper bound = the later of two independent guarantees:
             #   max(wm) - lag_wm   relative buffer under the data tip. Takes
@@ -1486,13 +1587,19 @@ def import_fact(source: Source, meta_engine, *,
                     (src_now - max_wm).total_seconds(), wm)
                 end_time = max_wm
 
+        # Assigned on only one of the branches below, and read unconditionally
+        # by the log extract — so it is initialised here rather than there. A
+        # backfill and an explicit --start own their window and never resume,
+        # which is exactly why they would otherwise leave it unbound.
+        skip_at_start = 0
+        log_gate_checked = False
         if backfill:
             # A backfill owns its window outright: no HWM lookup, and what is
             # already in fact is de-duped away so only the genuinely missing
             # rows get inserted.
             if start_time.tzinfo is None:
                 start_time = start_time.replace(tzinfo=timezone.utc)
-            last_end_time = extract_from = _ceil_second(start_time)
+            last_end_time = extract_from = source.ceil_watermark(start_time)
             if backfill_ids is not None:
                 # Narrowed, not skipped. Asking which of *these* ids are
                 # already in fact is both cheaper than pulling every PK in
@@ -1520,7 +1627,8 @@ def import_fact(source: Source, meta_engine, *,
                 dedupe_pending = meta.execute(text(
                     "SELECT dedupe_from FROM starcubes_meta.datasource "
                     " WHERE id = :ds"), {"ds": source.id}).scalar()
-            last_end_time, extract_from, existing_pks = _resume_state(
+            (last_end_time, extract_from, existing_pks,
+             skip_at_start) = _resume_state(
                 source, dest_engine, meta_engine, dedupe_pending)
 
             if extract_from is None and initial_window_s > 0:
@@ -1528,7 +1636,10 @@ def import_fact(source: Source, meta_engine, *,
                 # source where its data begins — the one question the engine
                 # never had to ask, because every other window starts at the
                 # stored watermark.
-                extract_from = _source_min_watermark(source, source_engine)
+                extract_from = (log_reader.min_watermark()
+                                if source.is_logfile
+                                else _source_min_watermark(source,
+                                                           source_engine))
                 if extract_from is None:
                     logger.warning(
                         "%s: initial_window_s is set but the source reports "
@@ -1539,7 +1650,7 @@ def import_fact(source: Source, meta_engine, *,
                 if start_time.tzinfo is None:
                     start_time = start_time.replace(tzinfo=timezone.utc)
                 # Explicit user-chosen window: no overlap, no de-dupe.
-                last_end_time = extract_from = _ceil_second(start_time)
+                last_end_time = extract_from = source.ceil_watermark(start_time)
                 existing_pks = set()
                 # The user owns this window, so it is not the run that
                 # honours the pending rewind — leave the flag standing.
@@ -1617,7 +1728,12 @@ def import_fact(source: Source, meta_engine, *,
             raise
 
         query = source.import_query
-        if (source.small_window_hint
+        if source.is_logfile and source.small_window_hint:
+            logger.warning(
+                "%s: small_window_hint is set on a log source and is ignored "
+                "— it is an optimizer hint spliced into a SELECT, and there "
+                "is no SELECT here", source.name)
+        elif (source.small_window_hint
                 and extract_from is not None
                 and (end_time - extract_from).days == 0):
             logger.log(logging.DEBUG if quiet else logging.INFO,
@@ -1666,8 +1782,16 @@ def import_fact(source: Source, meta_engine, *,
         # The `_sc_` prefix keeps the names clear of anything an operator
         # might have written in `import_query` (`core/query.py` uses the
         # same convention for `:_limit`).
+        # A log source gets no WHERE clause: `iter_chunks` takes the window
+        # as two arguments and filters on the parsed timestamp. The binds are
+        # still computed, harmlessly, so the log line below reads the same
+        # for both kinds.
+        where = ""
         where_params: dict = {"_sc_until": _as_naive_utc(end_time)}
-        if extract_from is not None:
+        if source.is_logfile:
+            if extract_from is not None:
+                where_params["_sc_from"] = _as_naive_utc(extract_from)
+        elif extract_from is not None:
             where = (f" WHERE {wm} >= :_sc_from "
                      f"   AND {wm} < :_sc_until")
             where_params["_sc_from"] = _as_naive_utc(extract_from)
@@ -1844,7 +1968,8 @@ def import_fact(source: Source, meta_engine, *,
             target=_progress_writer, name="etl-progress", daemon=True)
         progress_thread.start()
 
-        source_engine.dispose()  # drop parent pool before the main extract loop
+        if source_engine is not None:
+            source_engine.dispose()  # drop parent pool before the extract loop
         # Everything from here to the first chunk is time spent waiting on the
         # source, and on a wide window that is minutes. Say so, or the only
         # visible sign is a `progress_at` that stops advancing — which is what
@@ -1859,7 +1984,17 @@ def import_fact(source: Source, meta_engine, *,
         # an `import_query` containing `LIKE '%x%'` survives
         # `exec_driver_sql` only while no params accompany it, whereas
         # `text()` escapes for the driver's paramstyle itself.
-        if backfill_ids is not None:
+        if source.is_logfile:
+            # The third producer of `chunks`, and the whole seam this feature
+            # rests on: `_targeted_chunks` below already proved that an
+            # alternative producer leaves the rest of the pipeline untouched.
+            # Same DataFrame shape, same tz-aware UTC time column, so tqdm,
+            # the progress writer, the queues, the auto-dim resolution and the
+            # row accounting are unchanged and never learn what read the rows.
+            chunks = log_reader.iter_chunks(
+                extract_from, end_time, source.chunksize,
+                skip_at_start=skip_at_start)
+        elif backfill_ids is not None:
             # The audit named the rows; read those and nothing else. Same
             # DataFrame shape as the window read, so everything downstream --
             # tqdm, the progress writer, the transform/load queues, the row
@@ -1918,6 +2053,15 @@ def import_fact(source: Source, meta_engine, *,
             # (= busy). transform_q.put() block time goes to wait.
             _chunk_busy = time.monotonic() - t_fetch_start
             extract_busy += _chunk_busy
+            if log_reader is not None and not log_gate_checked:
+                # The first chunk has been produced but not yet handed to a
+                # worker, so this is the last moment a refusal costs nothing.
+                # See `_log_match_refusal` for why "nothing loaded yet" is the
+                # condition rather than "the run is over".
+                log_gate_checked = True
+                _refusal = _log_match_refusal(source, log_reader)
+                if _refusal:
+                    raise RuntimeError(f"{source.name}: {_refusal}")
             if chunk.empty:
                 break
             current = (chunk[pc][chunk.index[-1]]
@@ -2001,6 +2145,33 @@ def import_fact(source: Source, meta_engine, *,
             stats_arr[extract_slot_base + 2] += _chunk_wait
             if row_limit is not None and rows_total >= row_limit:
                 break
+
+        if log_reader is not None:
+            if not log_gate_checked:
+                # No chunk ever arrived — either the window was empty or every
+                # line failed to match. Nothing has been loaded either way, so
+                # the threshold still applies at full force.
+                log_gate_checked = True
+                _refusal = _log_match_refusal(source, log_reader)
+                if _refusal:
+                    raise RuntimeError(f"{source.name}: {_refusal}")
+            else:
+                _late = _log_match_refusal(source, log_reader)
+                if _late:
+                    logger.warning(
+                        "%s: %s Completing the run anyway: rows are already in "
+                        "fact, and failing now would leave the high watermark "
+                        "behind so the next run re-read the same window — with "
+                        "no primary key, that means duplicates. The rate is in "
+                        "stats.match_pct and the lines in "
+                        "starcubes_meta.etl_unparsed.", source.name, _late)
+            logger.log(logging.DEBUG if quiet else logging.INFO,
+                      "%s: log read %d file(s), %d line(s) parsed, %d "
+                      "unparsed (%s match)", source.name,
+                      log_reader.files_read, log_reader.parsed_rows,
+                      log_reader.unparsed_rows,
+                      "n/a" if log_reader.match_pct is None
+                      else f"{log_reader.match_pct:.2f}%")
 
         # The source is read; what is left is the queues draining through the
         # workers. Rows still move, so `progress_at` keeps up on its own —
@@ -2110,7 +2281,7 @@ def import_fact(source: Source, meta_engine, *,
                 extract_slot_base, n_transform,
                 extract_busy, extract_wait, extract_auto_dim_s,
                 duplicates, auto_dim_inserted, runtime_ms,
-                rows_total, live=False)
+                rows_total, live=False, log_reader=log_reader)
         if preflight_report is not None:
             # stats is already jsonb and already surfaced by the GUI, so the
             # report needs no table of its own. Merged here rather than in
@@ -2168,6 +2339,15 @@ def import_fact(source: Source, meta_engine, *,
                      "v": value, "c": total}
                     for (fact_col, value), (dim_table, total)
                     in unmapped_agg.items()])
+
+            if log_reader is not None and log_reader.unparsed:
+                meta.execute(text(
+                    "INSERT INTO starcubes_meta.etl_unparsed "
+                    "  (etl_run_id, file_name, line_no, raw_line) "
+                    "VALUES (:r, :f, :n, :l)"
+                ), [{"r": run_id, "f": u.file_name, "n": u.line_no,
+                     "l": f"[{u.reason}] {u.raw_line}"}
+                    for u in log_reader.unparsed])
 
             if status == "ok" and dedupe_pending is not None:
                 # Matched on the value, not just the id: a rewind written
@@ -2558,7 +2738,7 @@ def set_highwatermark(source: Source, dest_engine, meta_engine, *,
     if hwm.tzinfo is None:
         hwm = hwm.replace(tzinfo=timezone.utc)
 
-    hwm = _ceil_second(hwm)
+    hwm = source.ceil_watermark(hwm)
 
     now = datetime.now(timezone.utc)
     # Find the previous HWM (last ok row) for first_end_time.

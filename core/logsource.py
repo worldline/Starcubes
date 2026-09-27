@@ -304,6 +304,11 @@ def _supply_year(dt: datetime, ref: Optional[datetime]) -> datetime:
 # ---------------------------------------------------------------------------
 
 
+# Roles whose value reaches the DataFrame uncast. A dimension column's fact
+# type is the surrogate index's (`smallint`); the value travelling here is the
+# source value the ETL maps to that index.
+_RAW_ROLES = {"dimension", "auto-dimension"}
+
 _INT_TYPES = {"smallint", "int2", "integer", "int", "int4", "bigint", "int8"}
 _FLOAT_TYPES = {"real", "float4", "double precision", "float8", "numeric",
                 "decimal"}
@@ -424,6 +429,20 @@ class LineParser:
                         value, self.time_format, self.tz, ref)
                 except Exception as exc:
                     return None, f"{col.name}: {exc}"
+                continue
+            if col.role in _RAW_ROLES:
+                # **Not** cast to the fact column's type, and this is the one
+                # place it would be tempting. A dimension fact column is
+                # `smallint` because it stores the dim table's surrogate
+                # index — but what belongs in the DataFrame here is still the
+                # raw source value, because `core/etl.py:_resolve_auto_dim_
+                # chunk` is what turns it into that index, in the parent, on
+                # the chunk. Casting here would send every non-numeric value
+                # (a hostname, a URL path) to etl_unparsed and leave the
+                # dimension empty. It is exactly what a SQL source does: its
+                # `source_expr` projects text into a smallint column and the
+                # transform worker maps it.
+                row[col.name] = value
                 continue
             try:
                 row[col.name] = _cast(value, col.pg_type)
@@ -750,15 +769,33 @@ class LogReader:
                              fref.key, fref.mtime)
                 continue
             self.files_read += 1
+            # An unparsed record has no timestamp, so the window filter below
+            # cannot reach it — and counting it regardless is wrong in a way
+            # that bites immediately. Measured on the first end-to-end run: a
+            # quiet incremental pass re-read the two malformed lines in the
+            # file, reported `0 parsed, 2 unparsed (0.00% match)`, appended
+            # them to etl_unparsed again, and with `log_min_match_pct` set
+            # would have failed every run that legitimately had nothing to do.
+            #
+            # A log is kept in timestamp order, so the last record parsed
+            # before it dates an unparsed one well enough: below the window
+            # start it belongs to a pass that already reported it. Where
+            # nothing has been parsed yet in this file the line cannot be
+            # dated at all, and then it is *not* counted — refusing a run over
+            # a line we cannot place would be worse than missing it.
+            last_ts = None
             for line_no, raw in self._iter_records(fref):
                 row, reason = self.parser.parse(raw, fref.mtime)
                 if row is None:
-                    self._note_unparsed(fref, line_no, raw, reason)
+                    if from_ is None or (last_ts is not None
+                                         and last_ts >= from_):
+                        self._note_unparsed(fref, line_no, raw, reason)
                     continue
                 ts = self._row_time(row)
                 if ts is None:
                     self._note_unparsed(fref, line_no, raw, "no time column")
                     continue
+                last_ts = ts
                 if from_ is not None and ts < from_:
                     continue
                 if until is not None and ts >= until:
@@ -850,7 +887,8 @@ class GroupReport:
     samples: list[str]
     distinct: int
     distinct_after: Optional[int]     # after the transform, when one is set
-    pg_type: str
+    pg_type: str                      # the FACT column's type to create
+    value_type: str                   # what the raw values look like
     role: str
     high_cardinality: bool
 
@@ -1022,17 +1060,25 @@ def sample(config: LogConfig, n_lines: int = PROBE_LINES) -> ProbeReport:
             vals, config.time_format, tz)
         if is_time and time_group is None:
             time_group = g
-        pg_type = "timestamptz" if is_time else _guess_type(vals)
+        value_type = "timestamptz" if is_time else _guess_type(vals)
         if is_time:
             role = "time"
-        elif pg_type == "text":
+        elif value_type == "text":
             role = "auto-dimension"
         else:
             role = "measure"
+        # The fact column's type is not the value's type for a dimension: it
+        # holds the dim table's `smallserial` index, so it is smallint
+        # whatever the source value looks like. Getting this wrong produces a
+        # text dimension column, which then fails the dim count UPDATE with
+        # `operator does not exist: smallint = text` after a load has already
+        # succeeded — measured, on the first real end-to-end run.
+        pg_type = "smallint" if role == "auto-dimension" else value_type
         effective = distinct_after if distinct_after is not None else distinct
         groups.append(GroupReport(
             group=g, samples=vals[:5], distinct=distinct,
-            distinct_after=distinct_after, pg_type=pg_type, role=role,
+            distinct_after=distinct_after, pg_type=pg_type,
+            value_type=value_type, role=role,
             high_cardinality=(role == "auto-dimension" and lines_read > 0
                               and effective >= HIGH_CARDINALITY_SHARE * lines_read),
         ))

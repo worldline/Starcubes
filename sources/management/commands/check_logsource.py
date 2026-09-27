@@ -61,10 +61,17 @@ NGINX_TS = "%d/%b/%Y:%H:%M:%S %z"
 
 
 def _nginx_cols(with_transform: bool = False) -> list[ColumnSpec]:
+    # Note the dimension columns' pg_type: **smallint**, not text. A
+    # dimension fact column holds the dim table's smallserial index, not the
+    # source value — the same shape the shipped oracle_payments profile uses
+    # (`pg_type: smallint` with a text-producing `source_expr`). The fixtures
+    # declare it that way on purpose, because declaring `text` is what hid a
+    # real bug: the reader used to cast every column to its fact type, which
+    # sends a hostname against a smallint straight to etl_unparsed.
     cols = [
         ColumnSpec("ts", "ts", "timestamptz", "time"),
-        ColumnSpec("host", "host", "text", "auto-dimension"),
-        ColumnSpec("path", "path", "text", "auto-dimension"),
+        ColumnSpec("host", "host", "smallint", "auto-dimension"),
+        ColumnSpec("path", "path", "smallint", "auto-dimension"),
         ColumnSpec("status", "status", "smallint", "measure"),
         ColumnSpec("bytes", "bytes", "bigint", "measure"),
     ]
@@ -72,7 +79,7 @@ def _nginx_cols(with_transform: bool = False) -> list[ColumnSpec]:
         # The two transforms a real nginx profile needs, and nothing else:
         # the path collapsed to its first segment so it can be a dimension
         # at all, and '-' for bytes mapped onto a number so the cast works.
-        cols[2] = ColumnSpec("path", "path", "text", "auto-dimension",
+        cols[2] = ColumnSpec("path", "path", "smallint", "auto-dimension",
                              r"^(/[^/?]*).*$", r"\1")
         cols[4] = ColumnSpec("bytes", "bytes", "bigint", "measure",
                              r"^-$", "0")
@@ -418,6 +425,52 @@ def s_unparsed_and_rate(tmp: Path):
              u.reason if u else "-")]
 
 
+def s_unparsed_not_recounted(tmp: Path):
+    """A quiet incremental pass must not re-count old malformed lines.
+
+    Found on the first end-to-end run, and it is worse than it looks. An
+    unparsed record has no timestamp, so the window filter cannot reach it —
+    and counting it anyway made a pass with nothing to do report
+    `0 parsed, 2 unparsed (0.00% match)`, append the same two lines to
+    etl_unparsed again, and, with `log_min_match_pct` set, fail every run
+    that legitimately had no new data.
+    """
+    d = tmp / "recount"
+    d.mkdir()
+    lines = [_nginx_line(f"27/Sep/2026:08:00:{i:02d} +0000") for i in range(10)]
+    lines.insert(3, "broken early")
+    lines.insert(9, "broken late")
+    _write(d / "access.log", lines, mtime=_utc("2026-09-27 09:00:00"))
+    cfg = LogConfig(uri=f"file://{d}/access.log", line_regex=NGINX_RE,
+                    time_group="ts", time_format=NGINX_TS,
+                    columns=_nginx_cols())
+
+    first = LogReader(cfg)
+    rows1 = _drain(first)
+
+    # A pass whose window starts past everything in the file: nothing to do.
+    quiet = LogReader(cfg)
+    rows2 = [r for c in quiet.iter_chunks(_utc("2026-09-27 09:00:00"), None,
+                                          1000) for r in c.to_dict("records")]
+
+    # And one resuming mid-file: only the malformed line inside the window.
+    mid = LogReader(cfg)
+    [c for c in mid.iter_chunks(_utc("2026-09-27 08:00:06"), None, 1000)]
+
+    return [("first pass sees both malformed lines",
+             len(rows1) == 10 and first.unparsed_rows == 2,
+             f"{len(rows1)} rows / {first.unparsed_rows} unparsed"),
+            ("a quiet pass counts neither", len(rows2) == 0
+             and quiet.unparsed_rows == 0 and quiet.match_pct is None,
+             f"{quiet.unparsed_rows} unparsed, match_pct={quiet.match_pct}"),
+            ("match_pct is None, not 0.0, when nothing was read",
+             quiet.match_pct is None, f"{quiet.match_pct}"),
+            ("a mid-file resume counts only the one inside its window",
+             mid.unparsed_rows == 1,
+             f"{mid.unparsed_rows}: "
+             f"{[u.raw_line for u in mid.unparsed]}")]
+
+
 def s_skip_at_start(tmp: Path):
     """The crash-resume count-dedupe, which stands in for a primary key."""
     d = tmp / "resume"
@@ -445,6 +498,44 @@ def s_skip_at_start(tmp: Path):
             ("skip_at_start=2 resumes exactly after them",
              rows == ["/d", "/e"], f"{rows}"),
             ("later timestamps are never skipped", "/e" in rows, f"{rows}")]
+
+
+def s_dimension_stays_raw(tmp: Path):
+    """A dimension column reaches the DataFrame uncast, though it is smallint.
+
+    The trap, found on the first real end-to-end run. A dimension fact column
+    is `smallint` because it stores the dim table's surrogate index — but the
+    value the extract produces is still the *source* value, and
+    `core/etl.py:_resolve_auto_dim_chunk` is what turns it into the index,
+    in the parent, on the chunk. A reader that casts to the fact column's
+    type sends every hostname and URL path to etl_unparsed and leaves the
+    dimension empty.
+
+    Declaring the fixture columns `text` hid this completely, which is why
+    every fixture here now declares them the way a real profile does.
+    """
+    d = tmp / "rawdim"
+    d.mkdir()
+    _write(d / "access.log",
+           [_nginx_line(f"27/Sep/2026:08:00:{i:02d} +0000",
+                        host=f"10.0.0.{i}", path=f"/api/v{i}")
+            for i in range(5)],
+           mtime=_utc("2026-09-27 09:00:00"))
+    cfg = LogConfig(uri=f"file://{d}/access.log", line_regex=NGINX_RE,
+                    time_group="ts", time_format=NGINX_TS,
+                    columns=_nginx_cols())
+    r = LogReader(cfg)
+    rows = _drain(r)
+    hosts = [x["host"] for x in rows]
+    return [("nothing unparsed despite smallint dimension columns",
+             r.unparsed_rows == 0 and len(rows) == 5,
+             f"{len(rows)} rows / {r.unparsed_rows} unparsed"
+             + (f" first reason: {r.unparsed[0].reason}" if r.unparsed else "")),
+            ("the dimension carries its raw string, not an int",
+             hosts == [f"10.0.0.{i}" for i in range(5)], f"{hosts}"),
+            ("measures are still cast to numbers",
+             all(isinstance(x["status"], int) for x in rows),
+             f"{ {type(x['status']).__name__ for x in rows} }")]
 
 
 def s_probe(tmp: Path):
@@ -482,6 +573,9 @@ def s_probe(tmp: Path):
             ("ts recognised as the time column",
              g["ts"].role == "time" and rep.time_group == "ts",
              f"{g['ts'].role}/{rep.time_group}"),
+            ("host proposed as smallint, not text (it holds the dim index)",
+             g["host"].pg_type == "smallint" and g["host"].value_type == "text",
+             f"pg_type={g['host'].pg_type} value_type={g['host'].value_type}"),
             ("host is a low-cardinality auto-dimension",
              g["host"].role == "auto-dimension"
              and not g["host"].high_cardinality,
@@ -555,7 +649,9 @@ SCENARIOS = [
     ("rotation, gzip and the mtime prefilter", s_rotation_and_gzip),
     ("multi-line records", s_multiline),
     ("unparsed lines and the match rate", s_unparsed_and_rate),
+    ("unparsed lines are not re-counted", s_unparsed_not_recounted),
     ("crash-resume count de-duplication", s_skip_at_start),
+    ("a dimension column stays raw", s_dimension_stays_raw),
     ("the GUI probe", s_probe),
     ("the probe's transform preview", s_probe_transform),
     ("STARCUBES_LOG_ROOTS", s_roots_guard),
