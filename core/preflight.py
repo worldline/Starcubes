@@ -692,6 +692,127 @@ def _check_alarm_windows(source: Source, meta_engine) -> dict:
                   f"{_fmt_s(room)} of retained data", **detail)
 
 
+def _check_log_source(source: Source) -> dict:
+    """The log's transport is usable and the glob finds something.
+
+    The log-source counterpart of U5b, and it borrows U5b's asymmetry for the
+    same reason: a *refused* configuration and an *unreachable* one need
+    opposite answers. A path outside `STARCUBES_LOG_ROOTS`, a scheme this
+    build does not carry, an `exec://` with no allowlist — those are settings
+    nobody will fix by retrying, so they block. A transport that is simply
+    not answering right now is the extract's own problem and it reports that
+    better than a preflight can, so it warns.
+
+    An empty glob blocks. It is indistinguishable from a typo, and a load that
+    reads nothing and reports success is how a datasource sits "healthy" for a
+    week with no data in it.
+    """
+    from .logsource import LogSourceError, open_transport
+    try:
+        transport = open_transport(source.source_dsn)
+    except LogSourceError as exc:
+        return _check("log_source", CHECK_BLOCK, str(exc),
+                      uri=source.source_dsn)
+    try:
+        files = transport.list_files()
+    except LogSourceError as exc:
+        # Raised by the root/exec guards as well as by an unreadable path.
+        # A guard's refusal is a configuration finding, so it blocks.
+        return _check("log_source", CHECK_BLOCK, str(exc),
+                      uri=source.source_dsn)
+    except Exception as exc:
+        return _check("log_source", CHECK_WARN,
+                      f"the log transport did not answer: {exc}",
+                      uri=source.source_dsn, error=str(exc))
+    if not files:
+        return _check("log_source", CHECK_BLOCK,
+                      f"{transport.describe()} matches no file. A load that "
+                      f"reads nothing reports success, so this blocks rather "
+                      f"than leaving the datasource looking healthy and "
+                      f"empty.", uri=source.source_dsn, files=0)
+    newest = max((f.mtime for f in files if f.mtime), default=None)
+    total = sum(f.size or 0 for f in files)
+    return _check("log_source", CHECK_OK,
+                  f"{len(files)} file(s), {_fmt_bytes(total)}, newest written "
+                  f"{newest.isoformat() if newest else 'unknown'}",
+                  uri=source.source_dsn, files=len(files), bytes=total,
+                  newest=newest.isoformat() if newest else None)
+
+
+def _check_log_pattern(source: Source) -> dict:
+    """The regex compiles, captures every fact column, and matches real lines.
+
+    Two findings of different weight, deliberately. A fact column naming a
+    group the pattern does not capture is a misconfiguration that yields zero
+    rows and no error — the least debuggable outcome available — so it blocks,
+    with the same message `Source.load` would give. A *low match rate* only
+    warns here, however tempting it is to block: refusing the load is what
+    `datasource.log_min_match_pct` is for, it is the operator's number, and a
+    preflight sample is a tail rather than the window.
+    """
+    from .logsource import (LogConfig, LineParser, LogSourceError, sample,
+                            open_transport)
+    cfg = LogConfig.from_source(source)
+    try:
+        LineParser(cfg)
+    except LogSourceError as exc:
+        return _check("log_pattern", CHECK_BLOCK, str(exc))
+    # The group validation above needs no transport, and the sample below
+    # needs a working one. Where the transport is the problem, `log_source`
+    # has already said so with the same words — repeating it here would
+    # double the refusal for one cause, which is the trap
+    # `_check_source_projection` documents for the SQL side.
+    try:
+        open_transport(source.source_dsn).list_files()
+    except Exception:
+        return _check("log_pattern", CHECK_OK,
+                      "the pattern compiles and captures every fact column; "
+                      "the match rate could not be sampled — see the "
+                      "log_source check")
+    try:
+        rep = sample(cfg)
+    except LogSourceError as exc:
+        return _check("log_pattern", CHECK_BLOCK, str(exc))
+    except Exception as exc:
+        return _check("log_pattern", CHECK_WARN,
+                      f"could not read a sample to measure the match rate: "
+                      f"{exc}", error=str(exc))
+    if rep.match_pct is None:
+        return _check("log_pattern", CHECK_OK,
+                      "the pattern captures every fact column; no lines were "
+                      "available to measure a match rate against")
+    detail = {"lines_read": rep.lines_read, "matched": rep.matched,
+              "match_pct": round(rep.match_pct, 2),
+              "groups": sorted(g.group for g in rep.groups)}
+    threshold = float(source.log_min_match_pct or 0.0)
+    if threshold > 0 and rep.match_pct < threshold:
+        first = rep.unmatched[0]["line"] if rep.unmatched else None
+        return _check("log_pattern", CHECK_WARN,
+                      f"only {rep.match_pct:.2f}% of the {rep.lines_read} "
+                      f"newest lines match log_line_regex, below this "
+                      f"datasource's log_min_match_pct of {threshold:g} — the "
+                      f"load will refuse. The log's line format has most "
+                      f"likely changed."
+                      + (f" First unmatched: {first!r}" if first else ""),
+                      **detail)
+    if rep.match_pct < 100.0:
+        return _check("log_pattern", CHECK_OK,
+                      f"{rep.match_pct:.2f}% of the {rep.lines_read} newest "
+                      f"lines match; unmatched lines are counted into "
+                      f"etl_unparsed", **detail)
+    return _check("log_pattern", CHECK_OK,
+                  f"all {rep.lines_read} sampled lines match, and the pattern "
+                  f"captures every fact column", **detail)
+
+
+def _fmt_bytes(n: int) -> str:
+    for unit in ("B", "kB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} GB"
+
+
 def run_preflight(source: Source, meta_engine, dest_engine, *,
                   source_engine=None, repair: bool = True) -> dict:
     """Run every pre-load check, cheapest first, and return the report.
@@ -712,6 +833,12 @@ def run_preflight(source: Source, meta_engine, dest_engine, *,
     checks.append(_check_meta_migrations(meta_engine))
     checks.append(_check_indices(source, dest_engine, meta_engine))
     checks.append(_check_warehouse_drift(source, dest_engine))
+    if source.is_logfile:
+        # Beside the two SQL checks, not instead of them: those answer "not
+        # applicable" for a log source, which keeps the report's shape stable
+        # for a GUI that renders whatever codes come back.
+        checks.append(_check_log_source(source))
+        checks.append(_check_log_pattern(source))
     checks.append(_check_source_projection(source, source_engine))
     wm_tz_check, watermark_probe = _check_watermark_tz(
         source, source_engine)
