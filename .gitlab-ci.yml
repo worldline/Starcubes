@@ -256,7 +256,12 @@ image:
 # about. `BLOCK_PROMOTE` is the builder's switch if that ever needs to change.
 promote:
   stage: release
-  needs: [image]
+  # `prepare` as well as `image`, and not for its artifacts alone: `$VERSION`
+  # is a dotenv variable, and a job sees only the variables of the jobs it
+  # names in `needs`. Without it the trigger would carry an empty `TAG`, and
+  # the builder answers an empty mandatory variable with a message about the
+  # variable rather than about this file.
+  needs: [prepare, image]
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]/
   variables:
@@ -281,7 +286,9 @@ promote:
 # `:latest` pointing at a registry nobody reads.
 latest:
   stage: release
-  needs: [promote]
+  # `prepare` for the same reason `promote` needs it: `$VERSION` comes from its
+  # dotenv artifact, and `needs` is what decides which artifacts a job sees.
+  needs: [prepare, promote]
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]+$/
   variables:
