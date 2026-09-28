@@ -210,7 +210,14 @@ prepare:
       # job that needs this one, so none of them resolves the version again.
       dotenv: .release/build.env
 
-# ---- image -------------------------------------------------------------------
+# ---- build-image -------------------------------------------------------------
+# **Not called `image`**, though that is what it is: `image` is a reserved
+# word at the top level of a GitLab pipeline (the default image every job
+# runs in), so a job of that name is read as that keyword instead. The config
+# then validates as a malformed global image and the pipeline comes up with
+# **no jobs at all** — status `failed`, `yaml_errors: null`, nothing to read.
+# Cost: one release tag, 2026-09-28.
+#
 # The build itself, delegated. Everything this job knows it says in
 # `variables:` — a trigger job cannot run a script, so there is nowhere else to
 # put it, and a variable that arrives empty is not an error the builder
@@ -224,7 +231,7 @@ prepare:
 # `GIT_BRANCH` takes the tag. The builder runs `git checkout $GIT_BRANCH`, and
 # git takes a tag there as happily as a branch — building the tag is what makes
 # the image the tagged commit rather than the tip of a branch.
-image:
+build-image:
   stage: build
   needs: [prepare]
   rules:
@@ -256,12 +263,12 @@ image:
 # about. `BLOCK_PROMOTE` is the builder's switch if that ever needs to change.
 promote:
   stage: release
-  # `prepare` as well as `image`, and not for its artifacts alone: `$VERSION`
+  # `prepare` as well as `build-image`, and not for its artifacts alone: `$VERSION`
   # is a dotenv variable, and a job sees only the variables of the jobs it
   # names in `needs`. Without it the trigger would carry an empty `TAG`, and
   # the builder answers an empty mandatory variable with a message about the
   # variable rather than about this file.
-  needs: [prepare, image]
+  needs: [prepare, build-image]
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]/
   variables:
@@ -427,7 +434,7 @@ doctor:
 
       echo "── 3. the builder ────────────────────────────────────────────"
       # The trigger project must be visible to this job, or the release stops
-      # at the `image` job with a message about a non-existent project. Asked
+      # at the `build-image` job with a message about a non-existent project. Asked
       # here for a click instead of a tag: a failed tag has to be deleted and
       # set again on the fixed commit.
       api="$CI_API_V4_URL/projects/paas%2Foci-builder%2Fpipelines%2Fbuilder"

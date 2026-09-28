@@ -151,7 +151,7 @@ registry changed, so an operator who pulls it has one thing to do. See
   for the same reason beta.2 named its own.
 
   The pipeline is no longer two jobs but six: `prepare` (the two guards, the
-  source zip and the handover), `image`, `promote` and `latest` (the builder
+  source zip and the handover), `build-image`, `promote` and `latest` (the builder
   triggers), `publish` (the release) and `doctor`. `doctor` now checks only
   what this repository can still get wrong on its own — it can no longer
   probe the build, because the build happens elsewhere. Of the builder's four

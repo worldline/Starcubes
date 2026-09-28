@@ -393,7 +393,7 @@ the work this file used to do in two jobs now spans six:
 | Job | Stage | What it does |
 |---|---|---|
 | `prepare` | check | version guard, changelog guard, source zip, and the handover the later jobs read |
-| `image` | build | triggers `ACTION=build` |
+| `build-image` | build | triggers `ACTION=build` |
 | `promote` | release | triggers `ACTION=promote` — staging to production |
 | `latest` | release | triggers `ACTION=tag` with `NEW_TAG=latest`, final releases only |
 | `publish` | release | the release itself, through the Releases API |
@@ -538,7 +538,7 @@ Once a runner answers, a stuck job can be retried — **unless
 commit the tag points at, so a fix to the pipeline never reaches a job that
 is already queued. Delete the tag and set it again on the new commit.
 
-The `image`, `promote` and `latest` jobs do no work on this instance's own
+The `build-image`, `promote` and `latest` jobs do no work on this instance's own
 runners at all: they hand a request to the **OCI Builder's** queue, which is
 separate and has its own capacity limit — 25 concurrent builds across the
 whole company, distributed over two sites. A `build_image` job that sits in
