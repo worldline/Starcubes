@@ -12,6 +12,18 @@ committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
 [`docs/releases.md`](docs/releases.md).
 
+### Fixed
+
+- **The GitLab trigger's `FORCE` switch has a default of its own.** Deleting
+  the `OCI_FORCE_OVERWRITE` project variable did not switch the overwrite
+  protection back on — it switched the pipeline off. An *empty* `FORCE` is not
+  "off" for the OCI Builder but a parse error (it accepts only
+  `yes`/`1`/`true`/`no`/`0`/`false`), and GitLab expands an undefined variable
+  to the empty string, so the next `v*` tag would have stopped at `build-image`
+  with `Error while reading FORCE argument value` before building anything.
+  `OCI_FORCE_OVERWRITE: "False"` now sits among the pipeline's own variables,
+  where a project variable of the same name still overrides it.
+
 ## [2.0.0-beta.4] — 2026-09-28
 
 **A release about how the GitLab image is built, not about what the container

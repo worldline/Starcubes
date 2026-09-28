@@ -436,10 +436,15 @@ its configuration is a deliberately short list (`dev`, `devel`, `develop`,
 `latest`, `*-snapshot`) so that the flag does not end up set everywhere — its
 own comment says why: *"without it, users will always set this flag, leaving
 the security disabled for all builds."* So the pipeline passes `FORCE` from a
-project variable, `OCI_FORCE_OVERWRITE`, empty by default: set it to `True`,
-run, remove it again. Re-cutting a tag whose release was botched is the case
-that needs it. An image that is already published under a release tag is
-otherwise a thing to look at, not to overwrite.
+project variable, `OCI_FORCE_OVERWRITE`, **`False` unless a project variable of
+that name overrides it**. That default lives in the pipeline's own variables
+and has to live *somewhere*, because "unset" is not an option: the builder
+reads `FORCE` with a strict boolean parser that accepts only
+`yes`/`1`/`true`/`no`/`0`/`false`, so an empty value is a parse error rather
+than an "off", and GitLab expands an undefined variable to the empty string.
+Set it to `True`, run, remove it again. Re-cutting a tag whose release was
+botched is the case that needs it. An image that is already published under a
+release tag is otherwise a thing to look at, not to overwrite.
 
 ### Where the image goes, and what an operator has to change
 

@@ -83,6 +83,20 @@ variables:
   # subdirectory, and the image would build and be wrong.
   OCI_DOCKERFILE: "docker/Dockerfile.ubi"
 
+  # The default for the overwrite switch the two trigger jobs pass on as
+  # `FORCE`. It is spelled out here because **an empty FORCE is an error, not
+  # an "off"**: the builder reads it with a strict boolean parser that knows
+  # only yes/1/true/no/0/false, and GitLab expands an undefined variable to the
+  # empty string. Without this line, deleting the project variable would not
+  # restore the overwrite protection — it would stop the build with
+  # "Error while reading FORCE argument value : , please check documentation"
+  # before anything was built.
+  #
+  # A project variable of the same name still wins over this default: set
+  # `OCI_FORCE_OVERWRITE=True` for the one case that needs it, and remove it
+  # again afterwards. The two reasons are written out at the `FORCE:` lines.
+  OCI_FORCE_OVERWRITE: "False"
+
 default:
   image: $STARCUBES_JOB_IMAGE
   # These tags reach the k8s shared runner. A job that sits in "pending"
