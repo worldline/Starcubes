@@ -430,6 +430,17 @@ of them are worth naming before anyone edits them:
 checkout $GIT_BRANCH`, and git takes a tag there as happily as a branch.
 Building the tag is what makes the image the tagged commit.
 
+One more variable is worth knowing about: **`FORCE`**. The builder refuses to
+build a tag that already exists on the registry, and `overwritable_tags` in
+its configuration is a deliberately short list (`dev`, `devel`, `develop`,
+`latest`, `*-snapshot`) so that the flag does not end up set everywhere — its
+own comment says why: *"without it, users will always set this flag, leaving
+the security disabled for all builds."* So the pipeline passes `FORCE` from a
+project variable, `OCI_FORCE_OVERWRITE`, empty by default: set it to `True`,
+run, remove it again. Re-cutting a tag whose release was botched is the case
+that needs it. An image that is already published under a release tag is
+otherwise a thing to look at, not to overwrite.
+
 ### Where the image goes, and what an operator has to change
 
 `ACTION=build` leaves the image in the **staging** registry,

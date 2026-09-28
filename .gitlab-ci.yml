@@ -254,6 +254,17 @@ build-image:
     DOCKERFILE: "$OCI_DOCKERFILE"
     DOCKERFILE_DIR: ""
     BUILDER_BUILD_ARGS: "buildarg-STARCUBES_VERSION=$VERSION&buildarg-STARCUBES_BUILD_REF=$CI_COMMIT_SHORT_SHA&buildarg-STARCUBES_BUILD_DATE=$BUILD_DATE"
+    # Off unless someone turns it on, and deliberately so. The builder refuses
+    # to overwrite a tag that already exists, and its own configuration says
+    # why: were the flag permanent, it would be set everywhere and the
+    # protection would be gone for every build. A release tag that is already
+    # on the registry therefore means *someone has published this version* —
+    # something to look at, not to steamroll.
+    #
+    # Set `OCI_FORCE_OVERWRITE=True` in the project's CI/CD variables for the
+    # one case that needs it: re-cutting a tag whose release was botched, where
+    # the existing image is known to be junk. Remove it again afterwards.
+    FORCE: "$OCI_FORCE_OVERWRITE"
   trigger:
     project: paas/oci-builder/pipelines/builder
     strategy: depend
