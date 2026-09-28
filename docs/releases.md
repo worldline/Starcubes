@@ -460,11 +460,16 @@ dotenv artifact exists.
   assembled with `python3` and `json.dumps` rather than `printf` — a changelog
   section is full of backticks, quotes and newlines, and hand-rolled JSON in
   `sh` breaks on the first of them.
-- **The zip is a link, not an attachment.** GitLab releases carry asset
-  *links*; they do not host uploads. The job publishes the zip to the
-  project's **generic package registry** under
-  `…/packages/generic/starcubes/<version>/starcubes-<version>.zip` and links
-  the release to it.
+- **The zip is a link, not an attachment, and it lives in a job artifact.**
+  GitLab releases carry asset *links*; they do not host uploads. The obvious
+  home for the file would be the generic package registry, and **this
+  instance does not have one** — the endpoint answers `404` while `releases`
+  and `jobs/artifacts` both answer (measured 2026-09-28). So `prepare` keeps
+  the zip among its artifacts, with a retention of years rather than the
+  project default, and the release links to
+  `…/-/jobs/artifacts/<tag>/raw/.release/starcubes-<version>.zip?job=prepare`.
+  The link is stable for a tag, but it is an artifact: if the retention is
+  ever lowered, the link stops resolving.
 - **There is no pre-release flag.** GitLab releases have none, so a
   pre-release says so in its **name** (`starcubes 2.0.0-rc.1 (pre-release)`).
   The distinction that matters operationally is unaffected: `:latest` still

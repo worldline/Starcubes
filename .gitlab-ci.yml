@@ -83,9 +83,6 @@ variables:
   # subdirectory, and the image would build and be wrong.
   OCI_DOCKERFILE: "docker/Dockerfile.ubi"
 
-  # The generic package the source zip is published under.
-  PKG_NAME: starcubes
-
 default:
   image: $STARCUBES_JOB_IMAGE
   # These tags reach the k8s shared runner. A job that sits in "pending"
@@ -176,12 +173,17 @@ prepare:
       # name the version with no .git in the archive.
       zip_name="starcubes-$version.zip"
       git archive --format=zip "$tag" -o "$tmp/$zip_name"
-      # A GitLab release links to assets, it does not host them, so the zip
-      # needs a home first. The generic package registry is that home.
-      zip_url="$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/$PKG_NAME/$version/$zip_name"
-      curl --fail-with-body --silent --show-error \
-           --header "JOB-TOKEN: $CI_JOB_TOKEN" \
-           --upload-file "$tmp/$zip_name" "$zip_url"
+      # A GitLab release links to assets, it does not host them — so the zip
+      # needs a home, and this instance has **no package registry**: the
+      # generic packages endpoint answers 404 (measured 2026-09-28, while
+      # `releases` and `jobs/artifacts` both answer). The zip's home is this
+      # job's own artifact, and the URL below is what the release links to.
+      # It is fixed for the tag, so a retry produces the same link; what it
+      # does not survive is artifact expiry, which is why the retention below
+      # is years rather than the project default.
+      mkdir -p .release
+      cp "$tmp/$zip_name" ".release/$zip_name"
+      zip_url="$CI_PROJECT_URL/-/jobs/artifacts/$tag/raw/.release/$zip_name?job=prepare"
     - |
       # ---- hand over to the image job ------------------------------------
       # Written only now that every guard has passed. `.release/` is gitignored
@@ -203,8 +205,14 @@ prepare:
         echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
       } > .release/build.env
   artifacts:
+    # The whole directory, not just the notes: it carries the source zip the
+    # release links to as well. It is gitignored, and it is written only after
+    # version.py has already been asked for the version — an untracked file in
+    # the workspace would otherwise have made that version `…+dirty`.
     paths:
-      - .release/notes.md
+      - .release/
+    # The zip is a release asset, so it has to outlive the default retention.
+    expire_in: 5 years
     reports:
       # The GitLab equivalent of $GITHUB_ENV: these become variables in every
       # job that needs this one, so none of them resolves the version again.
@@ -355,7 +363,10 @@ publish:
       create = dict(common, assets={"links": [{
           "name":      os.environ["ZIP_NAME"],
           "url":       os.environ["ZIP_URL"],
-          "link_type": "package",
+          # "other", not "package": the target is a job artifact. GitLab
+          # accepts only other/runbook/image/package here, and none of the
+          # other three is true either.
+          "link_type": "other",
       }]})
 
       for path, payload in ((sys.argv[1], create), (sys.argv[2], common)):

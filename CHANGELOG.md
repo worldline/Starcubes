@@ -74,7 +74,7 @@ registry changed, so an operator who pulls it has one thing to do. See
 
 - **A release pipeline for GitLab**, alongside the existing GitHub one.
   A `v*` tag pushed to the internal remote now publishes an image, puts the
-  source zip in the generic package registry and cuts a release carrying this
+  source zip as a job artifact and cuts a release carrying this
   file's section for that version — the same two guards as on GitHub (the
   version must resolve *and* match the tag; the changelog section must exist
   before anything is built). Two operator-facing differences: the zip is
