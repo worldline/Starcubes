@@ -12,6 +12,14 @@ committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
 [`docs/releases.md`](docs/releases.md).
 
+## [2.0.0-beta.4] — 2026-09-28
+
+**A release about how the GitLab image is built, not about what the container
+does.** The GitHub build, the `starcubes_meta` schema, every environment
+variable and the profile format are untouched — but the image's path in the
+registry changed, so an operator who pulls it has one thing to do. See
+"Changed", first entry.
+
 ### Added
 
 - **Log files as a second kind of datasource.** `source_dialect` gains
@@ -65,37 +73,30 @@ runs through further pre-release tags — see
   do this.
 
 - **A release pipeline for GitLab**, alongside the existing GitHub one.
-  A `v*` tag pushed to the internal remote now builds the image, pushes it
-  to that project's container registry, publishes the source zip to the
-  generic package registry and cuts a release carrying this file's section
-  for that version — the same two guards as on GitHub (the version must
-  resolve *and* match the tag; the changelog section must exist before
-  anything is built). Two operator-facing differences: the zip is linked
-  from the release rather than attached to it, and GitLab has no
+  A `v*` tag pushed to the internal remote now publishes an image, puts the
+  source zip in the generic package registry and cuts a release carrying this
+  file's section for that version — the same two guards as on GitHub (the
+  version must resolve *and* match the tag; the changelog section must exist
+  before anything is built). Two operator-facing differences: the zip is
+  linked from the release rather than attached to it, and GitLab has no
   pre-release flag, so a pre-release says so in its name — `:latest` still
-  moves only for a final release. Where the image goes is the CI variable
-  `$STARCUBES_IMAGE`, so a different registry is a settings change, not a
-  commit. See [`docs/releases.md`](docs/releases.md), "Releasing from a
-  remote".
+  moves only for a final release. See
+  [`docs/releases.md`](docs/releases.md), "Releasing from a remote".
 
   The pipeline is built for what that instance actually has, which is not a
-  hosted runner: a **Kubernetes shared runner**, and a registry carrying
-  UBI-based images only — no `docker:cli`, no `docker:dind`, no
-  `release-cli`. So every job runs in a pod on a UBI 10 image out of that
-  registry and `dnf`-installs git, curl and buildah; the image is built
-  with **buildah, unprivileged** (vfs storage driver, `chroot` isolation),
-  because a shared runner grants no `privileged = true` and dind is
-  therefore out; and the release is created through the Releases API
-  instead of the `release:` keyword, which is implemented by an image that
-  is not there. Same tag, same name, same body, same asset link — and the
-  call is idempotent, so re-running a tag updates its release rather than
-  failing on the second attempt.
+  hosted runner: a **Kubernetes shared runner**, and no container registry of
+  its own. The release is created through the Releases API rather than the
+  `release:` keyword, which is implemented by an image that instance does not
+  carry: same tag, same name, same body, same asset link — and the call is
+  idempotent, so re-running a tag updates its release rather than failing on
+  the second attempt. See the first entry under "Changed" for where the image
+  is built.
 
 - **A second Dockerfile, `docker/Dockerfile.ubi`**, for that same instance.
   The repo-root `Dockerfile` is untouched and stays the default everywhere
   else — Debian slim off Docker Hub, which is what a checkout and the GitHub
   release build. The new one builds the identical image on **UBI 10** from
-  the internal registry: `dnf` instead of `apt-get`, and the Python
+  the internal registry: `microdnf` instead of `apt-get`, and the Python
   environment in a venv at `/opt/venv` instead of copied out of
   `/usr/local`, a path that belongs to the official `python:*` images rather
   than to any RPM python. Both share `entrypoint.sh`, `nginx.conf`,
@@ -103,22 +104,27 @@ runs through further pre-release tags — see
   containers are indistinguishable in operation.
 
   `docker/build.sh` picks between them with `STARCUBES_DOCKERFILE`, and
-  passes `STARCUBES_BASE_IMAGE`, `STARCUBES_NPM_REGISTRY` and
-  `STARCUBES_PIP_INDEX_URL` through as build args when they are set. With
-  none of them set it builds exactly what it built before. See
-  [`docs/releases.md`](docs/releases.md), "Two build branches".
+  passes `STARCUBES_NPM_REGISTRY` and `STARCUBES_PIP_INDEX_URL` through as
+  build args when they are set. With neither set it builds exactly what it
+  built before. See [`docs/releases.md`](docs/releases.md), "Two build
+  branches" — including why this branch's base image cannot be a build
+  argument any more.
 
 - **A `doctor` job in the GitLab pipeline.** Started by hand from the UI on
   any ref, it publishes nothing and checks, in one pass and continuing past
-  each failure, everything the release depends on and the repository cannot
-  guarantee: rootless podman and its subuid range, that the base image
-  pulls, that `dnf` in it can provide the seven packages the build
-  installs, that npm and PyPI (or their mirrors) answer, that the job
-  credentials open the container registry, the package registry and the
-  Releases API, and that `version.py` resolves. It exists because the only
-  other way to learn any of this was to push a `v*` tag — and a failed tag
-  has to be deleted and set again, since a queued job always runs the
-  pipeline file as of the commit its tag points at.
+  each failure, what the repository can still get wrong on its own: that
+  `version.py` resolves, that the changelog has an `[Unreleased]` section,
+  that the Dockerfile is where the pipeline says it is, and that the OCI
+  Builder's trigger project answers this project's job token. It exists
+  because the only other way to learn any of this was to push a `v*` tag —
+  and a failed tag has to be deleted and set again, since a queued job always
+  runs the pipeline file as of the commit its tag points at.
+
+  It is a weaker instrument than it was while the pipeline built its own
+  image, and it says so: the base image, the packages, npm and PyPI belong to
+  the OCI Builder now, and no job here can ask about them. Its replacement is
+  a rehearsal on a throwaway branch that triggers `ACTION=build` with
+  `TAG=probe` — see [`docs/releases.md`](docs/releases.md).
 
 ### Changed
 
@@ -139,8 +145,10 @@ runs through further pre-release tags — see
   must be pointed at `registry-production.svc.meshcore.net` — the same
   service under its other name — or at
   `registry-scl-staging.svc.meshcore.net`, which is where `build` leaves it
-  before `promote` copies it. By this project's own rule, an upgrade that
-  needs a hand is a **major** change, whatever else the release contains.
+  before `promote` copies it. The image path is not one of the five surfaces
+  `docs/releases.md` counts as the public one, so this is not a major bump —
+  but it is a break inside the beta series all the same, and it is named here
+  for the same reason beta.2 named its own.
 
   The pipeline is no longer two jobs but six: `prepare` (the two guards, the
   source zip and the handover), `image`, `promote` and `latest` (the builder

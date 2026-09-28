@@ -272,16 +272,18 @@ A pre-release is a tag like any other; SemVer's ordering does the rest:
 2.0.0-alpha.1  <  2.0.0-beta.1  <  2.0.0-rc.1  <  2.0.0
 ```
 
-The current tag is **`v2.0.0-beta.3`**: the 2.0.0 feature set is in place
+The current tag is **`v2.0.0-beta.4`**: the 2.0.0 feature set is in place
 and the schema, the environment variables and the profile format are
 frozen for 2.0.0 — what remains before final is polish and bug fixes.
 beta.2 broke that freeze once, for running several containers on one
 database (migrations 0042–0046, the log variables replaced, saved profiles
 moved into the database); its changelog names every step an operator has
-to take. beta.3 kept it — no schema change, no environment variable
-moved, no `manage.py` flag touched. Moving on is just another tag —
-`v2.0.0-rc.1` for the release candidate, `v2.0.0` to release. Nothing in
-the tree changes for any of them.
+to take. beta.3 and beta.4 kept it — no schema change, no environment
+variable moved, no `manage.py` flag touched. beta.4 changes one thing
+outside the freeze and names it in its changelog: the GitLab image is
+built by the OCI Builder now, and an operator pulls it from a new path.
+Moving on is just another tag — `v2.0.0-rc.1` for the release candidate,
+`v2.0.0` to release. Nothing in the tree changes for any of them.
 
 The About dialog marks any such version with a **pre-release** pill, so an
 operator can see at a glance that they are not running a final release.
