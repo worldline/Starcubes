@@ -399,14 +399,17 @@ the work this file used to do in two jobs now spans six:
 | `publish` | release | the release itself, through the Releases API |
 | `doctor` | check | the hand-checked questions, below |
 
-**What is proven and what is not.** `build` has run end to end — 2026-09-28,
-pipeline 19872671: the internal base pulls, the packages install, npm and PyPI
-answer, the build args arrive, the image is pushed and signed. **`promote` and
-`tag` have never been run from here.** They are written from the builder's own
-sources (`build-pipelines/includes/promote_image.yaml`,
-`includes/manage_tags.yaml`, and the `libs/` scripts those call), so the
-variable names are read rather than guessed — but the first real tag is their
-test, and a failure there stops the release before `publish`.
+**What is proven and what is not.** `build` and `promote` have both run.
+`build` ran end to end on 2026-09-28 (pipeline 19872671): the internal base
+pulls, the packages install, npm and PyPI answer, the build args arrive, the
+image is pushed and signed. `promote` ran for the first time in the same day's
+beta.4 release (pipeline 19877243): it found the image on the staging registry,
+copied it to `registry-production.svc.meshcore.net` and reported success.
+**`tag` has never been run from here.** It is written from the builder's own
+sources (`build-pipelines/includes/manage_tags.yaml` and the `libs/` scripts it
+calls), so the variable names are read rather than guessed — but the first
+*final* release is its test, and a failure there stops the release before
+`publish`.
 
 ### The trigger contract, and its two traps
 

@@ -19,19 +19,21 @@
 # The changelog guard runs there too, before anything is built, so a missing
 # section costs a minute rather than a full image build.
 #
-# **Three of the four builder actions are proven, one is not.** `build` has run
-# end to end (2026-09-28, pipeline 19872671): the internal base pulls, the
-# packages install, npm and PyPI answer, the build args arrive, the image is
-# pushed and signed. **`promote` and `tag` have never been run from here** —
-# they are written from the builder's own sources (`includes/promote_image.yaml`,
-# `includes/manage_tags.yaml` and the `libs/` scripts they call), and the first
-# real tag is their test. `docs/releases.md`, "GitLab — .gitlab-ci.yml", says
-# so where an operator will look.
+# **`build` and `promote` are proven, `tag` is not.** `build` has run end to
+# end (2026-09-28, pipeline 19872671): the internal base pulls, the packages
+# install, npm and PyPI answer, the build args arrive, the image is pushed and
+# signed. `promote` ran for the first time in the same day's beta.4 release
+# (pipeline 19877243): it found the image on staging and copied it to
+# production. **`tag` has never been run from here** — it is written from the
+# builder's own sources (`includes/manage_tags.yaml` and the `libs/` scripts it
+# calls), and the first final release is its test. `docs/releases.md`,
+# "GitLab — .gitlab-ci.yml", says so where an operator will look.
 #
 # Three further things GitLab does differently, all of them handled below
 # rather than papered over:
-#   * a release carries links, not file uploads — the zip goes into the
-#     generic package registry and is linked from the release;
+#   * a release carries links, not file uploads — and there is nowhere on this
+#     instance to upload to, because it has no package registry, so the zip is
+#     an artifact of `prepare` and the release links the job-artifact URL;
 #   * there is no pre-release flag — the name says it, and `:latest` is what
 #     actually keeps a beta from being pulled by accident;
 #   * artifacts must live inside $CI_PROJECT_DIR, which is the checkout —
