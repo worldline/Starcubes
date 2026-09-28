@@ -482,13 +482,36 @@ dotenv artifact exists.
   refuses to read it from inside the job image — quietly, since every git call
   in `version.py` is best-effort by design.
 
+### Who pushes the tag decides whether the build happens
+
+**The `build-image` job triggers the OCI Builder as the pipeline's user**, not
+as the project: GitLab checks that user's permission on the downstream project
+before it creates the downstream pipeline. The job token on its own is not
+enough — it cannot even see the builder project, so the API answers `404`.
+
+Two cases, measured on 2026-09-28:
+
+| The pipeline was started by | Result |
+|---|---|
+| a member of the builder project, from the UI | the trigger works — this is how the pipeline was rehearsed |
+| a tag push authenticated with a project access token | the bridge fails with `insufficient_bridge_permissions`, before anything is built |
+
+So a release tag has to be pushed by **a user the builder knows**. The durable
+fix is on the builder's side — allowing this project's job token in its
+*Settings → CI/CD → Job token permissions* — and it is worth asking for,
+because a tag that cannot be pushed by a robot will catch the next person too.
+Until then, `doctor` reports the job token as blind to the builder without
+failing on it: that is what the answer means, a hint at which of the two cases
+you are in rather than a verdict.
+
 ### Trying it without cutting a release
 
 `doctor` (*Build → Pipelines → Run pipeline*, on any ref) checks what this
 repository can still get wrong on its own — that `version.py` resolves, that
-the changelog has an `[Unreleased]` section, that the Dockerfile is where
-`OCI_DOCKERFILE` says it is, and that the trigger project answers this
-project's job token. It publishes nothing.
+the changelog has an `[Unreleased]` section, and that the Dockerfile is where
+`OCI_DOCKERFILE` says it is. It publishes nothing. It also *reports* whether
+the trigger project is visible to the job token, without failing on it: that
+question has no yes-or-no answer, as the next section explains.
 
 **It can no longer check the build, and that is worth saying plainly.** The
 base image, the package installs, npm, PyPI and the build arguments belong to

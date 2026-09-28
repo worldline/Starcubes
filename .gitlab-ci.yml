@@ -407,9 +407,7 @@ publish:
 # It is a weaker instrument than it was. The questions that used to matter —
 # can this pod build, does the registry accept our credentials — are the OCI
 # Builder's to answer now, and no job here can ask them. What is left is what
-# this repository can still get wrong on its own, plus a reachability check on
-# the trigger project, which is the one failure the pipeline cannot recover
-# from mid-release.
+# this repository can still get wrong on its own.
 doctor:
   stage: check
   rules:
@@ -444,18 +442,28 @@ doctor:
       note "repo       $CI_PROJECT_URL.git"
 
       echo "── 3. the builder ────────────────────────────────────────────"
-      # The trigger project must be visible to this job, or the release stops
-      # at the `build-image` job with a message about a non-existent project. Asked
-      # here for a click instead of a tag: a failed tag has to be deleted and
-      # set again on the fixed commit.
+      # A note, not a check — and that distinction cost a release tag to learn
+      # (2026-09-28). Whether `build-image` may trigger the OCI Builder depends
+      # on **who started this pipeline**: GitLab checks the pipeline user's
+      # permission on the downstream project, and the job token on its own
+      # never sees it. So a 404 here is also what a pipeline that triggers
+      # perfectly well answers — a web pipeline started by a member of the
+      # builder project goes through, one started by a project access token
+      # fails with `insufficient_bridge_permissions`.
+      #
+      # What the answer does tell you: **200** means the job token is on the
+      # builder's allowlist and every push triggers reliably; **404** means the
+      # tag has to be pushed by a user the builder knows.
       api="$CI_API_V4_URL/projects/paas%2Foci-builder%2Fpipelines%2Fbuilder"
       if curl --silent --show-error --fail --max-time 20 --output /dev/null \
            --header "JOB-TOKEN: $CI_JOB_TOKEN" "$api"; then
-        ok "the trigger project answers"
+        ok "the trigger project answers this job's token — any push can trigger it"
       else
-        bad "the trigger project does not answer with this job's token"
-        note "either it does not exist under this path, or this project may"
-        note "not trigger it — see docs/releases.md"
+        note "the trigger project is invisible to this job's token"
+        note "that is not by itself a failure: the trigger is allowed when the"
+        note "pipeline was started by a member of the builder project, and a"
+        note "tag pushed by a project access token was not — it fails with"
+        note "insufficient_bridge_permissions. See docs/releases.md."
       fi
 
       echo "── 4. what this job cannot check ─────────────────────────────"
