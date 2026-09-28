@@ -295,6 +295,10 @@ promote:
     IMAGE_NAME: "$OCI_IMAGE_NAME"
     TAG: "$VERSION"
     OBJECT_CODE: "$OCI_APPLICATION_SERVICE"
+    # The same switch as `build-image`, and for the same reason: promotion
+    # checks the *target* registry, so re-cutting a botched tag would stop
+    # here instead of there. It stays off unless someone sets it.
+    FORCE: "$OCI_FORCE_OVERWRITE"
   trigger:
     project: paas/oci-builder/pipelines/builder
     strategy: depend
