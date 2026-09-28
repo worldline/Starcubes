@@ -14,8 +14,9 @@
 # as two images that claim the same version and behave differently.
 #
 # Exactly three things differ, all of them forced:
-#   1. the base is one image for all three stages, taken from $BASE_IMAGE,
-#      and packages come from `dnf` rather than `apt-get`;
+#   1. the base is one image for all three stages, named **literally** on each
+#      stage directive (see below), and packages come from `microdnf` rather
+#      than `apt-get`;
 #   2. the Python environment lives in a venv at /opt/venv instead of being
 #      copied out of /usr/local (see stage 2);
 #   3. the JS stage installs nodejs from the base rather than starting from
@@ -24,19 +25,46 @@
 #
 # See docs/releases.md, "GitLab — .gitlab-ci.yml".
 
-# The base, for every stage. The default is the internal image; a build from
-# outside that network can point this at the public UBI 10 base, which is the
-# same dnf world and needs no login:
-#     STARCUBES_BASE_IMAGE=registry.access.redhat.com/ubi10/ubi:latest \
-#         STARCUBES_DOCKERFILE=docker/Dockerfile.ubi ./docker/build.sh
-ARG BASE_IMAGE=oci.registry.csms.worldline-solutions.com/docker-reg/wl-u10-python312:latest
+# ── The base, and why it is spelled out three times ───────────────────────────
+# The three stage directives below name the internal image directly. They used
+# to take it from a build ARG, whose default a build outside the corporate
+# network could point at the public UBI 10 base.
+#
+# **That indirection is what the OCI Builder's linter cannot see through.** It
+# reads the file statically and rejects any stage whose source image it does
+# not recognise, so the ARG produced two errors per directive — "Sources image
+# should come from …" and "Invalid parameters for command" — and the build
+# never started. Measured on 2026-09-28, pipeline 19865629. An ARG with a
+# default does not help: the linter reads the text, not the expansion.
+#
+# So the base is hard-wired, and this file is buildable **only inside the
+# corporate network**. That costs nothing here: it is the GitLab branch, the
+# official build is GitHub's (../Dockerfile), and no other GitLab has to build
+# it. The `STARCUBES_BASE_IMAGE` variable went with the ARG it fed.
+#
+# ── Why the base has no Python ────────────────────────────────────────────────
+# `wl-ubi10` is UBI 10 with microdnf and **no Python at all**, so every stage
+# installs what it needs. That is deliberate, not a detour. The one internal
+# image that does ship Python 3.12 — `wl-u10-python312` — has no package
+# manager: measured on 2026-09-28 in pipeline 19865870, the build died at
+# `RUN dnf …` with `dnf: command not found`. Nothing can be added to it
+# afterwards, and nginx and a C compiler for uwsgi have to come from somewhere.
+# microdnf is the way in — and on RHEL 10 `python3` *is* 3.12, so the package
+# lists below need no version suffix.
+#
+# `microdnf`, not `dnf`: UBI base images ship the former, and the canary
+# project's `dnf` works because it starts from `awl-ubi8`. If a run ever
+# reports `microdnf: command not found`, the package manager is the thing to
+# change, not the package list.
 
 # ── Stage 1: JS vendor (npm install the published package) ────────────────────
 # Pulls the pre-built dist/timeseries.js from the published npm tarball and
 # copies it into a stable path that Django's collectstatic will pick up via
 # STATICFILES_DIRS. The published @hgruber/timeseries.js tarball ships a
 # pre-built IIFE bundle in dist/, so no esbuild / bundling step is needed.
-FROM ${BASE_IMAGE} AS jsbuilder
+FROM oci.registry.csms.worldline-solutions.com/docker-reg/wl-ubi10:v5.0.58 AS jsbuilder
+
+LABEL wl.maintainer=holger.gruber@worldline.com
 
 # The Worldline images may set a non-root USER; the package steps need root.
 # The original's python:*-slim stages run as root throughout, and so does the
@@ -48,7 +76,7 @@ USER root
 # pipeline: "pull from somewhere else" is a variable, not an edit.
 ARG NPM_REGISTRY=""
 
-RUN dnf -y install nodejs npm && dnf clean all
+RUN microdnf -y install nodejs npm && microdnf clean all
 
 WORKDIR /js
 COPY package.json package-lock.json ./
@@ -74,7 +102,9 @@ RUN mkdir -p /js/vendor/timeseries && \
 # regex `static-map` with it — no error, they just stop matching. The runtime
 # stage carries the pcre2 runtime library anyway (nginx depends on it), so
 # this costs nothing in the final image.
-FROM ${BASE_IMAGE} AS builder
+FROM oci.registry.csms.worldline-solutions.com/docker-reg/wl-ubi10:v5.0.58 AS builder
+
+LABEL wl.maintainer=holger.gruber@worldline.com
 
 USER root
 ARG PIP_INDEX_URL=""
@@ -87,8 +117,8 @@ ARG PIP_INDEX_URL=""
 # python does not, and without it uwsgi's build stops at
 # `fatal error: Python.h: No such file or directory`. A python base image may
 # or may not have it — name it and neither case matters.
-RUN dnf -y install python3 python3-pip python3-devel gcc glibc-devel pcre2-devel \
-    && dnf clean all
+RUN microdnf -y install python3 python3-pip python3-devel gcc glibc-devel pcre2-devel \
+    && microdnf clean all
 
 # A venv at a fixed path, and the whole of it copied into the runtime stage.
 # This is where the file departs from ../Dockerfile, which copies
@@ -96,7 +126,7 @@ RUN dnf -y install python3 python3-pip python3-devel gcc glibc-devel pcre2-devel
 # absolute path — those paths are a property of the official python:* images.
 # An RPM python puts its packages under /usr/lib/python3.12/site-packages and
 # a Red Hat s2i image under /opt/app-root, so a copy by absolute path would
-# depend on which flavour $BASE_IMAGE happens to be. /opt/venv is ours.
+# depend on which flavour the base image happens to be. /opt/venv is ours.
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
@@ -108,7 +138,7 @@ RUN set -eu; \
 
 # Runtime image doesn't need pip / setuptools / wheel — strip them after the
 # install, before the venv is copied into the runtime stage. The glob on the
-# python version is deliberate: the interpreter comes from $BASE_IMAGE and a
+# python version is deliberate: the interpreter comes from the base image and a
 # hard-coded python3.12 would turn a base image bump into a silent no-op that
 # ships pip and 36 MB of pandas tests.
 #
@@ -123,13 +153,15 @@ RUN set -eu; \
     true
 
 # ── Stage 3: runtime ─────────────────────────────────────────────────────────
-FROM ${BASE_IMAGE}
+FROM oci.registry.csms.worldline-solutions.com/docker-reg/wl-ubi10:v5.0.58
+
+LABEL wl.maintainer=holger.gruber@worldline.com
 
 USER root
 
 # libaio is the Oracle instantclient dependency the original installs as
 # Debian's libaio1.
-RUN dnf -y install python3 nginx libaio && dnf clean all
+RUN microdnf -y install python3 nginx libaio && microdnf clean all
 
 # Python packages and uwsgi from builder — one path, and it carries the
 # uwsgi binary in /opt/venv/bin. docker/entrypoint.sh calls python3, nginx and

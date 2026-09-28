@@ -6,11 +6,13 @@
 #
 # There are two Dockerfiles. `Dockerfile` is the original and the default
 # here: Debian slim off Docker Hub, which is what the public build and every
-# checkout use. `docker/Dockerfile.ubi` is the internal branch — UBI 10 off
-# the Worldline registry, for an instance that cannot reach Docker Hub — and
-# is selected by STARCUBES_DOCKERFILE, which .gitlab-ci.yml sets. With none
-# of the STARCUBES_* variables below set, this script builds exactly what it
-# always built.
+# checkout use. `docker/Dockerfile.ubi` is the internal branch — UBI 10 off the
+# Worldline registry, with the base spelled out rather than taken from a build
+# ARG, because the OCI Builder's linter reads that file statically. It is
+# selected by STARCUBES_DOCKERFILE, and the GitLab pipeline no longer uses this
+# script at all: the OCI Builder builds that branch itself. With none of the
+# STARCUBES_* variables below set, this script builds exactly what it always
+# built.
 #
 # This is also where a release gets its identity. The version comes from the
 # git tag, resolved by starcubes/version.py: this script *asks* that module
@@ -70,14 +72,16 @@ esac
 # registry in play, :latest simply means "the one I built last", which is what
 # the README quickstart runs. Extra "$@" args are appended, so an explicit -t
 # still works.
-# Build args that only the internal Dockerfile declares: the base image and
-# the two package mirrors. Passed on only when set, so the default build keeps
-# the base its own Dockerfile names and reaches the public npm/PyPI exactly as
-# before. Prepended rather than appended, so an explicit argument of the
-# caller's still wins. See docs/releases.md, "Two build branches".
-if [ -n "${STARCUBES_BASE_IMAGE:-}" ]; then
-    set -- --build-arg "BASE_IMAGE=$STARCUBES_BASE_IMAGE" "$@"
-fi
+# Build args that only the internal Dockerfile declares: the two package
+# mirrors. Passed on only when set, so the default build reaches the public
+# npm/PyPI exactly as before. Prepended rather than appended, so an explicit
+# argument of the caller's still wins. See docs/releases.md, "Two build
+# branches".
+#
+# There used to be a third — `STARCUBES_BASE_IMAGE`, which chose the internal
+# branch's base image. It went with the ARG it fed: that base is spelled out in
+# the file now, because the OCI Builder's linter reads it statically and
+# rejects a stage whose source image it cannot see.
 if [ -n "${STARCUBES_NPM_REGISTRY:-}" ]; then
     set -- --build-arg "NPM_REGISTRY=$STARCUBES_NPM_REGISTRY" "$@"
 fi
