@@ -120,6 +120,56 @@ runs through further pre-release tags — see
   has to be deleted and set again, since a queued job always runs the
   pipeline file as of the commit its tag points at.
 
+### Changed
+
+- **The GitLab release builds its image through the OCI Builder.** The image
+  used to be built in the pipeline itself — buildah on the shared runner,
+  pushed to Harbor with credentials kept as CI variables. It is now built by
+  the central OCI Builder, which clones this repository, builds
+  `docker/Dockerfile.ubi` on its own infrastructure, pushes to Harbor with
+  credentials of its own and signs the result with cosign. **This project
+  holds no registry password any more**, so `STARCUBES_IMAGE`,
+  `STARCUBES_REGISTRY_USER` and `STARCUBES_REGISTRY_PASSWORD` can be deleted
+  from *Settings → CI/CD → Variables*.
+
+  **What an operator has to do:** the image's path changed. It is
+  `<registry>/starcubes/starcubes:<version>` now — the repository segment is
+  the object code, not `docker-reg`. A host pulling
+  `oci.registry.csms.worldline-solutions.com/docker-reg/starcubes:<tag>`
+  must be pointed at `registry-production.svc.meshcore.net` — the same
+  service under its other name — or at
+  `registry-scl-staging.svc.meshcore.net`, which is where `build` leaves it
+  before `promote` copies it. By this project's own rule, an upgrade that
+  needs a hand is a **major** change, whatever else the release contains.
+
+  The pipeline is no longer two jobs but six: `prepare` (the two guards, the
+  source zip and the handover), `image`, `promote` and `latest` (the builder
+  triggers), `publish` (the release) and `doctor`. `doctor` now checks only
+  what this repository can still get wrong on its own — it can no longer
+  probe the build, because the build happens elsewhere. Of the builder's four
+  actions, **only `build` has been run here**; `promote` and `tag` are
+  written from the builder's own sources and are untested until the first
+  real tag.
+
+- **`docker/Dockerfile.ubi` builds on the internal UBI 10 base, with
+  `microdnf`.** The GitLab branch's base is now `docker-reg/wl-ubi10`, named
+  literally on every stage directive, and Python, nginx and the compiler come
+  from `microdnf` instead of being preinstalled. Two measurements forced it:
+  the builder's security linter reads the Dockerfile **statically** and
+  rejects any stage whose source image it cannot recognise — so the
+  `BASE_IMAGE` build argument is gone, and with it `STARCUBES_BASE_IMAGE` —
+  and the one internal image that ships Python 3.12, `wl-u10-python312`, has
+  **no package manager at all**, so nginx and uwsgi's C compiler cannot be
+  added to it afterwards.
+
+  `requirements.txt` is untouched. Reaching for an older Python instead would
+  have meant Django 4.2 and pandas 2.2, both below what this application
+  pins, and the first of them out of support. The file also carries a
+  `wl.maintainer` label now: the builder lints a second time when it
+  promotes, in a **blocking** pass, and a missing label fails a release that
+  built cleanly. None of this touches the repo-root `Dockerfile`, which is
+  what the GitHub release and every checkout build.
+
 ## [2.0.0-beta.3.1] — 2026-09-25
 
 **A tag for exercising the GitLab release pipeline, not a release to

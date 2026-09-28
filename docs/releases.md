@@ -108,47 +108,75 @@ quickstart runs.
 
 ## Two build branches
 
-There are two Dockerfiles, and which one gets built is one environment
-variable.
+There are two Dockerfiles, and they are built by different things.
 
-`Dockerfile` at the repo root is the original and the default: Debian slim
-off Docker Hub, `apt-get` for nginx and the compiler, the Python packages
-copied out of `/usr/local`. It is what a checkout builds, what
-`.github/workflows/release.yml` builds, what the README quickstart runs —
-**and what `.gitlab-ci.yml` builds too.** Nothing about it changed when the
-second branch arrived.
+`Dockerfile` at the repo root is the original: Debian slim off Docker Hub,
+`apt-get` for nginx and the compiler, the Python packages copied out of
+`/usr/local`. **It is what the official build uses** — a checkout, the README
+quickstart, and `.github/workflows/release.yml`. Leave it alone unless a
+change is meant for everyone.
 
-`docker/Dockerfile.ubi` builds the same image on **UBI 10** —
-`docker-reg/wl-u10-python312` by default, `dnf` instead of `apt-get`, and the
-Python environment in a venv at `/opt/venv` rather than copied out of
-`/usr/local`, because that path is a property of the official `python:*`
-images and not of an RPM python.
+`docker/Dockerfile.ubi` builds the same image on the internal **UBI 10** base
+out of `oci.registry.csms.worldline-solutions.com/docker-reg/`, with
+`microdnf` instead of `apt-get`, the Python environment in a venv at
+`/opt/venv` rather than copied out of `/usr/local` (that path belongs to the
+official `python:*` images, not to an RPM python), and nodejs from the base
+rather than from a node image. **The GitLab release builds this one**, through
+the OCI Builder — see "GitLab — `.gitlab-ci.yml`" below.
 
-**It is not in use anywhere today, and that is worth saying plainly.** It
-was written for the assumption that the internal GitLab instance cannot
-reach Docker Hub. Measured, that assumption was wrong in both directions: a
-job pod there reaches Docker Hub, npm and PyPI perfectly well, while
-`cdn.redhat.com` does not answer — so the UBI file could never run its own
-`dnf` on the very instance it was written for. It stays in the tree as the
-branch for an environment that really is cut off from Docker Hub but has a
-UBI mirror, and it has been built and smoke-tested against a public UBI 10
-base. Until such an environment turns up, it is a spare, not a road.
+### Why the base is written into the file, not passed in
 
-The two share everything that is not distro-bound: `docker/entrypoint.sh`,
-`docker/nginx.conf`, `docker/uwsgi.ini`, the runtime `ENV` blocks, the
-build-identity guard, the OCI labels and every `STARCUBES_*` runtime
-variable. An operator cannot tell the resulting containers apart except by
-`podman inspect`. **That sharing is by copy, not by include** — a Dockerfile
-has no way to include another — so a change to any of the shared parts
-belongs in both files on the same commit. Nothing checks it.
+`docker/Dockerfile.ubi` names its base image literally on every stage
+directive, and there is no build argument for it. That is forced, and the
+reason is worth knowing before anyone improves it back into an argument:
 
-Four environment variables steer `build.sh`, and every one of them defaults
+The OCI Builder's security linter reads the Dockerfile **statically** and
+rejects any stage whose source image is not one of a handful of internal
+registries. An argument — even one with a sensible default — hides the host
+behind a variable, and the linter reports two errors per stage: "Sources image
+should come from …" and "Invalid parameters for command". Measured on
+2026-09-28, pipeline 19865629. There is no way to have both the indirection
+and the build.
+
+The cost is that this branch is buildable **only inside the corporate
+network**, and that `STARCUBES_BASE_IMAGE` — which used to point it at a
+public UBI base for a smoke test from outside — went with the argument it fed.
+That was judged cheap: the official build is GitHub's, and no other GitLab has
+to build this file.
+
+### Why the base has no Python
+
+The internal image that ships Python 3.12, `docker-reg/wl-u10-python312`, has
+**no package manager at all** — measured on 2026-09-28 in pipeline 19865870,
+where the first package step died with `dnf: command not found`. Nothing can
+be added to it afterwards, and nginx and a C compiler for uwsgi have to come
+from somewhere. So this branch builds on `docker-reg/wl-ubi10`, which carries
+UBI 10 with `microdnf` and no interpreter, and installs what each stage needs.
+On RHEL 10 `python3` *is* 3.12, so no package line needs a version suffix —
+and `requirements.txt` stays exactly what the GitHub build reads, which is the
+point. Reaching for an older Python instead would have meant Django 4.2 and
+pandas 2.2, both below what this application pins, and the first of them out
+of support.
+
+The two files share everything that is not distro-bound:
+`docker/entrypoint.sh`, `docker/nginx.conf`, `docker/uwsgi.ini`, the runtime
+`ENV` blocks, the build-identity guard, the OCI labels and every `STARCUBES_*`
+runtime variable. An operator cannot tell the resulting containers apart
+except by `podman inspect`. **That sharing is by copy, not by include** — a
+Dockerfile has no way to include another — so a change to any of the shared
+parts belongs in both files on the same commit. Nothing checks it.
+
+The `wl.maintainer` label is the one deliberate exception, and it lives only
+in the UBI file: the OCI Builder lints that file a second time at promotion,
+in a **blocking** pass, and a missing label there fails a release that built
+cleanly.
+
+Three environment variables steer `build.sh`, and every one of them defaults
 to the original behaviour:
 
 | Variable | Default | What it does |
 |---|---|---|
-| `STARCUBES_DOCKERFILE` | `Dockerfile` | Which Dockerfile to build. `.gitlab-ci.yml` sets it to `docker/Dockerfile.ubi`. |
-| `STARCUBES_BASE_IMAGE` | *(unset)* | Passed through as the `BASE_IMAGE` build arg, which only `docker/Dockerfile.ubi` declares. Unset, that file uses the internal `wl-u10-python312`; set it to `registry.access.redhat.com/ubi10/ubi:latest` to build the internal branch from outside the Worldline network — same dnf world, no login. |
+| `STARCUBES_DOCKERFILE` | `Dockerfile` | Which Dockerfile a *checkout* builds. The GitLab pipeline no longer uses this script — the OCI Builder builds `docker/Dockerfile.ubi` itself, and `DOCKERFILE` in `.gitlab-ci.yml` is what tells it so. |
 | `STARCUBES_NPM_REGISTRY` | *(unset)* | An npm mirror for the `jsbuilder` stage. Empty is the public registry. |
 | `STARCUBES_PIP_INDEX_URL` | *(unset)* | A PyPI mirror for the builder stage. Empty is the public index. |
 
@@ -309,10 +337,11 @@ commit that is already there.
 ## Releasing from a remote
 
 Two remotes run the procedure above automatically, and both do the same
-tag-side work: build the image through `docker/build.sh` — the one supported
-route, so all three build args the Dockerfile demands are set — push it,
-pack a source zip from the tag with `git archive`, and publish a release
-whose body is that version's `CHANGELOG.md` section.
+tag-side work: publish an image, pack a source zip from the tag with
+`git archive`, and cut a release whose body is that version's `CHANGELOG.md`
+section. How the image is produced is where they part: GitHub builds it here,
+through `docker/build.sh` — the one route that sets all three build args the
+root Dockerfile demands — while GitLab hands the job to the OCI Builder.
 
 Both pipelines carry the same two guards, and both fail loudly rather than
 publish something half-named: a version that does not resolve, or resolves
@@ -348,136 +377,135 @@ first (Organization → Settings → Packages).
 
 ### GitLab — `.gitlab-ci.yml`
 
-The internal instance. A `v*` tag pushed there runs the same procedure in
-two jobs — `build` (version guard, changelog guard, image, zip) and
-`publish` (the release itself). Five things differ from GitHub, and none of
-them is an oversight:
+The internal instance. A `v*` tag pushed there publishes the same three
+things GitHub does — image, source zip, release — but **the image is built by
+someone else**. The OCI Builder (`paas/oci-builder/pipelines/builder`) is a
+central service: it clones this repository, builds `docker/Dockerfile.ubi`
+with buildah on its own infrastructure, pushes to Harbor with credentials of
+its own, and signs the result with cosign. This project holds no registry
+password any more, which is the whole reason for the arrangement.
 
-- **A different runner, and therefore a job image.** The instance answers
-  with a **Kubernetes shared runner** — `k8s-S Shared Runner on GI/DC*`, via
-  the `tags:` line. Every job runs in a pod, so there is no host to install
-  anything on: each job names `$STARCUBES_JOB_IMAGE`, Docker Hub's full
-  `python:3.12`, which already carries git and curl, and `apt`-installs
-  buildah and netavark into it. Full, not `-slim`, and not the internal
-  `wl-u10-python312`: **that image carries no package manager at all**, and
-  UBI's repositories are unreachable from a job pod anyway. If a job reports
-  a non-root uid, that is the runner's pod security context and not
-  something this file can set — it says so rather than failing on a
-  permission error three lines later.
-- **The image is built with buildah, unprivileged.** A shared runner does
-  not hand out `privileged = true`, so docker-in-docker is out — and the
-  dind image is not in the registry either. buildah with the **vfs** storage
-  driver (set in `/etc/containers/storage.conf` during setup, so `tag` and
-  `push` look into the same store) and `BUILDAH_ISOLATION=chroot` needs
-  neither privileges nor user namespaces. The dind arrangement had a second,
-  quieter defect on this executor: `DOCKER_HOST: tcp://docker:2376` cannot
-  resolve, because a Kubernetes executor puts services into the job's own
-  pod network, reachable as `localhost`, with no alias.
-- **The same Dockerfile as everywhere else.** `STARCUBES_DOCKERFILE` is
-  empty here on purpose, so `build.sh` builds the repo-root `Dockerfile` —
-  see [Two build branches](#two-build-branches). `docker/Dockerfile.ubi` was
-  written for the assumption that this instance cannot reach Docker Hub, and
-  measurement overturned that assumption in both directions (below).
-- **A push target that is not GitLab's.** This GitLab has **no container
-  registry**, so `$CI_REGISTRY_IMAGE` is empty and a push against it pings
-  `https:///v2/`. `STARCUBES_IMAGE` names the Harbor this environment
-  already pulls from, and `STARCUBES_REGISTRY_USER` /
-  `STARCUBES_REGISTRY_PASSWORD` are its credentials. The job's own
-  `$CI_REGISTRY_*` are **not** a fallback for it: GitLab defines them even
-  with no registry configured, so an unconditional fallback is never empty
-  and quietly throws a job token at a foreign registry.
+**The jobs, in order.** A trigger job cannot have a `script:`, which is why
+the work this file used to do in two jobs now spans six:
+
+| Job | Stage | What it does |
+|---|---|---|
+| `prepare` | check | version guard, changelog guard, source zip, and the handover the later jobs read |
+| `image` | build | triggers `ACTION=build` |
+| `promote` | release | triggers `ACTION=promote` — staging to production |
+| `latest` | release | triggers `ACTION=tag` with `NEW_TAG=latest`, final releases only |
+| `publish` | release | the release itself, through the Releases API |
+| `doctor` | check | the hand-checked questions, below |
+
+**What is proven and what is not.** `build` has run end to end — 2026-09-28,
+pipeline 19872671: the internal base pulls, the packages install, npm and PyPI
+answer, the build args arrive, the image is pushed and signed. **`promote` and
+`tag` have never been run from here.** They are written from the builder's own
+sources (`build-pipelines/includes/promote_image.yaml`,
+`includes/manage_tags.yaml`, and the `libs/` scripts those call), so the
+variable names are read rather than guessed — but the first real tag is their
+test, and a failure there stops the release before `publish`.
+
+### The trigger contract, and its two traps
+
+Everything the builder knows comes from `variables:` on the trigger job. Two
+of them are worth naming before anyone edits them:
+
+- **`DOCKERFILE` and `DOCKERFILE_DIR`.** The file is named in full
+  (`docker/Dockerfile.ubi`) and `DOCKERFILE_DIR` is **empty**, because the
+  builder uses that directory as the build **context** as well as the
+  directory: `docker` there would make `COPY . /app/` copy only that
+  subdirectory. The image would build, and be wrong.
+- **`BUILDER_BUILD_ARGS`** is the builder's syntax, not Docker's: one string
+  of `buildarg-KEY=VALUE` pairs joined with `&`. A pair whose value is **empty
+  is silently dropped** — it does not fail the build. An unset variable would
+  therefore not report itself; it would strip a build argument and leave the
+  Dockerfile's identity guard to complain about a missing version, which is
+  the wrong diagnosis. That is why `prepare` composes the whole string in one
+  piece, and why the values it feeds are known to be set.
+
+`GIT_BRANCH` takes the **tag**, not a branch name — the builder runs `git
+checkout $GIT_BRANCH`, and git takes a tag there as happily as a branch.
+Building the tag is what makes the image the tagged commit.
+
+### Where the image goes, and what an operator has to change
+
+`ACTION=build` leaves the image in the **staging** registry,
+`registry-scl-staging.svc.meshcore.net/starcubes/starcubes:<version>`;
+`ACTION=promote` copies it to production,
+`registry-production.svc.meshcore.net/starcubes/starcubes:<version>` — the same
+service this project used to push to directly, under its other name
+`oci.registry.csms.worldline-solutions.com`.
+
+**The path changed, and that is the one thing an operator has to act on.** The
+repository segment is the object code now (`starcubes`), not `docker-reg`. A
+host pulling `…/docker-reg/starcubes:<tag>` has to be pointed at
+`…/starcubes/starcubes:<tag>`. Pre-releases are promoted too, deliberately:
+before the switch a beta landed in the same Harbor a final release did, and
+only `:latest` told them apart.
+
+`:latest` moves only for a final release. That rule is a regex on the tag
+rather than the `$PRERELEASE` flag `prepare` computes — not a shortcut, but
+because `rules:` are evaluated when the pipeline is created, long before any
+dotenv artifact exists.
+
+### What GitLab still does differently from GitHub
+
 - **The release is created through the API.** The `release:` keyword is
-  implemented by the `release-cli` image, which this registry does not carry
-  and this executor could not run anyway. The `publish` job `POST`s to
-  `/projects/:id/releases` with the job token instead: same tag, same name,
-  same description, same asset link. The body is assembled with `python3`
-  and `json.dumps` rather than `printf` — a changelog section is full of
-  backticks, quotes and newlines, and hand-rolled JSON in `sh` breaks on the
-  first of them.
-
+  implemented by the `release-cli` image, which this instance does not carry.
+  The `publish` job `POST`s to `/projects/:id/releases` with the job token
+  instead: same tag, same name, same description, same asset link. The body is
+  assembled with `python3` and `json.dumps` rather than `printf` — a changelog
+  section is full of backticks, quotes and newlines, and hand-rolled JSON in
+  `sh` breaks on the first of them.
 - **The zip is a link, not an attachment.** GitLab releases carry asset
   *links*; they do not host uploads. The job publishes the zip to the
   project's **generic package registry** under
   `…/packages/generic/starcubes/<version>/starcubes-<version>.zip` and links
-  the release to it. Same file, same name, one hop further away.
+  the release to it.
 - **There is no pre-release flag.** GitLab releases have none, so a
   pre-release says so in its **name** (`starcubes 2.0.0-rc.1 (pre-release)`).
   The distinction that matters operationally is unaffected: `:latest` still
   moves only for a final release, and the About dialog still draws its
   pre-release pill, because that comes from `version.py`.
 - **`GIT_DEPTH: 0` is load-bearing.** GitLab clones shallow by default and
-  `version.py` describes from the tag history. Without it every release
-  stops at the version guard, reporting a version problem that is really a
-  checkout setting. The job also marks the checkout `safe.directory`, or git
-  refuses to read it from inside the build image — quietly, since every git
-  call in `version.py` is best-effort by design.
+  `version.py` describes from the tag history. Without it every release stops
+  at the version guard, reporting a version problem that is really a checkout
+  setting. The two shell jobs also mark the checkout `safe.directory`, or git
+  refuses to read it from inside the job image — quietly, since every git call
+  in `version.py` is best-effort by design.
 
-**Before you tag anything, run `doctor`.** *Build → Pipelines → Run
-pipeline*, on any ref. It is the only job a hand-started pipeline runs, it
-publishes nothing, and it answers — in one pass, continuing past each
-failure — the six questions this pipeline cannot answer for itself:
+### Trying it without cutting a release
 
-1. can this pod build at all — buildah builds a throwaway image off the
-   real base, with **two** `-t`, because `docker/build.sh` passes two and an
-   engine that accepts only one would fail the release rather than this
-   check;
-2. does `$STARCUBES_BASE_IMAGE` pull — the registry lists repositories
-   without tags, so `:latest` is an assumption until something proves it;
-3. can `dnf` inside that image provide nodejs, npm, python3-devel, gcc,
-   nginx, libaio and pcre2-devel — a hardened image with no repositories
-   configured fails here rather than three minutes into a release;
-4. are npm and PyPI (or the mirrors in `STARCUBES_NPM_REGISTRY` /
-   `STARCUBES_PIP_INDEX_URL`) reachable;
-5. do the job credentials open the container registry, the package registry
-   and the Releases API;
-6. does `version.py` resolve in this clone.
+`doctor` (*Build → Pipelines → Run pipeline*, on any ref) checks what this
+repository can still get wrong on its own — that `version.py` resolves, that
+the changelog has an `[Unreleased]` section, that the Dockerfile is where
+`OCI_DOCKERFILE` says it is, and that the trigger project answers this
+project's job token. It publishes nothing.
 
-It exists because the alternative is to push a `v*` tag and read the
-failure — and a failed tag has to be deleted and set again on the fixed
-commit, since a queued job always runs the file as of the commit its tag
-points at. The job costs a click.
+**It can no longer check the build, and that is worth saying plainly.** The
+base image, the package installs, npm, PyPI and the build arguments belong to
+the OCI Builder, which runs them on its own infrastructure; no job here can
+ask about them. The cheap rehearsal is a throwaway branch whose
+`.gitlab-ci.yml` triggers `ACTION=build` with `TAG=probe` and an `IMAGE_NAME`
+that is not `starcubes`. It is how this pipeline was written, over four runs
+on 2026-09-28. A failed `v*` tag, by contrast, has to be deleted and set again
+on the fixed commit — a queued job always runs the file as of the commit its
+tag points at.
 
-**Where the image goes is one variable.** Nothing in the tree names a
-registry — the image's identity is its build args and OCI labels, not its
-name — so the pipeline pushes to `$STARCUBES_IMAGE`, defaulting to this
-project's own registry. Pointing it elsewhere is a change under *Settings →
-CI/CD → Variables*, not a commit; a registry other than the project's own
-needs its own credentials at the login step, since `$CI_REGISTRY_USER` and
-`$CI_REGISTRY_PASSWORD` are only good for this one.
+The image's identity is its build args and OCI labels, not its name — and the
+builder composes both from the trigger variables, so nothing in this tree
+decides them any more.
 
-Pulling needs `docker login $CI_REGISTRY` with a deploy token or a personal
-access token carrying `read_registry`.
-
-**What this environment actually is**, measured on 2026-09-25 rather than
-assumed — the pipeline prints this map in every job, because three rounds
-were spent on beliefs that one measurement overturned:
-
-| From a job pod | |
-|---|---|
-| `deb.debian.org`, `registry-1.docker.io`, `registry.npmjs.org`, `pypi.org` | reachable |
-| `artifactory.core.emea.giservices.io`, the GitLab itself | reachable |
-| `cdn.redhat.com`, `dl-cdn.alpinelinux.org` | **unreachable** |
-
-So a job pod's egress is an **allowlist, not a block** — the first failure,
-`apk add` against Alpine's CDN, looked like the latter. Image pulls are a
-separate path again: the runner rewrites them to an Artifactory mirror, so
-`image:` resolves even for things a job could not fetch itself.
-
-Two consequences. The repo-root `Dockerfile` has every source it needs
-(`npm ci`, `pip install`, its Debian bases), so it is what gets built.
-And `docker/Dockerfile.ubi` could never work here at all: it installs with
-`dnf` from the one CDN that does not answer.
-
-The instance has to be able to build, and that means four things the
-pipeline cannot supply itself: a **runner** whose tags match the `tags:`
-line, **a pod that may run as root** (for `apt`) and **may build
-unprivileged** (buildah with vfs and chroot isolation), a **push target
-with credentials**, and those package sources staying reachable. No dind
-image and no `release-cli` image are needed; neither exists in that
-registry, which is why the file is shaped the way it is. `doctor` checks
-every one of these in a single run, and the guards check the cheap ones
-before the build rather than after it — a missing variable that costs a
-full image build before it speaks up is a guard in the wrong place.
+**What this environment is.** `prepare` and `publish` run on a Kubernetes
+shared runner — a pod, with no host to install anything on — so both name
+`$STARCUBES_JOB_IMAGE`, Docker Hub's full `python:3.12`, which the runner
+pulls through its Artifactory mirror and which already carries git and curl.
+Neither job builds anything, so the questions that used to decide the
+Dockerfile — whether each package source answers, whether a CDN is reachable
+— no longer arise here at all. They belong to the OCI Builder now, on its own
+infrastructure, and the answers it needs are the ones measured on 2026-09-28:
+the internal base pulls, and microdnf, npm and PyPI all answer from there.
 
 **Where a runner comes from.** A self-hosted instance has exactly the
 runners its operator has put there — GitLab ships none. There is no
@@ -508,16 +536,14 @@ Once a runner answers, a stuck job can be retried — **unless
 commit the tag points at, so a fix to the pipeline never reaches a job that
 is already queued. Delete the tag and set it again on the new commit.
 
-Which runner it is decides the shape of `.gitlab-ci.yml`. It is written for
-the **Kubernetes shared runner** this instance answers with: a `default:`
-`image:` from the internal registry, tooling from `dnf`, no `services:`, no
-`DOCKER_*` variables, and `CONTAINER_ENGINE=buildah` building unprivileged.
-A shell runner with podman would want the opposite — no `image:`, no `dnf`
-step, tools on the host — and a docker executor would want a `docker:dind`
-service plus `privileged = true`, which a shared runner does not give and
-whose image is not in the registry anyway. Switching is therefore a runner
-decision first and an edit second, and `doctor` is how you find out which
-one you have.
+The `image`, `promote` and `latest` jobs do no work on this instance's own
+runners at all: they hand a request to the **OCI Builder's** queue, which is
+separate and has its own capacity limit — 25 concurrent builds across the
+whole company, distributed over two sites. A `build_image` job that sits in
+`pending` up there is waiting for that queue, not for anything in this file.
+The queue is also why the trigger uses `strategy: depend`: this pipeline
+waits for the downstream to finish, so a failed build fails the release
+rather than leaving it silently unbuilt.
 
 ### Two remotes, two builds
 

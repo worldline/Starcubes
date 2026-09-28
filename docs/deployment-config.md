@@ -338,10 +338,10 @@ A process reads its environment once, so a change takes a restart. The one
 live path is the GUI, and only for the
 [alarm transports and SSO](#alarm-transports-and-sso).
 
-This table is runtime only. The handful of variables that steer the *build*
-— `STARCUBES_DOCKERFILE`, `STARCUBES_BASE_IMAGE`, `STARCUBES_NPM_REGISTRY`,
-`STARCUBES_PIP_INDEX_URL` — have neither a checkout default nor an image
-default, and nothing in a built image remembers them. They are listed in
+This table is runtime only. The few variables that steer the *build* —
+`STARCUBES_DOCKERFILE`, `STARCUBES_NPM_REGISTRY`, `STARCUBES_PIP_INDEX_URL` —
+have neither a checkout default nor an image default, and nothing in a built
+image remembers them. They are listed in
 [`releases.md`, "Two build branches"](releases.md#two-build-branches).
 
 ### Database, HTTP and Django
