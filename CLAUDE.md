@@ -170,6 +170,11 @@ this table as a manifest.
 
 ## Verification before reporting work done
 
+0. **Tests** — `python -m pytest` runs the suite (see `docs/internals.md`,
+   "Tests"). DB tests are marked `db` and need `STARCUBES_TEST_DSN`; without
+   it they skip. The run never touches `STARCUBES_POSTGRES_DSN`. Add or
+   extend a test whenever behaviour changes — the pure modules and the
+   database paths both have a home in `tests/`.
 1. **Syntax / import** — every Python file in `core/` and
    `sources/management/commands/` must `ast.parse` cleanly. Imports
    additionally require `sqlalchemy`, `pandas`, `tqdm`.
@@ -197,7 +202,7 @@ this table as a manifest.
    from a correct one — every number in that module was wrong once, and
    none of the four failures raised anything.
 4. **Log sources** — after touching `core/logsource.py`, run
-   `manage.py check_logsource`. Thirteen fixture scenarios, 55 checks, no
+   `manage.py check_logsource`. Seventeen fixture scenarios, 81 checks, no
    database needed. It exists for the same reason as the check above: every
    failure mode in that module is **silent**. A zone applied in the wrong
    direction, a year taken from the wrong end of a December/January

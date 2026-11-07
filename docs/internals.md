@@ -304,6 +304,38 @@ Use the GUI at `/sources/new/` or write a seed script modelled on
   of each value;
 - optional `fact_index` rows.
 
+## Tests
+
+`python -m pytest` runs the suite configured in `pytest.ini` (files under
+`tests/`; test dependencies in `requirements-dev.txt`). It has two classes:
+
+- **Without a database**, always run. These cover the parts that are pure by
+  construction: the log parser and stream statistics, the SQL builders and
+  filters, profile/alarm YAML round-trips, partition arithmetic, the rollup
+  spec rules, the OIDC claim matrix, middleware, the template-comment trap,
+  and the four existing `check_*` management commands pulled in as
+  regression tests.
+- **Against PostgreSQL**, marked `db`. They need a **separate** DSN in
+  `STARCUBES_TEST_DSN`; without it they are skipped, not failed. `conftest`
+  deliberately blanks `STARCUBES_POSTGRES_DSN` for the run so a test can
+  never touch the production database. They cover meta-schema idempotency,
+  fact/partition and dimension DDL, a full `import_fact` run in both
+  directions of Postgres, the audit/rollup/preflight/cache/lease/alarm
+  paths and the query builders executed against real tables.
+
+A throwaway cluster, for a machine with no PostgreSQL running:
+
+```
+initdb -D /tmp/sc_pg -U "$USER" --auth=trust
+pg_ctl -D /tmp/sc_pg -o "-k /tmp/sc_pg_sock -p 55432" -l /tmp/sc_pg.log start
+STARCUBES_TEST_DSN='postgresql+psycopg2://'"$USER"'@/postgres?host=/tmp/sc_pg_sock&port=55432' \
+    python -m pytest
+```
+
+Each DB test gets its own schema (`scratch_schema`), which is dropped
+afterwards; the `starcubes_meta` schema is created once per session by
+`ensure_starcubes_meta`.
+
 ## Acknowledgements
 
 - Chart rendering by [`hgruber/timeseries.js`](https://github.com/hgruber/timeseries.js).

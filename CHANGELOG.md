@@ -12,8 +12,32 @@ committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
 [`docs/releases.md`](docs/releases.md).
 
+### Added
+
+- **A test suite.** `python -m pytest` now runs `tests/` (configuration in
+  `pytest.ini`). The pure modules — log parser, stream statistics, SQL
+  builders, profile and alarm YAML, partition and rollup rules — run without
+  a database; the integration class is marked `db` and needs a separate
+  `STARCUBES_TEST_DSN`, so a developer run skips it rather than failing, and
+  the run can never touch the configured production DSN. Covered in the
+  database class: meta-schema idempotency, fact/partition and dimension
+  DDL, a complete `import_fact` Postgres→Postgres run (including the second
+  run that must load nothing and a backfill that must not duplicate),
+  audit IDs, rollups, preflight, cache, leases and alarm episodes. The four
+  existing `check_*` management commands are pulled in as regression tests,
+  and a template test catches the multi-line `{# … #}` comment that ships
+  its text to the browser. See `docs/internals.md`, "Tests", for the
+  throwaway-cluster recipe.
+
 ### Fixed
 
+- **Nested alarm contexts normalised `andOr`/`indent` from the wrong
+  level.** `core/alarm.normalize_context_rows` accepts both the flat row
+  shape and `{'row': {...}, 'andOr': ..., 'indent': ...}`; in the nested
+  form it read both fields from the inner `row`, so every tree normalised
+  to "and"/0. The duplicate-alarm hint compares on this form, so two
+  genuinely different contexts could look identical. The flat form — what
+  every current caller sends — was unaffected.
 - **The GitLab trigger's `FORCE` switch has a default of its own.** Deleting
   the `OCI_FORCE_OVERWRITE` project variable did not switch the overwrite
   protection back on — it switched the pipeline off. An *empty* `FORCE` is not

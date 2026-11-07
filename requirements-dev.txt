@@ -1,0 +1,2 @@
+# Test-only dependencies. Runtime dependencies stay in requirements.txt.
+pytest>=8

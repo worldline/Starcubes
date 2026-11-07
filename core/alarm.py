@@ -178,9 +178,14 @@ def normalize_context_rows(rows: Optional[list[dict]]) -> list[tuple]:
         if not isinstance(row, dict):
             continue
         vals = tuple(sorted(str(v) for v in (row.get("vals") or [])))
+        # `andOr`/`indent` sitzen in der flachen Form auf `raw`, in der
+        # verschachtelten (`{'row': {...}, 'andOr': ..., 'indent': ...}`)
+        # daneben — nicht in `row`. Beide Ebenen lesen, sonst normalisiert
+        # die verschachtelte Form jeden Baum auf "and"/0.
         out.append((str(row.get("col") or ""), str(row.get("op") or ""),
-                    vals, str(row.get("andOr") or "and"),
-                    int(row.get("indent") or 0)))
+                    vals,
+                    str(raw.get("andOr", row.get("andOr")) or "and"),
+                    int(raw.get("indent", row.get("indent")) or 0)))
     return out
 
 
