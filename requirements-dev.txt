@@ -1,2 +1,5 @@
 # Test-only dependencies. Runtime dependencies stay in requirements.txt.
 pytest>=8
+# Browser-Smoke-Tests (tests/test_ui_playwright.py). Den Browser einmalig
+# installieren:  python -m playwright install chromium
+playwright>=1.40

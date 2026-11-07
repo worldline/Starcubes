@@ -144,3 +144,27 @@ class TestVersion:
         assert info["is_prerelease"] is False
         assert info["build_date"] == "2026-01-01"
         assert "timeseries_version" in info
+
+
+class TestDbFromDsn:
+    def test_netloc_form(self):
+        from starcubes.settings import _db_from_dsn
+        db = _db_from_dsn("postgresql+psycopg2://anna:geheim@db.example:5433/sc")
+        assert db["NAME"] == "sc"
+        assert db["USER"] == "anna"
+        assert db["PASSWORD"] == "geheim"
+        assert db["HOST"] == "db.example"
+        assert db["PORT"] == "5433"
+
+    def test_socket_im_query_string(self):
+        from starcubes.settings import _db_from_dsn
+        db = _db_from_dsn(
+            "postgresql+psycopg2://holger@/postgres?host=/tmp/sc_pg_sock&port=55432")
+        assert db["NAME"] == "postgres"
+        assert db["USER"] == "holger"
+        assert db["HOST"] == "/tmp/sc_pg_sock"
+        assert db["PORT"] == "55432"
+
+    def test_leerer_dsn_ist_dummy(self):
+        from starcubes.settings import _db_from_dsn
+        assert _db_from_dsn("")["ENGINE"] == "django.db.backends.dummy"

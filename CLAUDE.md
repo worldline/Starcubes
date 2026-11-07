@@ -172,9 +172,11 @@ this table as a manifest.
 
 0. **Tests** — `python -m pytest` runs the suite (see `docs/internals.md`,
    "Tests"). DB tests are marked `db` and need `STARCUBES_TEST_DSN`; without
-   it they skip. The run never touches `STARCUBES_POSTGRES_DSN`. Add or
-   extend a test whenever behaviour changes — the pure modules and the
-   database paths both have a home in `tests/`.
+   it they skip. Browser smoke tests are marked `ui` and additionally need
+   Playwright + Chromium; `pytest -m "not ui"` skips them. The run never
+   touches the production `STARCUBES_POSTGRES_DSN`. Add or extend a test
+   whenever behaviour changes — the pure modules, the Django view/API layer
+   and the browser paths all have a home in `tests/`.
 1. **Syntax / import** — every Python file in `core/` and
    `sources/management/commands/` must `ast.parse` cleanly. Imports
    additionally require `sqlalchemy`, `pandas`, `tqdm`.

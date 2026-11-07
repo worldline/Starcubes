@@ -307,7 +307,7 @@ Use the GUI at `/sources/new/` or write a seed script modelled on
 ## Tests
 
 `python -m pytest` runs the suite configured in `pytest.ini` (files under
-`tests/`; test dependencies in `requirements-dev.txt`). It has two classes:
+`tests/`; test dependencies in `requirements-dev.txt`). It has three classes:
 
 - **Without a database**, always run. These cover the parts that are pure by
   construction: the log parser and stream statistics, the SQL builders and
@@ -316,12 +316,29 @@ Use the GUI at `/sources/new/` or write a seed script modelled on
   and the four existing `check_*` management commands pulled in as
   regression tests.
 - **Against PostgreSQL**, marked `db`. They need a **separate** DSN in
-  `STARCUBES_TEST_DSN`; without it they are skipped, not failed. `conftest`
-  deliberately blanks `STARCUBES_POSTGRES_DSN` for the run so a test can
-  never touch the production database. They cover meta-schema idempotency,
-  fact/partition and dimension DDL, a full `import_fact` run in both
-  directions of Postgres, the audit/rollup/preflight/cache/lease/alarm
-  paths and the query builders executed against real tables.
+  `STARCUBES_TEST_DSN`; without it they are skipped, not failed. During a
+  test run the Django settings use that same DSN (never the production
+  `STARCUBES_POSTGRES_DSN`), so the ORM and the SQLAlchemy paths see one
+  database. They cover meta-schema idempotency, fact/partition and
+  dimension DDL, a full `import_fact` run in both directions of Postgres,
+  the audit/rollup/preflight/cache/lease/alarm paths, the query builders
+  executed against real tables, and the **Django view/API layer**: roles,
+  CSRF, status codes, JSON contracts, alarm CRUD and the admin-only pages.
+- **Browser smoke tests**, marked `ui` (and `db`). They start a real
+  `manage.py runserver --noreload` on a free port against the test
+  database, seed their own datasource and users, and drive Chromium through
+  Playwright: login/logout, a chart that loads its `plot.json`, filter
+  propagation, role-dependent panels, and asset delivery including the
+  path-traversal refusal. They need `playwright` and a Chromium:
+
+  ```
+  pip install -r requirements-dev.txt
+  python -m playwright install chromium
+  pytest -m ui
+  ```
+
+  `pytest -m "not ui"` skips the browser class; without
+  `STARCUBES_TEST_DSN` both database classes skip automatically.
 
 A throwaway cluster, for a machine with no PostgreSQL running:
 

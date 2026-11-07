@@ -23,14 +23,27 @@ runs through further pre-release tags — see
   database class: meta-schema idempotency, fact/partition and dimension
   DDL, a complete `import_fact` Postgres→Postgres run (including the second
   run that must load nothing and a backfill that must not duplicate),
-  audit IDs, rollups, preflight, cache, leases and alarm episodes. The four
-  existing `check_*` management commands are pulled in as regression tests,
-  and a template test catches the multi-line `{# … #}` comment that ships
-  its text to the browser. See `docs/internals.md`, "Tests", for the
+  audit IDs, rollups, preflight, cache, leases and alarm episodes. A second
+  class drives the **Django view/API layer** — roles, CSRF, status codes,
+  JSON contracts, alarm CRUD, admin-only pages — through the test client.
+  A third class (marked `ui`) starts a real `runserver` against the test
+  database and drives Chromium through Playwright: login/logout, a chart
+  that loads its `plot.json`, filter propagation, role-dependent panels and
+  asset delivery including the path-traversal refusal. The four existing
+  `check_*` management commands are pulled in as regression tests, and a
+  template test catches the multi-line `{# … #}` comment that ships its
+  text to the browser. See `docs/internals.md`, "Tests", for the
   throwaway-cluster recipe.
 
 ### Fixed
 
+- **Django ignored the `host`/`port` query parameters of the DSN.**
+  `starcubes/settings.py:_db_from_dsn` read only the URL netloc, so the
+  documented Unix-socket form
+  (`postgresql+psycopg2://user@/db?host=/var/run/postgresql&port=5432`)
+  sent Django to libpq's default socket while the SQLAlchemy core connected
+  to the configured one. Both halves now agree, which is also what lets the
+  view and browser tests run against a test cluster on a non-default socket.
 - **Nested alarm contexts normalised `andOr`/`indent` from the wrong
   level.** `core/alarm.normalize_context_rows` accepts both the flat row
   shape and `{'row': {...}, 'andOr': ..., 'indent': ...}`; in the nested

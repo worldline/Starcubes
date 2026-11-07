@@ -8,7 +8,10 @@ Zwei Testklassen:
   anfasst.
 * **Mit Datenbank** brauchen ``STARCUBES_TEST_DSN`` — einen *separaten*
   PostgreSQL-DSN. Ist er nicht gesetzt oder nicht erreichbar, werden diese
-  Tests übersprungen (``pytest.mark.db``), nicht rot.
+  Tests übersprungen (``pytest.mark.db``), nicht rot. Bei gesetztem DSN
+  zeigen auch die Django-Settings auf diese Testdatenbank (nie auf die
+  produktive ``STARCUBES_POSTGRES_DSN``), damit View- und UI-Tests dieselbe
+  Datenbasis benutzen.
 
 Ein lokaler Wegwerf-Cluster für die DB-Tests::
 
@@ -24,17 +27,24 @@ import uuid
 
 import pytest
 
-# Wichtig: vor django.setup() setzen. settings.py liest den DSN beim Import,
-# und sources.apps.ready() legt bei gesetztem DSN das Meta-Schema an.
+# Vor django.setup() lesen: settings.py baut DATABASES aus dem DSN beim
+# Import, und sources.apps.ready() legt bei gesetztem DSN das Meta-Schema an.
+# Der Test-DSN ist die einzige erlaubte Quelle; ohne ihn bleibt der
+# produktive DSN leer, damit kein Testlauf versehentlich die echte Datenbank
+# anfasst.
+TEST_DSN = os.environ.get("STARCUBES_TEST_DSN", "").strip()
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "starcubes.settings")
-os.environ["STARCUBES_POSTGRES_DSN"] = ""
+os.environ["STARCUBES_POSTGRES_DSN"] = TEST_DSN
 os.environ.setdefault("STARCUBES_DEBUG", "1")
+# Playwrights Sync-API hinterlässt eine laufende Event-Loop; Django verweigert
+# danach ORM-Zugriffe im selben Thread ("SynchronousOnlyOperation"). Im
+# Testprozess ist der dokumentierte Schalter dafür richtig — die Alternative
+# wäre, jede ORM-Nutzung in einen Thread zu verlagern.
+os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "1")
 
 import django  # noqa: E402
 
 django.setup()
-
-TEST_DSN = os.environ.get("STARCUBES_TEST_DSN", "").strip()
 
 
 def _skip_without_db() -> None:
@@ -145,6 +155,67 @@ def make_datasource(meta_engine):
             conn.execute(text(
                 "DELETE FROM starcubes_meta.datasource WHERE id = :id"),
                 {"id": ds_id})
+
+
+@pytest.fixture(scope="session")
+def django_orm(pg_dsn, meta_engine):
+    """Django-ORM-Tabellen (auth_user, sessions, …) in der Testdatenbank.
+
+    Reihenfolge ist wesentlich: ``starcubes_meta.sql`` läuft beim Bootstrap
+    **vor** ``migrate`` und kann die ``auth_user``-Zusatzspalten nur ergänzen,
+    wenn die Tabelle schon existiert. Auf einer frischen Datenbank legt
+    ``migrate`` sie an; der zweite ``ensure_starcubes_meta(force=True)``-Lauf
+    ist der Post-Migrate-Pass, den auch ``manage.py bootstrap`` macht.
+    """
+    from django.core.management import call_command
+
+    from core.schema import ensure_starcubes_meta
+
+    call_command("migrate", interactive=False, verbosity=0)
+    ensure_starcubes_meta(meta_engine, force=True)
+    return True
+
+
+@pytest.fixture
+def django_client(django_orm):
+    """Django-Testclient; CSRF wird pro Test bei Bedarf eingeschaltet."""
+    from django.test import Client
+
+    return Client()
+
+
+@pytest.fixture
+def seeded(meta_engine, pg_dsn, django_orm, schema_name):
+    """Eine vollständig konfigurierte Datasource mit Fact- und Dim-Daten.
+
+    Deckt alles ab, was ``Source.load`` und die Chart-/API-Views brauchen:
+    datasource, fact_column, dimension, fact_index, measure sowie die
+    physischen Tabellen und Zeilen.
+    """
+    from tests.seed import drop_seeded, seed_datasource
+
+    handle = seed_datasource(meta_engine, pg_dsn, schema_name)
+    try:
+        yield handle
+    finally:
+        drop_seeded(meta_engine, handle)
+
+
+@pytest.fixture
+def make_user(django_orm):
+    """Legt Login-Benutzer an und löscht sie nach dem Test wieder."""
+    from tests.seed import create_user
+
+    created = []
+
+    def _make(username=None, password="test-pass-123", *, superuser=False):
+        user = create_user(username, password, superuser=superuser)
+        created.append(user)
+        return user
+
+    yield _make
+    for user in created:
+        user.delete()
 
 
 @pytest.fixture

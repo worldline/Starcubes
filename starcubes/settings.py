@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import logging
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 class UrlDecodingFormatter(logging.Formatter):
@@ -109,17 +109,27 @@ TEMPLATES = [
 
 
 def _db_from_dsn(dsn: str) -> dict:
-    """Map a SQLAlchemy-style postgres URL to Django's DATABASES dict."""
+    """Map a SQLAlchemy-style postgres URL to Django's DATABASES dict.
+
+    Host and port may live in the netloc (``user@host:5432/db``) or, for a
+    Unix socket, in the query string (``?host=/var/run/postgresql&port=5432``)
+    — the form this project's own deployment example uses. SQLAlchemy reads
+    both; ignoring the query half here silently sent Django to libpq's
+    default socket while the core connected to the configured one.
+    """
     if not dsn:
         return {"ENGINE": "django.db.backends.dummy"}
     u = urlparse(dsn)
+    query = parse_qs(u.query)
+    host = u.hostname or (query.get("host") or [""])[0]
+    port = u.port or ((query.get("port") or [""])[0] or None)
     return {
         "ENGINE":   "starcubes.db_backends",
         "NAME":     u.path.lstrip("/"),
         "USER":     unquote(u.username) if u.username else "",
         "PASSWORD": unquote(u.password) if u.password else "",
-        "HOST":     u.hostname or "",
-        "PORT":     str(u.port) if u.port else "",
+        "HOST":     host or "",
+        "PORT":     str(port) if port else "",
         "OPTIONS":  {"options": "-c search_path=starcubes_meta,public"},
     }
 
