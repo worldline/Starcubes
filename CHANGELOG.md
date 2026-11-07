@@ -34,6 +34,19 @@ runs through further pre-release tags — see
   template test catches the multi-line `{# … #}` comment that ships its
   text to the browser. See `docs/internals.md`, "Tests", for the
   throwaway-cluster recipe.
+- **JavaScript unit tests and CI wiring.** `npm run test:js` runs 41
+  Vitest/jsdom tests over the app's classic scripts: the date picker's
+  parsing and UTC formatting, the anchored popovers (open/close, Escape,
+  outside click, roving focus), the inline-edit cell renderers and save
+  path, and the log viewer's pure formatters (`LogViewer.helpers` is a
+  read-only test seam). `package.json` gains `vitest`/`jsdom` as
+  devDependencies; the image build keeps `npm ci --omit=dev`, so none of it
+  reaches the container. CI now runs the suites: a new
+  `.github/workflows/tests.yml` on every branch push and pull request
+  (Python + PostgreSQL + Chromium, and the JS job), the GitHub release
+  workflow runs the Python job first and `release` needs it, and GitLab's
+  `test` job in the `check` stage gates `build-image` on tags (with a
+  manual `test-ui` job for browser runs).
 
 ### Fixed
 

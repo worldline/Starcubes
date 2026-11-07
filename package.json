@@ -2,8 +2,15 @@
   "name": "starcubes",
   "private": true,
   "version": "0.0.0",
-  "description": "npm manifest for vendoring the @hgruber/timeseries.js frontend dep",
+  "description": "npm manifest: the vendored @hgruber/timeseries.js bundle and the JavaScript test toolchain",
+  "scripts": {
+    "test:js": "vitest run"
+  },
   "dependencies": {
     "@hgruber/timeseries.js": "0.10.9"
+  },
+  "devDependencies": {
+    "jsdom": "25.0.1",
+    "vitest": "2.1.9"
   }
 }

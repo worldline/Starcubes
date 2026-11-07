@@ -761,5 +761,23 @@
       + '</tr>';
   };
 
+  // The pure helpers are exposed for the Vitest suite (tests/js). They take
+  // no DOM and no instance state, so this is a read-only seam, not a second
+  // API: nothing in the page calls them through this object.
+  LogViewer.helpers = {
+    esc: esc,
+    copyFilter: copyFilter,
+    sameFilter: sameFilter,
+    pad2: pad2,
+    timeOnly: timeOnly,
+    clockOnly: clockOnly,
+    fmtDuration: fmtDuration,
+    shortHost: shortHost,
+    kindClass: kindClass,
+    kindChip: kindChip,
+    statusBadge: statusBadge,
+    nowClock: nowClock,
+  };
+
   window.StarcubesLogViewer = LogViewer;
 })();

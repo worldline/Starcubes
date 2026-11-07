@@ -377,6 +377,12 @@ workflow token from within this repository's own Actions. If the first push
 is refused, the organisation's package creation policy has to be enabled
 first (Organization → Settings → Packages).
 
+**Tests gate the release.** The workflow's `tests` job runs the Python suite
+(including the PostgreSQL and browser classes) before `release`, and the
+release job declares `needs: tests` — a failing test stops the tag before an
+image is built. `.github/workflows/tests.yml` is the everyday copy: it runs
+the Python and JavaScript suites on every branch push and pull request.
+
 ### GitLab — `.gitlab-ci.yml`
 
 The internal instance. A `v*` tag pushed there publishes the same three
@@ -393,11 +399,17 @@ the work this file used to do in two jobs now spans six:
 | Job | Stage | What it does |
 |---|---|---|
 | `prepare` | check | version guard, changelog guard, source zip, and the handover the later jobs read |
+| `test` | check | the Python suite against a PostgreSQL service; `build-image` needs it |
+| `test-ui` | check | the browser smoke tests, manual from a hand-started pipeline |
 | `build-image` | build | triggers `ACTION=build` |
 | `promote` | release | triggers `ACTION=promote` — staging to production |
 | `latest` | release | triggers `ACTION=tag` with `NEW_TAG=latest`, final releases only |
 | `publish` | release | the release itself, through the Releases API |
 | `doctor` | check | the hand-checked questions, below |
+
+The JavaScript suite runs on the GitHub side only (`.github/workflows/tests.yml`):
+the GitLab job image has no Node, and adding it to every release would make
+the tag pipeline wait for an install that is not release work.
 
 **What is proven and what is not.** `build` and `promote` have both run.
 `build` ran end to end on 2026-09-28 (pipeline 19872671): the internal base

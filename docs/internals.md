@@ -340,6 +340,29 @@ Use the GUI at `/sources/new/` or write a seed script modelled on
   `pytest -m "not ui"` skips the browser class; without
   `STARCUBES_TEST_DSN` both database classes skip automatically.
 
+The **JavaScript** side has its own unit tests (Vitest + jsdom):
+
+```bash
+npm ci
+npm run test:js
+```
+
+They load the app's classic scripts into a jsdom document — the files are
+plain `<script>` sources, not ES modules — and cover the date picker's
+parsing/UTC formatting, the anchored popovers (open/close, Escape, outside
+click, roving focus), the inline-edit cell renderers and save path, and the
+log viewer's pure formatters (`LogViewer.helpers`, a read-only test seam).
+The Python suite does not invoke Node, so `pytest` and `npm run test:js`
+remain independent.
+
+**CI.** `.github/workflows/tests.yml` runs both suites on every branch push
+and pull request (PostgreSQL service, Python 3.12, Chromium, Node 20). On a
+release tag, `.github/workflows/release.yml` runs the same Python job first
+and the release job `needs` it. GitLab's `.gitlab-ci.yml` has a `test` job in
+the `check` stage on tags and hand-started pipelines (`build-image` needs it)
+and a manual `test-ui` job for browser runs; the JavaScript suite stays on
+the GitHub side because that job image has no Node.
+
 A throwaway cluster, for a machine with no PostgreSQL running:
 
 ```

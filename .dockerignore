@@ -49,3 +49,9 @@ logs/
 # Top-level node_modules from `npm install` — installed at build time by the
 # jsbuilder Dockerfile stage, must not leak into the build context.
 node_modules
+# Developer tooling, not app code: the Python/JS suites, their configs and the
+# test-only requirements. None of it is imported by a running container.
+tests/
+pytest.ini
+vitest.config.js
+requirements-dev.txt

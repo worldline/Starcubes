@@ -234,6 +234,66 @@ prepare:
       # job that needs this one, so none of them resolves the version again.
       dotenv: .release/build.env
 
+# ---- test -------------------------------------------------------------------
+# The Python suite against a PostgreSQL service. Runs on a release tag (before
+# the image is built) and on a hand-started pipeline. Browser tests stay out of
+# this job: Chromium plus its system libraries on every tag is a cost the
+# manual `test-ui` job below carries instead. The JavaScript suite is not here
+# either — it needs Node, which this image does not carry; the GitHub workflow
+# runs both on every branch push and pull request.
+test:
+  stage: check
+  rules:
+    - if: $CI_COMMIT_TAG =~ /^v[0-9]/
+    - if: $CI_PIPELINE_SOURCE == "web"
+  image: python:3.12
+  services:
+    - name: postgres:16
+      alias: postgres
+  variables:
+    POSTGRES_USER: starcubes
+    POSTGRES_PASSWORD: starcubes
+    POSTGRES_DB: starcubes
+    STARCUBES_TEST_DSN: "postgresql+psycopg2://starcubes:starcubes@postgres:5432/starcubes"
+    STARCUBES_SECRET_KEY: test-secret
+  before_script:
+    - *setup
+  script:
+    - |
+      python3 -m pip install --upgrade pip
+      python3 -m pip install -r requirements.txt -r requirements-dev.txt
+      python3 -m pytest -q -m "not ui"
+
+# ---- test-ui ----------------------------------------------------------------
+# The browser smoke tests, on demand. A release tag does not wait for these:
+# they exercise a real runserver and Chromium, and a transient browser failure
+# must not block an otherwise tested release. Start them from
+# Build → Pipelines → Run pipeline when the UI changed.
+test-ui:
+  stage: check
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: manual
+      allow_failure: true
+  image: python:3.12
+  services:
+    - name: postgres:16
+      alias: postgres
+  variables:
+    POSTGRES_USER: starcubes
+    POSTGRES_PASSWORD: starcubes
+    POSTGRES_DB: starcubes
+    STARCUBES_TEST_DSN: "postgresql+psycopg2://starcubes:starcubes@postgres:5432/starcubes"
+    STARCUBES_SECRET_KEY: test-secret
+  before_script:
+    - *setup
+  script:
+    - |
+      python3 -m pip install --upgrade pip
+      python3 -m pip install -r requirements.txt -r requirements-dev.txt
+      python3 -m playwright install --with-deps chromium
+      python3 -m pytest -q -m ui
+
 # ---- build-image -------------------------------------------------------------
 # **Not called `image`**, though that is what it is: `image` is a reserved
 # word at the top level of a GitLab pipeline (the default image every job
@@ -257,7 +317,7 @@ prepare:
 # the image the tagged commit rather than the tip of a branch.
 build-image:
   stage: build
-  needs: [prepare]
+  needs: [prepare, test]
   rules:
     - if: $CI_COMMIT_TAG =~ /^v[0-9]/
   variables:
