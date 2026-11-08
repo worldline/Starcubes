@@ -12,6 +12,13 @@ committed to a release until it is listed here. The road to a final 2.0.0
 runs through further pre-release tags — see
 [`docs/releases.md`](docs/releases.md).
 
+## [2.0.0-beta.5] — 2026-11-08
+
+**A release about proving the thing works, not about what it does.** The
+2.0.0 freeze holds: no schema change, no environment variable moved, no
+`manage.py` flag touched. What it adds is the test suites — and the three
+defects they put their finger on first. See "Fixed".
+
 ### Added
 
 - **A test suite.** `python -m pytest` now runs `tests/` (configuration in
@@ -64,16 +71,6 @@ runs through further pre-release tags — see
   to "and"/0. The duplicate-alarm hint compares on this form, so two
   genuinely different contexts could look identical. The flat form — what
   every current caller sends — was unaffected.
-- **The GitLab trigger's `FORCE` switch has a default of its own.** Deleting
-  the `OCI_FORCE_OVERWRITE` project variable did not switch the overwrite
-  protection back on — it switched the pipeline off. An *empty* `FORCE` is not
-  "off" for the OCI Builder but a parse error (it accepts only
-  `yes`/`1`/`true`/`no`/`0`/`false`), and GitLab expands an undefined variable
-  to the empty string, so the next `v*` tag would have stopped at `build-image`
-  with `Error while reading FORCE argument value` before building anything.
-  `OCI_FORCE_OVERWRITE: "False"` now sits among the pipeline's own variables,
-  where a project variable of the same name still overrides it.
-
 ## [2.0.0-beta.4] — 2026-09-28
 
 **A release about how the GitLab image is built, not about what the container
@@ -239,6 +236,18 @@ registry changed, so an operator who pulls it has one thing to do. See
   promotes, in a **blocking** pass, and a missing label fails a release that
   built cleanly. None of this touches the repo-root `Dockerfile`, which is
   what the GitHub release and every checkout build.
+
+### Fixed
+
+- **The GitLab trigger's `FORCE` switch has a default of its own.** Deleting
+  the `OCI_FORCE_OVERWRITE` project variable did not switch the overwrite
+  protection back on — it switched the pipeline off. An *empty* `FORCE` is not
+  "off" for the OCI Builder but a parse error (it accepts only
+  `yes`/`1`/`true`/`no`/`0`/`false`), and GitLab expands an undefined variable
+  to the empty string, so the next `v*` tag would have stopped at `build-image`
+  with `Error while reading FORCE argument value` before building anything.
+  `OCI_FORCE_OVERWRITE: "False"` now sits among the pipeline's own variables,
+  where a project variable of the same name still overrides it.
 
 ## [2.0.0-beta.3.1] — 2026-09-25
 
