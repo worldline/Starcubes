@@ -1,0 +1,123 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 520" width="1200" height="520" role="img" aria-labelledby="hiw-title hiw-desc">
+  <title id="hiw-title">How starcubes works</title>
+  <desc id="hiw-desc">A source — a SQL database or a log file — is read incrementally on a high watermark by a three-stage ETL engine, which loads a compact star schema into Postgres. The chart and alarms read that schema; filters live in the URL.</desc>
+
+  <defs>
+    <marker id="hiw-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#A9B6CC"/>
+    </marker>
+  </defs>
+
+  <!-- heading -->
+  <text x="48" y="54" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12" font-weight="700" letter-spacing="2.6" fill="#64718A">HOW IT WORKS</text>
+  <text x="48" y="86" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" font-weight="650" fill="#2B3A55">Point it at a source once — every question after that is a click.</text>
+
+  <!-- panel 1: sources -->
+  <rect x="48" y="112" width="252" height="292" rx="14" fill="#F7F9FC" stroke="#E4E9F2"/>
+  <circle cx="82" cy="148" r="14" fill="#46567A"/>
+  <text x="82" y="153" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="700" fill="#FFFFFF">1</text>
+  <text x="106" y="154" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#2B3A55">Sources</text>
+  <line x1="64" y1="168" x2="284" y2="168" stroke="#E4E9F2"/>
+
+  <rect x="64" y="182" width="220" height="64" rx="10" fill="#FFFFFF" stroke="#E4E9F2"/>
+  <text x="80" y="206" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">SQL database</text>
+  <text x="80" y="224" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" fill="#64718A">Oracle · Postgres · MySQL · MSSQL</text>
+  <text x="80" y="239" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" fill="#64718A">read on a high watermark</text>
+
+  <rect x="64" y="256" width="220" height="64" rx="10" fill="#FFFFFF" stroke="#E4E9F2"/>
+  <text x="80" y="280" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">Log files</text>
+  <text x="80" y="298" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" fill="#64718A">file · sftp · https · exec</text>
+  <text x="80" y="313" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11.5" fill="#64718A">parsed by a regex</text>
+
+  <text x="64" y="346" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">Configured once in starcubes_meta —</text>
+  <text x="64" y="362" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">a GUI form or a YAML profile.</text>
+
+  <!-- panel 2: etl engine -->
+  <rect x="332" y="112" width="252" height="292" rx="14" fill="#F7F9FC" stroke="#E4E9F2"/>
+  <circle cx="366" cy="148" r="14" fill="#46567A"/>
+  <text x="366" y="153" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="700" fill="#FFFFFF">2</text>
+  <text x="390" y="154" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#2B3A55">ETL engine</text>
+  <line x1="348" y1="168" x2="568" y2="168" stroke="#E4E9F2"/>
+
+  <rect x="348" y="182" width="220" height="52" rx="10" fill="#FFFFFF" stroke="#E4E9F2"/>
+  <text x="364" y="204" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" font-weight="650" fill="#2B3A55">Preflight</text>
+  <text x="364" y="221" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">schema · source · indices</text>
+
+  <line x1="362" y1="246" x2="362" y2="326" stroke="#C7D0E0" stroke-width="2"/>
+  <circle cx="362" cy="246" r="3.5" fill="#46567A"/>
+  <circle cx="362" cy="286" r="3.5" fill="#46567A"/>
+  <circle cx="362" cy="326" r="3.5" fill="#46567A"/>
+
+  <text x="376" y="250" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">Extract</text>
+  <text x="376" y="266" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">rows since the last watermark</text>
+
+  <text x="376" y="290" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">Transform</text>
+  <text x="376" y="306" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">values become smallint keys</text>
+
+  <text x="376" y="330" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">Load</text>
+  <text x="376" y="346" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">COPY FROM, partitioned fact</text>
+
+  <text x="348" y="372" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">Also in the engine:</text>
+  <text x="348" y="388" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">audit · rollups · alarms</text>
+
+  <!-- panel 3: postgres -->
+  <rect x="616" y="112" width="252" height="292" rx="14" fill="#F7F9FC" stroke="#E4E9F2"/>
+  <circle cx="650" cy="148" r="14" fill="#46567A"/>
+  <text x="650" y="153" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="700" fill="#FFFFFF">3</text>
+  <text x="674" y="154" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#2B3A55">Postgres</text>
+  <line x1="632" y1="168" x2="852" y2="168" stroke="#E4E9F2"/>
+
+  <rect x="632" y="202" width="3" height="24" rx="1.5" fill="#46567A"/>
+  <text x="648" y="214" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">fact</text>
+  <text x="648" y="230" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">monthly partitions · BRIN index</text>
+
+  <rect x="632" y="242" width="3" height="24" rx="1.5" fill="#46567A"/>
+  <text x="648" y="254" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">dim_*</text>
+  <text x="648" y="270" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">smallint keys, max 32 767</text>
+
+  <rect x="632" y="282" width="3" height="24" rx="1.5" fill="#46567A"/>
+  <text x="648" y="294" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">rollups</text>
+  <text x="648" y="310" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">optional hourly pre-aggregates</text>
+
+  <rect x="632" y="322" width="3" height="24" rx="1.5" fill="#46567A"/>
+  <text x="648" y="334" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">starcubes_meta</text>
+  <text x="648" y="350" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">datasources · runs · alarms</text>
+
+  <text x="632" y="372" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">One schema per datasource —</text>
+  <text x="632" y="388" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">sources never share a shape.</text>
+
+  <!-- panel 4: chart and alarms -->
+  <rect x="900" y="112" width="252" height="292" rx="14" fill="#F7F9FC" stroke="#E4E9F2"/>
+  <circle cx="934" cy="148" r="14" fill="#CF4F8F"/>
+  <text x="934" y="153" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="14.5" font-weight="700" fill="#FFFFFF">4</text>
+  <text x="958" y="154" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="17" font-weight="650" fill="#2B3A55">Chart &amp; alarms</text>
+  <line x1="916" y1="168" x2="1136" y2="168" stroke="#E4E9F2"/>
+
+  <rect x="916" y="202" width="3" height="24" rx="1.5" fill="#CF4F8F"/>
+  <text x="932" y="214" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">Chart</text>
+  <text x="932" y="230" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">stacked bars · nested filters</text>
+
+  <rect x="916" y="242" width="3" height="24" rx="1.5" fill="#CF4F8F"/>
+  <text x="932" y="254" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">Drill-down</text>
+  <text x="932" y="270" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">a bar → the rows inside it</text>
+
+  <rect x="916" y="282" width="3" height="24" rx="1.5" fill="#CF4F8F"/>
+  <text x="932" y="294" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">Alarms</text>
+  <text x="932" y="310" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">thresholds &amp; pipeline health</text>
+
+  <rect x="916" y="322" width="3" height="24" rx="1.5" fill="#CF4F8F"/>
+  <text x="932" y="334" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="13.5" font-weight="650" fill="#2B3A55">Query console</text>
+  <text x="932" y="350" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">read-only SQL</text>
+
+  <text x="916" y="372" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">Filters live in the URL —</text>
+  <text x="916" y="388" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="11" fill="#64718A">every view is a link you can send.</text>
+
+  <!-- flow -->
+  <line x1="303" y1="258" x2="326" y2="258" stroke="#A9B6CC" stroke-width="2" marker-end="url(#hiw-arrow)"/>
+  <line x1="587" y1="258" x2="610" y2="258" stroke="#A9B6CC" stroke-width="2" marker-end="url(#hiw-arrow)"/>
+  <line x1="871" y1="258" x2="894" y2="258" stroke="#A9B6CC" stroke-width="2" marker-end="url(#hiw-arrow)"/>
+
+  <!-- footer strip -->
+  <rect x="48" y="430" width="1104" height="56" rx="14" fill="#F2F5FA" stroke="#E4E9F2"/>
+  <text x="600" y="464" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="12.5" fill="#64718A">One container + one Postgres   ·   incremental by watermark   ·   read-only on the source   ·   every view is a URL</text>
+</svg>

@@ -151,22 +151,12 @@ And see what it costs you on disk, per table and per partition.
 
 ## How it works
 
-```
-                     starcubes_meta
-           (one datasource per row, edited in the GUI)
-                             |
-                             v
-  +----------------+   +-------------------+   +-------------------+
-  |   source DB    |   |    core/etl.py    |   |     Postgres      |
-  |                |   |                   |   |                   |
-  | Oracle / PG    |-->| extract           |-->| starcubes_<name>  |
-  | MySQL / MSSQL  |   |   transform       |   |   fact (part.)    |
-  |                |   |     load (COPY)   |   |   dim_*           |
-  +----------------+   +-------------------+   +-------------------+
-                                                        ^
-                                                        |
-                                             chart / alarms / audit
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/how-it-works-dark.svg">
+    <img src="docs/img/how-it-works.svg" alt="How starcubes works: a SQL database or a log file is read incrementally on a high watermark by a three-stage ETL engine, which loads a compact star schema into Postgres; the chart, alarms and query console read that schema, and filters live in the URL.">
+  </picture>
+</p>
 
 Each datasource gets its own Postgres schema, because two sources rarely have
 compatible shapes. The fact table is range-partitioned on its time column and
