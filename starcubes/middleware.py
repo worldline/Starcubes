@@ -54,7 +54,7 @@ class PipelineAlarmMiddleware:
 
     def __init__(self, get_response):
         self.get_response = get_response
-        self._last = 0.0
+        self._last: float | None = None
         self._lock = threading.Lock()
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
@@ -71,7 +71,10 @@ class PipelineAlarmMiddleware:
 
         now = time.monotonic()
         with self._lock:
-            if now - self._last < EVAL_INTERVAL_S:
+            # ``None`` and not ``0.0``: ``monotonic()`` is the host's uptime,
+            # so on a freshly booted machine it is legitimately smaller than
+            # the interval and the first request would schedule nothing.
+            if self._last is not None and now - self._last < EVAL_INTERVAL_S:
                 return
             self._last = now
         threading.Thread(target=self._evaluate, name="pipeline-alarm",

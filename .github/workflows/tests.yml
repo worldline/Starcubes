@@ -36,6 +36,25 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      # The chart page loads the vendored bundle from
+      # viz/static/timeseries/, which is generated (and gitignored) — a
+      # checkout has no copy. Without it the browser tests time out waiting
+      # for the plot.json fetch the page never starts.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Vendor timeseries.js
+        run: |
+          npm ci --omit=dev --no-audit --no-fund
+          mkdir -p viz/static/timeseries
+          cp node_modules/@hgruber/timeseries.js/dist/timeseries.min.js \
+             viz/static/timeseries/timeseries.js
+          cp node_modules/@hgruber/timeseries.js/LICENSE \
+             viz/static/timeseries/LICENSE
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:

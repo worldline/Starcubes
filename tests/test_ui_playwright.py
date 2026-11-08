@@ -29,6 +29,10 @@ pytestmark = pytest.mark.ui
 
 ROOT = Path(__file__).resolve().parent.parent
 PASSWORD = "test-pass-123"
+# Login and logout both redirect to the site root. Anchored to the root on
+# purpose: a bare ``/$`` also matches ``/sources/`` and ``/login/``, so the
+# wait returned before the POST it was meant to track had been answered.
+ROOT_URL = re.compile(r"^https?://[^/]+/$")
 
 
 @dataclass
@@ -145,7 +149,7 @@ def login(page, username: str, password: str = PASSWORD):
     page.fill("#id_username", username)
     page.fill("#id_password", password)
     page.click("button[type=submit]")
-    page.wait_for_url(re.compile(r"/$"))
+    page.wait_for_url(ROOT_URL)
 
 
 def _chart_url(world: UiWorld, **extra) -> str:
@@ -177,7 +181,7 @@ def test_login_und_logout(page, ui_world):
     assert ui_world.handle.name in page.content()
 
     page.evaluate("document.getElementById('logout-form').submit()")
-    page.wait_for_url(re.compile(r"/$"))
+    page.wait_for_url(ROOT_URL)
     page.goto("/sources/")
     assert "/login/" in page.url
 

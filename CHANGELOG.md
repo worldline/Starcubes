@@ -64,6 +64,14 @@ defects they put their finger on first. See "Fixed".
   sent Django to libpq's default socket while the SQLAlchemy core connected
   to the configured one. Both halves now agree, which is also what lets the
   view and browser tests run against a test cluster on a non-default socket.
+- **The request-path pipeline-alarm scheduler could stay silent on a fresh
+  machine.** `PipelineAlarmMiddleware` initialised its throttle timestamp to
+  `0.0` and compared it with `time.monotonic()`, which is the host's uptime:
+  on a host up for less than the interval (60 s by default) the first request
+  scheduled nothing, and nothing did until uptime passed it. The timestamp
+  starts as `None` now, so the first request always schedules — the fallback
+  evaluator exists precisely for deployments whose request path may not see
+  another one soon.
 - **Nested alarm contexts normalised `andOr`/`indent` from the wrong
   level.** `core/alarm.normalize_context_rows` accepts both the flat row
   shape and `{'row': {...}, 'andOr': ..., 'indent': ...}`; in the nested

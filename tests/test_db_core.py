@@ -161,7 +161,7 @@ class TestAdhoc:
 
 
 class TestConfigDb:
-    def test_db_wert_und_env_vorrang(self, meta_engine, monkeypatch):
+    def test_db_wert_und_env_vorrang(self, meta_engine, pg_dsn, monkeypatch):
         import core.config as config
 
         key = "STARCUBES_SMTP_HOST"
@@ -171,7 +171,9 @@ class TestConfigDb:
                 "VALUES (:k, 'aus-der-db', 'test') "
                 "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"),
                 {"k": key})
-        monkeypatch.setenv("STARCUBES_POSTGRES_DSN", str(meta_engine.url))
+        # ``pg_dsn`` and not ``str(meta_engine.url)``: SQLAlchemy masks the
+        # password in that rendering, and a DSN with ``***`` cannot connect.
+        monkeypatch.setenv("STARCUBES_POSTGRES_DSN", pg_dsn)
         monkeypatch.delenv(key, raising=False)
         config.invalidate()
         try:
